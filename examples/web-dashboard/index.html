@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ToWrite Dashboard</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header>
+        <div>
+          <h1>ToWrite Dashboard</h1>
+          <p id="statusText">等待连接</p>
+        </div>
+        <form id="configForm" class="config">
+          <input id="apiBase" value="http://127.0.0.1:48321" aria-label="API Base" />
+          <input id="token" type="password" placeholder="token" aria-label="Token" />
+          <button type="submit">连接</button>
+        </form>
+      </header>
+
+      <section class="stats">
+        <article><strong id="openCount">0</strong><span>open</span></article>
+        <article><strong id="candidateCount">0</strong><span>candidate</span></article>
+        <article><strong id="articleCount">0</strong><span>articles</span></article>
+        <article><strong id="blockedCount">0</strong><span>blocked</span></article>
+      </section>
+
+      <section class="filters">
+        <select id="laneFilter">
+          <option value="">全部 lane</option>
+          <option value="think">ToThink</option>
+          <option value="write">ToWrite</option>
+        </select>
+        <select id="statusFilter">
+          <option value="">全部状态</option>
+          <option value="open">open</option>
+          <option value="blocked">blocked</option>
+          <option value="paused">paused</option>
+          <option value="candidate">candidate</option>
+          <option value="resolved">resolved</option>
+        </select>
+        <select id="rawSelect">
+          <option value="deck">原始 JSON：deck</option>
+          <option value="questions">原始 JSON：questions</option>
+          <option value="articles">原始 JSON：articles</option>
+        </select>
+        <input id="searchInput" placeholder="搜索问题、文件、标签或备注" />
+      </section>
+
+      <nav class="quickbar" aria-label="快速跳转">
+        <a href="#thinkPanel">ToThink</a>
+        <a href="#writePanel">ToWrite</a>
+        <a href="#articlePanel">文章统计</a>
+        <a href="#rawPanel">原始 JSON</a>
+      </nav>
+
+      <details id="rawPanel" class="raw-panel">
+        <summary>
+          <span>原始 API 文件</span>
+          <small>展开查看 deck / questions / articles</small>
+        </summary>
+        <div class="raw-body">
+          <div class="panel-head">
+            <small>当前选择由上方「原始 JSON」下拉框控制</small>
+            <button id="copyRaw" type="button">复制 JSON</button>
+          </div>
+          <pre id="rawJson" class="raw-json">{}</pre>
+        </div>
+      </details>
+
+      <section class="layout">
+        <section class="workbench">
+          <details id="thinkPanel" class="lane-panel think" open>
+            <summary>
+              <span>ToThink</span>
+              <small id="thinkCount">0 项</small>
+            </summary>
+            <div id="thinkList" class="list"></div>
+          </details>
+
+          <details id="writePanel" class="lane-panel write" open>
+            <summary>
+              <span>ToWrite</span>
+              <small id="writeCountLabel">0 项</small>
+            </summary>
+            <div id="writeList" class="list"></div>
+          </details>
+        </section>
+        <section id="articlePanel">
+          <h2>文章统计</h2>
+          <div id="articleList" class="list compact"></div>
+        </section>
+      </section>
+    </main>
+    <script src="./app.js"></script>
+  </body>
+</html>

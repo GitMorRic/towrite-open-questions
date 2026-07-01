@@ -1,0 +1,126 @@
+:root {
+  color-scheme: light dark;
+  font-family: "Inter", "Segoe UI", sans-serif;
+  background: #101418;
+  color: #eef3f7;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+}
+
+.shell {
+  display: grid;
+  gap: 12px;
+  max-width: 420px;
+  margin: 0 auto;
+  padding: 14px;
+}
+
+.settings,
+.noteBox,
+.card {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: #172027;
+}
+
+.settings {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  padding: 10px;
+}
+
+label {
+  display: grid;
+  gap: 4px;
+  color: #9fb0bd;
+  font-size: 12px;
+}
+
+input,
+textarea {
+  box-sizing: border-box;
+  width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 8px 9px;
+  background: #0f151a;
+  color: #eef3f7;
+}
+
+button {
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #5da9e9;
+  color: #081018;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+button:hover {
+  filter: brightness(1.08);
+}
+
+.card {
+  display: grid;
+  gap: 10px;
+  min-height: 210px;
+  padding: 16px;
+  border-left: 5px solid #e3a23b;
+}
+
+.topline,
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.topline span {
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #b8c7d2;
+  font-size: 12px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 20px;
+  line-height: 1.2;
+}
+
+p {
+  margin: 0;
+  line-height: 1.45;
+}
+
+#question {
+  font-size: 16px;
+  font-weight: 650;
+}
+
+#meta,
+#latestNote,
+.message {
+  color: #9fb0bd;
+  font-size: 12px;
+}
+
+.noteBox {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
+.actions button {
+  flex: 1 1 auto;
+}
+
+.message.error {
+  color: #ff8c8c;
+}

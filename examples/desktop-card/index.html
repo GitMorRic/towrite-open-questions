@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ToWrite 桌面卡片</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="settings" aria-label="API 设置">
+        <label>
+          <span>API Base</span>
+          <input id="apiBase" value="http://127.0.0.1:48321" />
+        </label>
+        <label>
+          <span>Token</span>
+          <input id="token" type="password" placeholder="填你的 token" />
+        </label>
+        <button id="saveSettings" type="button">保存并刷新</button>
+      </section>
+
+      <section class="card" aria-live="polite">
+        <div class="topline">
+          <span id="lane">ToWrite</span>
+          <span id="status">open</span>
+          <span id="count">0 / 0</span>
+        </div>
+        <h1 id="title">等待连接 ToWrite</h1>
+        <p id="question">请先启用 External API，并填入 token。</p>
+        <p id="meta"></p>
+        <p id="latestNote"></p>
+      </section>
+
+      <section class="noteBox">
+        <textarea id="noteText" rows="3" placeholder="给当前卡片追加一条灵感备注"></textarea>
+        <div class="actions">
+          <button id="prevCard" type="button">上一张</button>
+          <button id="nextCard" type="button">下一张</button>
+          <button id="addNote" type="button">追加备注</button>
+          <button id="resolveCard" type="button">标记已解决</button>
+          <button id="refreshCards" type="button">刷新</button>
+        </div>
+      </section>
+
+      <p id="message" class="message"></p>
+    </main>
+    <script src="./app.js"></script>
+  </body>
+</html>

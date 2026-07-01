@@ -1,0 +1,8 @@
+node_modules/
+dist/
+release/
+.obsidian-open-questions/
+.agents/
+.codex/
+*.log
+*.tsbuildinfo
