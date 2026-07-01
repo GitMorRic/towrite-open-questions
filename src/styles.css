@@ -2316,3 +2316,9 @@
   margin: 0 0 14px;
   padding: 0 10px;
 }
+
+.towrite-hidden-clipboard-buffer {
+  position: fixed;
+  opacity: 0;
+  pointer-events: none;
+}

@@ -1,5 +1,13 @@
 # 更新日志
 
+## 0.2.1 - 2026-07-02
+
+- 修复 Obsidian 社区目录自动审核报出的源码错误：移除 `eval("require")`，改为直接加载 Node `http` 模块。
+- 卸载插件时不再 detach 侧边栏和 dashboard leaf，避免用户调整过的位置在下次加载时被重置。
+- Markdown 批注预览改用短生命周期 `Component` 渲染，避免把主插件实例作为 MarkdownRenderer component。
+- 侧边栏和 dashboard 激活逻辑改用兼容更早 Obsidian 版本的 `setActiveLeaf`，不再依赖 `revealLeaf`。
+- 设置页标题改为 `new Setting(...).setHeading()`；复制 fallback 的隐藏 textarea 改为 CSS class，减少审核样式警告。
+
 ## 0.2.0 - 2026-07-01
 
 - 新增手机小屏 / 墨水屏模拟页：`GET /device?token=...&profile=mobile-eink`。

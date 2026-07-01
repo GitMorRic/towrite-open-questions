@@ -384,7 +384,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
     const copy = COPY[this.plugin.settings.language ?? "zh"];
     containerEl.empty();
     containerEl.addClass("towrite-settings");
-    containerEl.createEl("h2", { text: copy.title });
+    new Setting(containerEl).setName(copy.title).setHeading();
 
     new Setting(containerEl)
       .setName(copy.language)
@@ -1332,12 +1332,11 @@ async function copyToClipboard(value: string, copiedMessage: string): Promise<vo
   if (navigator.clipboard?.writeText) {
     await navigator.clipboard.writeText(value);
   } else {
-    const textArea = document.body.createEl("textarea");
+    const textArea = activeDocument.body.createEl("textarea");
     textArea.value = value;
-    textArea.style.position = "fixed";
-    textArea.style.opacity = "0";
+    textArea.addClass("towrite-hidden-clipboard-buffer");
     textArea.select();
-    document.execCommand("copy");
+    activeDocument.execCommand("copy");
     textArea.remove();
   }
   new Notice(copiedMessage);

@@ -1,5 +1,6 @@
 import "./styles.css";
 import {
+  Component,
   MarkdownView,
   MarkdownRenderer,
   Notice,
@@ -243,8 +244,6 @@ export default class ToWritePlugin extends Plugin {
   onunload(): void {
     void this.externalApiServer?.stop();
     this.selectionToolbar?.destroy();
-    this.app.workspace.detachLeavesOfType(TOWRITE_SIDEBAR_VIEW);
-    this.app.workspace.detachLeavesOfType(TOWRITE_DASHBOARD_VIEW);
   }
 
   queryQuestions(query: OpenQuestionQuery = {}): OpenQuestion[] {
@@ -277,7 +276,13 @@ export default class ToWritePlugin extends Plugin {
 
   async renderMarkdown(markdown: string, element: HTMLElement, sourcePath: string): Promise<void> {
     element.replaceChildren();
-    await MarkdownRenderer.render(this.app, markdown, element, sourcePath || this.getActiveFile() || "", this);
+    const component = new Component();
+    component.load();
+    try {
+      await MarkdownRenderer.render(this.app, markdown, element, sourcePath || this.getActiveFile() || "", component);
+    } finally {
+      component.unload();
+    }
   }
 
   async openObsidianLink(linktext: string, sourcePath: string): Promise<void> {
@@ -736,7 +741,7 @@ export default class ToWritePlugin extends Plugin {
   private async activateSidebar(): Promise<void> {
     const existing = this.app.workspace.getLeavesOfType(TOWRITE_SIDEBAR_VIEW)[0];
     if (existing) {
-      this.app.workspace.revealLeaf(existing);
+      this.app.workspace.setActiveLeaf(existing, { focus: true });
       return;
     }
 
@@ -746,13 +751,13 @@ export default class ToWritePlugin extends Plugin {
     }
 
     await leaf.setViewState({ type: TOWRITE_SIDEBAR_VIEW, active: true });
-    this.app.workspace.revealLeaf(leaf);
+    this.app.workspace.setActiveLeaf(leaf, { focus: true });
   }
 
   private async activateDashboard(): Promise<void> {
     const leaf = this.app.workspace.getLeaf("tab");
     await leaf.setViewState({ type: TOWRITE_DASHBOARD_VIEW, active: true });
-    this.app.workspace.revealLeaf(leaf);
+    this.app.workspace.setActiveLeaf(leaf, { focus: true });
   }
 
   private registerEvents(): void {
@@ -1341,7 +1346,7 @@ function createExternalApiToken(): string {
 }
 
 function randomTokenFragment(): string {
-  return globalThis.crypto?.randomUUID?.().replace(/-/gu, "") ?? `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+  return activeWindow.crypto?.randomUUID?.().replace(/-/gu, "") ?? `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
 }
 
 function defaultTitleFromBody(body: string): string {

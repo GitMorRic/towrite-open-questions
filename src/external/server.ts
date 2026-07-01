@@ -68,6 +68,8 @@ interface QuestionFieldPatch {
   reminderDismissedAt?: string;
 }
 
+declare function require(moduleId: "http"): NodeHttpModule;
+
 interface NodeHttpModule {
   createServer(listener: (request: HttpRequest, response: HttpResponse) => void): HttpServer;
 }
@@ -125,8 +127,7 @@ export class ToWriteExternalApiServer {
       throw new ExternalApiError(400, "External API token is missing.");
     }
 
-    const http = loadHttpModule();
-    const server = http.createServer((request, response) => {
+    const server = require("http").createServer((request, response) => {
       void this.handleRequest(request, response);
     });
     this.server = server;
@@ -531,14 +532,6 @@ export class ToWriteExternalApiServer {
     response.setHeader("content-type", contentType);
     response.end(payload);
   }
-}
-
-function loadHttpModule(): NodeHttpModule {
-  const globalRequire = (globalThis as { require?: unknown }).require;
-  const requireFunction = typeof globalRequire === "function"
-    ? globalRequire as (moduleId: string) => unknown
-    : (0, eval)("require") as (moduleId: string) => unknown;
-  return requireFunction("http") as NodeHttpModule;
 }
 
 function setCorsHeaders(response: HttpResponse): void {
