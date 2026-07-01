@@ -20,6 +20,14 @@ It is not a general TODO list. It gives your vault a ToThink / ToWrite annotatio
 - Run an optional local desktop HTTP API for JSON, RSS, SSE events, dashboard views, mobile device previews, companion phone input, and note/status/capture writeback.
 - Run optional OpenAI-compatible summaries and local-note recommendations after you configure your own endpoint.
 
+## Screenshots
+
+![Sidebar current note and selection toolbar](docs/assets/sidebar-current-note%20and%20selection-toolbar.png)
+
+![Small-screen and External API overview](docs/assets/to-write-elink-api-overview.png)
+
+![Web dashboard](docs/assets/to-write-web-dashboard.png)
+
 ## Desktop Only
 
 This plugin is marked `isDesktopOnly: true` because the optional External API uses Node.js `http` to run a local server inside Obsidian Desktop. Core indexing is local-first, but the current marketplace build is desktop-only to comply with Obsidian community plugin review requirements.
