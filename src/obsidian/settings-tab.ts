@@ -1,4 +1,4 @@
-import { App, Notice, PluginSettingTab, Setting, setIcon, type SettingDefinitionItem } from "obsidian";
+import { App, Notice, PluginSettingTab, Setting, setIcon } from "obsidian";
 import {
   DEFAULT_STATUS_OPTIONS,
   DEFAULT_REMINDER_PRESETS,
@@ -397,31 +397,8 @@ export class ToWriteSettingTab extends PluginSettingTab {
     super(app, plugin);
   }
 
-  private settingsRootEl: HTMLElement | null = null;
-
   display(): void {
-    this.settingsRootEl = this.containerEl;
     this.renderSettings(this.containerEl);
-  }
-
-  getSettingDefinitions(): SettingDefinitionItem[] {
-    const copy = COPY[this.plugin.settings.language ?? "zh"];
-    return [{
-      name: copy.title,
-      searchable: false,
-      render: (setting) => {
-        setting.settingEl.empty();
-        setting.settingEl.addClass("towrite-settings-definition");
-        const root = setting.settingEl.createDiv({ cls: "towrite-settings" });
-        this.settingsRootEl = root;
-        this.renderSettings(root);
-        return () => {
-          if (this.settingsRootEl === root) {
-            this.settingsRootEl = null;
-          }
-        };
-      }
-    }];
   }
 
   private renderSettings(containerEl: HTMLElement): void {
@@ -1045,11 +1022,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
   }
 
   private refreshSettingsUi(): void {
-    if (this.settingsRootEl) {
-      this.renderSettings(this.settingsRootEl);
-    } else {
-      this.update();
-    }
+    this.renderSettings(this.containerEl);
   }
 
   private renderTriggerWordEditor(containerEl: HTMLElement, copy: SettingCopy): void {

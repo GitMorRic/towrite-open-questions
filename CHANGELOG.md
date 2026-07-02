@@ -1,5 +1,17 @@
 # Changelog / 更新日志
 
+## 0.2.7 - 2026-07-02
+
+- Removed the remaining Obsidian 1.13 settings APIs from the settings tab so the declared 1.5.0 minimum app version is accurate.
+- Kept the settings heading on Setting#setHeading while restoring the stable imperative display path.
+- Preserved the CSS cleanup with zero !important declarations.
+
+中文摘要：
+
+- 移除设置页里残留的 Obsidian 1.13 新 API，让声明的最低版本 1.5.0 和源码实际兼容。
+- 保留官方要求的 Setting#setHeading，同时恢复稳定的 display 渲染路径。
+- 保留 CSS 清理结果，styles.css 仍然没有 !important。
+
 ## 0.2.6 - 2026-07-02
 
 - Restored the imperative settings display fallback so the settings page renders in older or manually installed Obsidian builds.
