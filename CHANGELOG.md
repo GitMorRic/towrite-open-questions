@@ -1,5 +1,20 @@
 # Changelog / 更新日志
 
+## 0.2.4 - 2026-07-02
+
+- Switched the settings page to Obsidian's getSettingDefinitions() API and kept the heading on Setting#setHeading.
+- Raised the 0.2.4 minimum Obsidian version to 1.13.0 to match the new settings API.
+- Cleaned the frontmatter export write path to avoid unsafe assignment warnings.
+- Wrapped the edit modal submit handler so it no longer returns a Promise where Obsidian expects void.
+- Switched PDF overlay timer calls back to window.requestAnimationFrame/setTimeout per Obsidian review guidance.
+- Renamed the selection toolbar document field to avoid the popout compatibility warning.
+
+中文摘要：
+
+- 设置页切换到 Obsidian 新的 getSettingDefinitions() API，并继续使用 setHeading。
+- 0.2.4 的最低 Obsidian 版本提升到 1.13.0，以匹配新设置 API。
+- 修复 frontmatter 写入、弹窗 Promise、PDF timer、选区工具条字段名等审核 warning。
+
 ## 0.2.3 - 2026-07-02
 
 - Added a five-tab settings layout: General, Cards & Editor, Workflow, API & Device, and AI.

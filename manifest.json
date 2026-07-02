@@ -1,8 +1,8 @@
 {
   "id": "towrite-open-questions",
   "name": "ToWrite Open Questions",
-  "version": "0.2.3",
-  "minAppVersion": "1.5.0",
+  "version": "0.2.4",
+  "minAppVersion": "1.13.0",
   "description": "Track ToThink and ToWrite annotations beside your source notes.",
   "author": "Rick",
   "authorUrl": "https://github.com/GitMorRic",

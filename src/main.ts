@@ -1078,42 +1078,11 @@ export default class ToWritePlugin extends Plugin {
       return;
     }
 
-    new AddQuestionModal(this.app, async (result) => {
-      const updated: OpenQuestion = {
-        ...question,
-        title: result.title,
-        lane: result.lane,
-        question: result.question,
-        note: result.note,
-        kind: result.kind,
-        priority: result.priority,
-        tags: result.tags,
-        color: result.color,
-        status: result.status,
-        updatedAt: new Date().toISOString()
-      };
-
-      if (question.source.rule === "selection") {
-        await this.sidecars.upsert(updated);
-        await this.refreshSidecars();
-      } else {
-        this.store.patchQuestion(question.id, {
-          title: updated.title,
-          lane: updated.lane,
-          question: updated.question,
-          note: updated.note,
-          kind: updated.kind,
-          priority: updated.priority,
-          tags: updated.tags,
-          color: updated.color,
-          status: updated.status
-        });
-      }
-
-      await this.savePluginData();
-      if (this.settings.autoExport) {
-        await this.exportNow(false);
-      }
+    new AddQuestionModal(this.app, (result) => {
+      void this.applyQuestionModalEdit(question, result).catch((error) => {
+        console.error("Failed to update ToWrite question from modal", error);
+        new Notice("Failed to update ToWrite question.");
+      });
     }, {
       title: question.title,
       lane: question.lane,
@@ -1128,6 +1097,54 @@ export default class ToWritePlugin extends Plugin {
       language: this.settings.language,
       mode: "edit"
     }).open();
+  }
+
+  private async applyQuestionModalEdit(question: OpenQuestion, result: {
+    title?: string;
+    lane: OpenQuestionLane;
+    question: string;
+    note?: string;
+    kind: OpenQuestion["kind"];
+    priority?: OpenQuestion["priority"];
+    tags: string[];
+    color: OpenQuestionColor;
+    status: OpenQuestion["status"];
+  }): Promise<void> {
+    const updated: OpenQuestion = {
+      ...question,
+      title: result.title,
+      lane: result.lane,
+      question: result.question,
+      note: result.note,
+      kind: result.kind,
+      priority: result.priority,
+      tags: result.tags,
+      color: result.color,
+      status: result.status,
+      updatedAt: new Date().toISOString()
+    };
+
+    if (question.source.rule === "selection") {
+      await this.sidecars.upsert(updated);
+      await this.refreshSidecars();
+    } else {
+      this.store.patchQuestion(question.id, {
+        title: updated.title,
+        lane: updated.lane,
+        question: updated.question,
+        note: updated.note,
+        kind: updated.kind,
+        priority: updated.priority,
+        tags: updated.tags,
+        color: updated.color,
+        status: updated.status
+      });
+    }
+
+    await this.savePluginData();
+    if (this.settings.autoExport) {
+      await this.exportNow(false);
+    }
   }
 
   private async updateQuestionFromUi(id: string, patch: Omit<Partial<StoredQuestionState>, "id">): Promise<void> {

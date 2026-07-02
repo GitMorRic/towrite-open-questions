@@ -36,7 +36,7 @@ export class PdfQuestionLayer {
 
   destroy(): void {
     if (this.frame !== null) {
-      activeWindow.cancelAnimationFrame(this.frame);
+      window.cancelAnimationFrame(this.frame);
       this.frame = null;
     }
     this.observer?.disconnect();
@@ -48,7 +48,7 @@ export class PdfQuestionLayer {
     if (this.frame !== null) {
       return;
     }
-    this.frame = activeWindow.requestAnimationFrame(() => {
+    this.frame = window.requestAnimationFrame(() => {
       this.frame = null;
       this.render();
     });
@@ -164,7 +164,7 @@ export async function jumpToPdfQuestion(app: App, file: TFile, question: OpenQue
 
   const firstRect = anchor?.rects.find((rect) => rect.pageNumber === pageNumberToFind);
   scrollPdfPageIntoView(page, firstRect);
-  activeWindow.setTimeout(() => flashPdfQuestion(question.id), 180);
+  window.setTimeout(() => flashPdfQuestion(question.id), 180);
   return true;
 }
 
@@ -254,10 +254,10 @@ function flashPdfQuestion(questionId: string): void {
   const highlights = activeDocument.querySelectorAll<HTMLElement>(`.towrite-pdf-highlight[data-towrite-question-id="${CSS.escape(questionId)}"]`);
   highlights.forEach((highlight) => {
     highlight.addClass("is-flashing");
-    activeWindow.setTimeout(() => highlight.removeClass("is-flashing"), 1600);
+    window.setTimeout(() => highlight.removeClass("is-flashing"), 1600);
   });
 }
 
 function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => activeWindow.setTimeout(resolve, ms));
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }

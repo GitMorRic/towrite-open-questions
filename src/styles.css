@@ -2056,12 +2056,15 @@
   width: 100%;
 }
 
-.towrite-settings-title {
-  margin: 0 0 14px;
-  font-size: 22px;
-  line-height: 1.2;
+.towrite-settings-definition {
+  display: block;
+  border-top: 0;
+  padding: 0;
 }
 
+.towrite-settings-definition > .towrite-settings {
+  width: 100%;
+}
 .towrite-settings-tabs {
   display: flex;
   gap: 4px;
@@ -2181,7 +2184,7 @@
 }
 
 .towrite-workflow-stage-header::before {
-  content: "›";
+  content: ">";
   color: var(--text-muted);
   font-size: 18px;
   line-height: 1;

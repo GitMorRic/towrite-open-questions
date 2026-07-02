@@ -63,10 +63,11 @@ export class QuestionExporter {
       }
 
       await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
-        const data: Record<string, unknown> = frontmatter;
-        data.open_questions = article.open;
-        data.candidate_questions = article.candidate;
-        data.question_status = article.needsWork ? "blocked" : "clear";
+        Object.assign(frontmatter, {
+          open_questions: article.open,
+          candidate_questions: article.candidate,
+          question_status: article.needsWork ? "blocked" : "clear"
+        });
       });
     }
 
