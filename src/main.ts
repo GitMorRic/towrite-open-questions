@@ -72,6 +72,9 @@ export default class ToWritePlugin extends Plugin {
   private uiApi!: ToWriteUiApi;
   private selectionToolbar?: SelectionQuestionToolbar;
   private pdfQuestionLayer?: PdfQuestionLayer;
+  private backgroundRefreshTimer = 0;
+  private backgroundRefreshRunning = false;
+  private backgroundRefreshQueued = false;
 
   async onload(): Promise<void> {
     await this.loadPluginData();
@@ -242,6 +245,10 @@ export default class ToWritePlugin extends Plugin {
   }
 
   onunload(): void {
+    if (this.backgroundRefreshTimer) {
+      window.clearTimeout(this.backgroundRefreshTimer);
+      this.backgroundRefreshTimer = 0;
+    }
     void this.externalApiServer?.stop();
     this.selectionToolbar?.destroy();
   }
@@ -350,23 +357,67 @@ export default class ToWritePlugin extends Plugin {
 
   async refreshIndex(): Promise<void> {
     await this.indexer.rebuildVault();
-    await this.refreshSidecars();
-    await this.localKnowledgeIndex.rebuild(this.app, this.settings.exportDirectory);
+    await this.refreshSidecars({ rebuildWorkflow: false });
+    if (this.shouldBuildLocalKnowledgeIndex()) {
+      await this.localKnowledgeIndex.rebuild(this.app, this.settings.exportDirectory);
+    }
     await this.workflowIndex.rebuild();
     if (this.settings.autoExport) {
-      await this.exportNow(false);
+      await this.exportNow(false, { rebuildWorkflow: false });
     }
     this.aiService.refreshMissingForActiveNote(this.getActiveFile());
     this.store.notify();
   }
 
-  async exportNow(showNotice = true): Promise<void> {
-    await this.workflowIndex.rebuild();
+  async exportNow(showNotice = true, options: { rebuildWorkflow?: boolean } = {}): Promise<void> {
+    if (options.rebuildWorkflow !== false) {
+      await this.workflowIndex.rebuild();
+    }
     await this.exporter.exportAll();
     if (showNotice) {
       const directory = this.settings.exportDirectory.replace(/\\/gu, "/").replace(/\/+$/u, "");
       new Notice(`ToWrite JSON exported to ${directory}/index.json, articles.json, eink-compact.json, workflows.json.`);
     }
+  }
+
+  private scheduleBackgroundRefresh(delayMs = 3500): void {
+    if (this.backgroundRefreshTimer) {
+      window.clearTimeout(this.backgroundRefreshTimer);
+    }
+    this.backgroundRefreshTimer = window.setTimeout(() => {
+      this.backgroundRefreshTimer = 0;
+      void this.runBackgroundRefresh();
+    }, delayMs);
+  }
+
+  private async runBackgroundRefresh(): Promise<void> {
+    if (this.backgroundRefreshRunning) {
+      this.backgroundRefreshQueued = true;
+      return;
+    }
+
+    this.backgroundRefreshRunning = true;
+    try {
+      if (this.shouldBuildLocalKnowledgeIndex()) {
+        await this.localKnowledgeIndex.rebuild(this.app, this.settings.exportDirectory);
+      }
+      await this.workflowIndex.rebuild();
+      if (this.settings.autoExport) {
+        await this.exportNow(false, { rebuildWorkflow: false });
+      }
+      this.aiService.refreshMissingForActiveNote(this.getActiveFile());
+      this.store.notify();
+    } finally {
+      this.backgroundRefreshRunning = false;
+      if (this.backgroundRefreshQueued) {
+        this.backgroundRefreshQueued = false;
+        this.scheduleBackgroundRefresh(1200);
+      }
+    }
+  }
+
+  private shouldBuildLocalKnowledgeIndex(): boolean {
+    return this.settings.ai.enabled;
   }
 
   subscribe(listener: () => void): () => void {
@@ -763,16 +814,12 @@ export default class ToWritePlugin extends Plugin {
   private registerEvents(): void {
     const reindexFile = debounce((file: TFile) => {
       void this.indexer.indexFile(file).then(async () => {
-        await this.refreshSidecars();
-        await this.localKnowledgeIndex.rebuild(this.app, this.settings.exportDirectory);
-        await this.workflowIndex.rebuild();
-        if (this.settings.autoExport) {
-          await this.exportNow(false);
-        }
-        this.aiService.refreshMissingForActiveNote(this.getActiveFile());
+        await this.refreshSidecars({ rebuildWorkflow: false });
+        this.store.notify();
+        this.scheduleBackgroundRefresh();
         return undefined;
       });
-    }, 500, true);
+    }, 900, true);
     const notifyActiveLineChange = debounce(() => {
       this.store.notify();
     }, 120, true);
@@ -1172,10 +1219,12 @@ export default class ToWritePlugin extends Plugin {
     new Notice("ToWrite source anchor pinned.");
   }
 
-  private async refreshSidecars(): Promise<void> {
+  private async refreshSidecars(options: { rebuildWorkflow?: boolean } = {}): Promise<void> {
     const questions = await this.sidecars.refreshResolvedQuestions();
     this.store.replaceAllSidecarQuestions(questions);
-    await this.workflowIndex?.rebuild();
+    if (options.rebuildWorkflow !== false) {
+      await this.workflowIndex?.rebuild();
+    }
   }
 
   private headingPathForLine(file: TFile, line: number): string[] {

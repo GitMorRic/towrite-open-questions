@@ -27,7 +27,7 @@ export function createQuestionDecorations(options: QuestionDecorationOptions): E
       }
 
       update(update: ViewUpdate): void {
-        if (update.docChanged || update.viewportChanged || update.selectionSet || update.transactions.length > 0) {
+        if (update.docChanged || update.viewportChanged || update.selectionSet) {
           this.decorations = buildDecorations(update.view, options);
         }
       }

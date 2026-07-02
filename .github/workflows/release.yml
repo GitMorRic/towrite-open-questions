@@ -1,0 +1,108 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+      - "*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, for example 0.2.1"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Prepare release assets
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version || '' }}
+        run: |
+          set -euo pipefail
+          if [ -n "$INPUT_VERSION" ]; then
+            VERSION="$INPUT_VERSION"
+            TAG="$INPUT_VERSION"
+          else
+            TAG="${GITHUB_REF_NAME}"
+            VERSION="${TAG#v}"
+          fi
+          export VERSION
+          export TAG
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
+
+          node <<'NODE'
+          const fs = require('fs');
+          const version = process.env.VERSION;
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const manifest = JSON.parse(fs.readFileSync('manifest.json', 'utf8'));
+          const versions = JSON.parse(fs.readFileSync('versions.json', 'utf8'));
+          const errors = [];
+          if (pkg.version !== version) errors.push(`package.json version is ${pkg.version}, expected ${version}`);
+          if (manifest.version !== version) errors.push(`manifest.json version is ${manifest.version}, expected ${version}`);
+          if (!versions[version]) errors.push(`versions.json is missing ${version}`);
+          if (errors.length) {
+            console.error(errors.join('\n'));
+            process.exit(1);
+          }
+          NODE
+
+          mkdir -p release-assets
+          cp dist/main.js release-assets/main.js
+          cp dist/manifest.json release-assets/manifest.json
+          cp dist/styles.css release-assets/styles.css
+          (cd release-assets && zip -q "towrite-open-questions-${VERSION}.zip" main.js manifest.json styles.css)
+
+          if awk "/^## .*${VERSION}/{flag=1; next} /^## /{flag=0} flag" CHANGELOG.md > RELEASE_NOTES.md && [ -s RELEASE_NOTES.md ]; then
+            true
+          else
+            printf 'Release %s\n\nSee CHANGELOG.md for details.\n' "$VERSION" > RELEASE_NOTES.md
+          fi
+
+      - name: Generate artifact attestations
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            release-assets/main.js
+            release-assets/manifest.json
+            release-assets/styles.css
+            release-assets/towrite-open-questions-${{ env.VERSION }}.zip
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$RELEASE_TAG" \
+            release-assets/main.js \
+            release-assets/manifest.json \
+            release-assets/styles.css \
+            release-assets/towrite-open-questions-${VERSION}.zip \
+            --title "ToWrite Open Questions ${VERSION}" \
+            --notes-file RELEASE_NOTES.md \
+            --target "$GITHUB_SHA"
