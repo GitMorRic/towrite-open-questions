@@ -1,5 +1,17 @@
 # Changelog / 更新日志
 
+## 0.2.6 - 2026-07-02
+
+- Restored the imperative settings display fallback so the settings page renders in older or manually installed Obsidian builds.
+- Kept the new settings definition entry for newer Obsidian versions while returning the minimum app version to 1.5.0.
+- Preserved the 0.2.5 CSS cleanup with zero !important declarations.
+
+中文摘要：
+
+- 恢复设置页 display 兼容入口，修复部分 Obsidian 版本或手动安装场景下设置页空白的问题。
+- 新版 Obsidian 仍保留 getSettingDefinitions 入口，同时最低版本回到 1.5.0。
+- 保留 0.2.5 的 CSS 清理结果，styles.css 里仍然没有 !important。
+
 ## 0.2.5 - 2026-07-02
 
 - Removed all remaining !important declarations from plugin CSS to satisfy Obsidian style review warnings.

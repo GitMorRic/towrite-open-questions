@@ -399,6 +399,11 @@ export class ToWriteSettingTab extends PluginSettingTab {
 
   private settingsRootEl: HTMLElement | null = null;
 
+  display(): void {
+    this.settingsRootEl = this.containerEl;
+    this.renderSettings(this.containerEl);
+  }
+
   getSettingDefinitions(): SettingDefinitionItem[] {
     const copy = COPY[this.plugin.settings.language ?? "zh"];
     return [{

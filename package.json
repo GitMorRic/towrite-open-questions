@@ -1,6 +1,6 @@
 {
   "name": "towrite-open-questions",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "ToThink and ToWrite annotations for Obsidian writing workflows.",
   "type": "module",
   "private": true,
