@@ -630,6 +630,7 @@ function buildWorkflowScreen(options: {
   const files = flattenWorkflowFiles(options.workflowPayload, options.query.stage, options.spec);
   const items = files.slice(options.offset, options.offset + options.limit);
   const openUri = items[0]?.openUri;
+  const quickCaptureUrl = buildInputUrl(options.query);
   const title = options.query.stage
     ? options.workflowPayload.stages.find((stage) => stage.id === options.query.stage)?.title ?? "Workflow"
     : "Workflow";
@@ -643,7 +644,12 @@ function buildWorkflowScreen(options: {
         title,
         subtitle: files.length > 0 ? `${Math.min(options.offset + 1, files.length)}-${Math.min(options.offset + options.limit, files.length)} / ${files.length}` : "0 / 0",
         openUri,
-        actions: openUri ? [openSourceAction(openUri)] : [],
+        companionUrl: quickCaptureUrl,
+        qrText: quickCaptureUrl,
+        actions: [
+          quickCaptureAction(quickCaptureUrl),
+          ...(openUri ? [openSourceAction(openUri)] : [])
+        ],
         items: items.length > 0 ? items : [{ type: "empty", text: "没有匹配的 Workflow 文件。" }]
       }
     ]
@@ -665,6 +671,7 @@ function buildArticlesScreen(options: {
     .map((article) => toDeviceArticle(options.vaultName, article, options.spec, options.query));
   const openUri = items[0]?.openUri;
   const firstSourceFile = items[0]?.filePath;
+  const quickCaptureUrl = buildInputUrl(options.query);
 
   return {
     total: articles.length,
@@ -675,7 +682,10 @@ function buildArticlesScreen(options: {
         title: "来源笔记",
         subtitle: articles.length > 0 ? `${Math.min(options.offset + 1, articles.length)}-${Math.min(options.offset + options.limit, articles.length)} / ${articles.length}` : "0 / 0",
         openUri,
+        companionUrl: quickCaptureUrl,
+        qrText: quickCaptureUrl,
         actions: [
+          quickCaptureAction(quickCaptureUrl),
           ...(firstSourceFile ? [viewCardsAction(firstSourceFile)] : []),
           ...(openUri ? [openSourceAction(openUri)] : [])
         ],

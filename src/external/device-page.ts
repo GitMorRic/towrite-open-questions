@@ -107,6 +107,9 @@ export function buildDevicePageHtml(): string {
         min-height: 0;
         width: 100%;
         height: 100%;
+        justify-self: center;
+        align-self: center;
+        transform-origin: center center;
         padding: 14px;
         overflow: hidden;
         overflow: clip;
@@ -956,20 +959,26 @@ export function buildDevicePageHtml(): string {
         const availableWidth = Math.max(120, stageRect.width - 12);
         const availableHeight = Math.max(90, stageRect.height - 26);
         const ratio = spec.width / spec.height;
-        let width = availableWidth;
-        let height = width / ratio;
-        if (height > availableHeight) {
-          height = availableHeight;
-          width = height * ratio;
-        }
-        screenEl.style.width = Math.floor(width) + "px";
-        screenEl.style.height = Math.floor(height) + "px";
+        const scale = screenScaleForSpec(spec, availableWidth, availableHeight);
+        screenEl.style.width = Math.floor(spec.width) + "px";
+        screenEl.style.height = Math.floor(spec.height) + "px";
+        screenEl.style.transform = "scale(" + scale.toFixed(3) + ")";
         screenEl.classList.toggle("sim-landscape", spec.width >= spec.height);
         screenEl.classList.toggle("sim-portrait", spec.width < spec.height);
         screenEl.classList.toggle("sim-micro", spec.width <= 320 && spec.height <= 220);
         const ppi = spec.inches > 0 ? Math.sqrt(spec.width * spec.width + spec.height * spec.height) / spec.inches : 0;
         screenSizeEl.textContent = spec.label + " · " + spec.width + "×" + spec.height + " · " + ratioText(spec.width, spec.height) + (spec.inches ? " · " + spec.inches + "寸" : "") + (ppi ? " · " + ppi.toFixed(0) + "ppi" : "");
         window.requestAnimationFrame(fitScreenContent);
+      }
+
+      function screenScaleForSpec(spec, availableWidth, availableHeight) {
+        const fitScale = Math.min(availableWidth / spec.width, availableHeight / spec.height);
+        if (screenPresetEl.value === "phone-auto") {
+          return Math.max(0.2, Math.min(1, fitScale));
+        }
+        const longEdge = Math.max(spec.width, spec.height);
+        const previewCap = Math.min(3.4, Math.max(1, 880 / longEdge));
+        return Math.max(0.2, Math.min(fitScale, previewCap));
       }
 
       function numberOr(value, fallback) {
@@ -1246,7 +1255,14 @@ export function buildDevicePageHtml(): string {
 
       function quickCaptureUrl() {
         const action = screenAction("quickCapture");
-        return action && action.uri ? action.uri : "";
+        return action && action.uri ? action.uri : quickCaptureFallbackUrl();
+      }
+
+      function quickCaptureFallbackUrl() {
+        if (!state.token) return "";
+        const next = new URLSearchParams();
+        next.set("token", state.token);
+        return "/device/input?" + next.toString();
       }
 
       function phoneJumpUrl() {
