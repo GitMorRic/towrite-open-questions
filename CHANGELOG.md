@@ -1,5 +1,15 @@
 # Changelog / 更新日志
 
+## 0.2.5 - 2026-07-02
+
+- Removed all remaining !important declarations from plugin CSS to satisfy Obsidian style review warnings.
+- Kept the existing plugin-scoped selectors and build output behavior unchanged.
+
+中文摘要：
+
+- 移除插件 CSS 中剩余的全部 !important，清理 Obsidian 样式审核 warning。
+- 保留原有插件作用域选择器和构建输出方式。
+
 ## 0.2.4 - 2026-07-02
 
 - Switched the settings page to Obsidian's getSettingDefinitions() API and kept the heading on Setting#setHeading.
