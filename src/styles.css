@@ -2233,28 +2233,34 @@
   white-space: nowrap;
 }
 
-.towrite-color-amber .towrite-settings-color-dot {
+.towrite-settings-color-swatches .towrite-settings-color-button.towrite-color-amber > .towrite-settings-color-dot {
   background: #f2b84b;
+  background-color: #f2b84b;
 }
 
-.towrite-color-mint .towrite-settings-color-dot {
+.towrite-settings-color-swatches .towrite-settings-color-button.towrite-color-mint > .towrite-settings-color-dot {
   background: #75c7a1;
+  background-color: #75c7a1;
 }
 
-.towrite-color-sky .towrite-settings-color-dot {
+.towrite-settings-color-swatches .towrite-settings-color-button.towrite-color-sky > .towrite-settings-color-dot {
   background: #82b8ef;
+  background-color: #82b8ef;
 }
 
-.towrite-color-rose .towrite-settings-color-dot {
+.towrite-settings-color-swatches .towrite-settings-color-button.towrite-color-rose > .towrite-settings-color-dot {
   background: #ec8aa7;
+  background-color: #ec8aa7;
 }
 
-.towrite-color-violet .towrite-settings-color-dot {
+.towrite-settings-color-swatches .towrite-settings-color-button.towrite-color-violet > .towrite-settings-color-dot {
   background: #a995ee;
+  background-color: #a995ee;
 }
 
-.towrite-color-slate .towrite-settings-color-dot {
+.towrite-settings-color-swatches .towrite-settings-color-button.towrite-color-slate > .towrite-settings-color-dot {
   background: #9aa4b2;
+  background-color: #9aa4b2;
 }
 
 .towrite-trigger-row,
