@@ -106,7 +106,7 @@ export class LocalKnowledgeIndex {
 async function readDocument(app: App, file: TFile): Promise<LocalKnowledgeDocument> {
   const content = await app.vault.cachedRead(file);
   const cache = app.metadataCache.getFileCache(file);
-  const frontmatter = cache?.frontmatter as Record<string, unknown> | undefined;
+  const frontmatter = cache?.frontmatter;
   const frontmatterTags = collectFrontmatterTags(frontmatter);
   const cacheTags = cache?.tags?.map((tag) => tag.tag.replace(/^#/u, "")) ?? [];
 

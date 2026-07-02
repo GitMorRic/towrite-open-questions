@@ -162,7 +162,7 @@ export class AiQuestionService {
 
     return {
       noteTitle: file.basename,
-      frontmatter: cache?.frontmatter as Record<string, unknown> | undefined,
+      frontmatter: cache?.frontmatter,
       headingPath: question.source.headingPath,
       question,
       anchorText: question.anchorText,

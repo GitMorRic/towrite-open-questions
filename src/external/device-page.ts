@@ -1402,7 +1402,7 @@ export function buildDevicePageHtml(): string {
       }
 
       function titleFromText(text) {
-        const compact = String(text || "").replace(/\s+/g, " ").trim();
+        const compact = String(text || "").replace(/\\s+/g, " ").trim();
         return compact.length <= 24 ? compact : compact.slice(0, 24) + "...";
       }
 

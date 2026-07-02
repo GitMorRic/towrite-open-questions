@@ -17,7 +17,3 @@ export function stripQuestionRuleSyntax(text: string, rule?: OpenQuestionRule): 
 
   return cleaned || text.trim();
 }
-
-function startsWithQuestionRule(text: string): boolean {
-  return /^\s*\?\?\s+/u.test(text) || /^\s*[-*+]\s+\[[ xX]\]\s+\[\?\]\s+/u.test(text);
-}

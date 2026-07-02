@@ -14,8 +14,11 @@ import {
 import { OPEN_QUESTION_COLORS, type OpenQuestionColor, type QuestionStatusOption } from "../core/types";
 import type ToWritePlugin from "../main";
 
+type SettingsTabId = "general" | "cards" | "workflow" | "api" | "ai";
+
 type SettingCopy = {
   title: string;
+  tabs: Record<SettingsTabId, string>;
   language: string;
   languageDesc: string;
   chinese: string;
@@ -119,211 +122,225 @@ type SettingCopy = {
 };
 
 const COPY: Record<ToWriteLanguage, SettingCopy> = {
-  zh: {
-    title: "\u0054\u006f\u0057\u0072\u0069\u0074\u0065\uff1a\u672a\u95ed\u5408\u95ee\u9898",
-    language: "\u8bed\u8a00",
-    languageDesc: "\u8bbe\u7f6e\u63d2\u4ef6\u754c\u9762\u7684\u663e\u793a\u8bed\u8a00\u3002\u9ed8\u8ba4\u4f7f\u7528\u4e2d\u6587\u3002",
-    chinese: "\u4e2d\u6587",
-    english: "\u82f1\u6587",
-    exportDirectory: "\u5bfc\u51fa\u76ee\u5f55",
-    exportDirectoryDesc: "\u76f8\u5bf9\u4e8e vault \u6839\u76ee\u5f55\u7684 JSON \u5bfc\u51fa\u6587\u4ef6\u5939\u3002",
-    autoExport: "\u81ea\u52a8\u5bfc\u51fa JSON",
-    autoExportDesc: "\u7d22\u5f15\u5237\u65b0\u6216\u72b6\u6001\u53d8\u5316\u540e\uff0c\u81ea\u52a8\u5199\u5165 index.json\u3001articles.json \u548c eink-compact.json\u3002",
-    autoOpenSidebar: "启动时自动打开侧栏",
-    autoOpenSidebarDesc: "Obsidian 布局加载完成后，自动在右侧展开 ToWrite 面板，避免第一次启用插件时找不到入口。",
-    groupCurrentByHeading: "当前笔记按标题分组",
-    groupCurrentByHeadingDesc: "关闭时，同一篇文章里的批注按位置直接列出；开启后才按 Markdown 标题分组。",
-    candidateDetection: "\u89e6\u53d1\u8bcd\u5efa\u8bae",
-    candidateDetectionDesc: "\u53ea\u5728\u6b63\u6587\u4e2d\u9ad8\u4eae\u5e76\u663e\u793a\u52a0\u53f7\uff0c\u4e0d\u4f1a\u81ea\u52a8\u52a0\u5165\u53f3\u4fa7\u5217\u8868\u3002",
-    editorDecorations: "\u7f16\u8f91\u5668\u6807\u8bb0",
-    editorDecorationsDesc: "\u5728\u7f16\u8f91\u5668\u4e2d\u6807\u8bb0\u6b63\u5f0f\u95ee\u9898\u548c\u53ef\u6dfb\u52a0\u5efa\u8bae\u3002\u4fee\u6539\u540e\u5efa\u8bae\u91cd\u8f7d Obsidian\u3002",
-    compactEditorDecorations: "弱化编辑器标记",
-    compactEditorDecorationsDesc: "开启后，正文里只显示左侧竖线，不再铺满整行底色。关闭时恢复整行浅色高亮。",
-    triggerWords: "\u89e6\u53d1\u8bcd",
-    triggerWordsDesc: "\u6bcf\u4e2a\u89e6\u53d1\u8bcd\u4e00\u4e2a\u8f93\u5165\u6846\u3002\u7c98\u8d34\u591a\u4e2a\u8bcd\u65f6\u652f\u6301\u9017\u53f7\u3001\u4e2d\u6587\u9017\u53f7\u3001\u5206\u53f7\u3001\u987f\u53f7\u6216\u6362\u884c\u81ea\u52a8\u62c6\u5206\u3002",
-    addPlaceholder: "\u65b0\u589e\u89e6\u53d1\u8bcd",
-    addTrigger: "\u6dfb\u52a0\u89e6\u53d1\u8bcd",
-    removeTrigger: "\u5220\u9664",
-    statuses: "\u95ee\u9898\u72b6\u6001",
-    statusesDesc: "\u53f3\u952e\u5361\u7247\u72b6\u6001\u6807\u7b7e\u65f6\u4f1a\u663e\u793a\u8fd9\u4e9b\u72b6\u6001\u3002id \u5efa\u8bae\u4f7f\u7528\u82f1\u6587\u5c0f\u5199\uff0c\u663e\u793a\u540d\u53ef\u4ee5\u81ea\u5b9a\u4e49\u3002",
-    reminderPresets: "提醒快捷设置",
-    reminderPresetsDesc: "一行一个快捷项，格式：显示名 = 规则。规则支持 15m、1h、3h、today 18:00、tomorrow 09:00、nextWeek 09:00。",
-    defaultThinkColor: "ToThink \u9ed8\u8ba4\u989c\u8272",
-    defaultThinkColorDesc: "\u6ca1\u6709\u5728\u9009\u533a\u5de5\u5177\u6761\u624b\u52a8\u9009\u8272\u65f6\uff0cToThink \u5361\u7247\u4f7f\u7528\u7684\u989c\u8272\u3002",
-    defaultWriteColor: "ToWrite \u9ed8\u8ba4\u989c\u8272",
-    defaultWriteColorDesc: "\u6ca1\u6709\u5728\u9009\u533a\u5de5\u5177\u6761\u624b\u52a8\u9009\u8272\u65f6\uff0cToWrite \u5361\u7247\u4f7f\u7528\u7684\u989c\u8272\u3002",
-    externalApi: "外部 API",
-    externalApiDesc: "桌面端本地 HTTP API，可用于 JSON、RSS、SSE 实时刷新，以及状态和笔记写回。",
-    externalApiBindHost: "API 监听地址",
-    externalApiBindHostDesc: "只在本机使用填 127.0.0.1；局域网或隧道访问填 0.0.0.0。",
-    externalApiPort: "API 端口",
-    externalApiPortDesc: "本地 HTTP API 使用的端口。",
-    externalApiToken: "API token",
-    externalApiTokenDesc: "私有 API 都需要 token。开启下面的选项后，GET 请求也可以用 ?token=。",
-    externalApiQueryToken: "允许 GET 查询参数 token",
-    externalApiQueryTokenDesc: "适合 ESP32、RSS 阅读器、桌面小组件等不能发送 Authorization header 的客户端。",
-    externalApiPublicBaseUrl: "手机/远程访问基地址",
-    externalApiPublicBaseUrlDesc: "填手机实际访问的地址，例如 http://100.x.y.z:48321 或 http://192.168.1.20:48321。留空时使用本机示例地址。",
-    externalApiEndpoint: "API 访问地址",
-    externalApiEndpointDesc: "本机示例地址。局域网访问时，把 127.0.0.1 换成这台电脑的局域网 IP。",
-    externalApiDashboard: "Dashboard 页面",
-    externalApiDashboardDesc: "在浏览器里查看解析后的待解决问题、文章统计和原始 JSON。",
-    externalApiDevice: "手机小屏页面",
-    externalApiDeviceDesc: "复制到手机浏览器，用来模拟墨水屏/小屏设备。",
-    deviceCapture: "手机输入写回",
-    deviceCaptureDesc: "允许 /device/input companion 页面把回答追加到卡片，或把独立想法写入指定 Inbox/文件夹。",
-    deviceCaptureInbox: "默认 Inbox 文件",
-    deviceCaptureInboxDesc: "没有选择具体目标时，新想法会追加到这个 Markdown 文件。",
-    deviceCaptureFolders: "可选目标文件夹",
-    deviceCaptureFoldersDesc: "一行一个 vault 内文件夹。手机输入页会把它们显示为保存位置。",
-    deviceCaptureTags: "默认 tags",
-    deviceCaptureTagsDesc: "手机输入页保存的新想法默认带上的标签；可用逗号、顿号或换行分隔。",
-    regenerateToken: "重新生成 token",
-    workflowStages: "Workflow Stages",
-    workflowStagesDesc: "按文件夹、frontmatter tags 或正文 #tag，把 Markdown 文件分组为 Raw、Sparks、Processing 等自定义状态，并通过 workflows.json 和 API 暴露。",
-    workflowStageTitle: "显示标题",
-    workflowStageTitlePlaceholder: "例如 Sparks",
-    workflowStageId: "Stage id",
-    workflowStageIdPlaceholder: "例如 sparks",
-    workflowStageDescription: "描述",
-    workflowStageDescriptionPlaceholder: "这组文件表示什么状态",
-    workflowStageColor: "颜色",
-    workflowStageFolders: "文件夹前缀",
-    workflowStageFoldersDesc: "一行一个路径前缀，例如 MindFlow/01-Sparks 或 Techbench/02-Processing。",
-    workflowStageTags: "匹配标签",
-    workflowStageTagsDesc: "一行一个 tag，会同时匹配 frontmatter tags 和正文 #tag，可写 spark 或 #spark。",
-    workflowStageLimit: "每组数量",
-    workflowStageStaleDays: "过期天数",
-    workflowStageAdd: "添加 stage",
-    workflowStageRemove: "删除 stage",
-    workflowStageMoveUp: "上移",
-    workflowStageMoveDown: "下移",
-    statusId: "\u72b6\u6001 id",
-    statusLabel: "\u663e\u793a\u540d",
-    addStatus: "\u6dfb\u52a0\u72b6\u6001",
-    ai: "AI \u529f\u80fd",
-    aiDesc: "\u9ed8\u8ba4\u5173\u95ed\u3002\u542f\u7528\u540e ToWrite \u4f1a\u4f7f\u7528\u4f60\u914d\u7f6e\u7684 OpenAI-compatible \u63a5\u53e3\uff0c\u53ea\u505a\u672c\u5730\u7b14\u8bb0\u6458\u8981\u548c\u63a8\u8350\uff0c\u4e0d\u505a\u8054\u7f51\u641c\u7d22\u3002",
-    aiProviderPreset: "AI 接入预设",
-    aiProviderPresetDesc: "选择后会填入兼容 OpenAI 的 Base URL 和建议模型；API Key 仍需自己填写。",
-    aiBaseUrl: "AI Base URL",
-    aiBaseUrlDesc: "\u517c\u5bb9 OpenAI \u98ce\u683c\u63a5\u53e3\u7684\u57fa\u7840\u5730\u5740\uff0c\u4f8b\u5982 https://api.openai.com/v1 \u6216\u81ea\u6258\u7ba1\u7f51\u5173\u3002",
-    aiApiKey: "AI API Key",
-    aiApiKeyDesc: "\u4fdd\u5b58\u5728\u672c\u5730\u63d2\u4ef6\u6570\u636e\u4e2d\u3002\u672a\u542f\u7528 AI \u65f6\u4e0d\u4f1a\u53d1\u9001\u8bf7\u6c42\u3002",
-    aiModel: "AI \u6a21\u578b",
-    aiModelDesc: "\u7528\u4e8e\u6458\u8981\u548c\u672c\u5730\u7b14\u8bb0\u91cd\u6392\u5e8f\u7684\u6a21\u578b\u540d\u3002",
-    aiAutoRun: "\u81ea\u52a8\u540e\u53f0\u751f\u6210",
-    aiAutoRunDesc: "\u5f00\u542f\u540e\u81ea\u52a8\u5904\u7406\u7f3a\u5931\u6216\u8fc7\u671f\u7684\u6b63\u5f0f\u95ee\u9898\uff0c\u4e0d\u5904\u7406\u89e6\u53d1\u8bcd\u5efa\u8bae\u3002",
-    aiAutoLimit: "\u6bcf\u6b21\u4f1a\u8bdd\u81ea\u52a8\u4e0a\u9650",
-    aiAutoLimitDesc: "\u9650\u5236\u6bcf\u6b21\u542f\u52a8 Obsidian \u540e\u81ea\u52a8\u8c03\u7528 AI \u7684\u95ee\u9898\u6570\u91cf\u3002",
-    aiRerank: "AI \u91cd\u6392\u5e8f\u672c\u5730\u7b14\u8bb0",
-    aiRerankDesc: "\u5f00\u542f\u540e\u5148\u7528\u672c\u5730\u7d22\u5f15\u53ec\u56de\u5019\u9009\u7b14\u8bb0\uff0c\u518d\u4ea4\u7ed9 AI \u9009\u62e9\u6700\u76f8\u5173\u7684\u7ed3\u679c\u3002",
-    writeArticleProperties: "\u5199\u5165\u6587\u7ae0\u5c5e\u6027",
-    writeArticlePropertiesDesc: "\u53ef\u9009\uff1a\u5bfc\u51fa\u65f6\u5199\u5165 open_questions\u3001candidate_questions \u548c question_status \u5230\u7b14\u8bb0\u5c5e\u6027\u3002",
-    copy: "复制",
-    copied: "已复制"
+  "zh": {
+    "title": "ToWrite：未闭合问题",
+    "tabs": {
+      "general": "通用",
+      "cards": "卡片与编辑器",
+      "workflow": "Workflow",
+      "api": "API 与设备",
+      "ai": "AI"
+    },
+    "language": "语言",
+    "languageDesc": "设置插件界面的显示语言。默认使用中文。",
+    "chinese": "中文",
+    "english": "英文",
+    "exportDirectory": "导出目录",
+    "exportDirectoryDesc": "相对于 vault 根目录的 JSON 导出文件夹。",
+    "autoExport": "自动导出 JSON",
+    "autoExportDesc": "索引刷新或状态变化后，自动写入 index.json、articles.json、eink-compact.json 和 workflows.json。",
+    "autoOpenSidebar": "启动时自动打开侧栏",
+    "autoOpenSidebarDesc": "Obsidian 布局加载完成后，自动在右侧展开 ToWrite 面板，避免第一次启用插件时找不到入口。",
+    "groupCurrentByHeading": "当前笔记按标题分组",
+    "groupCurrentByHeadingDesc": "关闭时，同一篇文章里的批注按位置直接列出；开启后才按 Markdown 标题分组。",
+    "candidateDetection": "触发词建议",
+    "candidateDetectionDesc": "只在正文中高亮并显示加号，不会自动加入右侧列表。",
+    "editorDecorations": "编辑器标记",
+    "editorDecorationsDesc": "在编辑器中标记正式问题和可添加建议。修改后建议重载 Obsidian。",
+    "compactEditorDecorations": "紧凑编辑器标记",
+    "compactEditorDecorationsDesc": "开启后，正文里只显示左侧竖线，不再铺满整行底色。关闭时恢复整行浅色高亮。",
+    "triggerWords": "触发词",
+    "triggerWordsDesc": "每个触发词一个输入框。粘贴多个词时支持逗号、中文逗号、分号、顿号或换行自动拆分。",
+    "addPlaceholder": "新增触发词",
+    "addTrigger": "添加触发词",
+    "removeTrigger": "删除",
+    "statuses": "问题状态",
+    "statusesDesc": "右键卡片状态标签时会显示这些状态。id 建议使用英文小写，显示名可以自定义。",
+    "reminderPresets": "提醒快捷设置",
+    "reminderPresetsDesc": "一行一个快捷项，格式：显示名 = 规则。规则支持 15m、1h、3h、today 18:00、tomorrow 09:00、nextWeek 09:00。",
+    "defaultThinkColor": "ToThink 默认颜色",
+    "defaultThinkColorDesc": "没有在选区工具条手动选色时，ToThink 卡片使用的颜色。",
+    "defaultWriteColor": "ToWrite 默认颜色",
+    "defaultWriteColorDesc": "没有在选区工具条手动选色时，ToWrite 卡片使用的颜色。",
+    "externalApi": "外部 API",
+    "externalApiDesc": "桌面端本地 HTTP API，可用于 JSON、RSS、SSE 实时刷新，以及状态和笔记写回。",
+    "externalApiBindHost": "API 监听地址",
+    "externalApiBindHostDesc": "只在本机使用填 127.0.0.1；局域网或隧道访问填 0.0.0.0。",
+    "externalApiPort": "API 端口",
+    "externalApiPortDesc": "本地 HTTP API 使用的端口。",
+    "externalApiToken": "API token",
+    "externalApiTokenDesc": "私有 API 都需要 token。开启下面的选项后，GET 请求也可以用 ?token=。",
+    "externalApiQueryToken": "允许 GET 查询参数 token",
+    "externalApiQueryTokenDesc": "适合 ESP32、RSS 阅读器、桌面小组件等不能发送 Authorization header 的客户端。",
+    "externalApiPublicBaseUrl": "手机/远程访问基地址",
+    "externalApiPublicBaseUrlDesc": "填手机实际访问的地址，例如 https://desktop-name.tailnet.ts.net:48321 或 http://192.168.1.20:48321。留空时使用本机示例地址。",
+    "externalApiEndpoint": "API 访问地址",
+    "externalApiEndpointDesc": "本机示例地址。局域网访问时，把 127.0.0.1 换成这台电脑的局域网 IP。",
+    "externalApiDashboard": "Dashboard 页面",
+    "externalApiDashboardDesc": "在浏览器里查看解析后的待解决问题、文章统计和原始 JSON。",
+    "externalApiDevice": "手机小屏页面",
+    "externalApiDeviceDesc": "复制到手机浏览器，用来模拟墨水屏/小屏设备。",
+    "deviceCapture": "手机输入写回",
+    "deviceCaptureDesc": "允许 /device/input companion 页面把回答追加到卡片，或把独立想法写入指定 Inbox/文件夹。",
+    "deviceCaptureInbox": "默认 Inbox 文件",
+    "deviceCaptureInboxDesc": "没有选择具体目标时，新想法会追加到这个 Markdown 文件。",
+    "deviceCaptureFolders": "可选目标文件夹",
+    "deviceCaptureFoldersDesc": "一行一个 vault 内文件夹。手机输入页会把它们显示为保存位置。",
+    "deviceCaptureTags": "默认 tags",
+    "deviceCaptureTagsDesc": "手机输入页保存的新想法默认带上的标签；可用逗号、顿号或换行分隔。",
+    "regenerateToken": "重新生成 token",
+    "workflowStages": "Workflow Stages",
+    "workflowStagesDesc": "按文件夹、frontmatter tags 或正文 #tag，把 Markdown 文件分组为 Raw、Sparks、Processing 等自定义状态，并通过 workflows.json 和 API 暴露。",
+    "workflowStageTitle": "显示标题",
+    "workflowStageTitlePlaceholder": "例如 Sparks",
+    "workflowStageId": "Stage id",
+    "workflowStageIdPlaceholder": "例如 sparks",
+    "workflowStageDescription": "描述",
+    "workflowStageDescriptionPlaceholder": "这组文件表示什么状态",
+    "workflowStageColor": "颜色",
+    "workflowStageFolders": "文件夹前缀",
+    "workflowStageFoldersDesc": "一行一个路径前缀，例如 MindFlow/01-Sparks 或 Techbench/02-Processing。",
+    "workflowStageTags": "匹配标签",
+    "workflowStageTagsDesc": "一行一个 tag，会同时匹配 frontmatter tags 和正文 #tag，可写 spark 或 #spark。",
+    "workflowStageLimit": "每组数量",
+    "workflowStageStaleDays": "过期天数",
+    "workflowStageAdd": "添加 stage",
+    "workflowStageRemove": "删除 stage",
+    "workflowStageMoveUp": "上移",
+    "workflowStageMoveDown": "下移",
+    "statusId": "状态 id",
+    "statusLabel": "显示名",
+    "addStatus": "添加状态",
+    "ai": "AI 功能",
+    "aiDesc": "默认关闭。启用后 ToWrite 会使用你配置的 OpenAI-compatible 接口，只做本地笔记摘要和推荐，不做联网搜索。",
+    "aiProviderPreset": "AI 接入预设",
+    "aiProviderPresetDesc": "选择后会填入兼容 OpenAI 的 Base URL 和建议模型；API Key 仍需自己填写。",
+    "aiBaseUrl": "AI Base URL",
+    "aiBaseUrlDesc": "兼容 OpenAI 风格接口的基础地址，例如 https://api.openai.com/v1 或自托管网关。",
+    "aiApiKey": "AI API Key",
+    "aiApiKeyDesc": "保存在本地插件数据中。未启用 AI 时不会发送请求。",
+    "aiModel": "AI 模型",
+    "aiModelDesc": "用于摘要和本地笔记重排序的模型名。",
+    "aiAutoRun": "自动后台生成",
+    "aiAutoRunDesc": "开启后自动处理缺失或过期的正式问题，不处理触发词建议。",
+    "aiAutoLimit": "每次会话自动上限",
+    "aiAutoLimitDesc": "限制每次启动 Obsidian 后自动调用 AI 的问题数量。",
+    "aiRerank": "AI 重排序本地笔记",
+    "aiRerankDesc": "开启后先用本地索引召回候选笔记，再交给 AI 选择最相关的结果。",
+    "writeArticleProperties": "写入文章属性",
+    "writeArticlePropertiesDesc": "可选：导出时写入 open_questions、candidate_questions 和 question_status 到笔记属性。",
+    "copy": "复制",
+    "copied": "已复制"
   },
-  en: {
-    title: "ToWrite Open Questions",
-    language: "Language",
-    languageDesc: "Choose the plugin display language. Chinese is the default.",
-    chinese: "Chinese",
-    english: "English",
-    exportDirectory: "Export directory",
-    exportDirectoryDesc: "Vault-relative folder used for JSON exports.",
-    autoExport: "Auto export JSON",
-    autoExportDesc: "Write index.json, articles.json, and eink-compact.json after refreshes and status changes.",
-    autoOpenSidebar: "Open sidebar on startup",
-    autoOpenSidebarDesc: "After the Obsidian layout is ready, automatically reveal the ToWrite sidebar on the right.",
-    groupCurrentByHeading: "Group current note by heading",
-    groupCurrentByHeadingDesc: "Off by default. When enabled, cards in the current note are grouped by Markdown headings.",
-    candidateDetection: "Trigger suggestions",
-    candidateDetectionDesc: "Highlight matching lines with an add button; do not auto-create sidebar cards.",
-    editorDecorations: "Editor decorations",
-    editorDecorationsDesc: "Mark saved questions and addable suggestions in the editor. Reload Obsidian after changing this.",
-    compactEditorDecorations: "Compact editor decorations",
-    compactEditorDecorationsDesc: "Show only the left marker line instead of a full-row background highlight.",
-    triggerWords: "Trigger words",
-    triggerWordsDesc: "One editable box per word. Pasted lists are split by commas, Chinese commas, semicolons, ideographic commas, or new lines.",
-    addPlaceholder: "New trigger word",
-    addTrigger: "Add trigger word",
-    removeTrigger: "Remove",
-    statuses: "Question statuses",
-    statusesDesc: "These statuses appear when right-clicking a status chip. Use stable lowercase ids; labels are display text.",
-    reminderPresets: "Reminder quick presets",
-    reminderPresetsDesc: "One preset per line: label = rule. Rules support 15m, 1h, 3h, today 18:00, tomorrow 09:00, nextWeek 09:00.",
-    defaultThinkColor: "Default ToThink color",
-    defaultThinkColorDesc: "Color used for ToThink cards when the selection toolbar color is not overridden.",
-    defaultWriteColor: "Default ToWrite color",
-    defaultWriteColorDesc: "Color used for ToWrite cards when the selection toolbar color is not overridden.",
-    externalApi: "External API",
-    externalApiDesc: "Desktop-only local HTTP API for JSON, RSS, SSE, and status/note writeback.",
-    externalApiBindHost: "API bind host",
-    externalApiBindHostDesc: "Use 127.0.0.1 for local-only access, or 0.0.0.0 for LAN/tunnel access.",
-    externalApiPort: "API port",
-    externalApiPortDesc: "Port used by the local HTTP API.",
-    externalApiToken: "API token",
-    externalApiTokenDesc: "Required for all private API routes. GET routes may also use ?token= when enabled below.",
-    externalApiQueryToken: "Allow GET query token",
-    externalApiQueryTokenDesc: "Useful for ESP32, RSS readers, and simple widgets that cannot send Authorization headers.",
-    externalApiPublicBaseUrl: "Phone / remote base URL",
-    externalApiPublicBaseUrlDesc: "The address your phone can actually reach, such as http://100.x.y.z:48321 or http://192.168.1.20:48321. Leave blank for a local example.",
-    externalApiEndpoint: "API endpoint",
-    externalApiEndpointDesc: "Local example URL. For LAN access, replace 127.0.0.1 with this computer's LAN IP.",
-    externalApiDashboard: "Dashboard page",
-    externalApiDashboardDesc: "Open a browser UI for unresolved questions, article summaries, and raw JSON.",
-    externalApiDevice: "Phone device page",
-    externalApiDeviceDesc: "Copy this to your phone browser to simulate an eink or small-screen device.",
-    deviceCapture: "Phone input writeback",
-    deviceCaptureDesc: "Allow the /device/input companion page to answer cards or save standalone ideas into an Inbox or folder.",
-    deviceCaptureInbox: "Default Inbox file",
-    deviceCaptureInboxDesc: "Standalone ideas are appended to this Markdown file when no specific target is selected.",
-    deviceCaptureFolders: "Target folders",
-    deviceCaptureFoldersDesc: "One vault folder per line. The phone input page exposes these as save targets.",
-    deviceCaptureTags: "Default tags",
-    deviceCaptureTagsDesc: "Tags added to new device captures by default. Split with commas or new lines.",
-    regenerateToken: "Regenerate token",
-    workflowStages: "Workflow Stages",
-    workflowStagesDesc: "Group Markdown files by folder prefixes, frontmatter tags, or inline #tags, then expose the stages through workflows.json and the API.",
-    workflowStageTitle: "Display title",
-    workflowStageTitlePlaceholder: "For example, Sparks",
-    workflowStageId: "Stage id",
-    workflowStageIdPlaceholder: "For example, sparks",
-    workflowStageDescription: "Description",
-    workflowStageDescriptionPlaceholder: "What this file state means",
-    workflowStageColor: "Color",
-    workflowStageFolders: "Folder prefixes",
-    workflowStageFoldersDesc: "One vault-relative prefix per line, such as MindFlow/01-Sparks or Techbench/02-Processing.",
-    workflowStageTags: "Tags",
-    workflowStageTagsDesc: "One tag per line. Matches frontmatter tags and inline #tags; both spark and #spark work.",
-    workflowStageLimit: "Limit per stage",
-    workflowStageStaleDays: "Stale after days",
-    workflowStageAdd: "Add stage",
-    workflowStageRemove: "Remove stage",
-    workflowStageMoveUp: "Move up",
-    workflowStageMoveDown: "Move down",
-    statusId: "Status id",
-    statusLabel: "Label",
-    addStatus: "Add status",
-    ai: "AI features",
-    aiDesc: "Off by default. When enabled, ToWrite uses your OpenAI-compatible endpoint for local-note summaries and recommendations only. It does not perform web search.",
-    aiProviderPreset: "AI provider preset",
-    aiProviderPresetDesc: "Applies an OpenAI-compatible Base URL and suggested model. You still provide the API key.",
-    aiBaseUrl: "AI Base URL",
-    aiBaseUrlDesc: "Base URL for an OpenAI-compatible API, such as https://api.openai.com/v1 or a self-hosted gateway.",
-    aiApiKey: "AI API Key",
-    aiApiKeyDesc: "Stored in local plugin data. No requests are sent while AI is disabled.",
-    aiModel: "AI model",
-    aiModelDesc: "Model used for summaries and local-note reranking.",
-    aiAutoRun: "Auto-generate in background",
-    aiAutoRunDesc: "When enabled, process missing or stale saved questions automatically. Trigger suggestions are ignored.",
-    aiAutoLimit: "Auto limit per session",
-    aiAutoLimitDesc: "Maximum number of automatic AI calls after each Obsidian launch.",
-    aiRerank: "AI reranks local notes",
-    aiRerankDesc: "Recall candidate notes locally, then let AI pick the most relevant ones.",
-    writeArticleProperties: "Write article properties",
-    writeArticlePropertiesDesc: "Optional: write open_questions, candidate_questions, and question_status into note frontmatter on export.",
-    copy: "Copy",
-    copied: "Copied"
+  "en": {
+    "title": "ToWrite Open Questions",
+    "tabs": {
+      "general": "General",
+      "cards": "Cards & Editor",
+      "workflow": "Workflow",
+      "api": "API & Device",
+      "ai": "AI"
+    },
+    "language": "Language",
+    "languageDesc": "Choose the plugin display language. Chinese is the default.",
+    "chinese": "Chinese",
+    "english": "English",
+    "exportDirectory": "Export directory",
+    "exportDirectoryDesc": "Folder for JSON exports, relative to the vault root.",
+    "autoExport": "Auto-export JSON",
+    "autoExportDesc": "Write index.json, articles.json, eink-compact.json, and workflows.json after index refreshes or status changes.",
+    "autoOpenSidebar": "Open sidebar on startup",
+    "autoOpenSidebarDesc": "After the Obsidian layout is ready, automatically open the ToWrite panel on the right so first-time users can find it.",
+    "groupCurrentByHeading": "Group current note by heading",
+    "groupCurrentByHeadingDesc": "When off, annotations in the same note are listed by position. Turn it on to group them by Markdown heading.",
+    "candidateDetection": "Trigger word suggestions",
+    "candidateDetectionDesc": "Highlight trigger words in the editor and show add buttons without adding them to the sidebar automatically.",
+    "editorDecorations": "Editor markers",
+    "editorDecorationsDesc": "Mark saved questions and addable suggestions in the editor. Reload Obsidian after changing this if needed.",
+    "compactEditorDecorations": "Compact editor markers",
+    "compactEditorDecorationsDesc": "When enabled, editor marks use a left rail only instead of a full-line background. Disable it to restore full-line highlights.",
+    "triggerWords": "Trigger words",
+    "triggerWordsDesc": "One trigger word per input. Pasting multiple words supports comma, Chinese comma, semicolon, enumeration comma, or line breaks.",
+    "addPlaceholder": "New trigger word",
+    "addTrigger": "Add trigger word",
+    "removeTrigger": "Remove",
+    "statuses": "Question statuses",
+    "statusesDesc": "Shown in the card status menu. Keep ids lowercase English when possible; labels can be customized.",
+    "reminderPresets": "Reminder presets",
+    "reminderPresetsDesc": "One shortcut per line: Label = rule. Rules support 15m, 1h, 3h, today 18:00, tomorrow 09:00, nextWeek 09:00.",
+    "defaultThinkColor": "Default ToThink color",
+    "defaultThinkColorDesc": "Color used for ToThink cards when no color is chosen from the selection toolbar.",
+    "defaultWriteColor": "Default ToWrite color",
+    "defaultWriteColorDesc": "Color used for ToWrite cards when no color is chosen from the selection toolbar.",
+    "externalApi": "External API",
+    "externalApiDesc": "Local desktop HTTP API for JSON, RSS, SSE refreshes, status updates, and note writeback.",
+    "externalApiBindHost": "API bind host",
+    "externalApiBindHostDesc": "Use 127.0.0.1 for local-only access; use 0.0.0.0 for LAN or tunnel access.",
+    "externalApiPort": "API port",
+    "externalApiPortDesc": "Port used by the local HTTP API.",
+    "externalApiToken": "API token",
+    "externalApiTokenDesc": "Private API routes require this token. When the option below is enabled, GET requests can also use ?token=.",
+    "externalApiQueryToken": "Allow GET query token",
+    "externalApiQueryTokenDesc": "Useful for ESP32, RSS readers, and desktop widgets that cannot send an Authorization header.",
+    "externalApiPublicBaseUrl": "Phone/remote base URL",
+    "externalApiPublicBaseUrlDesc": "Set the URL your phone will actually open, such as https://desktop-name.tailnet.ts.net:48321 or http://192.168.1.20:48321. Leave empty to use the local example URL.",
+    "externalApiEndpoint": "API URL",
+    "externalApiEndpointDesc": "Local example URL. For LAN access, replace 127.0.0.1 with this computer’s LAN IP.",
+    "externalApiDashboard": "Dashboard page",
+    "externalApiDashboardDesc": "View parsed open questions, article statistics, and raw JSON in a browser.",
+    "externalApiDevice": "Phone small-screen page",
+    "externalApiDeviceDesc": "Copy to a phone browser to simulate an e-ink or small-screen device.",
+    "deviceCapture": "Phone input writeback",
+    "deviceCaptureDesc": "Allow the /device/input companion page to append answers to cards or save standalone ideas to an Inbox/folder.",
+    "deviceCaptureInbox": "Default Inbox file",
+    "deviceCaptureInboxDesc": "When no specific target is selected, new ideas are appended to this Markdown file.",
+    "deviceCaptureFolders": "Selectable target folders",
+    "deviceCaptureFoldersDesc": "One vault folder per line. The phone input page will show them as save targets.",
+    "deviceCaptureTags": "Default tags",
+    "deviceCaptureTagsDesc": "Tags added to new ideas saved from the phone input page; separate with commas, enumeration commas, or line breaks.",
+    "regenerateToken": "Regenerate token",
+    "workflowStages": "Workflow Stages",
+    "workflowStagesDesc": "Group Markdown files into custom states such as Raw, Sparks, and Processing by folder, frontmatter tags, or inline #tags, then expose them through workflows.json and the API.",
+    "workflowStageTitle": "Display title",
+    "workflowStageTitlePlaceholder": "For example Sparks",
+    "workflowStageId": "Stage id",
+    "workflowStageIdPlaceholder": "For example sparks",
+    "workflowStageDescription": "Description",
+    "workflowStageDescriptionPlaceholder": "What this file group means",
+    "workflowStageColor": "Color",
+    "workflowStageFolders": "Folder prefixes",
+    "workflowStageFoldersDesc": "One path prefix per line, for example MindFlow/01-Sparks or Techbench/02-Processing.",
+    "workflowStageTags": "Matching tags",
+    "workflowStageTagsDesc": "One tag per line. Matches both frontmatter tags and inline #tags. Use spark or #spark.",
+    "workflowStageLimit": "Items per stage",
+    "workflowStageStaleDays": "Stale days",
+    "workflowStageAdd": "Add stage",
+    "workflowStageRemove": "Remove stage",
+    "workflowStageMoveUp": "Move up",
+    "workflowStageMoveDown": "Move down",
+    "statusId": "Status id",
+    "statusLabel": "Label",
+    "addStatus": "Add status",
+    "ai": "AI features",
+    "aiDesc": "Off by default. When enabled, ToWrite uses your OpenAI-compatible endpoint for local note summaries and recommendations only, not web search.",
+    "aiProviderPreset": "AI provider preset",
+    "aiProviderPresetDesc": "Choosing a preset fills an OpenAI-compatible Base URL and suggested model; you still need to enter your API key.",
+    "aiBaseUrl": "AI Base URL",
+    "aiBaseUrlDesc": "Base URL for an OpenAI-compatible API, such as https://api.openai.com/v1 or a self-hosted gateway.",
+    "aiApiKey": "AI API Key",
+    "aiApiKeyDesc": "Stored in local plugin data. No requests are sent while AI is disabled.",
+    "aiModel": "AI model",
+    "aiModelDesc": "Model used for summaries and local note reranking.",
+    "aiAutoRun": "Automatic background generation",
+    "aiAutoRunDesc": "Automatically process saved questions with missing or stale AI output; trigger word suggestions are ignored.",
+    "aiAutoLimit": "Auto-run limit per session",
+    "aiAutoLimitDesc": "Limit how many questions AI can process automatically after each Obsidian startup.",
+    "aiRerank": "AI rerank local notes",
+    "aiRerankDesc": "First retrieve candidate notes from the local index, then ask AI to pick the most relevant results.",
+    "writeArticleProperties": "Write article properties",
+    "writeArticlePropertiesDesc": "Optional: write open_questions, candidate_questions, and question_status into note frontmatter on export.",
+    "copy": "Copy",
+    "copied": "Copied"
   }
 };
 
@@ -374,6 +391,7 @@ const AI_PROVIDER_PRESETS = [
 
 export class ToWriteSettingTab extends PluginSettingTab {
   private readonly openWorkflowStageIds = new Set<string>();
+  private activeSettingsTab: SettingsTabId = "general";
 
   constructor(app: App, private readonly plugin: ToWritePlugin) {
     super(app, plugin);
@@ -384,8 +402,56 @@ export class ToWriteSettingTab extends PluginSettingTab {
     const copy = COPY[this.plugin.settings.language ?? "zh"];
     containerEl.empty();
     containerEl.addClass("towrite-settings");
-    new Setting(containerEl).setName(copy.title).setHeading();
+    containerEl.createEl("h2", { cls: "towrite-settings-title", text: copy.title });
+    this.renderSettingsTabs(containerEl, copy);
 
+    const panel = containerEl.createDiv({ cls: "towrite-settings-tab-panel" });
+    if (this.activeSettingsTab === "general") {
+      this.renderGeneralSettings(panel, copy);
+    } else if (this.activeSettingsTab === "cards") {
+      this.renderCardsEditorSettings(panel, copy);
+    } else if (this.activeSettingsTab === "workflow") {
+      this.renderWorkflowSettings(panel, copy);
+    } else if (this.activeSettingsTab === "api") {
+      this.renderApiDeviceSettings(panel, copy);
+    } else {
+      this.renderAiSettings(panel, copy);
+    }
+  }
+
+  private renderSettingsTabs(containerEl: HTMLElement, copy: SettingCopy): void {
+    const tabs: Array<{ id: SettingsTabId; label: string }> = [
+      { id: "general", label: copy.tabs.general },
+      { id: "cards", label: copy.tabs.cards },
+      { id: "workflow", label: copy.tabs.workflow },
+      { id: "api", label: copy.tabs.api },
+      { id: "ai", label: copy.tabs.ai }
+    ];
+    const tabBar = containerEl.createDiv({ cls: "towrite-settings-tabs" });
+    tabBar.setAttribute("role", "tablist");
+
+    for (const tab of tabs) {
+      const active = this.activeSettingsTab === tab.id;
+      const button = tabBar.createEl("button", {
+        cls: `towrite-settings-tab${active ? " is-active" : ""}`,
+        text: tab.label,
+        attr: {
+          type: "button",
+          role: "tab",
+          "aria-selected": String(active)
+        }
+      });
+      button.addEventListener("click", () => {
+        if (this.activeSettingsTab === tab.id) {
+          return;
+        }
+        this.activeSettingsTab = tab.id;
+        this.refreshSettingsUi();
+      });
+    }
+  }
+
+  private renderGeneralSettings(containerEl: HTMLElement, copy: SettingCopy): void {
     new Setting(containerEl)
       .setName(copy.language)
       .setDesc(copy.languageDesc)
@@ -395,9 +461,9 @@ export class ToWriteSettingTab extends PluginSettingTab {
           .addOption("en", copy.english)
           .setValue(this.plugin.settings.language)
           .onChange(async (value) => {
-            this.plugin.settings.language = value as ToWriteLanguage;
+            this.plugin.settings.language = value === "en" ? "en" : "zh";
             await this.plugin.savePluginData();
-            this.display();
+            this.refreshSettingsUi();
           });
       });
 
@@ -438,6 +504,10 @@ export class ToWriteSettingTab extends PluginSettingTab {
           });
       });
 
+
+  }
+
+  private renderCardsEditorSettings(containerEl: HTMLElement, copy: SettingCopy): void {
     new Setting(containerEl)
       .setName(copy.groupCurrentByHeading)
       .setDesc(copy.groupCurrentByHeadingDesc)
@@ -532,6 +602,21 @@ export class ToWriteSettingTab extends PluginSettingTab {
       }
     );
 
+
+    new Setting(containerEl)
+      .setName(copy.writeArticleProperties)
+      .setDesc(copy.writeArticlePropertiesDesc)
+      .addToggle((toggle) => {
+        toggle
+          .setValue(this.plugin.settings.writeArticleProperties)
+          .onChange(async (value) => {
+            this.plugin.settings.writeArticleProperties = value;
+            await this.plugin.savePluginData();
+          });
+      });
+  }
+
+  private renderApiDeviceSettings(containerEl: HTMLElement, copy: SettingCopy): void {
     new Setting(containerEl)
       .setName(copy.externalApi)
       .setDesc(copy.externalApiDesc)
@@ -542,7 +627,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
             this.plugin.settings.externalApi.enabled = value;
             await this.plugin.savePluginData();
             await this.plugin.configureExternalApiServer();
-            this.display();
+            this.refreshSettingsUi();
           });
       });
 
@@ -565,7 +650,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
             this.plugin.settings.externalApi.publicBaseUrl = nextValue;
             text.setValue(nextValue);
             await this.plugin.savePluginData();
-            this.display();
+            this.refreshSettingsUi();
           };
 
           text
@@ -707,7 +792,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
             .onClick(async () => {
               this.plugin.regenerateExternalApiToken();
               await this.plugin.savePluginData();
-              this.display();
+              this.refreshSettingsUi();
             });
         });
 
@@ -733,7 +818,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.deviceCapture.enabled = value;
             await this.plugin.savePluginData();
-            this.display();
+            this.refreshSettingsUi();
           });
       });
 
@@ -780,6 +865,10 @@ export class ToWriteSettingTab extends PluginSettingTab {
         });
     }
 
+
+  }
+
+  private renderWorkflowSettings(containerEl: HTMLElement, copy: SettingCopy): void {
     new Setting(containerEl)
       .setName(copy.workflowStages)
       .setDesc(copy.workflowStagesDesc)
@@ -793,7 +882,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
             }
             await this.plugin.savePluginData();
             await this.plugin.refreshIndex();
-            this.display();
+            this.refreshSettingsUi();
           });
       });
 
@@ -801,6 +890,10 @@ export class ToWriteSettingTab extends PluginSettingTab {
       this.renderWorkflowStageEditor(containerEl, copy);
     }
 
+
+  }
+
+  private renderAiSettings(containerEl: HTMLElement, copy: SettingCopy): void {
     new Setting(containerEl)
       .setName(copy.ai)
       .setDesc(copy.aiDesc)
@@ -810,7 +903,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.ai.enabled = value;
             await this.plugin.savePluginData();
-            this.display();
+            this.refreshSettingsUi();
           });
       });
 
@@ -832,7 +925,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
               this.plugin.settings.ai.baseUrl = preset.baseUrl;
               this.plugin.settings.ai.model = preset.model;
               await this.plugin.savePluginData();
-              this.display();
+              this.refreshSettingsUi();
             });
         });
 
@@ -922,17 +1015,11 @@ export class ToWriteSettingTab extends PluginSettingTab {
         });
     }
 
-    new Setting(containerEl)
-      .setName(copy.writeArticleProperties)
-      .setDesc(copy.writeArticlePropertiesDesc)
-      .addToggle((toggle) => {
-        toggle
-          .setValue(this.plugin.settings.writeArticleProperties)
-          .onChange(async (value) => {
-            this.plugin.settings.writeArticleProperties = value;
-            await this.plugin.savePluginData();
-          });
-      });
+
+  }
+
+  private refreshSettingsUi(): void {
+    this.display();
   }
 
   private renderTriggerWordEditor(containerEl: HTMLElement, copy: SettingCopy): void {
@@ -1054,7 +1141,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
     const list = containerEl.createDiv({ cls: "towrite-workflow-stage-editor" });
 
     for (const [index, stage] of stages.entries()) {
-      const card = list.createEl("details", { cls: `towrite-workflow-stage-card towrite-color-${stage.color}` }) as HTMLDetailsElement;
+      const card = list.createEl("details", { cls: `towrite-workflow-stage-card towrite-color-${stage.color}` });
       card.open = this.openWorkflowStageIds.has(stage.id);
       card.addEventListener("toggle", () => {
         if (card.open) {
@@ -1243,9 +1330,13 @@ export class ToWriteSettingTab extends PluginSettingTab {
       });
       button.createSpan({ cls: "towrite-settings-color-dot" });
       button.createSpan({ cls: "towrite-settings-color-name", text: label });
-      button.addEventListener("click", async () => {
-        await onChange(color);
-        this.display();
+      button.addEventListener("click", () => {
+        void onChange(color)
+          .then(() => this.refreshSettingsUi())
+          .catch((error) => {
+            console.error("Failed to save ToWrite color setting", error);
+            new Notice("Failed to save color setting.");
+          });
       });
     }
   }
@@ -1254,13 +1345,13 @@ export class ToWriteSettingTab extends PluginSettingTab {
     this.plugin.settings.candidateTriggerWords = normalizeTriggerWords(words);
     await this.plugin.savePluginData();
     await this.plugin.refreshIndex();
-    this.display();
+    this.refreshSettingsUi();
   }
 
   private async saveStatusOptions(options: QuestionStatusOption[]): Promise<void> {
     this.plugin.settings.statusOptions = normalizeStatusOptions(options);
     await this.plugin.savePluginData();
-    this.display();
+    this.refreshSettingsUi();
   }
 
   private async patchWorkflowStage(index: number, patch: Partial<WorkflowStageSettings>, redisplay = false): Promise<void> {
@@ -1278,7 +1369,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
     await this.plugin.savePluginData();
     await this.plugin.refreshIndex();
     if (redisplay) {
-      this.display();
+      this.refreshSettingsUi();
     }
   }
 }
@@ -1329,16 +1420,11 @@ function createIconButton(parent: HTMLElement, icon: string, label: string): HTM
 }
 
 async function copyToClipboard(value: string, copiedMessage: string): Promise<void> {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(value);
-  } else {
-    const textArea = activeDocument.body.createEl("textarea");
-    textArea.value = value;
-    textArea.addClass("towrite-hidden-clipboard-buffer");
-    textArea.select();
-    activeDocument.execCommand("copy");
-    textArea.remove();
+  if (!navigator.clipboard?.writeText) {
+    new Notice("Clipboard API is not available in this Obsidian window.");
+    return;
   }
+  await navigator.clipboard.writeText(value);
   new Notice(copiedMessage);
 }
 

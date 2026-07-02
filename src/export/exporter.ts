@@ -63,9 +63,10 @@ export class QuestionExporter {
       }
 
       await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
-        frontmatter.open_questions = article.open;
-        frontmatter.candidate_questions = article.candidate;
-        frontmatter.question_status = article.needsWork ? "blocked" : "clear";
+        const data: Record<string, unknown> = frontmatter;
+        data.open_questions = article.open;
+        data.candidate_questions = article.candidate;
+        data.question_status = article.needsWork ? "blocked" : "clear";
       });
     }
 

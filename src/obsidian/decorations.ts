@@ -133,10 +133,12 @@ class SuggestionActionsWidget extends WidgetType {
   }
 
   toDOM(view: EditorView): HTMLElement {
-    const wrapper = document.createElement("span");
+    const doc = view.dom.ownerDocument;
+    const win = doc.defaultView ?? window;
+    const wrapper = doc.createElement("span");
     wrapper.className = "towrite-suggestion-actions";
 
-    const button = document.createElement("button");
+    const button = doc.createElement("button");
     button.type = "button";
     button.className = `towrite-suggestion-add towrite-suggestion-add-${this.suggestion.lane}`;
     button.textContent = this.suggestion.lane === "write" ? "+ Write" : "+ Think";
@@ -150,12 +152,14 @@ class SuggestionActionsWidget extends WidgetType {
       event.stopPropagation();
       button.disabled = true;
       button.textContent = "Added";
-      Promise.resolve(this.onAcceptSuggestion(this.suggestion.id)).finally(() => {
-        window.setTimeout(() => view.dispatch({}), 0);
-      });
+      void Promise.resolve(this.onAcceptSuggestion(this.suggestion.id))
+        .catch((error) => console.error("Failed to accept ToWrite suggestion", error))
+        .finally(() => {
+          win.setTimeout(() => view.dispatch({}), 0);
+        });
     });
 
-    const ignoreButton = document.createElement("button");
+    const ignoreButton = doc.createElement("button");
     ignoreButton.type = "button";
     ignoreButton.className = "towrite-suggestion-ignore";
     ignoreButton.textContent = "×";
@@ -170,9 +174,11 @@ class SuggestionActionsWidget extends WidgetType {
       event.stopPropagation();
       ignoreButton.disabled = true;
       button.disabled = true;
-      Promise.resolve(this.onIgnoreSuggestion(this.suggestion.id)).finally(() => {
-        window.setTimeout(() => view.dispatch({}), 0);
-      });
+      void Promise.resolve(this.onIgnoreSuggestion(this.suggestion.id))
+        .catch((error) => console.error("Failed to ignore ToWrite suggestion", error))
+        .finally(() => {
+          win.setTimeout(() => view.dispatch({}), 0);
+        });
     });
 
     wrapper.append(button, ignoreButton);

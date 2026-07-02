@@ -862,10 +862,10 @@ export default class ToWritePlugin extends Plugin {
       })
     );
 
-    this.registerDomEvent(document, "keyup", () => {
+    this.registerDomEvent(activeDocument, "keyup", () => {
       notifyActiveLineChange();
     });
-    this.registerDomEvent(document, "mouseup", () => {
+    this.registerDomEvent(activeDocument, "mouseup", () => {
       notifyActiveLineChange();
     });
   }
@@ -967,7 +967,7 @@ export default class ToWritePlugin extends Plugin {
     lane: OpenQuestionLane,
     color?: OpenQuestionColor
   ): Promise<void> {
-    const selectedText = window.getSelection()?.toString().trim() ?? "";
+    const selectedText = activeWindow.getSelection()?.toString().trim() ?? "";
     if (!selectedText) {
       new Notice("Select text in the PDF first.");
       return;

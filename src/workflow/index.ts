@@ -308,7 +308,7 @@ async function readWorkflowDocuments(app: App, exportDirectory: string): Promise
 async function readWorkflowDocument(app: App, file: TFile): Promise<WorkflowSourceDocument> {
   const content = await app.vault.cachedRead(file);
   const cache = app.metadataCache.getFileCache(file);
-  const frontmatter = cache?.frontmatter as Record<string, unknown> | undefined;
+  const frontmatter = cache?.frontmatter;
   const frontmatterTags = collectFrontmatterTags(frontmatter);
   const cacheTags = cache?.tags?.map((tag) => tag.tag.replace(/^#/u, "")) ?? [];
   const inlineTags = collectInlineTags(content);
@@ -460,8 +460,9 @@ function workflowFileMatchesSearch(file: WorkflowFileSummary, search: string): b
 }
 
 function compactWorkflowFile(file: WorkflowFileSummary): WorkflowFileSummary {
-  const { frontmatter: _frontmatter, ...rest } = file;
-  return rest;
+  const compact = { ...file };
+  delete compact.frontmatter;
+  return compact;
 }
 
 function uniqueFileCount(stages: Array<Pick<WorkflowStageSummary, "files">>): number {

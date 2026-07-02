@@ -10,28 +10,32 @@ export class SelectionQuestionToolbar {
   private readonly element: HTMLElement;
   private readonly colorButton: HTMLButtonElement;
   private readonly palette: HTMLElement;
+  private readonly document: Document;
+  private readonly win: Window;
   private selectedColor: OpenQuestionColor | null = null;
   private paletteOpen = false;
   private readonly handleMouseUp = () => {
-    window.setTimeout(() => this.positionNearSelection(), 0);
+    this.win.setTimeout(() => this.positionNearSelection(), 0);
   };
   private readonly handleScroll = () => this.hide();
 
   constructor(private readonly options: SelectionQuestionToolbarOptions) {
-    this.element = document.body.createDiv({ cls: "towrite-selection-toolbar" });
+    this.document = activeDocument;
+    this.win = this.document.defaultView ?? activeWindow;
+    this.element = this.document.body.createDiv({ cls: "towrite-selection-toolbar" });
     const rendered = this.render();
     this.colorButton = rendered.colorButton;
     this.palette = rendered.palette;
     this.hide();
-    document.addEventListener("mouseup", this.handleMouseUp);
-    document.addEventListener("keyup", this.handleMouseUp);
-    document.addEventListener("scroll", this.handleScroll, true);
+    this.document.addEventListener("mouseup", this.handleMouseUp);
+    this.document.addEventListener("keyup", this.handleMouseUp);
+    this.document.addEventListener("scroll", this.handleScroll, true);
   }
 
   destroy(): void {
-    document.removeEventListener("mouseup", this.handleMouseUp);
-    document.removeEventListener("keyup", this.handleMouseUp);
-    document.removeEventListener("scroll", this.handleScroll, true);
+    this.document.removeEventListener("mouseup", this.handleMouseUp);
+    this.document.removeEventListener("keyup", this.handleMouseUp);
+    this.document.removeEventListener("scroll", this.handleScroll, true);
     this.element.remove();
   }
 
@@ -112,7 +116,7 @@ export class SelectionQuestionToolbar {
   }
 
   private positionNearSelection(): void {
-    const selection = window.getSelection();
+    const selection = this.win.getSelection();
     if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
       this.hide();
       return;
@@ -120,9 +124,10 @@ export class SelectionQuestionToolbar {
 
     const selectedText = selection.toString().trim();
     const range = selection.getRangeAt(0);
-    const container = range.commonAncestorContainer instanceof HTMLElement
-      ? range.commonAncestorContainer
-      : range.commonAncestorContainer.parentElement;
+    const ancestor = range.commonAncestorContainer;
+    const container = ancestor.instanceOf(HTMLElement)
+      ? ancestor
+      : ancestor.parentElement;
 
     if (!selectedText || !container?.closest(".markdown-source-view, .markdown-reading-view, .markdown-preview-view, .cm-editor, .pdf-viewer, .pdf-container, .pdf-embed, .pdf-page")) {
       this.hide();

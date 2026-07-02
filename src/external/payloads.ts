@@ -170,13 +170,13 @@ export function queryFromUrl(url: URL): OpenQuestionQuery {
   const limit = parseLimit(url.searchParams.get("limit"), 0);
 
   if (status.length > 0) {
-    query.status = status as OpenQuestionStatus[];
+    query.status = status.filter(isOpenQuestionStatus);
   }
   if (lane.length > 0) {
     query.lane = lane.filter((value): value is OpenQuestionLane => value === "think" || value === "write");
   }
   if (kind.length > 0) {
-    query.kind = kind as OpenQuestionKind[];
+    query.kind = kind.filter(isOpenQuestionKind);
   }
   if (filePath) {
     query.filePath = filePath;
@@ -192,6 +192,24 @@ export function queryFromUrl(url: URL): OpenQuestionQuery {
   }
 
   return query;
+}
+
+function isOpenQuestionStatus(value: string): value is OpenQuestionStatus {
+  return value.length > 0;
+}
+
+const OPEN_QUESTION_KIND_VALUES: readonly string[] = [
+  "research",
+  "experiment",
+  "explanation",
+  "citation",
+  "todo",
+  "evidence",
+  "other"
+];
+
+function isOpenQuestionKind(value: string): value is OpenQuestionKind {
+  return OPEN_QUESTION_KIND_VALUES.includes(value);
 }
 
 export function parseLimit(value: string | null, fallback: number): number {

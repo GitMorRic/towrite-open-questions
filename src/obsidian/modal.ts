@@ -115,7 +115,9 @@ export class AddQuestionModal extends Modal {
           .addOption("write", copy.laneWrite)
           .setValue(this.lane)
           .onChange((value) => {
-            this.lane = value as OpenQuestionLane;
+            if (isOpenQuestionLane(value)) {
+              this.lane = value;
+            }
           });
       });
 
@@ -128,7 +130,9 @@ export class AddQuestionModal extends Modal {
         dropdown
           .setValue(this.color)
           .onChange((value) => {
-            this.color = value as OpenQuestionColor;
+            if (isOpenQuestionColor(value)) {
+              this.color = value;
+            }
           });
       });
 
@@ -142,7 +146,9 @@ export class AddQuestionModal extends Modal {
           .addOption("ignored", copy.status.ignored)
           .setValue(this.status)
           .onChange((value) => {
-            this.status = value as OpenQuestionStatus;
+            if (isBuiltInOpenQuestionStatus(value)) {
+              this.status = value;
+            }
           });
       });
 
@@ -159,7 +165,9 @@ export class AddQuestionModal extends Modal {
           .addOption("other", copy.kind.other)
           .setValue(this.kind)
           .onChange((value) => {
-            this.kind = value as OpenQuestionKind;
+            if (isOpenQuestionKind(value)) {
+              this.kind = value;
+            }
           });
       });
 
@@ -172,7 +180,7 @@ export class AddQuestionModal extends Modal {
           .addOption("P2", "P2")
           .addOption("P3", "P3")
           .onChange((value) => {
-            this.priority = value ? (value as OpenQuestionPriority) : undefined;
+            this.priority = isOpenQuestionPriority(value) ? value : undefined;
           });
       });
 
@@ -299,4 +307,35 @@ function modalCopy(language: ToWriteLanguage, mode: "create" | "edit") {
       other: "Other"
     }
   };
+}
+
+function isOpenQuestionLane(value: string): value is OpenQuestionLane {
+  return value === "think" || value === "write";
+}
+
+function isOpenQuestionColor(value: string): value is OpenQuestionColor {
+  const values: readonly string[] = OPEN_QUESTION_COLORS;
+  return values.includes(value);
+}
+
+function isBuiltInOpenQuestionStatus(value: string): value is OpenQuestionStatus {
+  return value === "open" || value === "candidate" || value === "resolved" || value === "ignored";
+}
+
+const OPEN_QUESTION_KIND_VALUES: readonly string[] = [
+  "todo",
+  "research",
+  "experiment",
+  "explanation",
+  "citation",
+  "evidence",
+  "other"
+];
+
+function isOpenQuestionKind(value: string): value is OpenQuestionKind {
+  return OPEN_QUESTION_KIND_VALUES.includes(value);
+}
+
+function isOpenQuestionPriority(value: string): value is OpenQuestionPriority {
+  return value === "P1" || value === "P2" || value === "P3";
 }

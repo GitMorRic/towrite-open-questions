@@ -364,7 +364,12 @@
 }
 
 .towrite-card-collapsed .towrite-card-top {
-  display: contents;
+  display: grid;
+  grid-column: 1 / -1;
+  grid-row: 1;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
 }
 
 .towrite-card-collapsed .towrite-card-head {
@@ -372,6 +377,14 @@
   grid-row: 1;
   flex-wrap: nowrap;
   gap: 3px;
+}
+
+.towrite-card-collapsed .towrite-card-summary {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: center;
+  justify-self: center;
+  max-width: min(420px, 100%);
 }
 
 .towrite-card-collapsed .towrite-card-line {
@@ -1013,9 +1026,6 @@
 
 .towrite-original-text button:hover {
   color: var(--text-normal);
-  text-decoration: underline;
-  text-decoration-thickness: 1px;
-  text-underline-offset: 3px;
 }
 
 .towrite-card-meta {
@@ -1481,13 +1491,8 @@
 
 .towrite-mark {
   border-radius: 2px;
-  box-decoration-break: clone;
-  -webkit-box-decoration-break: clone;
 }
 
-.towrite-mark-open {
-  text-decoration-line: none;
-}
 
 .towrite-mark-candidate {
   outline: 1px dashed currentColor;
@@ -1500,32 +1505,26 @@
 
 .towrite-mark-amber {
   background: rgba(214, 138, 0, 0.18);
-  text-decoration-color: #d68a00;
 }
 
 .towrite-mark-mint {
   background: rgba(58, 155, 114, 0.18);
-  text-decoration-color: #3a9b72;
 }
 
 .towrite-mark-sky {
   background: rgba(75, 142, 220, 0.18);
-  text-decoration-color: #4b8edc;
 }
 
 .towrite-mark-rose {
   background: rgba(211, 91, 127, 0.18);
-  text-decoration-color: #d35b7f;
 }
 
 .towrite-mark-violet {
   background: rgba(139, 112, 214, 0.18);
-  text-decoration-color: #8b70d6;
 }
 
 .towrite-mark-slate {
   background: rgba(122, 134, 154, 0.18);
-  text-decoration-color: #7a869a;
 }
 
 .towrite-selection-toolbar {
@@ -2055,6 +2054,50 @@
 
 .towrite-modal textarea {
   width: 100%;
+}
+
+.towrite-settings-title {
+  margin: 0 0 14px;
+  font-size: 22px;
+  line-height: 1.2;
+}
+
+.towrite-settings-tabs {
+  display: flex;
+  gap: 4px;
+  margin: 0 0 14px;
+  padding: 4px;
+  border-radius: 8px;
+  background: var(--background-secondary);
+  overflow-x: auto;
+}
+
+.towrite-settings-tab {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-weight: 600;
+  box-shadow: none;
+}
+
+.towrite-settings-tab:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+.towrite-settings-tab.is-active {
+  color: var(--text-normal);
+  background: var(--background-primary);
+  box-shadow: inset 0 -2px 0 var(--interactive-accent);
+}
+
+.towrite-settings-tab-panel {
+  display: grid;
+  gap: 10px;
 }
 
 .towrite-settings .setting-item {

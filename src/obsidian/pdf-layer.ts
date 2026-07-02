@@ -22,18 +22,21 @@ export class PdfQuestionLayer {
   register(): void {
     this.options.component.registerEvent(this.options.app.workspace.on("active-leaf-change", () => this.scheduleRender()));
     this.options.component.registerEvent(this.options.app.workspace.on("layout-change", () => this.scheduleRender()));
-    this.options.component.registerDomEvent(document, "scroll", () => this.scheduleRender(), true);
-    this.options.component.registerDomEvent(window, "resize", () => this.scheduleRender());
+    const doc = activeDocument;
+    const win = doc.defaultView ?? activeWindow;
+    this.options.component.registerDomEvent(doc, "scroll", () => this.scheduleRender(), true);
+    this.options.component.registerDomEvent(win, "resize", () => this.scheduleRender());
     this.options.component.register(this.options.subscribe(() => this.scheduleRender()));
-    this.observer = new MutationObserver(() => this.scheduleRender());
-    this.observer.observe(document.body, { childList: true, subtree: true });
+    const observer = new MutationObserver(() => this.scheduleRender());
+    observer.observe(doc.body, { childList: true, subtree: true });
+    this.observer = observer;
     this.options.component.register(() => this.destroy());
     this.scheduleRender();
   }
 
   destroy(): void {
     if (this.frame !== null) {
-      cancelAnimationFrame(this.frame);
+      activeWindow.cancelAnimationFrame(this.frame);
       this.frame = null;
     }
     this.observer?.disconnect();
@@ -45,7 +48,7 @@ export class PdfQuestionLayer {
     if (this.frame !== null) {
       return;
     }
-    this.frame = requestAnimationFrame(() => {
+    this.frame = activeWindow.requestAnimationFrame(() => {
       this.frame = null;
       this.render();
     });
@@ -100,7 +103,7 @@ export class PdfQuestionLayer {
 }
 
 export function pdfAnchorFromCurrentSelection(): PdfAnchor | undefined {
-  const selection = window.getSelection();
+  const selection = activeWindow.getSelection();
   const selectedText = selection?.toString().trim() ?? "";
   if (!selection || selection.rangeCount === 0 || !selectedText) {
     return undefined;
@@ -109,7 +112,7 @@ export function pdfAnchorFromCurrentSelection(): PdfAnchor | undefined {
   const items = [];
   for (let rangeIndex = 0; rangeIndex < selection.rangeCount; rangeIndex += 1) {
     const range = selection.getRangeAt(rangeIndex);
-    for (const rect of Array.from(range.getClientRects())) {
+    for (const rect of Array.from<DOMRect>(range.getClientRects())) {
       const page = pageElementFromRect(rect);
       if (!page) {
         continue;
@@ -161,7 +164,7 @@ export async function jumpToPdfQuestion(app: App, file: TFile, question: OpenQue
 
   const firstRect = anchor?.rects.find((rect) => rect.pageNumber === pageNumberToFind);
   scrollPdfPageIntoView(page, firstRect);
-  window.setTimeout(() => flashPdfQuestion(question.id), 180);
+  activeWindow.setTimeout(() => flashPdfQuestion(question.id), 180);
   return true;
 }
 
@@ -171,8 +174,7 @@ function activePdfFile(app: App): TFile | null {
 }
 
 function activePdfViewer(app: App): HTMLElement | null {
-  const active = (app.workspace.activeLeaf?.view as { containerEl?: HTMLElement } | undefined)?.containerEl;
-  const root = active ?? document.querySelector<HTMLElement>(".workspace-leaf.mod-active");
+  const root = activeDocument.querySelector<HTMLElement>(".workspace-leaf.mod-active");
   if (!root) {
     return null;
   }
@@ -180,7 +182,7 @@ function activePdfViewer(app: App): HTMLElement | null {
 }
 
 function pageElementFromRect(rect: DOMRect): HTMLElement | null {
-  const element = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+  const element = activeDocument.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
   return element?.closest<HTMLElement>(PDF_PAGE_SELECTOR) ?? null;
 }
 
@@ -236,8 +238,10 @@ function scrollPdfPageIntoView(page: HTMLElement, rect?: { top: number; height: 
 
 function scrollParent(element: HTMLElement): HTMLElement | null {
   let current: HTMLElement | null = element.parentElement;
-  while (current && current !== document.body) {
-    const style = getComputedStyle(current);
+  const doc = element.ownerDocument;
+  const win = doc.defaultView ?? activeWindow;
+  while (current && current !== doc.body) {
+    const style = win.getComputedStyle(current);
     if (/(auto|scroll)/u.test(`${style.overflowY}${style.overflow}`) && current.scrollHeight > current.clientHeight) {
       return current;
     }
@@ -247,13 +251,13 @@ function scrollParent(element: HTMLElement): HTMLElement | null {
 }
 
 function flashPdfQuestion(questionId: string): void {
-  const highlights = document.querySelectorAll<HTMLElement>(`.towrite-pdf-highlight[data-towrite-question-id="${CSS.escape(questionId)}"]`);
-  for (const highlight of Array.from(highlights)) {
+  const highlights = activeDocument.querySelectorAll<HTMLElement>(`.towrite-pdf-highlight[data-towrite-question-id="${CSS.escape(questionId)}"]`);
+  highlights.forEach((highlight) => {
     highlight.addClass("is-flashing");
-    window.setTimeout(() => highlight.removeClass("is-flashing"), 1600);
-  }
+    activeWindow.setTimeout(() => highlight.removeClass("is-flashing"), 1600);
+  });
 }
 
 function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
+  return new Promise((resolve) => activeWindow.setTimeout(resolve, ms));
 }

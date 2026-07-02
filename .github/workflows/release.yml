@@ -27,7 +27,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
@@ -76,7 +76,6 @@ jobs:
           cp dist/main.js release-assets/main.js
           cp dist/manifest.json release-assets/manifest.json
           cp dist/styles.css release-assets/styles.css
-          (cd release-assets && zip -q "towrite-open-questions-${VERSION}.zip" main.js manifest.json styles.css)
 
           if awk "/^## .*${VERSION}/{flag=1; next} /^## /{flag=0} flag" CHANGELOG.md > RELEASE_NOTES.md && [ -s RELEASE_NOTES.md ]; then
             true
@@ -91,7 +90,6 @@ jobs:
             release-assets/main.js
             release-assets/manifest.json
             release-assets/styles.css
-            release-assets/towrite-open-questions-${{ env.VERSION }}.zip
 
       - name: Create GitHub release
         env:
@@ -102,7 +100,6 @@ jobs:
             release-assets/main.js \
             release-assets/manifest.json \
             release-assets/styles.css \
-            release-assets/towrite-open-questions-${VERSION}.zip \
             --title "ToWrite Open Questions ${VERSION}" \
             --notes-file RELEASE_NOTES.md \
             --target "$GITHUB_SHA"
