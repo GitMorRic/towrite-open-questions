@@ -2374,3 +2374,69 @@
   opacity: 0;
   pointer-events: none;
 }
+
+.towrite-device-profile-editor {
+  display: grid;
+  gap: 10px;
+  margin: 8px 0 16px;
+}
+
+.towrite-device-profile-card {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-secondary);
+}
+
+.towrite-device-profile-header {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+
+.towrite-device-profile-title {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  margin-right: auto;
+}
+
+.towrite-device-profile-title strong,
+.towrite-device-profile-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.towrite-device-profile-meta {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.towrite-device-profile-body {
+  display: grid;
+  gap: 0;
+  padding: 0 10px 10px;
+}
+
+.towrite-device-profile-actions .towrite-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  min-width: 30px;
+  padding: 0;
+}
+
+.towrite-device-profile-add {
+  display: flex;
+  justify-content: flex-start;
+  margin: 0 0 14px;
+  padding: 0 10px;
+}
+
+.towrite-device-profile-add button {
+  min-height: 30px;
+  border-radius: 7px;
+}

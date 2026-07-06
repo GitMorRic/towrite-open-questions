@@ -211,3 +211,5 @@ Because ToWrite stores selected source text in sidecar JSON and export files, tr
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+For ESP32/e-ink integrations, see the Chinese device protocol guide: [docs/device-feed-protocol.zh-CN.md](docs/device-feed-protocol.zh-CN.md).

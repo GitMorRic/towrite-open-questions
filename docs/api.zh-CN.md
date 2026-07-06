@@ -544,3 +544,22 @@ await fetch(`${API_BASE}/api/v1/questions/${encodeURIComponent(id)}`, {
 - 不要把 token 发到公共仓库。
 - 公网访问建议放在 Tailscale、Cloudflare Tunnel、frp、Nginx/Caddy 等外部通道后面。
 - 插件不内置账号系统、HTTPS 证书或云中继；这些由你自己的网络层负责。
+
+## Device Feed 与墨水屏协议
+
+如果要接入 ESP32S3、墨水屏、手机小屏或桌面小组件，优先使用：
+
+```text
+GET /api/v1/device-feed?token=...&profile=eink-bw&width=264&height=176&inches=2.7&page=home
+```
+
+完整字段说明见：[Device Feed 协议](device-feed-protocol.zh-CN.md)。
+
+示例 JSON：
+
+- [eink-bw 首页](examples/device-feed-eink-bw-home.json)
+- [eink-bw 卡片页](examples/device-feed-eink-bw-cards.json)
+- [eink-bw Workflow 页](examples/device-feed-eink-bw-workflow.json)
+- [eink-bw 来源笔记页](examples/device-feed-eink-bw-articles.json)
+
+设置页的 `API & Device -> 设备 Profiles` 可以保存常用屏幕参数，并生成可复制的 device-feed URL。

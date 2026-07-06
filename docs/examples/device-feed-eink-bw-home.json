@@ -1,0 +1,131 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-07-03T01:00:00.000Z",
+  "vaultName": "Capture",
+  "profile": "eink-bw",
+  "device": {
+    "width": 264,
+    "height": 176,
+    "inches": 2.7,
+    "orientation": "landscape",
+    "aspectRatio": 1.5,
+    "ppi": 117.5,
+    "layout": "landscape-compact",
+    "page": "home",
+    "limit": 1
+  },
+  "summary": {
+    "think": 9,
+    "write": 2,
+    "unresolved": 11,
+    "candidate": 0,
+    "blockedArticles": 4,
+    "workflowFiles": 6,
+    "workflowStages": 5,
+    "remindersDue": 0,
+    "remindersUpcoming": 1
+  },
+  "workflow": {
+    "enabled": true,
+    "uniqueFiles": 6,
+    "stages": [
+      {
+        "id": "raw",
+        "title": "Raw",
+        "description": "Capture / 未整理",
+        "color": "slate",
+        "count": 6,
+        "staleCount": 1,
+        "nextActions": [
+          {
+            "title": "整理这条原始材料",
+            "filePath": "MindFlow/00-Raw/一个想法.md",
+            "openUri": "obsidian://open?vault=Capture&file=MindFlow%2F00-Raw%2F%E4%B8%80%E4%B8%AA%E6%83%B3%E6%B3%95.md"
+          }
+        ]
+      }
+    ]
+  },
+  "screens": [
+    {
+      "id": "home",
+      "type": "home",
+      "title": "小屏首页",
+      "subtitle": "ToThink / ToWrite / Workflow 总览",
+      "companionUrl": "https://desktop.tailnet.ts.net:48321/device/input?token=TOKEN",
+      "qrText": "https://desktop.tailnet.ts.net:48321/device/input?token=TOKEN",
+      "items": [
+        {
+          "type": "stats",
+          "stats": [
+            { "label": "ToThink", "value": 9 },
+            { "label": "ToWrite", "value": 2 },
+            { "label": "未解决", "value": 11 },
+            { "label": "有问题文章", "value": 4 },
+            { "label": "提醒到期", "value": 0 }
+          ]
+        },
+        {
+          "type": "workflow-stage",
+          "stages": [
+            {
+              "id": "raw",
+              "title": "Raw",
+              "description": "Capture / 未整理",
+              "color": "slate",
+              "count": 6,
+              "staleCount": 1,
+              "nextActions": []
+            }
+          ]
+        },
+        {
+          "type": "next-actions",
+          "actions": [
+            {
+              "title": "整理这条原始材料",
+              "source": "Raw",
+              "openUri": "obsidian://open?vault=Capture&file=MindFlow%2F00-Raw%2F%E4%B8%80%E4%B8%AA%E6%83%B3%E6%B3%95.md"
+            }
+          ]
+        }
+      ],
+      "actions": [
+        {
+          "id": "quickCapture",
+          "label": "新想法",
+          "kind": "input",
+          "qrText": "https://desktop.tailnet.ts.net:48321/device/input?token=TOKEN",
+          "enabled": true
+        },
+        {
+          "id": "next",
+          "label": "下一页",
+          "kind": "navigate",
+          "page": "cards",
+          "cursor": "0",
+          "enabled": true
+        }
+      ]
+    }
+  ],
+  "navigation": {
+    "page": "home",
+    "cursor": "0",
+    "limit": 1,
+    "total": 1,
+    "hasPrev": false,
+    "hasNext": true,
+    "nextCursor": "0"
+  },
+  "actions": [
+    {
+      "id": "next",
+      "label": "下一页",
+      "kind": "navigate",
+      "page": "cards",
+      "cursor": "0",
+      "enabled": true
+    }
+  ]
+}

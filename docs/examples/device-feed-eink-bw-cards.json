@@ -1,0 +1,116 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-07-03T01:02:00.000Z",
+  "vaultName": "Capture",
+  "profile": "eink-bw",
+  "device": {
+    "width": 264,
+    "height": 176,
+    "inches": 2.7,
+    "orientation": "landscape",
+    "aspectRatio": 1.5,
+    "ppi": 117.5,
+    "layout": "landscape-compact",
+    "page": "cards",
+    "lane": "write",
+    "limit": 1
+  },
+  "summary": {
+    "think": 9,
+    "write": 2,
+    "unresolved": 11,
+    "candidate": 0,
+    "blockedArticles": 4,
+    "workflowFiles": 6,
+    "workflowStages": 5,
+    "remindersDue": 0,
+    "remindersUpcoming": 1
+  },
+  "workflow": {
+    "enabled": true,
+    "uniqueFiles": 6,
+    "stages": []
+  },
+  "screens": [
+    {
+      "id": "cards-0",
+      "type": "cards",
+      "title": "ToWrite 卡片",
+      "subtitle": "1 / 2",
+      "openUri": "obsidian://open?vault=Capture&file=00-Raw%2FExample.md&line=32",
+      "companionUrl": "https://desktop.tailnet.ts.net:48321/device/input?token=TOKEN&questionId=oq_example_write",
+      "qrText": "https://desktop.tailnet.ts.net:48321/device/input?token=TOKEN&questionId=oq_example_write",
+      "items": [
+        {
+          "type": "card",
+          "id": "oq_example_write",
+          "title": "补充每个人具体的文档经历",
+          "body": "这里还要补充每个人具体的文档以及之前的经历",
+          "note": "可以先列三个角色的经历，再展开证据。",
+          "source": "Example",
+          "sourceFile": "00-Raw/Example.md",
+          "sourceLine": 32,
+          "lane": "write",
+          "status": "open",
+          "kind": "todo",
+          "tags": ["draft"],
+          "reminderAt": "2026-07-03T10:00:00.000Z",
+          "reminderNote": "先写第一版",
+          "reminderDue": false,
+          "openUri": "obsidian://open?vault=Capture&file=00-Raw%2FExample.md&line=32",
+          "answerUrl": "https://desktop.tailnet.ts.net:48321/device/input?token=TOKEN&questionId=oq_example_write",
+          "updatedAt": "2026-07-03T00:50:00.000Z"
+        }
+      ],
+      "peekItems": [
+        {
+          "type": "card-preview",
+          "id": "oq_example_think",
+          "title": "这个来源可靠吗",
+          "source": "Example",
+          "lane": "think",
+          "status": "open",
+          "kind": "evidence",
+          "answerUrl": "https://desktop.tailnet.ts.net:48321/device/input?token=TOKEN&questionId=oq_example_think",
+          "openUri": "obsidian://open?vault=Capture&file=00-Raw%2FExample.md&line=45"
+        }
+      ],
+      "actions": [
+        {
+          "id": "answerCard",
+          "label": "回答",
+          "kind": "input",
+          "questionId": "oq_example_write",
+          "qrText": "https://desktop.tailnet.ts.net:48321/device/input?token=TOKEN&questionId=oq_example_write",
+          "enabled": true
+        },
+        {
+          "id": "openSource",
+          "label": "打开来源",
+          "kind": "open-uri",
+          "uri": "obsidian://open?vault=Capture&file=00-Raw%2FExample.md&line=32",
+          "enabled": true
+        }
+      ]
+    }
+  ],
+  "navigation": {
+    "page": "cards",
+    "cursor": "0",
+    "limit": 1,
+    "total": 2,
+    "hasPrev": false,
+    "hasNext": true,
+    "nextCursor": "1"
+  },
+  "actions": [
+    {
+      "id": "next",
+      "label": "下一张",
+      "kind": "navigate",
+      "page": "cards",
+      "cursor": "1",
+      "enabled": true
+    }
+  ]
+}

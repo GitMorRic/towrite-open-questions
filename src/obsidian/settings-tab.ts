@@ -1,17 +1,20 @@
 import { App, Notice, PluginSettingTab, Setting, setIcon } from "obsidian";
 import {
   DEFAULT_STATUS_OPTIONS,
+  DEFAULT_DEVICE_PROFILES,
   DEFAULT_REMINDER_PRESETS,
   DEFAULT_WORKFLOW_STAGES,
   normalizeExternalApiBindHost,
   normalizeExternalApiPublicBaseUrl,
+  normalizeDeviceProfiles,
   normalizeReminderPresets,
+  type ToWriteDeviceProfileSettings,
   type ToWriteLanguage,
   type ToWriteReminderPreset,
   type ToWriteSettings,
   type WorkflowStageSettings
 } from "../core/settings";
-import { OPEN_QUESTION_COLORS, type OpenQuestionColor, type QuestionStatusOption } from "../core/types";
+import { OPEN_QUESTION_COLORS, type OpenQuestionColor, type OpenQuestionLane, type QuestionStatusOption } from "../core/types";
 import type ToWritePlugin from "../main";
 
 type SettingsTabId = "general" | "cards" | "workflow" | "api" | "ai";
@@ -76,6 +79,21 @@ type SettingCopy = {
   deviceCaptureFoldersDesc: string;
   deviceCaptureTags: string;
   deviceCaptureTagsDesc: string;
+  deviceProfiles: string;
+  deviceProfilesDesc: string;
+  deviceProfileName: string;
+  deviceProfileId: string;
+  deviceProfileKind: string;
+  deviceProfileSize: string;
+  deviceProfileWidth: string;
+  deviceProfileHeight: string;
+  deviceProfileInches: string;
+  deviceProfileDefaultPage: string;
+  deviceProfileDefaultLane: string;
+  deviceProfileRefresh: string;
+  deviceProfileFeedUrl: string;
+  deviceProfileAdd: string;
+  deviceProfileRemove: string;
   regenerateToken: string;
   workflowStages: string;
   workflowStagesDesc: string;
@@ -188,6 +206,21 @@ const COPY: Record<ToWriteLanguage, SettingCopy> = {
     "deviceCaptureFoldersDesc": "一行一个 vault 内文件夹。手机输入页会把它们显示为保存位置。",
     "deviceCaptureTags": "默认 tags",
     "deviceCaptureTagsDesc": "手机输入页保存的新想法默认带上的标签；可用逗号、顿号或换行分隔。",
+    "deviceProfiles": "设备 Profiles",
+    "deviceProfilesDesc": "保存常用墨水屏/小屏参数，并生成 ESP32、手机或桌面组件可直接请求的 device-feed URL。",
+    "deviceProfileName": "显示名称",
+    "deviceProfileId": "Profile id",
+    "deviceProfileKind": "Profile 类型",
+    "deviceProfileSize": "屏幕尺寸",
+    "deviceProfileWidth": "宽度 px",
+    "deviceProfileHeight": "高度 px",
+    "deviceProfileInches": "英寸",
+    "deviceProfileDefaultPage": "默认页面",
+    "deviceProfileDefaultLane": "默认卡片范围",
+    "deviceProfileRefresh": "刷新间隔（秒）",
+    "deviceProfileFeedUrl": "Device feed URL",
+    "deviceProfileAdd": "添加设备 profile",
+    "deviceProfileRemove": "删除设备 profile",
     "regenerateToken": "重新生成 token",
     "workflowStages": "Workflow Stages",
     "workflowStagesDesc": "按文件夹、frontmatter tags 或正文 #tag，把 Markdown 文件分组为 Raw、Sparks、Processing 等自定义状态，并通过 workflows.json 和 API 暴露。",
@@ -298,6 +331,21 @@ const COPY: Record<ToWriteLanguage, SettingCopy> = {
     "deviceCaptureFoldersDesc": "One vault folder per line. The phone input page will show them as save targets.",
     "deviceCaptureTags": "Default tags",
     "deviceCaptureTagsDesc": "Tags added to new ideas saved from the phone input page; separate with commas, enumeration commas, or line breaks.",
+    "deviceProfiles": "Device Profiles",
+    "deviceProfilesDesc": "Save common e-ink or small-screen parameters and generate a device-feed URL for ESP32, phones, or desktop widgets.",
+    "deviceProfileName": "Display name",
+    "deviceProfileId": "Profile id",
+    "deviceProfileKind": "Profile kind",
+    "deviceProfileSize": "Screen size",
+    "deviceProfileWidth": "Width px",
+    "deviceProfileHeight": "Height px",
+    "deviceProfileInches": "Inches",
+    "deviceProfileDefaultPage": "Default page",
+    "deviceProfileDefaultLane": "Default card lane",
+    "deviceProfileRefresh": "Refresh interval seconds",
+    "deviceProfileFeedUrl": "Device feed URL",
+    "deviceProfileAdd": "Add device profile",
+    "deviceProfileRemove": "Remove device profile",
     "regenerateToken": "Regenerate token",
     "workflowStages": "Workflow Stages",
     "workflowStagesDesc": "Group Markdown files into custom states such as Raw, Sparks, and Processing by folder, frontmatter tags, or inline #tags, then expose them through workflows.json and the API.",
@@ -391,6 +439,7 @@ const AI_PROVIDER_PRESETS = [
 
 export class ToWriteSettingTab extends PluginSettingTab {
   private readonly openWorkflowStageIds = new Set<string>();
+  private readonly openDeviceProfileIds = new Set<string>();
   private activeSettingsTab: SettingsTabId = "general";
 
   constructor(app: App, private readonly plugin: ToWritePlugin) {
@@ -812,6 +861,8 @@ export class ToWriteSettingTab extends PluginSettingTab {
         });
     }
 
+    this.renderDeviceProfiles(containerEl, copy);
+
     new Setting(containerEl)
       .setName(copy.deviceCapture)
       .setDesc(copy.deviceCaptureDesc)
@@ -869,6 +920,186 @@ export class ToWriteSettingTab extends PluginSettingTab {
     }
 
 
+  }
+
+  private renderDeviceProfiles(containerEl: HTMLElement, copy: SettingCopy): void {
+    new Setting(containerEl)
+      .setName(copy.deviceProfiles)
+      .setDesc(copy.deviceProfilesDesc);
+
+    const profiles = normalizeDeviceProfiles(this.plugin.settings.deviceProfiles);
+    this.plugin.settings.deviceProfiles = profiles;
+    const list = containerEl.createDiv({ cls: "towrite-device-profile-editor" });
+
+    for (const [index, profile] of profiles.entries()) {
+      const card = list.createEl("details", { cls: "towrite-device-profile-card" });
+      card.open = this.openDeviceProfileIds.has(profile.id);
+      card.addEventListener("toggle", () => {
+        if (card.open) {
+          this.openDeviceProfileIds.add(profile.id);
+        } else {
+          this.openDeviceProfileIds.delete(profile.id);
+        }
+      });
+
+      const header = card.createEl("summary", { cls: "towrite-device-profile-header" });
+      const title = header.createDiv({ cls: "towrite-device-profile-title" });
+      title.createEl("strong", { text: profile.name || profile.id });
+      title.createSpan({
+        cls: "towrite-device-profile-meta",
+        text: profile.profile + " ? " + profile.width + "?" + profile.height + " ? " + profile.inches + " inch ? " + profile.defaultPage
+      });
+      const actions = header.createDiv({ cls: "towrite-device-profile-actions" });
+      const remove = createIconButton(actions, "trash-2", copy.deviceProfileRemove);
+      remove.addEventListener("click", (event) => {
+        event.stopPropagation();
+        void this.removeDeviceProfile(index);
+      });
+
+      const body = card.createDiv({ cls: "towrite-device-profile-body" });
+
+      new Setting(body)
+        .setName(copy.deviceProfileName)
+        .addText((input) => {
+          input
+            .setValue(profile.name)
+            .setPlaceholder("2.7 inch e-ink landscape")
+            .onChange(async (value) => {
+              await this.patchDeviceProfile(index, { name: value.trim() });
+            });
+        });
+
+      new Setting(body)
+        .setName(copy.deviceProfileId)
+        .addText((input) => {
+          input
+            .setValue(profile.id)
+            .setPlaceholder("eink-27-landscape")
+            .onChange(async (value) => {
+              await this.patchDeviceProfile(index, { id: normalizeDeviceProfileId(value) }, true);
+            });
+        });
+
+      new Setting(body)
+        .setName(copy.deviceProfileKind)
+        .addDropdown((dropdown) => {
+          dropdown
+            .addOption("eink-bw", "eink-bw")
+            .addOption("mobile-eink", "mobile-eink")
+            .addOption("desktop-card", "desktop-card")
+            .setValue(profile.profile)
+            .onChange(async (value) => {
+              await this.patchDeviceProfile(index, { profile: value as ToWriteDeviceProfileSettings["profile"] }, true);
+            });
+        });
+
+      new Setting(body)
+        .setName(copy.deviceProfileWidth)
+        .setDesc(copy.deviceProfileSize)
+        .addText((input) => {
+          input
+            .setValue(String(profile.width))
+            .setPlaceholder("264")
+            .onChange(async (value) => {
+              await this.patchDeviceProfile(index, { width: clampInteger(value, 80, 2400, 264) }, true);
+            });
+        });
+
+      new Setting(body)
+        .setName(copy.deviceProfileHeight)
+        .addText((input) => {
+          input
+            .setValue(String(profile.height))
+            .setPlaceholder("176")
+            .onChange(async (value) => {
+              await this.patchDeviceProfile(index, { height: clampInteger(value, 80, 2400, 176) }, true);
+            });
+        });
+
+      new Setting(body)
+        .setName(copy.deviceProfileInches)
+        .addText((input) => {
+          input
+            .setValue(String(profile.inches))
+            .setPlaceholder("2.7")
+            .onChange(async (value) => {
+              await this.patchDeviceProfile(index, { inches: clampNumber(value, 1, 32, 2.7) }, true);
+            });
+        });
+
+      new Setting(body)
+        .setName(copy.deviceProfileDefaultPage)
+        .addDropdown((dropdown) => {
+          dropdown
+            .addOption("home", "home")
+            .addOption("cards", "cards")
+            .addOption("workflow", "workflow")
+            .addOption("articles", "articles")
+            .setValue(profile.defaultPage)
+            .onChange(async (value) => {
+              await this.patchDeviceProfile(index, { defaultPage: value as ToWriteDeviceProfileSettings["defaultPage"] }, true);
+            });
+        });
+
+      new Setting(body)
+        .setName(copy.deviceProfileDefaultLane)
+        .addDropdown((dropdown) => {
+          dropdown
+            .addOption("", "all")
+            .addOption("think", "ToThink")
+            .addOption("write", "ToWrite")
+            .setValue(profile.defaultLane ?? "")
+            .onChange(async (value) => {
+              await this.patchDeviceProfile(index, { defaultLane: value as OpenQuestionLane | "" }, true);
+            });
+        });
+
+      new Setting(body)
+        .setName(copy.deviceProfileRefresh)
+        .addText((input) => {
+          input
+            .setValue(String(profile.refreshSeconds))
+            .setPlaceholder("300")
+            .onChange(async (value) => {
+              await this.patchDeviceProfile(index, { refreshSeconds: clampInteger(value, 15, 86400, 300) }, true);
+            });
+        });
+
+      const feedUrl = buildDeviceFeedProfileUrl(this.plugin.settings, profile);
+      new Setting(body)
+        .setName(copy.deviceProfileFeedUrl)
+        .addText((input) => {
+          input.setValue(feedUrl);
+          input.inputEl.readOnly = true;
+          input.inputEl.addClass("towrite-readonly-input");
+        })
+        .addButton((button) => {
+          button
+            .setIcon("copy")
+            .setTooltip(copy.copy)
+            .onClick(() => {
+              void copyToClipboard(feedUrl, copy.copied);
+            });
+        });
+    }
+
+    const addRow = containerEl.createDiv({ cls: "towrite-device-profile-add" });
+    const addButton = addRow.createEl("button", {
+      text: copy.deviceProfileAdd,
+      attr: { type: "button" }
+    });
+    addButton.addEventListener("click", () => {
+      const nextId = nextDeviceProfileId(profiles);
+      this.openDeviceProfileIds.add(nextId);
+      void this.saveDeviceProfiles([
+        ...profiles,
+        {
+          ...DEFAULT_DEVICE_PROFILES[0],
+          id: nextId,
+          name: "Device " + (profiles.length + 1)
+        }
+      ], true);
+    });
   }
 
   private renderWorkflowSettings(containerEl: HTMLElement, copy: SettingCopy): void {
@@ -1357,6 +1588,33 @@ export class ToWriteSettingTab extends PluginSettingTab {
     this.refreshSettingsUi();
   }
 
+  private async patchDeviceProfile(index: number, patch: Partial<ToWriteDeviceProfileSettings>, redisplay = false): Promise<void> {
+    const profiles = [...normalizeDeviceProfiles(this.plugin.settings.deviceProfiles)];
+    const current = profiles[index];
+    if (!current) {
+      return;
+    }
+    profiles[index] = { ...current, ...patch };
+    await this.saveDeviceProfiles(profiles, redisplay);
+  }
+
+  private async removeDeviceProfile(index: number): Promise<void> {
+    const profiles = [...normalizeDeviceProfiles(this.plugin.settings.deviceProfiles)];
+    const removed = profiles.splice(index, 1)[0];
+    if (removed) {
+      this.openDeviceProfileIds.delete(removed.id);
+    }
+    await this.saveDeviceProfiles(profiles, true);
+  }
+
+  private async saveDeviceProfiles(profiles: ToWriteDeviceProfileSettings[], redisplay = false): Promise<void> {
+    this.plugin.settings.deviceProfiles = normalizeDeviceProfiles(profiles);
+    await this.plugin.savePluginData();
+    if (redisplay) {
+      this.refreshSettingsUi();
+    }
+  }
+
   private async patchWorkflowStage(index: number, patch: Partial<WorkflowStageSettings>, redisplay = false): Promise<void> {
     const stages = [...this.plugin.settings.workflowStages.stages];
     const current = stages[index];
@@ -1387,6 +1645,21 @@ function buildExternalApiDashboardUrl(settings: ToWriteSettings): string {
 
 function buildExternalApiDeviceUrl(settings: ToWriteSettings): string {
   return buildExternalApiUrl(settings, "/device");
+}
+
+function buildDeviceFeedProfileUrl(settings: ToWriteSettings, profile: ToWriteDeviceProfileSettings): string {
+  const baseUrl = settings.externalApi.publicBaseUrl || buildLocalExternalApiBaseUrl(settings);
+  const params = new URLSearchParams();
+  params.set("token", settings.externalApi.token || "TOKEN");
+  params.set("profile", profile.profile);
+  params.set("width", String(profile.width));
+  params.set("height", String(profile.height));
+  params.set("inches", String(profile.inches));
+  params.set("page", profile.defaultPage);
+  if (profile.defaultLane) {
+    params.set("lane", profile.defaultLane);
+  }
+  return baseUrl + "/api/v1/device-feed?" + params.toString();
 }
 
 function buildExternalApiUrl(settings: ToWriteSettings, path: string): string {
@@ -1506,6 +1779,23 @@ function normalizeStatusId(value: string): string {
     .replace(/[^a-z0-9_-]/gu, "");
 }
 
+function nextDeviceProfileId(profiles: ToWriteDeviceProfileSettings[]): string {
+  const ids = new Set(profiles.map((profile) => profile.id));
+  let index = profiles.length + 1;
+  while (ids.has("device-" + index)) {
+    index += 1;
+  }
+  return "device-" + index;
+}
+
+function normalizeDeviceProfileId(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/gu, "-")
+    .replace(/[^a-z0-9_-]/gu, "");
+}
+
 function normalizeStageId(value: string): string {
   return value
     .trim()
@@ -1597,6 +1887,14 @@ function colorLabel(color: OpenQuestionColor, language: ToWriteLanguage): string
     return labels[color];
   }
   return color;
+}
+
+function clampNumber(value: string, min: number, max: number, fallback: number): number {
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(max, parsed));
 }
 
 function clampInteger(value: string, min: number, max: number, fallback: number): number {

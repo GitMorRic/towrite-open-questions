@@ -20,6 +20,7 @@ import {
   DEFAULT_WORKFLOW_STAGES,
   normalizeExternalApiBindHost,
   normalizeExternalApiPublicBaseUrl,
+  normalizeDeviceProfiles,
   normalizeReminderPresets,
   type ToWriteSavedData,
   type ToWriteSettings,
@@ -1289,6 +1290,7 @@ function normalizeSettings(settings?: Partial<ToWriteSettings>): ToWriteSettings
     defaultWriteColor: isQuestionColor(settings?.defaultWriteColor) ? settings.defaultWriteColor : DEFAULT_SETTINGS.defaultWriteColor,
     externalApi: normalizeExternalApiSettings(settings?.externalApi),
     deviceCapture: normalizeDeviceCaptureSettings(settings?.deviceCapture),
+    deviceProfiles: normalizeDeviceProfiles(settings?.deviceProfiles),
     workflowStages: normalizeWorkflowStages(settings?.workflowStages),
     reminderPresets: normalizeReminderPresets(settings?.reminderPresets),
     ai: {

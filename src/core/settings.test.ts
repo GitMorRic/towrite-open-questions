@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_REMINDER_PRESETS, normalizeExternalApiBindHost, normalizeExternalApiPublicBaseUrl, normalizeReminderPresets } from "./settings";
+import { DEFAULT_DEVICE_PROFILES, DEFAULT_REMINDER_PRESETS, normalizeDeviceProfiles, normalizeExternalApiBindHost, normalizeExternalApiPublicBaseUrl, normalizeReminderPresets } from "./settings";
 
 describe("settings normalization", () => {
   it("normalizes common External API bind host values", () => {
@@ -25,5 +25,45 @@ describe("settings normalization", () => {
       { label: "", value: "1h" },
       { label: "Later", value: "" }
     ])).toEqual([{ label: "Soon", value: "15m" }]);
+  });
+
+  it("normalizes device profiles", () => {
+    expect(normalizeDeviceProfiles([])).toEqual(DEFAULT_DEVICE_PROFILES);
+    expect(normalizeDeviceProfiles([
+      {
+        id: "My 2.7 Screen!",
+        name: "",
+        profile: "unknown" as never,
+        width: 10,
+        height: 9999,
+        inches: 0,
+        defaultPage: "bad" as never,
+        defaultLane: "all" as never,
+        refreshSeconds: 1
+      },
+      {
+        id: "my-27-screen",
+        name: "Duplicate",
+        profile: "desktop-card",
+        width: 800,
+        height: 480,
+        inches: 7,
+        defaultPage: "cards",
+        defaultLane: "write",
+        refreshSeconds: 60
+      }
+    ])).toEqual([
+      {
+        id: "my-27-screen",
+        name: "my-27-screen",
+        profile: "eink-bw",
+        width: 80,
+        height: 2400,
+        inches: 1,
+        defaultPage: "home",
+        defaultLane: "",
+        refreshSeconds: 15
+      }
+    ]);
   });
 });

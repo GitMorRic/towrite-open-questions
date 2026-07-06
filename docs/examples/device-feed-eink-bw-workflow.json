@@ -1,0 +1,101 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-07-03T01:04:00.000Z",
+  "vaultName": "Capture",
+  "profile": "eink-bw",
+  "device": {
+    "width": 264,
+    "height": 176,
+    "inches": 2.7,
+    "orientation": "landscape",
+    "aspectRatio": 1.5,
+    "ppi": 117.5,
+    "layout": "landscape-compact",
+    "page": "workflow",
+    "stage": "sparks",
+    "limit": 1
+  },
+  "summary": {
+    "think": 9,
+    "write": 2,
+    "unresolved": 11,
+    "candidate": 0,
+    "blockedArticles": 4,
+    "workflowFiles": 6,
+    "workflowStages": 5,
+    "remindersDue": 0,
+    "remindersUpcoming": 1
+  },
+  "workflow": {
+    "enabled": true,
+    "uniqueFiles": 6,
+    "stages": [
+      {
+        "id": "sparks",
+        "title": "Sparks",
+        "description": "灵感",
+        "color": "amber",
+        "count": 2,
+        "staleCount": 0,
+        "nextActions": []
+      }
+    ]
+  },
+  "screens": [
+    {
+      "id": "workflow-0",
+      "type": "workflow",
+      "title": "Workflow",
+      "subtitle": "Sparks · 1 / 2",
+      "openUri": "obsidian://open?vault=Capture&file=MindFlow%2F01-Sparks%2F%E6%9C%BA%E5%99%A8%E4%BA%BA%E6%83%B3%E6%B3%95.md",
+      "items": [
+        {
+          "type": "workflow-file",
+          "stageId": "sparks",
+          "stageTitle": "Sparks",
+          "color": "amber",
+          "filePath": "MindFlow/01-Sparks/机器人想法.md",
+          "title": "也许做个手指机器人是学生创业最好的开始点",
+          "description": "从一个很小的机械手指开始，记录需求、成本、结构和验证路径。",
+          "nextAction": "找三个已有项目对标",
+          "tags": ["spark", "robot"],
+          "stale": false,
+          "ageDays": 2,
+          "openQuestionCount": 1,
+          "thinkCount": 1,
+          "writeCount": 0,
+          "openUri": "obsidian://open?vault=Capture&file=MindFlow%2F01-Sparks%2F%E6%9C%BA%E5%99%A8%E4%BA%BA%E6%83%B3%E6%B3%95.md",
+          "updatedAt": "2026-07-02T12:00:00.000Z"
+        }
+      ],
+      "actions": [
+        {
+          "id": "openSource",
+          "label": "打开笔记",
+          "kind": "open-uri",
+          "uri": "obsidian://open?vault=Capture&file=MindFlow%2F01-Sparks%2F%E6%9C%BA%E5%99%A8%E4%BA%BA%E6%83%B3%E6%B3%95.md",
+          "enabled": true
+        }
+      ]
+    }
+  ],
+  "navigation": {
+    "page": "workflow",
+    "cursor": "0",
+    "limit": 1,
+    "total": 2,
+    "hasPrev": false,
+    "hasNext": true,
+    "nextCursor": "1"
+  },
+  "actions": [
+    {
+      "id": "next",
+      "label": "下一项",
+      "kind": "navigate",
+      "page": "workflow",
+      "cursor": "1",
+      "enabled": true
+    }
+  ]
+}

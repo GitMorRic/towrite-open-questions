@@ -1,4 +1,4 @@
-import type { OpenQuestionColor, QuestionStatusOption } from "./types";
+import type { OpenQuestionColor, OpenQuestionLane, QuestionStatusOption } from "./types";
 
 export type ToWriteLanguage = "zh" | "en";
 
@@ -44,6 +44,21 @@ export interface ToWriteDeviceCaptureSettings {
   defaultTags: string[];
 }
 
+export type ToWriteDeviceProfileKind = "mobile-eink" | "eink-bw" | "desktop-card";
+export type ToWriteDeviceProfilePage = "home" | "cards" | "workflow" | "articles";
+
+export interface ToWriteDeviceProfileSettings {
+  id: string;
+  name: string;
+  profile: ToWriteDeviceProfileKind;
+  width: number;
+  height: number;
+  inches: number;
+  defaultPage: ToWriteDeviceProfilePage;
+  defaultLane?: OpenQuestionLane | "";
+  refreshSeconds: number;
+}
+
 export interface ToWriteReminderPreset {
   label: string;
   value: string;
@@ -64,6 +79,7 @@ export interface ToWriteSettings {
   defaultWriteColor: OpenQuestionColor;
   externalApi: ToWriteExternalApiSettings;
   deviceCapture: ToWriteDeviceCaptureSettings;
+  deviceProfiles: ToWriteDeviceProfileSettings[];
   workflowStages: WorkflowStagesSettings;
   reminderPresets: ToWriteReminderPreset[];
   ai: ToWriteAiSettings;
@@ -137,6 +153,20 @@ export const DEFAULT_WORKFLOW_STAGES: WorkflowStageSettings[] = [
   }
 ];
 
+export const DEFAULT_DEVICE_PROFILES: ToWriteDeviceProfileSettings[] = [
+  {
+    id: "eink-27-landscape",
+    name: "2.7 inch e-ink landscape",
+    profile: "eink-bw",
+    width: 264,
+    height: 176,
+    inches: 2.7,
+    defaultPage: "home",
+    defaultLane: "",
+    refreshSeconds: 300
+  }
+];
+
 export const DEFAULT_REMINDER_PRESETS: ToWriteReminderPreset[] = [
   { label: "15 分钟后", value: "15m" },
   { label: "1 小时后", value: "1h" },
@@ -191,6 +221,7 @@ export const DEFAULT_SETTINGS: ToWriteSettings = {
     targetFolders: ["00-Raw", "01-Sparks", "02-Processing"],
     defaultTags: ["capture", "device"]
   },
+  deviceProfiles: DEFAULT_DEVICE_PROFILES,
   workflowStages: {
     enabled: false,
     stages: DEFAULT_WORKFLOW_STAGES
@@ -207,6 +238,33 @@ export const DEFAULT_SETTINGS: ToWriteSettings = {
   },
   writeArticleProperties: false
 };
+
+export function normalizeDeviceProfiles(profiles?: ToWriteDeviceProfileSettings[]): ToWriteDeviceProfileSettings[] {
+  const source = Array.isArray(profiles) && profiles.length > 0 ? profiles : DEFAULT_DEVICE_PROFILES;
+  const seen = new Set<string>();
+  const output: ToWriteDeviceProfileSettings[] = [];
+
+  for (const profile of source) {
+    const id = normalizeDeviceProfileId(profile.id || profile.name);
+    if (!id || seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    output.push({
+      id,
+      name: String(profile.name ?? "").trim() || id,
+      profile: normalizeDeviceProfileKind(profile.profile),
+      width: clampIntegerSetting(profile.width, 80, 2400, 264),
+      height: clampIntegerSetting(profile.height, 80, 2400, 176),
+      inches: clampNumberSetting(profile.inches, 1, 32, 2.7),
+      defaultPage: normalizeDeviceProfilePage(profile.defaultPage),
+      defaultLane: profile.defaultLane === "think" || profile.defaultLane === "write" ? profile.defaultLane : "",
+      refreshSeconds: clampIntegerSetting(profile.refreshSeconds, 15, 86400, 300)
+    });
+  }
+
+  return output.length > 0 ? output : DEFAULT_DEVICE_PROFILES;
+}
 
 export function normalizeReminderPresets(presets?: ToWriteReminderPreset[]): ToWriteReminderPreset[] {
   const source = Array.isArray(presets) && presets.length > 0 ? presets : DEFAULT_REMINDER_PRESETS;
@@ -284,4 +342,37 @@ function isHostname(value: string): boolean {
     return false;
   }
   return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/u.test(value);
+}
+
+
+function normalizeDeviceProfileId(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/gu, "-")
+    .replace(/[^a-z0-9_-]/gu, "");
+}
+
+function normalizeDeviceProfileKind(value: unknown): ToWriteDeviceProfileKind {
+  return value === "mobile-eink" || value === "eink-bw" || value === "desktop-card" ? value : "eink-bw";
+}
+
+function normalizeDeviceProfilePage(value: unknown): ToWriteDeviceProfilePage {
+  return value === "cards" || value === "workflow" || value === "articles" || value === "home" ? value : "home";
+}
+
+function clampIntegerSetting(value: unknown, min: number, max: number, fallback: number): number {
+  const parsed = typeof value === "number" ? value : Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(max, Math.floor(parsed)));
+}
+
+function clampNumberSetting(value: unknown, min: number, max: number, fallback: number): number {
+  const parsed = typeof value === "number" ? value : Number.parseFloat(String(value ?? ""));
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(max, parsed));
 }
