@@ -21,6 +21,8 @@ import {
   normalizeExternalApiBindHost,
   normalizeExternalApiPublicBaseUrl,
   normalizeDeviceProfiles,
+  normalizePushSettings,
+  normalizeQuote0Settings,
   normalizeReminderPresets,
   type ToWriteSavedData,
   type ToWriteSettings,
@@ -43,6 +45,11 @@ import { OpenAiCompatibleProvider } from "./ai/openai-provider";
 import { AiQuestionService } from "./ai/service";
 import { QuestionExporter } from "./export/exporter";
 import { ToWriteExternalApiServer, type DeviceCaptureRequest, type DeviceCaptureResult } from "./external/server";
+import { PushEngine } from "./push/engine";
+import { normalizePushRuntimeState, type PushAnchorInput, type PushFeedbackInput } from "./push/state";
+import type { PushFeedPayload, PushRuntimeState } from "./push/types";
+import { Quote0SyncService, type Quote0SyncResult } from "./quote0/sync-service";
+import type { Quote0Device, Quote0DeviceStatus } from "./quote0/client";
 import { WorkflowIndex } from "./workflow";
 import { createQuestionDecorations } from "./obsidian/decorations";
 import { OpenQuestionIndexer } from "./obsidian/indexer";
@@ -70,6 +77,8 @@ export default class ToWritePlugin extends Plugin {
   private localKnowledgeIndex!: LocalKnowledgeIndex;
   private aiService!: AiQuestionService;
   private externalApiServer!: ToWriteExternalApiServer;
+  private pushEngine!: PushEngine;
+  private quote0SyncService!: Quote0SyncService;
   private uiApi!: ToWriteUiApi;
   private selectionToolbar?: SelectionQuestionToolbar;
   private pdfQuestionLayer?: PdfQuestionLayer;
@@ -114,12 +123,35 @@ export default class ToWritePlugin extends Plugin {
       getWorkflowPayload: (query = {}) => this.workflowIndex.getPayload(query),
       getWorkflowSummary: () => this.workflowIndex.getSummary(),
       getDeviceCaptureSettings: () => this.settings.deviceCapture,
+      getRestrictedAccessToken: () => this.settings.quote0.enabled ? this.settings.quote0.nfcToken : "",
+      getPushFeed: (targetId) => this.getPushFeed(targetId),
+      recordPushFeedback: (input) => this.recordPushFeedback(input),
+      recordContextAnchor: (input) => this.recordContextAnchor(input),
       getStatusOptions: () => this.settings.statusOptions,
       updateQuestionStatus: (id, status, note, clientId) => this.updateQuestionStatusFromExternal(id, status, note, clientId),
       appendQuestionNote: (id, text, clientId) => this.appendQuestionNoteFromExternal(id, text, clientId),
       updateQuestionFields: (id, patch) => this.updateQuestionFieldsFromExternal(id, patch),
       createDeviceCapture: (request) => this.createDeviceCaptureFromExternal(request),
       subscribe: (listener) => this.subscribe(listener)
+    });
+    this.pushEngine = new PushEngine({
+      getSettings: () => this.settings,
+      getVaultName: () => this.app.vault.getName(),
+      getQuestions: () => this.store.query(),
+      getArticleSummaries: () => this.store.getArticleSummaries(),
+      getWorkflowPayload: () => this.workflowIndex.getPayload({ limit: 50, compact: true }),
+      getActiveFile: () => this.getActiveFile(),
+      getState: () => this.pushState,
+      saveState: () => this.savePluginData()
+    });
+    this.quote0SyncService = new Quote0SyncService({
+      getSettings: () => this.settings,
+      getVaultName: () => this.app.vault.getName(),
+      getQuestions: () => this.store.query(),
+      getArticleSummaries: () => this.store.getArticleSummaries(),
+      getWorkflowPayload: () => this.workflowIndex.getPayload({ limit: 50, compact: true }),
+      getPushQuote0Delivery: () => this.pushEngine.prepareQuote0Delivery("quote0"),
+      saveSettings: () => this.savePluginData()
     });
     this.uiApi = this.createUiApi();
     this.selectionToolbar = new SelectionQuestionToolbar({
@@ -234,6 +266,7 @@ export default class ToWritePlugin extends Plugin {
     this.addSettingTab(new ToWriteSettingTab(this.app, this));
     this.registerEvents();
     void this.configureExternalApiServer(false);
+    this.configureQuote0Sync();
 
     this.app.workspace.onLayoutReady(() => {
       void this.refreshIndex();
@@ -251,6 +284,7 @@ export default class ToWritePlugin extends Plugin {
       this.backgroundRefreshTimer = 0;
     }
     void this.externalApiServer?.stop();
+    this.quote0SyncService?.stop();
     this.selectionToolbar?.destroy();
   }
 
@@ -428,7 +462,8 @@ export default class ToWritePlugin extends Plugin {
   async savePluginData(): Promise<void> {
     const data: ToWriteSavedData = {
       settings: this.settings,
-      questionStates: this.store?.serializeStates() ?? this.savedQuestionStates
+      questionStates: this.store?.serializeStates() ?? this.savedQuestionStates,
+      pushState: this.pushState
     };
     await this.saveData(data);
   }
@@ -490,6 +525,54 @@ export default class ToWritePlugin extends Plugin {
       const message = error instanceof Error ? error.message : String(error);
       new Notice(`ToWrite external API failed: ${message}`);
     }
+  }
+
+  configureQuote0Sync(): void {
+    this.quote0SyncService?.restart();
+  }
+
+  async listQuote0Devices(): Promise<Quote0Device[]> {
+    return this.quote0SyncService.listDevices();
+  }
+
+  async getQuote0DeviceStatus(): Promise<Quote0DeviceStatus> {
+    return this.quote0SyncService.getDeviceStatus();
+  }
+
+  async syncQuote0Next(): Promise<Quote0SyncResult> {
+    return this.quote0SyncService.syncNext();
+  }
+
+  async sendQuote0TestCard(): Promise<string> {
+    return this.quote0SyncService.sendTestCard();
+  }
+
+  async switchQuote0ToNextContent(): Promise<string> {
+    return this.quote0SyncService.switchToNextContent();
+  }
+
+  async updateQuote0DeviceRefreshInterval(): Promise<void> {
+    await this.quote0SyncService.updateDeviceRefreshInterval();
+  }
+
+  getPushFeed(targetId?: string): PushFeedPayload {
+    return this.pushEngine.getFeed(targetId);
+  }
+
+  async recordPushFeedback(input: PushFeedbackInput): Promise<void> {
+    await this.pushEngine.recordFeedback(input);
+    this.store.notify();
+  }
+
+  async recordContextAnchor(input: PushAnchorInput): Promise<void> {
+    await this.pushEngine.recordAnchor(input);
+    this.store.notify();
+  }
+
+  regenerateQuote0NfcToken(): string {
+    const token = createQuote0NfcToken();
+    this.settings.quote0.nfcToken = token;
+    return token;
   }
 
   regenerateExternalApiToken(): string {
@@ -605,12 +688,13 @@ export default class ToWritePlugin extends Plugin {
   private async createDeviceCaptureFromExternal(request: DeviceCaptureRequest): Promise<DeviceCaptureResult> {
     const createdAt = new Date().toISOString();
     const text = request.text.trim();
+    const target = this.resolveDeviceCaptureTarget(request);
     const tags = normalizeCaptureTags([
       ...this.settings.deviceCapture.defaultTags,
-      ...request.tags
+      ...request.tags,
+      ...(target.stage ? [target.stage.id, ...target.stage.tags] : [])
     ]);
     const title = request.title?.trim() || defaultTitleFromBody(text);
-    const target = this.resolveDeviceCaptureTarget(request);
     let filePath: string;
 
     if (target.kind === "inboxFile") {
@@ -633,7 +717,8 @@ export default class ToWritePlugin extends Plugin {
         text,
         tags,
         createdAt,
-        clientId: request.clientId
+        clientId: request.clientId,
+        workflowStage: target.stage
       });
       await this.app.vault.create(filePath, content);
     }
@@ -651,7 +736,7 @@ export default class ToWritePlugin extends Plugin {
     };
   }
 
-  private resolveDeviceCaptureTarget(request: DeviceCaptureRequest): { kind: "inboxFile" | "folderPath"; inboxFile?: string; folderPath?: string } {
+  private resolveDeviceCaptureTarget(request: DeviceCaptureRequest): { kind: "inboxFile" | "folderPath"; inboxFile?: string; folderPath?: string; stage?: Pick<WorkflowStageSettings, "id" | "title" | "tags"> } {
     const target = request.target;
     if (!target || target.kind === "inboxFile") {
       return {
@@ -670,7 +755,8 @@ export default class ToWritePlugin extends Plugin {
       const folderPath = stage?.folderPrefixes[0] || this.settings.deviceCapture.targetFolders[0] || "00-Raw";
       return {
         kind: "folderPath",
-        folderPath
+        folderPath,
+        stage: stage ? { id: stage.id, title: stage.title, tags: stage.tags } : undefined
       };
     }
     return {
@@ -734,11 +820,13 @@ export default class ToWritePlugin extends Plugin {
   }
 
   private savedQuestionStates: Record<string, StoredQuestionState> = {};
+  private pushState: PushRuntimeState = normalizePushRuntimeState();
 
   private async loadPluginData(): Promise<void> {
     const data = (await this.loadData()) as Partial<ToWriteSavedData> | null;
     this.settings = normalizeSettings(data?.settings);
     this.savedQuestionStates = data?.questionStates ?? {};
+    this.pushState = normalizePushRuntimeState(data?.pushState);
   }
 
   private createUiApi(): ToWriteUiApi {
@@ -1279,6 +1367,7 @@ function normalizeSettings(settings?: Partial<ToWriteSettings>): ToWriteSettings
     ? mergeStatusOptions(settings.statusOptions)
     : DEFAULT_STATUS_OPTIONS;
 
+  const quote0 = ensureQuote0NfcToken(normalizeQuote0Settings(settings?.quote0));
   return {
     ...DEFAULT_SETTINGS,
     ...(settings ?? {}),
@@ -1296,7 +1385,9 @@ function normalizeSettings(settings?: Partial<ToWriteSettings>): ToWriteSettings
     ai: {
       ...DEFAULT_SETTINGS.ai,
       ...(settings?.ai ?? {})
-    }
+    },
+    quote0,
+    push: normalizePushSettings(settings?.push, quote0)
   };
 }
 
@@ -1413,6 +1504,20 @@ function createExternalApiToken(): string {
   return `tw_${randomTokenFragment()}_${randomTokenFragment()}`;
 }
 
+function createQuote0NfcToken(): string {
+  return `q0_${randomTokenFragment()}_${randomTokenFragment()}`;
+}
+
+function ensureQuote0NfcToken(settings: ToWriteSettings["quote0"]): ToWriteSettings["quote0"] {
+  if (settings.nfcToken) {
+    return settings;
+  }
+  return {
+    ...settings,
+    nfcToken: createQuote0NfcToken()
+  };
+}
+
 function randomTokenFragment(): string {
   return activeWindow.crypto?.randomUUID?.().replace(/-/gu, "") ?? `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
 }
@@ -1491,6 +1596,7 @@ function formatCaptureNote(options: {
   tags: string[];
   createdAt: string;
   clientId?: string;
+  workflowStage?: Pick<WorkflowStageSettings, "id" | "title">;
 }): string {
   const frontmatter = [
     "---",
@@ -1498,6 +1604,11 @@ function formatCaptureNote(options: {
     "source: device",
     `created: ${options.createdAt}`,
     ...(options.clientId ? [`source_client: ${yamlString(options.clientId.trim().slice(0, 80))}`] : []),
+    ...(options.workflowStage ? [
+      `workflow_stage: ${yamlString(options.workflowStage.id)}`,
+      `workflow_stage_title: ${yamlString(options.workflowStage.title)}`,
+      `workflow_status: ${yamlString(options.workflowStage.id)}`
+    ] : []),
     "tags:",
     ...(options.tags.length > 0 ? options.tags.map((tag) => `  - ${yamlString(tag)}`) : ["  - capture"]),
     "---"

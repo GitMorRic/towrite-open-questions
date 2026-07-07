@@ -1,4 +1,5 @@
 import type { OpenQuestionColor, OpenQuestionLane, QuestionStatusOption } from "./types";
+import type { PushHabitRule, PushRuntimeState, PushTargetSettings, ToWritePushSettings } from "../push/types";
 
 export type ToWriteLanguage = "zh" | "en";
 
@@ -10,6 +11,24 @@ export interface ToWriteAiSettings {
   autoRun: boolean;
   maxAutoRunsPerSession: number;
   rerankLocalNotes: boolean;
+}
+
+export type ToWriteQuote0LaneScope = "" | OpenQuestionLane;
+
+export interface ToWriteQuote0Settings {
+  enabled: boolean;
+  apiBaseUrl: string;
+  apiKey: string;
+  deviceId: string;
+  taskKey: string;
+  taskAlias: string;
+  refreshSeconds: number;
+  lane: ToWriteQuote0LaneScope;
+  nfcToken: string;
+  cursor: number;
+  lastSyncedQuestionId: string;
+  lastSyncedAt: string;
+  lastError: string;
 }
 
 export interface ToWriteExternalApiSettings {
@@ -83,12 +102,15 @@ export interface ToWriteSettings {
   workflowStages: WorkflowStagesSettings;
   reminderPresets: ToWriteReminderPreset[];
   ai: ToWriteAiSettings;
+  quote0: ToWriteQuote0Settings;
+  push: ToWritePushSettings;
   writeArticleProperties: boolean;
 }
 
 export interface ToWriteSavedData {
   settings: ToWriteSettings;
   questionStates: Record<string, import("./types").StoredQuestionState>;
+  pushState?: PushRuntimeState;
 }
 
 export const DEFAULT_STATUS_OPTIONS: QuestionStatusOption[] = [
@@ -167,6 +189,101 @@ export const DEFAULT_DEVICE_PROFILES: ToWriteDeviceProfileSettings[] = [
   }
 ];
 
+export const DEFAULT_QUOTE0_SETTINGS: ToWriteQuote0Settings = {
+  enabled: false,
+  apiBaseUrl: "https://dot.mindreset.tech",
+  apiKey: "",
+  deviceId: "",
+  taskKey: "",
+  taskAlias: "ToWrite Open Questions",
+  refreshSeconds: 300,
+  lane: "",
+  nfcToken: "",
+  cursor: 0,
+  lastSyncedQuestionId: "",
+  lastSyncedAt: "",
+  lastError: ""
+};
+
+export const DEFAULT_PUSH_SETTINGS: ToWritePushSettings = {
+  enabled: false,
+  privacy: {
+    level: "local-coarse",
+    allowPreciseLocation: false,
+    shareWithAi: false
+  },
+  targets: [
+    {
+      id: "local-web",
+      name: "Local web / phone",
+      type: "local-web",
+      enabled: true,
+      profile: "mobile-eink",
+      width: 390,
+      height: 844,
+      inches: 6.1,
+      defaultPage: "home",
+      defaultLane: "",
+      refreshSeconds: 60,
+      quietHoursStart: "",
+      quietHoursEnd: "",
+      token: "",
+      capabilities: ["pull", "sse", "feedback", "input"]
+    },
+    {
+      id: "quote0",
+      name: "quote0",
+      type: "quote0",
+      enabled: false,
+      profile: "eink-bw",
+      width: 264,
+      height: 176,
+      inches: 2.7,
+      defaultPage: "cards",
+      defaultLane: "",
+      refreshSeconds: 300,
+      quietHoursStart: "",
+      quietHoursEnd: "",
+      token: "",
+      capabilities: ["push", "nfc", "text-api"]
+    }
+  ],
+  habits: [
+    {
+      id: "morning-sparks",
+      label: "Morning sparks",
+      enabled: true,
+      timeStart: "06:00",
+      timeEnd: "11:00",
+      placeLabel: "",
+      mode: "",
+      stageIds: ["raw", "sparks"],
+      lanes: ["think"],
+      statuses: [],
+      targetIds: [],
+      boost: 18,
+      limitPerDay: 12
+    },
+    {
+      id: "evening-writing",
+      label: "Evening writing",
+      enabled: true,
+      timeStart: "18:00",
+      timeEnd: "23:00",
+      placeLabel: "",
+      mode: "writing",
+      stageIds: ["processing"],
+      lanes: ["write"],
+      statuses: [],
+      targetIds: [],
+      boost: 20,
+      limitPerDay: 12
+    }
+  ],
+  habitText: "",
+  aiRerank: false
+};
+
 export const DEFAULT_REMINDER_PRESETS: ToWriteReminderPreset[] = [
   { label: "15 分钟后", value: "15m" },
   { label: "1 小时后", value: "1h" },
@@ -236,6 +353,8 @@ export const DEFAULT_SETTINGS: ToWriteSettings = {
     maxAutoRunsPerSession: 5,
     rerankLocalNotes: true
   },
+  quote0: DEFAULT_QUOTE0_SETTINGS,
+  push: DEFAULT_PUSH_SETTINGS,
   writeArticleProperties: false
 };
 
@@ -285,6 +404,195 @@ export function normalizeReminderPresets(presets?: ToWriteReminderPreset[]): ToW
   return output.length > 0 ? output : DEFAULT_REMINDER_PRESETS;
 }
 
+export function normalizeQuote0Settings(settings?: Partial<ToWriteQuote0Settings>): ToWriteQuote0Settings {
+  return {
+    ...DEFAULT_QUOTE0_SETTINGS,
+    ...(settings ?? {}),
+    enabled: settings?.enabled === true,
+    apiBaseUrl: normalizeQuote0ApiBaseUrl(settings?.apiBaseUrl),
+    apiKey: String(settings?.apiKey ?? "").trim(),
+    deviceId: normalizeQuote0ShortText(settings?.deviceId, 120),
+    taskKey: normalizeQuote0ShortText(settings?.taskKey, 120),
+    taskAlias: normalizeQuote0ShortText(settings?.taskAlias, 100) || DEFAULT_QUOTE0_SETTINGS.taskAlias,
+    refreshSeconds: clampIntegerSetting(settings?.refreshSeconds, 60, 86400, DEFAULT_QUOTE0_SETTINGS.refreshSeconds),
+    lane: settings?.lane === "think" || settings?.lane === "write" ? settings.lane : "",
+    nfcToken: normalizeQuote0ShortText(settings?.nfcToken, 160),
+    cursor: clampIntegerSetting(settings?.cursor, 0, 100000, 0),
+    lastSyncedQuestionId: normalizeQuote0ShortText(settings?.lastSyncedQuestionId, 120),
+    lastSyncedAt: normalizeQuote0ShortText(settings?.lastSyncedAt, 80),
+    lastError: normalizeQuote0ShortText(settings?.lastError, 400)
+  };
+}
+
+export function normalizePushSettings(
+  settings?: Partial<ToWritePushSettings>,
+  quote0?: ToWriteQuote0Settings
+): ToWritePushSettings {
+  const normalizedQuote0 = quote0 ?? DEFAULT_QUOTE0_SETTINGS;
+  const targets = normalizePushTargets(settings?.targets, normalizedQuote0);
+  return {
+    ...DEFAULT_PUSH_SETTINGS,
+    ...(settings ?? {}),
+    enabled: settings?.enabled === true || normalizedQuote0.enabled,
+    privacy: {
+      level: settings?.privacy?.level === "precise-location" || settings?.privacy?.level === "no-location"
+        ? settings.privacy.level
+        : "local-coarse",
+      allowPreciseLocation: settings?.privacy?.allowPreciseLocation === true,
+      shareWithAi: settings?.privacy?.shareWithAi === true
+    },
+    targets,
+    habits: normalizePushHabits(settings?.habits),
+    habitText: String(settings?.habitText ?? "").trim().slice(0, 4000),
+    aiRerank: settings?.aiRerank === true
+  };
+}
+
+function normalizePushTargets(targets: PushTargetSettings[] | undefined, quote0: ToWriteQuote0Settings): PushTargetSettings[] {
+  const source = Array.isArray(targets) && targets.length > 0
+    ? targets
+    : DEFAULT_PUSH_SETTINGS.targets;
+  const seen = new Set<string>();
+  const output: PushTargetSettings[] = [];
+
+  for (const target of source) {
+    const id = normalizePushId(target.id || target.name);
+    if (!id || seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    output.push({
+      id,
+      name: normalizePushShortText(target.name, 100) || id,
+      type: normalizePushTargetType(target.type),
+      enabled: target.enabled === true,
+      profile: normalizeDeviceProfileKind(target.profile),
+      width: clampIntegerSetting(target.width, 80, 2400, 264),
+      height: clampIntegerSetting(target.height, 80, 2400, 176),
+      inches: clampNumberSetting(target.inches, 1, 32, 2.7),
+      defaultPage: normalizeDeviceProfilePage(target.defaultPage),
+      defaultLane: target.defaultLane === "think" || target.defaultLane === "write" ? target.defaultLane : "",
+      refreshSeconds: clampIntegerSetting(target.refreshSeconds, 15, 86400, 300),
+      quietHoursStart: normalizeTime(target.quietHoursStart),
+      quietHoursEnd: normalizeTime(target.quietHoursEnd),
+      token: normalizePushShortText(target.token, 200),
+      capabilities: normalizePushStringList(target.capabilities).slice(0, 12)
+    });
+  }
+
+  const quoteTargetIndex = output.findIndex((target) => target.id === "quote0");
+  const quoteTarget: PushTargetSettings = {
+    id: "quote0",
+    name: "quote0",
+    type: "quote0",
+    enabled: quote0.enabled,
+    profile: "eink-bw",
+    width: 264,
+    height: 176,
+    inches: 2.7,
+    defaultPage: "cards",
+    defaultLane: quote0.lane,
+    refreshSeconds: quote0.refreshSeconds,
+    quietHoursStart: "",
+    quietHoursEnd: "",
+    token: quote0.nfcToken,
+    capabilities: ["push", "nfc", "text-api"]
+  };
+
+  if (quoteTargetIndex >= 0) {
+    output[quoteTargetIndex] = {
+      ...output[quoteTargetIndex],
+      type: "quote0",
+      profile: "eink-bw",
+      width: 264,
+      height: 176,
+      inches: 2.7,
+      defaultPage: "cards",
+      defaultLane: quote0.lane || output[quoteTargetIndex].defaultLane,
+      refreshSeconds: quote0.refreshSeconds || output[quoteTargetIndex].refreshSeconds,
+      token: quote0.nfcToken || output[quoteTargetIndex].token,
+      capabilities: uniquePushList([...output[quoteTargetIndex].capabilities, "push", "nfc", "text-api"]),
+      enabled: quote0.enabled || output[quoteTargetIndex].enabled
+    };
+  } else {
+    output.push(quoteTarget);
+  }
+
+  return output.length > 0 ? output : DEFAULT_PUSH_SETTINGS.targets;
+}
+
+function normalizePushHabits(habits: PushHabitRule[] | undefined): PushHabitRule[] {
+  const source = Array.isArray(habits) && habits.length > 0 ? habits : DEFAULT_PUSH_SETTINGS.habits;
+  const seen = new Set<string>();
+  const output: PushHabitRule[] = [];
+
+  for (const habit of source) {
+    const id = normalizePushId(habit.id || habit.label);
+    if (!id || seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    output.push({
+      id,
+      label: normalizePushShortText(habit.label, 100) || id,
+      enabled: habit.enabled !== false,
+      timeStart: normalizeTime(habit.timeStart),
+      timeEnd: normalizeTime(habit.timeEnd),
+      placeLabel: normalizePushShortText(habit.placeLabel, 80),
+      mode: normalizePushShortText(habit.mode, 80),
+      stageIds: normalizePushStringList(habit.stageIds).map(normalizePushId).filter(Boolean),
+      lanes: normalizePushStringList(habit.lanes).filter((item): item is OpenQuestionLane => item === "think" || item === "write"),
+      statuses: normalizePushStringList(habit.statuses) as PushHabitRule["statuses"],
+      targetIds: normalizePushStringList(habit.targetIds).map(normalizePushId).filter(Boolean),
+      boost: clampIntegerSetting(habit.boost, -100, 100, 10),
+      limitPerDay: clampIntegerSetting(habit.limitPerDay, 0, 500, 0)
+    });
+  }
+
+  return output;
+}
+
+function normalizePushTargetType(value: unknown): PushTargetSettings["type"] {
+  return value === "quote0" || value === "mobile-app" || value === "local-web" || value === "webhook" ? value : "local-web";
+}
+
+function normalizePushId(value: unknown): string {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/gu, "-")
+    .replace(/[^a-z0-9_-]/gu, "")
+    .slice(0, 80);
+}
+
+function normalizePushShortText(value: unknown, maxLength: number): string {
+  return String(value ?? "").trim().slice(0, maxLength);
+}
+
+function normalizePushStringList(value: unknown): string[] {
+  const items = Array.isArray(value) ? value : String(value ?? "").split(/[,;\n|\uFF0C\u3001\uFF1B]+/u);
+  const seen = new Set<string>();
+  const output: string[] = [];
+  for (const item of items) {
+    const text = String(item).trim();
+    if (!text || seen.has(text)) {
+      continue;
+    }
+    seen.add(text);
+    output.push(text);
+  }
+  return output;
+}
+
+function uniquePushList(values: string[]): string[] {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+}
+
+function normalizeTime(value: unknown): string {
+  const text = String(value ?? "").trim();
+  return /^([01]\d|2[0-3]):[0-5]\d$/u.test(text) ? text : "";
+}
+
 export function normalizeExternalApiBindHost(value?: string): string {
   const trimmed = value?.trim().toLowerCase() ?? "";
   if (!trimmed) {
@@ -324,6 +632,30 @@ export function normalizeExternalApiPublicBaseUrl(value?: string): string {
   } catch {
     return "";
   }
+}
+
+export function normalizeQuote0ApiBaseUrl(value?: string): string {
+  const trimmed = value?.trim().replace(/\/+$/u, "") ?? "";
+  if (!trimmed) {
+    return DEFAULT_QUOTE0_SETTINGS.apiBaseUrl;
+  }
+
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return DEFAULT_QUOTE0_SETTINGS.apiBaseUrl;
+    }
+    url.pathname = "";
+    url.search = "";
+    url.hash = "";
+    return url.toString().replace(/\/+$/u, "");
+  } catch {
+    return DEFAULT_QUOTE0_SETTINGS.apiBaseUrl;
+  }
+}
+
+function normalizeQuote0ShortText(value: unknown, maxLength: number): string {
+  return String(value ?? "").trim().slice(0, maxLength);
 }
 
 function isIpv4Address(value: string): boolean {

@@ -1,5 +1,7 @@
 import type { ArticleSummary, OpenQuestion, OpenQuestionStatus, QuestionStatusOption } from "../core/types";
 import { normalizeExternalApiBindHost, type ToWriteDeviceCaptureSettings, type ToWriteExternalApiSettings } from "../core/settings";
+import type { PushAnchorInput, PushFeedbackInput } from "../push/state";
+import type { PushFeedPayload } from "../push/types";
 import type { WorkflowIndexPayload, WorkflowSummaryPayload } from "../workflow";
 import { workflowQueryFromUrl, type WorkflowQuery } from "../workflow";
 import { buildDashboardHtml } from "./dashboard";
@@ -27,6 +29,10 @@ interface ExternalApiServerOptions {
   getWorkflowPayload(query?: WorkflowQuery): WorkflowIndexPayload;
   getWorkflowSummary(): WorkflowSummaryPayload;
   getDeviceCaptureSettings(): ToWriteDeviceCaptureSettings;
+  getRestrictedAccessToken?(): string;
+  getPushFeed?(targetId?: string): PushFeedPayload;
+  recordPushFeedback?(input: PushFeedbackInput): Promise<void>;
+  recordContextAnchor?(input: PushAnchorInput): Promise<void>;
   getStatusOptions(): QuestionStatusOption[];
   updateQuestionStatus(id: string, status: OpenQuestionStatus, note?: string, clientId?: string): Promise<OpenQuestion | undefined>;
   appendQuestionNote(id: string, text: string, clientId?: string): Promise<OpenQuestion | undefined>;
@@ -112,6 +118,7 @@ export class ToWriteExternalApiServer {
   private server?: HttpServer;
   private unsubscribe?: () => void;
   private readonly sseClients = new Set<HttpResponse>();
+  private readonly pushSseClients = new Map<HttpResponse, string | undefined>();
 
   constructor(private readonly options: ExternalApiServerOptions) {}
 
@@ -158,6 +165,10 @@ export class ToWriteExternalApiServer {
       client.end();
     }
     this.sseClients.clear();
+    for (const client of this.pushSseClients.keys()) {
+      client.end();
+    }
+    this.pushSseClients.clear();
 
     const server = this.server;
     this.server = undefined;
@@ -212,7 +223,7 @@ export class ToWriteExternalApiServer {
         return;
       }
 
-      if (!this.isAuthorized(request, url, method !== "GET")) {
+      if (!this.isAuthorized(request, url, method)) {
         throw new ExternalApiError(401, "Unauthorized.");
       }
 
@@ -285,6 +296,11 @@ export class ToWriteExternalApiServer {
       return;
     }
 
+    if (url.pathname === "/api/v1/push/feed") {
+      this.writeJson(response, 200, this.buildPushFeed(url));
+      return;
+    }
+
     if (url.pathname === "/api/v1/eink") {
       const limit = parseLimit(url.searchParams.get("limit"), 12);
       const questions = this.options.getQuestions(queryFromUrl(url));
@@ -322,6 +338,11 @@ export class ToWriteExternalApiServer {
 
     if (url.pathname === "/api/v1/events") {
       this.startSse(response);
+      return;
+    }
+
+    if (url.pathname === "/api/v1/push/events") {
+      this.startPushSse(response, url.searchParams.get("targetId")?.trim() || undefined);
       return;
     }
 
@@ -390,6 +411,51 @@ export class ToWriteExternalApiServer {
       return;
     }
 
+    if (url.pathname === "/api/v1/push/feedback") {
+      if (!this.options.recordPushFeedback) {
+        throw new ExternalApiError(404, "Push feedback is not available.");
+      }
+      const body = await readJsonBody(request);
+      const targetId = readString(body, "targetId");
+      const candidateId = readString(body, "candidateId");
+      const action = readPushFeedbackAction(body);
+      if (!targetId || !candidateId || !action) {
+        throw new ExternalApiError(400, "Missing targetId, candidateId, or action.");
+      }
+      await this.options.recordPushFeedback({
+        targetId,
+        candidateId,
+        candidateType: readPushCandidateType(body),
+        action,
+        note: readOptionalText(body, "note"),
+        clientId: readOptionalText(body, "clientId")
+      });
+      this.writeJson(response, 200, { ok: true });
+      return;
+    }
+
+    if (url.pathname === "/api/v1/context/anchors") {
+      if (!this.options.recordContextAnchor) {
+        throw new ExternalApiError(404, "Context anchors are not available.");
+      }
+      const body = await readJsonBody(request);
+      const targetId = readOptionalText(body, "targetId");
+      const source = readOptionalText(body, "source");
+      await this.options.recordContextAnchor({
+        source: source === "manual" || source === "device" || source === "system" || source === "ai" ? source : "device",
+        targetId,
+        deviceId: readOptionalText(body, "deviceId"),
+        placeLabel: readOptionalText(body, "placeLabel"),
+        mode: readOptionalText(body, "mode"),
+        activeFile: readOptionalText(body, "activeFile"),
+        networkLabel: readOptionalText(body, "networkLabel"),
+        preciseLocation: readPreciseLocation(body),
+        ttlSeconds: readPositiveInteger(body, "ttlSeconds")
+      });
+      this.writeJson(response, 200, { ok: true });
+      return;
+    }
+
     throw new ExternalApiError(404, "Not found.");
   }
 
@@ -451,10 +517,26 @@ export class ToWriteExternalApiServer {
     this.writeSse(response, "snapshot", this.currentSnapshot());
   }
 
+  private startPushSse(response: HttpResponse, targetId?: string): void {
+    response.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive"
+    });
+    this.pushSseClients.set(response, targetId);
+    response.on("close", () => {
+      this.pushSseClients.delete(response);
+    });
+    this.writeSse(response, "snapshot", this.buildPushFeedForTarget(targetId));
+  }
+
   private broadcastUpdate(): void {
     const snapshot = this.currentSnapshot();
     for (const client of this.sseClients) {
       this.writeSse(client, "update", snapshot);
+    }
+    for (const [client, targetId] of this.pushSseClients.entries()) {
+      this.writeSse(client, "update", this.buildPushFeedForTarget(targetId));
     }
   }
 
@@ -508,19 +590,50 @@ export class ToWriteExternalApiServer {
     };
   }
 
+  private buildPushFeed(url: URL): PushFeedPayload {
+    return this.buildPushFeedForTarget(url.searchParams.get("targetId")?.trim() || undefined);
+  }
+
+  private buildPushFeedForTarget(targetId?: string): PushFeedPayload {
+    if (!this.options.getPushFeed) {
+      throw new ExternalApiError(404, "Push feed is not available.");
+    }
+    return this.options.getPushFeed(targetId);
+  }
+
   private writeSse(response: HttpResponse, event: string, payload: unknown): void {
     response.write(`event: ${event}\n`);
     response.write(`data: ${JSON.stringify(payload)}\n\n`);
   }
 
-  private isAuthorized(request: HttpRequest, url: URL, isWrite: boolean): boolean {
+  private isAuthorized(request: HttpRequest, url: URL, method: string): boolean {
     const settings = this.options.getSettings();
     const token = settings.token.trim();
+    const restrictedToken = this.options.getRestrictedAccessToken?.()?.trim() ?? "";
     const authorization = headerValue(request, "authorization");
     if (authorization === `Bearer ${token}`) {
       return true;
     }
-    return !isWrite && settings.allowQueryTokenForRead && url.searchParams.get("token") === token;
+    if (method === "GET" && settings.allowQueryTokenForRead && url.searchParams.get("token") === token) {
+      return true;
+    }
+    if (!restrictedToken || !this.isRestrictedRoute(method, url.pathname)) {
+      return false;
+    }
+    if (authorization === `Bearer ${restrictedToken}`) {
+      return true;
+    }
+    return method === "GET" && url.searchParams.get("token") === restrictedToken;
+  }
+
+  private isRestrictedRoute(method: string, pathname: string): boolean {
+    if (method === "GET") {
+      return pathname === "/device/input" || pathname === "/api/v1/device-input-context";
+    }
+    if (method === "POST") {
+      return pathname === "/api/v1/captures" || /^\/api\/v1\/questions\/[^/]+\/notes$/u.test(pathname);
+    }
+    return false;
   }
 
   private writeJson(response: HttpResponse, status: number, payload: unknown): void {
@@ -636,6 +749,42 @@ function readCaptureTarget(body: Record<string, unknown>): DeviceCaptureTarget |
     };
   }
   return undefined;
+}
+
+function readPushFeedbackAction(body: Record<string, unknown>): PushFeedbackInput["action"] | undefined {
+  const action = readString(body, "action");
+  return action === "useful" || action === "skipped" || action === "later" || action === "answered" || action === "opened-no-write" || action === "opened"
+    ? action
+    : undefined;
+}
+
+function readPushCandidateType(body: Record<string, unknown>): PushFeedbackInput["candidateType"] {
+  const type = readString(body, "candidateType");
+  return type === "workflow-file" || type === "article" ? type : "question";
+}
+
+function readPreciseLocation(body: Record<string, unknown>): PushAnchorInput["preciseLocation"] {
+  const value = body.preciseLocation;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const latitude = Number(record.latitude);
+  const longitude = Number(record.longitude);
+  const accuracy = Number(record.accuracy);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    return undefined;
+  }
+  return {
+    latitude,
+    longitude,
+    accuracy: Number.isFinite(accuracy) ? accuracy : undefined
+  };
+}
+
+function readPositiveInteger(body: Record<string, unknown>, key: string): number | undefined {
+  const value = Number(body[key]);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
 }
 
 function readPatchString(body: Record<string, unknown>, key: string, maxLength: number): { present: boolean; value?: string } {

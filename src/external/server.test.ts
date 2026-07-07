@@ -106,6 +106,175 @@ describe("external server", () => {
     expect(response.statusCode).toBe(401);
     expect(JSON.parse(response.body)).toEqual({ error: "Unauthorized." });
   });
+
+  it("allows Quote0 restricted token to load input context and write notes", async () => {
+    let appended: unknown;
+    const server = makeServer({
+      getRestrictedAccessToken: () => "quote0-token",
+      appendQuestionNote: async (id, text, clientId) => {
+        appended = { id, text, clientId };
+        return question;
+      }
+    });
+
+    const contextResponse = new FakeResponse();
+    await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
+      .handleRequest(new FakeRequest("GET", "/api/v1/device-input-context?token=quote0-token&questionId=oq_one", {}, {
+        authorization: undefined
+      }), contextResponse);
+
+    expect(contextResponse.statusCode).toBe(200);
+    expect(JSON.parse(contextResponse.body).question).toMatchObject({ id: "oq_one" });
+
+    const writeResponse = new FakeResponse();
+    await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
+      .handleRequest(new FakeRequest("POST", "/api/v1/questions/oq_one/notes", {
+        text: "Answered from NFC",
+        clientId: "quote0"
+      }, { authorization: "Bearer quote0-token" }), writeResponse);
+
+    expect(writeResponse.statusCode).toBe(200);
+    expect(appended).toEqual({
+      id: "oq_one",
+      text: "Answered from NFC",
+      clientId: "quote0"
+    });
+  });
+
+  it("rejects Quote0 restricted token for full deck reads", async () => {
+    const server = makeServer({
+      getRestrictedAccessToken: () => "quote0-token"
+    });
+    const response = new FakeResponse();
+    await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
+      .handleRequest(new FakeRequest("GET", "/api/v1/deck?token=quote0-token", {}, {
+        authorization: undefined
+      }), response);
+
+    expect(response.statusCode).toBe(401);
+    expect(JSON.parse(response.body)).toEqual({ error: "Unauthorized." });
+  });
+
+  it("serves push feed with full API authorization", async () => {
+    const server = makeServer({
+      getPushFeed: (targetId) => ({
+        schemaVersion: 1,
+        generatedAt: "2026-07-07T00:00:00.000Z",
+        target: {
+          id: targetId || "local-web",
+          name: "Local web",
+          type: "local-web",
+          profile: "mobile-eink",
+          width: 390,
+          height: 844,
+          inches: 6.1,
+          capabilities: ["pull"]
+        },
+        privacy: {
+          level: "local-coarse",
+          preciseLocationIncluded: false
+        },
+        context: {
+          timeBucket: "morning",
+          placeLabel: "desk"
+        },
+        decision: {
+          candidateId: "oq_one",
+          candidateType: "question",
+          score: 42,
+          reason: "active note",
+          quiet: false
+        },
+        display: {
+          title: "Old title",
+          message: "Old body",
+          signature: "Think"
+        }
+      })
+    });
+
+    const response = new FakeResponse();
+    await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
+      .handleRequest(new FakeRequest("GET", "/api/v1/push/feed?targetId=phone", {}), response);
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toMatchObject({
+      target: { id: "phone" },
+      privacy: { preciseLocationIncluded: false },
+      decision: { candidateId: "oq_one" }
+    });
+  });
+
+  it("records push feedback and context anchors", async () => {
+    const calls: unknown[] = [];
+    const server = makeServer({
+      recordPushFeedback: async (input) => {
+        calls.push(input);
+      },
+      recordContextAnchor: async (input) => {
+        calls.push(input);
+      }
+    });
+
+    const feedbackResponse = new FakeResponse();
+    await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
+      .handleRequest(new FakeRequest("POST", "/api/v1/push/feedback", {
+        targetId: "phone",
+        candidateId: "oq_one",
+        candidateType: "question",
+        action: "opened-no-write",
+        clientId: "mobile"
+      }), feedbackResponse);
+
+    const anchorResponse = new FakeResponse();
+    await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
+      .handleRequest(new FakeRequest("POST", "/api/v1/context/anchors", {
+        targetId: "phone",
+        placeLabel: "desk",
+        mode: "writing",
+        preciseLocation: { latitude: 31.2, longitude: 121.5 }
+      }), anchorResponse);
+
+    expect(feedbackResponse.statusCode).toBe(200);
+    expect(anchorResponse.statusCode).toBe(200);
+    expect(calls).toEqual([
+      {
+        targetId: "phone",
+        candidateId: "oq_one",
+        candidateType: "question",
+        action: "opened-no-write",
+        note: undefined,
+        clientId: "mobile"
+      },
+      {
+        source: "device",
+        targetId: "phone",
+        deviceId: undefined,
+        placeLabel: "desk",
+        mode: "writing",
+        activeFile: undefined,
+        networkLabel: undefined,
+        preciseLocation: { latitude: 31.2, longitude: 121.5, accuracy: undefined },
+        ttlSeconds: undefined
+      }
+    ]);
+  });
+
+  it("rejects restricted tokens for push feed reads", async () => {
+    const server = makeServer({
+      getRestrictedAccessToken: () => "quote0-token",
+      getPushFeed: () => {
+        throw new Error("should not be called");
+      }
+    });
+    const response = new FakeResponse();
+    await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
+      .handleRequest(new FakeRequest("GET", "/api/v1/push/feed?token=quote0-token", {}, {
+        authorization: undefined
+      }), response);
+
+    expect(response.statusCode).toBe(401);
+  });
 });
 
 function makeServer(overrides: Partial<ConstructorParameters<typeof ToWriteExternalApiServer>[0]> = {}): ToWriteExternalApiServer {

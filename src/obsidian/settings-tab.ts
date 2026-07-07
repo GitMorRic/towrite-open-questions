@@ -7,6 +7,8 @@ import {
   normalizeExternalApiBindHost,
   normalizeExternalApiPublicBaseUrl,
   normalizeDeviceProfiles,
+  normalizePushSettings,
+  normalizeQuote0ApiBaseUrl,
   normalizeReminderPresets,
   type ToWriteDeviceProfileSettings,
   type ToWriteLanguage,
@@ -15,9 +17,11 @@ import {
   type WorkflowStageSettings
 } from "../core/settings";
 import { OPEN_QUESTION_COLORS, type OpenQuestionColor, type OpenQuestionLane, type QuestionStatusOption } from "../core/types";
+import type { PushHabitRule, PushTargetSettings } from "../push/types";
 import type ToWritePlugin from "../main";
+import type { Quote0Device } from "../quote0/client";
 
-type SettingsTabId = "general" | "cards" | "workflow" | "api" | "ai";
+type SettingsTabId = "general" | "cards" | "workflow" | "api" | "push" | "quote0" | "ai";
 
 type SettingCopy = {
   title: string;
@@ -71,6 +75,63 @@ type SettingCopy = {
   externalApiDashboardDesc: string;
   externalApiDevice: string;
   externalApiDeviceDesc: string;
+  push: string;
+  pushDesc: string;
+  pushEnabled: string;
+  pushEnabledDesc: string;
+  pushPrivacy: string;
+  pushPrivacyDesc: string;
+  pushPrivacyLocal: string;
+  pushPrivacyPrecise: string;
+  pushPrivacyNone: string;
+  pushPreciseLocation: string;
+  pushPreciseLocationDesc: string;
+  pushAiRerank: string;
+  pushAiRerankDesc: string;
+  pushHabitText: string;
+  pushHabitTextDesc: string;
+  pushTargets: string;
+  pushTargetsDesc: string;
+  pushHabits: string;
+  pushHabitsDesc: string;
+  pushAddTarget: string;
+  pushRemoveTarget: string;
+  pushAddHabit: string;
+  pushRemoveHabit: string;
+  pushFeedUrl: string;
+  quote0: string;
+  quote0Desc: string;
+  quote0ApiBaseUrl: string;
+  quote0ApiBaseUrlDesc: string;
+  quote0ApiKey: string;
+  quote0ApiKeyDesc: string;
+  quote0DeviceId: string;
+  quote0DeviceIdDesc: string;
+  quote0FetchDevices: string;
+  quote0NoDevices: string;
+  quote0DeviceStatus: string;
+  quote0Scope: string;
+  quote0ScopeDesc: string;
+  quote0AllCards: string;
+  quote0ThinkOnly: string;
+  quote0WriteOnly: string;
+  quote0RefreshSeconds: string;
+  quote0RefreshSecondsDesc: string;
+  quote0TaskKey: string;
+  quote0TaskKeyDesc: string;
+  quote0TaskAlias: string;
+  quote0TaskAliasDesc: string;
+  quote0NfcToken: string;
+  quote0NfcTokenDesc: string;
+  quote0NfcLink: string;
+  quote0NfcLinkDesc: string;
+  quote0SendNext: string;
+  quote0SendTest: string;
+  quote0ForceRefresh: string;
+  quote0ApplyInterval: string;
+  quote0LoopNotice: string;
+  quote0LastSync: string;
+  quote0MissingPublicBaseUrl: string;
   deviceCapture: string;
   deviceCaptureDesc: string;
   deviceCaptureInbox: string;
@@ -147,6 +208,8 @@ const COPY: Record<ToWriteLanguage, SettingCopy> = {
       "cards": "卡片与编辑器",
       "workflow": "Workflow",
       "api": "API 与设备",
+      "push": "推流",
+      "quote0": "Quote0",
       "ai": "AI"
     },
     "language": "语言",
@@ -198,6 +261,63 @@ const COPY: Record<ToWriteLanguage, SettingCopy> = {
     "externalApiDashboardDesc": "在浏览器里查看解析后的待解决问题、文章统计和原始 JSON。",
     "externalApiDevice": "手机小屏页面",
     "externalApiDeviceDesc": "复制到手机浏览器，用来模拟墨水屏/小屏设备。",
+    "push": "自动推流",
+    "pushDesc": "同一套候选、情境锚点、规则排序和反馈，服务 quote0、手机 App、局域网页面和后续设备。",
+    "pushEnabled": "启用 Push Engine",
+    "pushEnabledDesc": "开启后 Quote0 会优先使用通用推流策略；手机和自研设备可读取 /api/v1/push/feed。",
+    "pushPrivacy": "隐私边界",
+    "pushPrivacyDesc": "默认只记录时间段、手动地点标签、模式和当前笔记等粗粒度锚点。",
+    "pushPrivacyLocal": "本地粗粒度",
+    "pushPrivacyPrecise": "精确位置",
+    "pushPrivacyNone": "不采位置",
+    "pushPreciseLocation": "允许精确位置",
+    "pushPreciseLocationDesc": "只有同时选择精确位置隐私边界时才会保存坐标；默认关闭。",
+    "pushAiRerank": "允许 AI 重排",
+    "pushAiRerankDesc": "v1 仍由规则优先；开启后只允许 AI 在本地候选内微调和生成建议。",
+    "pushHabitText": "我的工作习惯",
+    "pushHabitTextDesc": "自由文本说明你的时间、地点、设备和写作偏好；AI 只能据此提出待确认规则。",
+    "pushTargets": "推流目标",
+    "pushTargetsDesc": "配置 quote0、手机 App、局域网页面或未来 webhook 的目标参数。",
+    "pushHabits": "习惯规则",
+    "pushHabitsDesc": "结构化规则：时间段、地点标签、工作模式、stage、lane、状态、设备和权重。",
+    "pushAddTarget": "添加目标",
+    "pushRemoveTarget": "删除目标",
+    "pushAddHabit": "添加规则",
+    "pushRemoveHabit": "删除规则",
+    "pushFeedUrl": "Push feed URL",
+    "quote0": "Quote0 推送",
+    "quote0Desc": "把当前 ToThink / ToWrite 卡片推送到 quote0 Text API，并把 NFC 链接指向手机写回页面。",
+    "quote0ApiBaseUrl": "Dot API Base URL",
+    "quote0ApiBaseUrlDesc": "默认使用 https://dot.mindreset.tech。一般不需要修改。",
+    "quote0ApiKey": "Dot API Key",
+    "quote0ApiKeyDesc": "保存在本地 Obsidian 插件数据里。请勿截图或提交到仓库。",
+    "quote0DeviceId": "Quote0 Device ID",
+    "quote0DeviceIdDesc": "可手动填写，也可以填入 API key 后点击获取设备自动选择。",
+    "quote0FetchDevices": "获取设备",
+    "quote0NoDevices": "没有找到 quote_0 设备。",
+    "quote0DeviceStatus": "设备状态",
+    "quote0Scope": "卡片范围",
+    "quote0ScopeDesc": "控制 quote0 轮播 ToThink、ToWrite，或全部未解决卡片。",
+    "quote0AllCards": "全部",
+    "quote0ThinkOnly": "只看 ToThink",
+    "quote0WriteOnly": "只看 ToWrite",
+    "quote0RefreshSeconds": "刷新间隔（秒）",
+    "quote0RefreshSecondsDesc": "插件定时推送下一张卡片的间隔。quote0 接电时官方最小刷新间隔为 1 分钟。",
+    "quote0TaskKey": "Text API taskKey",
+    "quote0TaskKeyDesc": "已有多个 Text API 内容时填写。留空则更新第一个 Text API 内容。",
+    "quote0TaskAlias": "Text API taskAlias",
+    "quote0TaskAliasDesc": "显示在 quote0 任务列表中的名字，用来识别 ToWrite 内容。",
+    "quote0NfcToken": "Quote0 NFC token",
+    "quote0NfcTokenDesc": "专用于 NFC 写回的受限 token，只允许打开写回页和提交内容。",
+    "quote0NfcLink": "NFC 测试链接",
+    "quote0NfcLinkDesc": "使用 External API 的手机/远程访问基地址生成。局域网模式请填电脑的局域网地址。",
+    "quote0SendNext": "发送下一条",
+    "quote0SendTest": "发送测试卡",
+    "quote0ForceRefresh": "强制刷新设备",
+    "quote0ApplyInterval": "应用设备间隔",
+    "quote0LoopNotice": "如果返回 404 或设备没有切换，请先在 Dot App/Content Studio 把 Text API 内容加入 quote0 的 Loop Content。",
+    "quote0LastSync": "最近同步",
+    "quote0MissingPublicBaseUrl": "还没有设置手机/远程访问基地址，NFC 链接暂不可用。",
     "deviceCapture": "手机输入写回",
     "deviceCaptureDesc": "允许 /device/input companion 页面把回答追加到卡片，或把独立想法写入指定 Inbox/文件夹。",
     "deviceCaptureInbox": "默认 Inbox 文件",
@@ -272,6 +392,8 @@ const COPY: Record<ToWriteLanguage, SettingCopy> = {
       "cards": "Cards & Editor",
       "workflow": "Workflow",
       "api": "API & Device",
+      "push": "Push",
+      "quote0": "Quote0",
       "ai": "AI"
     },
     "language": "Language",
@@ -323,6 +445,63 @@ const COPY: Record<ToWriteLanguage, SettingCopy> = {
     "externalApiDashboardDesc": "View parsed open questions, article statistics, and raw JSON in a browser.",
     "externalApiDevice": "Phone small-screen page",
     "externalApiDeviceDesc": "Copy to a phone browser to simulate an e-ink or small-screen device.",
+    "push": "Push automation",
+    "pushDesc": "One candidate, context, ranking, and feedback layer for quote0, mobile apps, local web, and future devices.",
+    "pushEnabled": "Enable Push Engine",
+    "pushEnabledDesc": "When enabled, Quote0 uses the shared push policy, and devices can read /api/v1/push/feed.",
+    "pushPrivacy": "Privacy boundary",
+    "pushPrivacyDesc": "Defaults to coarse local anchors such as time bucket, manual place label, mode, and active note.",
+    "pushPrivacyLocal": "Local coarse",
+    "pushPrivacyPrecise": "Precise location",
+    "pushPrivacyNone": "No location",
+    "pushPreciseLocation": "Allow precise location",
+    "pushPreciseLocationDesc": "Coordinates are saved only when this is on and the privacy boundary is precise location.",
+    "pushAiRerank": "Allow AI rerank",
+    "pushAiRerankDesc": "Rules still lead in v1. AI can only rerank local candidates and suggest rules.",
+    "pushHabitText": "My work habits",
+    "pushHabitTextDesc": "Describe your time, place, device, and writing preferences. AI suggestions must be confirmed before becoming rules.",
+    "pushTargets": "Push targets",
+    "pushTargetsDesc": "Configure quote0, mobile apps, local web pages, or future webhooks.",
+    "pushHabits": "Habit rules",
+    "pushHabitsDesc": "Structured rules for time, place label, mode, stage, lane, status, target, and boost.",
+    "pushAddTarget": "Add target",
+    "pushRemoveTarget": "Remove target",
+    "pushAddHabit": "Add rule",
+    "pushRemoveHabit": "Remove rule",
+    "pushFeedUrl": "Push feed URL",
+    "quote0": "Quote0 push",
+    "quote0Desc": "Push the current ToThink / ToWrite card to quote0 Text API, with NFC opening the phone writeback page.",
+    "quote0ApiBaseUrl": "Dot API Base URL",
+    "quote0ApiBaseUrlDesc": "Defaults to https://dot.mindreset.tech. Usually leave this unchanged.",
+    "quote0ApiKey": "Dot API key",
+    "quote0ApiKeyDesc": "Stored locally in Obsidian plugin data. Do not screenshot it or commit it.",
+    "quote0DeviceId": "Quote0 device ID",
+    "quote0DeviceIdDesc": "Fill it manually, or enter an API key and fetch devices to select one.",
+    "quote0FetchDevices": "Fetch devices",
+    "quote0NoDevices": "No quote_0 devices found.",
+    "quote0DeviceStatus": "Device status",
+    "quote0Scope": "Card scope",
+    "quote0ScopeDesc": "Choose whether quote0 rotates all open cards, ToThink only, or ToWrite only.",
+    "quote0AllCards": "All",
+    "quote0ThinkOnly": "ToThink only",
+    "quote0WriteOnly": "ToWrite only",
+    "quote0RefreshSeconds": "Refresh interval (seconds)",
+    "quote0RefreshSecondsDesc": "How often the plugin pushes the next card. Dot documents 1 minute as the powered minimum.",
+    "quote0TaskKey": "Text API taskKey",
+    "quote0TaskKeyDesc": "Use when multiple Text API contents exist. Leave empty to update the first Text API content.",
+    "quote0TaskAlias": "Text API taskAlias",
+    "quote0TaskAliasDesc": "Name shown in the quote0 task list so this ToWrite content is easy to identify.",
+    "quote0NfcToken": "Quote0 NFC token",
+    "quote0NfcTokenDesc": "Restricted token for NFC writeback. It can open the input page and submit content, not read the full deck.",
+    "quote0NfcLink": "NFC test link",
+    "quote0NfcLinkDesc": "Generated from the phone/remote base URL. For LAN mode, use this computer's LAN address.",
+    "quote0SendNext": "Send next card",
+    "quote0SendTest": "Send test card",
+    "quote0ForceRefresh": "Force device refresh",
+    "quote0ApplyInterval": "Apply device interval",
+    "quote0LoopNotice": "If the API returns 404 or the display does not switch, add the Text API content to quote0 Loop Content in Dot App/Content Studio first.",
+    "quote0LastSync": "Last sync",
+    "quote0MissingPublicBaseUrl": "Phone/remote base URL is missing, so NFC links are not available yet.",
     "deviceCapture": "Phone input writeback",
     "deviceCaptureDesc": "Allow the /device/input companion page to append answers to cards or save standalone ideas to an Inbox/folder.",
     "deviceCaptureInbox": "Default Inbox file",
@@ -440,6 +619,7 @@ const AI_PROVIDER_PRESETS = [
 export class ToWriteSettingTab extends PluginSettingTab {
   private readonly openWorkflowStageIds = new Set<string>();
   private readonly openDeviceProfileIds = new Set<string>();
+  private quote0Devices: Quote0Device[] = [];
   private activeSettingsTab: SettingsTabId = "general";
 
   constructor(app: App, private readonly plugin: ToWritePlugin) {
@@ -466,6 +646,10 @@ export class ToWriteSettingTab extends PluginSettingTab {
       this.renderWorkflowSettings(panel, copy);
     } else if (this.activeSettingsTab === "api") {
       this.renderApiDeviceSettings(panel, copy);
+    } else if (this.activeSettingsTab === "push") {
+      this.renderPushSettings(panel, copy);
+    } else if (this.activeSettingsTab === "quote0") {
+      this.renderQuote0Settings(panel, copy);
     } else {
       this.renderAiSettings(panel, copy);
     }
@@ -477,6 +661,8 @@ export class ToWriteSettingTab extends PluginSettingTab {
       { id: "cards", label: copy.tabs.cards },
       { id: "workflow", label: copy.tabs.workflow },
       { id: "api", label: copy.tabs.api },
+      { id: "push", label: copy.tabs.push },
+      { id: "quote0", label: copy.tabs.quote0 },
       { id: "ai", label: copy.tabs.ai }
     ];
     const tabBar = containerEl.createDiv({ cls: "towrite-settings-tabs" });
@@ -920,6 +1106,630 @@ export class ToWriteSettingTab extends PluginSettingTab {
     }
 
 
+  }
+
+  private renderQuote0Settings(containerEl: HTMLElement, copy: SettingCopy): void {
+    const quote0 = this.plugin.settings.quote0;
+
+    new Setting(containerEl)
+      .setName(copy.quote0)
+      .setDesc(copy.quote0Desc)
+      .addToggle((toggle) => {
+        toggle
+          .setValue(quote0.enabled)
+          .onChange(async (value) => {
+            quote0.enabled = value;
+            await this.plugin.savePluginData();
+            this.plugin.configureQuote0Sync();
+            this.refreshSettingsUi();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName(copy.quote0ApiBaseUrl)
+      .setDesc(copy.quote0ApiBaseUrlDesc)
+      .addText((text) => {
+        let draftValue = quote0.apiBaseUrl;
+        const commit = async () => {
+          const nextValue = normalizeQuote0ApiBaseUrl(draftValue);
+          quote0.apiBaseUrl = nextValue;
+          text.setValue(nextValue);
+          await this.plugin.savePluginData();
+        };
+        text
+          .setValue(quote0.apiBaseUrl)
+          .setPlaceholder("https://dot.mindreset.tech")
+          .onChange((value) => {
+            draftValue = value;
+          });
+        text.inputEl.addEventListener("blur", () => {
+          void commit();
+        });
+        text.inputEl.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") {
+            text.inputEl.blur();
+          }
+        });
+      });
+
+    new Setting(containerEl)
+      .setName(copy.quote0ApiKey)
+      .setDesc(copy.quote0ApiKeyDesc)
+      .addText((text) => {
+        text
+          .setValue(quote0.apiKey)
+          .setPlaceholder("dot_app_...")
+          .onChange(async (value) => {
+            quote0.apiKey = value.trim();
+            await this.plugin.savePluginData();
+          });
+        text.inputEl.type = "password";
+        text.inputEl.autocomplete = "off";
+      });
+
+    new Setting(containerEl)
+      .setName(copy.quote0DeviceId)
+      .setDesc(copy.quote0DeviceIdDesc)
+      .addText((text) => {
+        text
+          .setValue(quote0.deviceId)
+          .setPlaceholder("ABCD1234ABCD")
+          .onChange(async (value) => {
+            quote0.deviceId = value.trim();
+            await this.plugin.savePluginData();
+            this.plugin.configureQuote0Sync();
+          });
+      })
+      .addButton((button) => {
+        button
+          .setButtonText(copy.quote0FetchDevices)
+          .onClick(async () => {
+            try {
+              const devices = await this.plugin.listQuote0Devices();
+              this.quote0Devices = devices.filter(isQuote0Device);
+              if (this.quote0Devices.length === 1) {
+                quote0.deviceId = this.quote0Devices[0].id;
+                await this.plugin.savePluginData();
+                this.plugin.configureQuote0Sync();
+                new Notice(`Quote0 device selected: ${formatQuote0DeviceLabel(this.quote0Devices[0])}`);
+              } else if (this.quote0Devices.length === 0) {
+                new Notice(copy.quote0NoDevices);
+              } else {
+                new Notice(`Found ${this.quote0Devices.length} quote0 devices.`);
+              }
+              this.refreshSettingsUi();
+            } catch (error) {
+              new Notice(`Quote0 devices failed: ${errorMessage(error)}`);
+            }
+          });
+      })
+      .addButton((button) => {
+        button
+          .setButtonText(copy.quote0DeviceStatus)
+          .onClick(async () => {
+            try {
+              const status = await this.plugin.getQuote0DeviceStatus();
+              new Notice([
+                status.alias || status.deviceId,
+                status.status?.current,
+                status.status?.battery,
+                status.status?.wifi
+              ].filter(Boolean).join(" · ") || "Quote0 status loaded.");
+            } catch (error) {
+              new Notice(`Quote0 status failed: ${errorMessage(error)}`);
+            }
+          });
+      });
+
+    if (this.quote0Devices.length > 1) {
+      new Setting(containerEl)
+        .setName(copy.quote0DeviceId)
+        .addDropdown((dropdown) => {
+          for (const device of this.quote0Devices) {
+            dropdown.addOption(device.id, formatQuote0DeviceLabel(device));
+          }
+          dropdown
+            .setValue(quote0.deviceId)
+            .onChange(async (value) => {
+              quote0.deviceId = value;
+              await this.plugin.savePluginData();
+              this.plugin.configureQuote0Sync();
+              this.refreshSettingsUi();
+            });
+        });
+    }
+
+    new Setting(containerEl)
+      .setName(copy.quote0Scope)
+      .setDesc(copy.quote0ScopeDesc)
+      .addDropdown((dropdown) => {
+        dropdown
+          .addOption("", copy.quote0AllCards)
+          .addOption("think", copy.quote0ThinkOnly)
+          .addOption("write", copy.quote0WriteOnly)
+          .setValue(quote0.lane)
+          .onChange(async (value) => {
+            quote0.lane = value === "think" || value === "write" ? value : "";
+            quote0.cursor = 0;
+            await this.plugin.savePluginData();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName(copy.quote0RefreshSeconds)
+      .setDesc(copy.quote0RefreshSecondsDesc)
+      .addText((text) => {
+        text
+          .setValue(String(quote0.refreshSeconds))
+          .setPlaceholder("300")
+          .onChange(async (value) => {
+            quote0.refreshSeconds = clampInteger(value, 60, 86400, 300);
+            await this.plugin.savePluginData();
+            this.plugin.configureQuote0Sync();
+          });
+      })
+      .addButton((button) => {
+        button
+          .setButtonText(copy.quote0ApplyInterval)
+          .onClick(async () => {
+            try {
+              await this.plugin.updateQuote0DeviceRefreshInterval();
+              new Notice("Quote0 device interval updated.");
+            } catch (error) {
+              new Notice(`Quote0 interval failed: ${errorMessage(error)}`);
+            }
+          });
+      });
+
+    new Setting(containerEl)
+      .setName(copy.quote0TaskKey)
+      .setDesc(copy.quote0TaskKeyDesc)
+      .addText((text) => {
+        text
+          .setValue(quote0.taskKey)
+          .setPlaceholder("text_task_1")
+          .onChange(async (value) => {
+            quote0.taskKey = value.trim();
+            await this.plugin.savePluginData();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName(copy.quote0TaskAlias)
+      .setDesc(copy.quote0TaskAliasDesc)
+      .addText((text) => {
+        text
+          .setValue(quote0.taskAlias)
+          .setPlaceholder("ToWrite Open Questions")
+          .onChange(async (value) => {
+            quote0.taskAlias = value.trim() || "ToWrite Open Questions";
+            await this.plugin.savePluginData();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName(copy.quote0NfcToken)
+      .setDesc(copy.quote0NfcTokenDesc)
+      .addText((text) => {
+        text.setValue(quote0.nfcToken);
+        text.inputEl.readOnly = true;
+        text.inputEl.addClass("towrite-readonly-input");
+      })
+      .addButton((button) => {
+        button
+          .setIcon("copy")
+          .setTooltip(copy.copy)
+          .onClick(() => {
+            void copyToClipboard(quote0.nfcToken, copy.copied);
+          });
+      })
+      .addButton((button) => {
+        button
+          .setButtonText(copy.regenerateToken)
+          .onClick(async () => {
+            this.plugin.regenerateQuote0NfcToken();
+            await this.plugin.savePluginData();
+            this.refreshSettingsUi();
+          });
+      });
+
+    const nfcLink = buildQuote0NfcPreviewUrl(this.plugin.settings);
+    new Setting(containerEl)
+      .setName(copy.quote0NfcLink)
+      .setDesc(nfcLink ? copy.quote0NfcLinkDesc : copy.quote0MissingPublicBaseUrl)
+      .addText((text) => {
+        text.setValue(nfcLink || "");
+        text.inputEl.readOnly = true;
+        text.inputEl.addClass("towrite-readonly-input");
+      })
+      .addButton((button) => {
+        button
+          .setIcon("copy")
+          .setTooltip(copy.copy)
+          .setDisabled(!nfcLink)
+          .onClick(() => {
+            if (nfcLink) {
+              void copyToClipboard(nfcLink, copy.copied);
+            }
+          });
+      });
+
+    new Setting(containerEl)
+      .setName(copy.quote0LastSync)
+      .setDesc(formatQuote0LastSync(quote0));
+
+    new Setting(containerEl)
+      .setName(copy.quote0SendNext)
+      .setDesc(copy.quote0LoopNotice)
+      .addButton((button) => {
+        button
+          .setButtonText(copy.quote0SendNext)
+          .onClick(async () => {
+            try {
+              const result = await this.plugin.syncQuote0Next();
+              new Notice(result.questionId ? `Quote0 sent ${result.questionId}.` : result.message);
+              this.refreshSettingsUi();
+            } catch (error) {
+              new Notice(`Quote0 sync failed: ${errorMessage(error)}`);
+              this.refreshSettingsUi();
+            }
+          });
+      })
+      .addButton((button) => {
+        button
+          .setButtonText(copy.quote0SendTest)
+          .onClick(async () => {
+            try {
+              const message = await this.plugin.sendQuote0TestCard();
+              new Notice(message);
+              this.refreshSettingsUi();
+            } catch (error) {
+              new Notice(`Quote0 test failed: ${errorMessage(error)}`);
+              this.refreshSettingsUi();
+            }
+          });
+      })
+      .addButton((button) => {
+        button
+          .setButtonText(copy.quote0ForceRefresh)
+          .onClick(async () => {
+            try {
+              const message = await this.plugin.switchQuote0ToNextContent();
+              new Notice(message);
+              this.refreshSettingsUi();
+            } catch (error) {
+              new Notice(`Quote0 refresh failed: ${errorMessage(error)}`);
+              this.refreshSettingsUi();
+            }
+          });
+      });
+  }
+
+  private renderPushSettings(containerEl: HTMLElement, copy: SettingCopy): void {
+    const push = this.plugin.settings.push;
+
+    new Setting(containerEl)
+      .setName(copy.push)
+      .setDesc(copy.pushDesc)
+      .addToggle((toggle) => {
+        toggle
+          .setValue(push.enabled)
+          .onChange(async (value) => {
+            push.enabled = value;
+            await this.savePushSettings(true);
+            this.plugin.configureQuote0Sync();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName(copy.pushPrivacy)
+      .setDesc(copy.pushPrivacyDesc)
+      .addDropdown((dropdown) => {
+        dropdown
+          .addOption("local-coarse", copy.pushPrivacyLocal)
+          .addOption("precise-location", copy.pushPrivacyPrecise)
+          .addOption("no-location", copy.pushPrivacyNone)
+          .setValue(push.privacy.level)
+          .onChange(async (value) => {
+            push.privacy.level = value === "precise-location" || value === "no-location" ? value : "local-coarse";
+            if (push.privacy.level !== "precise-location") {
+              push.privacy.allowPreciseLocation = false;
+            }
+            await this.savePushSettings(true);
+          });
+      });
+
+    new Setting(containerEl)
+      .setName(copy.pushPreciseLocation)
+      .setDesc(copy.pushPreciseLocationDesc)
+      .addToggle((toggle) => {
+        toggle
+          .setValue(push.privacy.allowPreciseLocation)
+          .onChange(async (value) => {
+            push.privacy.allowPreciseLocation = value && push.privacy.level === "precise-location";
+            await this.savePushSettings(true);
+          });
+      });
+
+    new Setting(containerEl)
+      .setName(copy.pushAiRerank)
+      .setDesc(copy.pushAiRerankDesc)
+      .addToggle((toggle) => {
+        toggle
+          .setValue(push.aiRerank)
+          .onChange(async (value) => {
+            push.aiRerank = value;
+            await this.savePushSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName(copy.pushHabitText)
+      .setDesc(copy.pushHabitTextDesc)
+      .addTextArea((text) => {
+        text
+          .setValue(push.habitText)
+          .setPlaceholder("Morning: sparks at desk. Evening: processing write cards. Phone: quick capture.")
+          .onChange(async (value) => {
+            push.habitText = value.trim().slice(0, 4000);
+            await this.savePushSettings();
+          });
+        text.inputEl.rows = 4;
+      });
+
+    new Setting(containerEl)
+      .setName(copy.pushTargets)
+      .setDesc(copy.pushTargetsDesc)
+      .setHeading();
+    this.renderPushTargetEditor(containerEl, copy);
+
+    new Setting(containerEl)
+      .setName(copy.pushHabits)
+      .setDesc(copy.pushHabitsDesc)
+      .setHeading();
+    this.renderPushHabitEditor(containerEl, copy);
+  }
+
+  private renderPushTargetEditor(containerEl: HTMLElement, copy: SettingCopy): void {
+    const targets = this.plugin.settings.push.targets;
+    const list = containerEl.createDiv({ cls: "towrite-workflow-stage-editor" });
+
+    for (const [index, target] of targets.entries()) {
+      const card = list.createEl("details", { cls: "towrite-workflow-stage-card towrite-color-slate" });
+      card.open = index < 2;
+      const header = card.createEl("summary", { cls: "towrite-workflow-stage-header" });
+      const title = header.createDiv({ cls: "towrite-workflow-stage-title" });
+      title.createEl("strong", { text: `${target.name || target.id} (${target.type})` });
+      title.createSpan({ cls: "towrite-workflow-stage-meta", text: `${target.profile} · ${target.refreshSeconds}s · ${target.enabled ? "enabled" : "off"}` });
+      const actions = header.createDiv({ cls: "towrite-workflow-stage-actions" });
+      const remove = createIconButton(actions, "trash-2", copy.pushRemoveTarget);
+      remove.disabled = target.id === "quote0";
+      remove.addEventListener("click", (event) => {
+        event.stopPropagation();
+        void this.removePushTarget(index);
+      });
+
+      const body = card.createDiv({ cls: "towrite-workflow-stage-body" });
+      new Setting(body)
+        .setName("Enabled")
+        .addToggle((toggle) => {
+          toggle.setValue(target.enabled).onChange(async (value) => {
+            await this.patchPushTarget(index, { enabled: value }, true);
+          });
+        });
+      new Setting(body)
+        .setName("Name")
+        .addText((text) => {
+          text.setValue(target.name).onChange(async (value) => {
+            await this.patchPushTarget(index, { name: value.trim() || target.id });
+          });
+        });
+      new Setting(body)
+        .setName("Target id")
+        .addText((text) => {
+          text.setValue(target.id).setPlaceholder("desk-phone").onChange(async (value) => {
+            await this.patchPushTarget(index, { id: normalizePushEditorId(value) }, true);
+          });
+          text.inputEl.disabled = target.id === "quote0";
+        });
+      new Setting(body)
+        .setName("Type")
+        .addDropdown((dropdown) => {
+          dropdown
+            .addOption("local-web", "local-web")
+            .addOption("mobile-app", "mobile-app")
+            .addOption("quote0", "quote0")
+            .addOption("webhook", "webhook")
+            .setValue(target.type)
+            .onChange(async (value) => {
+              await this.patchPushTarget(index, { type: normalizePushTargetType(value) }, true);
+            });
+        });
+      new Setting(body)
+        .setName("Profile")
+        .addDropdown((dropdown) => {
+          dropdown
+            .addOption("mobile-eink", "mobile-eink")
+            .addOption("eink-bw", "eink-bw")
+            .addOption("desktop-card", "desktop-card")
+            .setValue(target.profile)
+            .onChange(async (value) => {
+              await this.patchPushTarget(index, { profile: value === "mobile-eink" || value === "desktop-card" ? value : "eink-bw" }, true);
+            });
+        });
+      new Setting(body)
+        .setName("Default page")
+        .addDropdown((dropdown) => {
+          dropdown
+            .addOption("home", "home")
+            .addOption("cards", "cards")
+            .addOption("workflow", "workflow")
+            .addOption("articles", "articles")
+            .setValue(target.defaultPage)
+            .onChange(async (value) => {
+              await this.patchPushTarget(index, { defaultPage: value === "cards" || value === "workflow" || value === "articles" ? value : "home" }, true);
+            });
+        });
+      new Setting(body)
+        .setName("Default lane")
+        .addDropdown((dropdown) => {
+          dropdown
+            .addOption("", "all")
+            .addOption("think", "think")
+            .addOption("write", "write")
+            .setValue(target.defaultLane)
+            .onChange(async (value) => {
+              await this.patchPushTarget(index, { defaultLane: value === "think" || value === "write" ? value : "" }, true);
+            });
+        });
+      new Setting(body)
+        .setName("Refresh seconds")
+        .addText((text) => {
+          text.setValue(String(target.refreshSeconds)).onChange(async (value) => {
+            await this.patchPushTarget(index, { refreshSeconds: clampInteger(value, 15, 86400, 300) });
+          });
+        });
+      new Setting(body)
+        .setName("Quiet hours")
+        .setDesc("Format HH:mm. Leave empty to disable.")
+        .addText((text) => {
+          text.setValue(target.quietHoursStart).setPlaceholder("23:00").onChange(async (value) => {
+            await this.patchPushTarget(index, { quietHoursStart: normalizeTimeInput(value) });
+          });
+        })
+        .addText((text) => {
+          text.setValue(target.quietHoursEnd).setPlaceholder("07:00").onChange(async (value) => {
+            await this.patchPushTarget(index, { quietHoursEnd: normalizeTimeInput(value) });
+          });
+        });
+      new Setting(body)
+        .setName("Capabilities")
+        .addTextArea((text) => {
+          text.setValue(target.capabilities.join("\n")).onChange(async (value) => {
+            await this.patchPushTarget(index, { capabilities: splitWorkflowList(value) });
+          });
+          text.inputEl.rows = 3;
+        });
+      const feedUrl = buildPushFeedUrl(this.plugin.settings, target);
+      new Setting(body)
+        .setName(copy.pushFeedUrl)
+        .addText((text) => {
+          text.setValue(feedUrl);
+          text.inputEl.readOnly = true;
+          text.inputEl.addClass("towrite-readonly-input");
+        })
+        .addButton((button) => {
+          button.setIcon("copy").setTooltip(copy.copy).onClick(() => {
+            void copyToClipboard(feedUrl, copy.copied);
+          });
+        });
+    }
+
+    const addButton = containerEl.createEl("button", { text: copy.pushAddTarget, attr: { type: "button" } });
+    addButton.addEventListener("click", () => {
+      const id = nextPushTargetId(targets);
+      void this.savePushTargets([
+        ...targets,
+        {
+          id,
+          name: `Target ${targets.length + 1}`,
+          type: "local-web",
+          enabled: true,
+          profile: "mobile-eink",
+          width: 390,
+          height: 844,
+          inches: 6.1,
+          defaultPage: "home",
+          defaultLane: "",
+          refreshSeconds: 60,
+          quietHoursStart: "",
+          quietHoursEnd: "",
+          token: "",
+          capabilities: ["pull", "sse", "feedback", "input"]
+        }
+      ], true);
+    });
+  }
+
+  private renderPushHabitEditor(containerEl: HTMLElement, copy: SettingCopy): void {
+    const habits = this.plugin.settings.push.habits;
+    const list = containerEl.createDiv({ cls: "towrite-workflow-stage-editor" });
+
+    for (const [index, habit] of habits.entries()) {
+      const card = list.createEl("details", { cls: "towrite-workflow-stage-card towrite-color-mint" });
+      card.open = index < 2;
+      const header = card.createEl("summary", { cls: "towrite-workflow-stage-header" });
+      const title = header.createDiv({ cls: "towrite-workflow-stage-title" });
+      title.createEl("strong", { text: habit.label || habit.id });
+      title.createSpan({ cls: "towrite-workflow-stage-meta", text: `${habit.timeStart || "*"}-${habit.timeEnd || "*"} · boost ${habit.boost}` });
+      const actions = header.createDiv({ cls: "towrite-workflow-stage-actions" });
+      const remove = createIconButton(actions, "trash-2", copy.pushRemoveHabit);
+      remove.addEventListener("click", (event) => {
+        event.stopPropagation();
+        void this.removePushHabit(index);
+      });
+
+      const body = card.createDiv({ cls: "towrite-workflow-stage-body" });
+      new Setting(body).setName("Enabled").addToggle((toggle) => {
+        toggle.setValue(habit.enabled).onChange(async (value) => this.patchPushHabit(index, { enabled: value }, true));
+      });
+      new Setting(body).setName("Label").addText((text) => {
+        text.setValue(habit.label).onChange(async (value) => this.patchPushHabit(index, { label: value.trim() || habit.id }));
+      });
+      new Setting(body).setName("Rule id").addText((text) => {
+        text.setValue(habit.id).onChange(async (value) => this.patchPushHabit(index, { id: normalizePushEditorId(value) }, true));
+      });
+      new Setting(body).setName("Time range").setDesc("Format HH:mm. Leave empty for all day.").addText((text) => {
+        text.setValue(habit.timeStart).setPlaceholder("06:00").onChange(async (value) => this.patchPushHabit(index, { timeStart: normalizeTimeInput(value) }));
+      }).addText((text) => {
+        text.setValue(habit.timeEnd).setPlaceholder("11:00").onChange(async (value) => this.patchPushHabit(index, { timeEnd: normalizeTimeInput(value) }));
+      });
+      new Setting(body).setName("Place / mode").addText((text) => {
+        text.setValue(habit.placeLabel).setPlaceholder("desk").onChange(async (value) => this.patchPushHabit(index, { placeLabel: value.trim() }));
+      }).addText((text) => {
+        text.setValue(habit.mode).setPlaceholder("writing").onChange(async (value) => this.patchPushHabit(index, { mode: value.trim() }));
+      });
+      new Setting(body).setName("Stage ids").addTextArea((text) => {
+        text.setValue(habit.stageIds.join("\n")).setPlaceholder("raw\nsparks").onChange(async (value) => this.patchPushHabit(index, { stageIds: splitWorkflowList(value) }));
+        text.inputEl.rows = 3;
+      });
+      new Setting(body).setName("Lanes").addText((text) => {
+        text.setValue(habit.lanes.join(", ")).setPlaceholder("think, write").onChange(async (value) => this.patchPushHabit(index, { lanes: parseLaneList(value) }));
+      });
+      new Setting(body).setName("Statuses").addText((text) => {
+        text.setValue(habit.statuses.join(", ")).setPlaceholder("open, blocked").onChange(async (value) => this.patchPushHabit(index, { statuses: splitWorkflowList(value) }));
+      });
+      new Setting(body).setName("Target ids").addTextArea((text) => {
+        text.setValue(habit.targetIds.join("\n")).setPlaceholder("quote0\nlocal-web").onChange(async (value) => this.patchPushHabit(index, { targetIds: splitWorkflowList(value).map(normalizePushEditorId) }));
+        text.inputEl.rows = 3;
+      });
+      new Setting(body).setName("Boost").addText((text) => {
+        text.setValue(String(habit.boost)).onChange(async (value) => this.patchPushHabit(index, { boost: clampInteger(value, -100, 100, 10) }));
+      });
+    }
+
+    const addButton = containerEl.createEl("button", { text: copy.pushAddHabit, attr: { type: "button" } });
+    addButton.addEventListener("click", () => {
+      const id = nextPushHabitId(habits);
+      void this.savePushHabits([
+        ...habits,
+        {
+          id,
+          label: `Rule ${habits.length + 1}`,
+          enabled: true,
+          timeStart: "",
+          timeEnd: "",
+          placeLabel: "",
+          mode: "",
+          stageIds: [],
+          lanes: [],
+          statuses: [],
+          targetIds: [],
+          boost: 10,
+          limitPerDay: 0
+        }
+      ], true);
+    });
   }
 
   private renderDeviceProfiles(containerEl: HTMLElement, copy: SettingCopy): void {
@@ -1615,6 +2425,60 @@ export class ToWriteSettingTab extends PluginSettingTab {
     }
   }
 
+  private async savePushSettings(redisplay = false): Promise<void> {
+    this.plugin.settings.push = normalizePushSettings(this.plugin.settings.push, this.plugin.settings.quote0);
+    await this.plugin.savePluginData();
+    if (redisplay) {
+      this.refreshSettingsUi();
+    }
+  }
+
+  private async patchPushTarget(index: number, patch: Partial<PushTargetSettings>, redisplay = false): Promise<void> {
+    const targets = [...this.plugin.settings.push.targets];
+    const current = targets[index];
+    if (!current) {
+      return;
+    }
+    targets[index] = { ...current, ...patch };
+    await this.savePushTargets(targets, redisplay);
+  }
+
+  private async savePushTargets(targets: PushTargetSettings[], redisplay = false): Promise<void> {
+    this.plugin.settings.push.targets = targets;
+    await this.savePushSettings(redisplay);
+    this.plugin.configureQuote0Sync();
+  }
+
+  private async removePushTarget(index: number): Promise<void> {
+    const targets = [...this.plugin.settings.push.targets];
+    if (targets[index]?.id === "quote0") {
+      return;
+    }
+    targets.splice(index, 1);
+    await this.savePushTargets(targets, true);
+  }
+
+  private async patchPushHabit(index: number, patch: Partial<PushHabitRule>, redisplay = false): Promise<void> {
+    const habits = [...this.plugin.settings.push.habits];
+    const current = habits[index];
+    if (!current) {
+      return;
+    }
+    habits[index] = { ...current, ...patch };
+    await this.savePushHabits(habits, redisplay);
+  }
+
+  private async savePushHabits(habits: PushHabitRule[], redisplay = false): Promise<void> {
+    this.plugin.settings.push.habits = habits;
+    await this.savePushSettings(redisplay);
+  }
+
+  private async removePushHabit(index: number): Promise<void> {
+    const habits = [...this.plugin.settings.push.habits];
+    habits.splice(index, 1);
+    await this.savePushHabits(habits, true);
+  }
+
   private async patchWorkflowStage(index: number, patch: Partial<WorkflowStageSettings>, redisplay = false): Promise<void> {
     const stages = [...this.plugin.settings.workflowStages.stages];
     const current = stages[index];
@@ -1633,6 +2497,95 @@ export class ToWriteSettingTab extends PluginSettingTab {
       this.refreshSettingsUi();
     }
   }
+}
+
+function isQuote0Device(device: Quote0Device): boolean {
+  return device.series === "quote" && device.model === "quote_0";
+}
+
+function buildPushFeedUrl(settings: ToWriteSettings, target: PushTargetSettings): string {
+  const baseUrl = settings.externalApi.publicBaseUrl || buildLocalExternalApiBaseUrl(settings);
+  const params = new URLSearchParams();
+  params.set("token", settings.externalApi.token || "TOKEN");
+  params.set("targetId", target.id);
+  return `${baseUrl}/api/v1/push/feed?${params.toString()}`;
+}
+
+function normalizePushEditorId(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/gu, "-")
+    .replace(/[^a-z0-9_-]/gu, "")
+    .slice(0, 80);
+}
+
+function normalizePushTargetType(value: string): PushTargetSettings["type"] {
+  return value === "quote0" || value === "mobile-app" || value === "webhook" ? value : "local-web";
+}
+
+function normalizeTimeInput(value: string): string {
+  const text = value.trim();
+  return /^([01]\d|2[0-3]):[0-5]\d$/u.test(text) ? text : "";
+}
+
+function parseLaneList(value: string): OpenQuestionLane[] {
+  return splitWorkflowList(value).filter((lane): lane is OpenQuestionLane => lane === "think" || lane === "write");
+}
+
+function nextPushTargetId(targets: PushTargetSettings[]): string {
+  const ids = new Set(targets.map((target) => target.id));
+  let index = targets.length + 1;
+  while (ids.has(`target-${index}`)) {
+    index += 1;
+  }
+  return `target-${index}`;
+}
+
+function nextPushHabitId(habits: PushHabitRule[]): string {
+  const ids = new Set(habits.map((habit) => habit.id));
+  let index = habits.length + 1;
+  while (ids.has(`habit-${index}`)) {
+    index += 1;
+  }
+  return `habit-${index}`;
+}
+
+function formatQuote0DeviceLabel(device: Quote0Device): string {
+  return [
+    device.alias || device.id,
+    device.location,
+    `edition ${device.edition}`,
+    device.id
+  ].filter(Boolean).join(" · ");
+}
+
+function buildQuote0NfcPreviewUrl(settings: ToWriteSettings): string {
+  const baseUrl = settings.externalApi.publicBaseUrl.trim().replace(/\/+$/u, "");
+  const token = settings.quote0.nfcToken.trim();
+  if (!baseUrl || !token) {
+    return "";
+  }
+  const params = new URLSearchParams();
+  params.set("token", token);
+  return `${baseUrl}/device/input?${params.toString()}`;
+}
+
+function formatQuote0LastSync(settings: ToWriteSettings["quote0"]): string {
+  if (settings.lastError) {
+    return `Error: ${settings.lastError}`;
+  }
+  if (!settings.lastSyncedAt) {
+    return "Not synced yet.";
+  }
+  return [
+    settings.lastSyncedAt,
+    settings.lastSyncedQuestionId ? `question ${settings.lastSyncedQuestionId}` : "test card"
+  ].join(" · ");
+}
+
+function errorMessage(error: unknown): string {
+  return (error instanceof Error ? error.message : String(error)).slice(0, 400);
 }
 
 function buildExternalApiExampleUrl(settings: ToWriteSettings): string {
