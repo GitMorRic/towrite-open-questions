@@ -70,6 +70,39 @@ describe("PushPolicyEngine", () => {
     expect(decision.candidate?.id).toBe("oq_other");
     expect(decision.reason).not.toContain("recently sent");
   });
+
+  it("lets due reminders interrupt a home target", () => {
+    const decision = new PushPolicyEngine().select({
+      candidates: [homeCandidate, candidates[0]],
+      push,
+      target: { ...target, defaultPage: "home" },
+      events: [],
+      now: new Date("2026-07-07T20:00:00")
+    });
+
+    expect(decision.candidate?.id).toBe("oq_due");
+    expect(decision.reason).toContain("reminder due");
+  });
+
+  it("does not cooldown the home summary into an empty feed", () => {
+    const decision = new PushPolicyEngine().select({
+      candidates: [homeCandidate],
+      push,
+      target: { ...target, defaultPage: "home" },
+      events: [{
+        id: "sent-home",
+        targetId: "quote0",
+        candidateId: "home:2026-07-07",
+        candidateType: "home-summary",
+        decisionReason: "home summary target",
+        score: 5,
+        sentAt: "2026-07-07T19:55:00.000Z"
+      }],
+      now: new Date("2026-07-07T20:00:00")
+    });
+
+    expect(decision.candidate?.id).toBe("home:2026-07-07");
+  });
 });
 
 const target: PushTargetSettings = {
@@ -142,3 +175,15 @@ const candidates: PushCandidate[] = [
     updatedAt: "2026-07-07T19:30:00.000Z"
   }
 ];
+
+const homeCandidate: PushCandidate = {
+  id: "home:2026-07-07",
+  type: "home-summary",
+  title: "ToWrite Overview",
+  body: "2 open · 1 articles · 1 reminders due",
+  tags: [],
+  metrics: [
+    { label: "? ToThink", value: 1 },
+    { label: "✎ ToWrite", value: 1 }
+  ]
+};

@@ -17,18 +17,33 @@ describe("PushCandidateSource", () => {
     });
 
     expect(candidates.map((candidate) => candidate.id)).toEqual([
+      "home:2026-07-07",
       "oq_due",
       "workflow:MindFlow/01-Sparks/spark.md",
       "article:MindFlow/01-Sparks/spark.md"
     ]);
     expect(candidates[0]).toMatchObject({
+      type: "home-summary",
+      metrics: expect.arrayContaining([
+        { label: "? ToThink", value: 1 },
+        { label: "Articles", value: 1 }
+      ])
+    });
+    expect(candidates[1]).toMatchObject({
       type: "question",
       workflowStageId: "sparks",
       workflowStageTitle: "Sparks",
       reminderDue: true,
       nextAction: "Draft one concrete example"
     });
-    expect(candidates[0].answerUrl).toContain("/device/input?");
+    expect(candidates[1].answerUrl).toContain("/device/input?");
+    expect(candidates[3]).toMatchObject({
+      type: "article",
+      workflowStageTitle: "Sparks",
+      stale: true,
+      ageDays: 3,
+      articleOpen: 1
+    });
   });
 });
 
@@ -123,4 +138,3 @@ const workflow: WorkflowIndexPayload = {
     }
   ]
 };
-

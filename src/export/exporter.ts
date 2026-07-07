@@ -8,6 +8,7 @@ import type {
   OpenQuestion
 } from "../core/types";
 import type { ToWriteSettings } from "../core/settings";
+import { enrichArticleSummariesWithWorkflow } from "../core/articles";
 import type { WorkflowIndexPayload } from "../workflow";
 
 export class QuestionExporter {
@@ -26,7 +27,8 @@ export class QuestionExporter {
     const vaultName = this.app.vault.getName();
     const generatedAt = new Date().toISOString();
     const questions = this.store.getAllQuestions();
-    const articles = this.store.getArticleSummaries();
+    const workflowPayload = this.getWorkflowPayload();
+    const articles = enrichArticleSummariesWithWorkflow(this.store.getArticleSummaries(), workflowPayload, generatedAt);
 
     const indexPayload: ExportIndexPayload = {
       schemaVersion: 2,
@@ -43,8 +45,6 @@ export class QuestionExporter {
     };
 
     const einkPayload = buildEinkPayload(generatedAt, questions, articles, vaultName);
-    const workflowPayload = this.getWorkflowPayload();
-
     await this.app.vault.adapter.write(`${directory}/index.json`, JSON.stringify(indexPayload, null, 2));
     await this.app.vault.adapter.write(`${directory}/articles.json`, JSON.stringify(articlesPayload, null, 2));
     await this.app.vault.adapter.write(`${directory}/eink-compact.json`, JSON.stringify(einkPayload, null, 2));

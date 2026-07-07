@@ -159,6 +159,14 @@ export interface OpenQuestionQuery {
 export interface ArticleSummary {
   filePath: string;
   title: string;
+  createdAt?: string;
+  updatedAt?: string;
+  ageDays?: number;
+  oldestOpenAgeDays?: number;
+  statusLabel?: string;
+  stageId?: string;
+  stageTitle?: string;
+  stale?: boolean;
   open: number;
   candidate: number;
   resolved: number;

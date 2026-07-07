@@ -1,4 +1,5 @@
 import type { ArticleSummary, OpenQuestion, OpenQuestionLane, OpenQuestionStatus } from "../core/types";
+import { enrichArticleSummariesWithWorkflow } from "../core/articles";
 import { stripQuestionRuleSyntax } from "../core/rule-text";
 import type { WorkflowFileSummary, WorkflowIndexPayload, WorkflowStageSummary } from "../workflow";
 import { buildObsidianUri } from "./payloads";
@@ -207,6 +208,14 @@ export interface DeviceArticleItem {
   type: "article";
   filePath: string;
   title: string;
+  createdAt?: string;
+  updatedAt?: string;
+  ageDays?: number;
+  oldestOpenAgeDays?: number;
+  statusLabel?: string;
+  stageId?: string;
+  stageTitle?: string;
+  stale?: boolean;
   open: number;
   candidate: number;
   resolved: number;
@@ -397,12 +406,13 @@ export function buildDeviceFeedPayload(
   const offset = parseCursor(cursor);
   const workQuestions = questions.filter((question) => isWorkStatus(question.status));
   const nowMs = Date.parse(generatedAt);
-  const summary = buildSummary(workQuestions, questions, articles, workflowPayload, Number.isFinite(nowMs) ? nowMs : Date.now());
+  const enrichedArticles = enrichArticleSummariesWithWorkflow(articles, workflowPayload, generatedAt);
+  const summary = buildSummary(workQuestions, questions, enrichedArticles, workflowPayload, Number.isFinite(nowMs) ? nowMs : Date.now());
   const workflow = buildWorkflowSummary(workflowPayload, spec);
   const pageData = buildScreenForPage({
     vaultName,
     workQuestions,
-    articles,
+    articles: enrichedArticles,
     workflowPayload,
     page,
     offset,
@@ -751,6 +761,14 @@ function toDeviceArticle(vaultName: string, article: ArticleSummary, spec: Profi
     type: "article",
     filePath: article.filePath,
     title: truncateText(article.title || article.filePath, spec.titleLength),
+    createdAt: article.createdAt,
+    updatedAt: article.updatedAt,
+    ageDays: article.ageDays,
+    oldestOpenAgeDays: article.oldestOpenAgeDays,
+    statusLabel: article.statusLabel,
+    stageId: article.stageId,
+    stageTitle: article.stageTitle ? truncateText(article.stageTitle, spec.titleLength) : undefined,
+    stale: article.stale,
     open: article.open,
     candidate: article.candidate,
     resolved: article.resolved,

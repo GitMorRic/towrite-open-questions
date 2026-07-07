@@ -46,6 +46,37 @@ export interface Quote0TextStyle {
   fontWeight?: number;
 }
 
+export interface Quote0ImagePayload {
+  refreshNow?: boolean;
+  image: string;
+  link?: string;
+  border?: 0 | 1;
+  ditherType?: "NONE" | "DIFFUSION" | "ORDERED";
+  ditherKernel?: "THRESHOLD" | "ATKINSON" | "BURKES" | "FLOYD_STEINBERG" | "SIERRA2" | "STUCKI" | "JARVIS_JUDICE_NINKE" | "DIFFUSION_ROW" | "DIFFUSION_COLUMN" | "DIFFUSION_2D";
+  taskKey?: string;
+  taskAlias?: string | number | null;
+}
+
+export interface Quote0CanvasPayload {
+  refreshNow?: boolean;
+  taskAlias?: string | number | null;
+  data: Record<string, unknown>;
+  windowData: {
+    default: Quote0CanvasElement[];
+  };
+  layoutFull?: {
+    tw?: string;
+    style?: Record<string, unknown>;
+  };
+  link?: string;
+  border?: 0 | 1;
+}
+
+export interface Quote0CanvasElement {
+  type: "div" | "span" | "img";
+  props: Record<string, unknown>;
+}
+
 export interface Quote0DeviceSettingsPatch {
   alias?: string | null;
   location?: string | null;
@@ -75,6 +106,8 @@ export interface Quote0ClientLike {
   listDevices(): Promise<Quote0Device[]>;
   getDeviceStatus(deviceId: string): Promise<Quote0DeviceStatus>;
   sendTextContent(deviceId: string, payload: Quote0TextPayload): Promise<Quote0MessageResponse>;
+  sendImageContent(deviceId: string, payload: Quote0ImagePayload): Promise<Quote0MessageResponse>;
+  sendCanvasContent(deviceId: string, payload: Quote0CanvasPayload): Promise<Quote0MessageResponse>;
   switchToNextContent(deviceId: string): Promise<Quote0MessageResponse>;
   updateDeviceSettings(deviceId: string, patch: Quote0DeviceSettingsPatch): Promise<unknown>;
 }
@@ -93,6 +126,22 @@ export class Quote0Client implements Quote0ClientLike {
   async sendTextContent(deviceId: string, payload: Quote0TextPayload): Promise<Quote0MessageResponse> {
     return this.requestJson<Quote0MessageResponse>(
       `/api/authV2/open/device/${encodeURIComponent(deviceId)}/text`,
+      "POST",
+      payload
+    );
+  }
+
+  async sendImageContent(deviceId: string, payload: Quote0ImagePayload): Promise<Quote0MessageResponse> {
+    return this.requestJson<Quote0MessageResponse>(
+      `/api/authV2/open/device/${encodeURIComponent(deviceId)}/image`,
+      "POST",
+      payload
+    );
+  }
+
+  async sendCanvasContent(deviceId: string, payload: Quote0CanvasPayload): Promise<Quote0MessageResponse> {
+    return this.requestJson<Quote0MessageResponse>(
+      `/api/authV2/open/device/${encodeURIComponent(deviceId)}/canvas`,
       "POST",
       payload
     );
@@ -127,6 +176,7 @@ export class Quote0Client implements Quote0ClientLike {
         authorization: `Bearer ${apiKey}`,
         "content-type": "application/json"
       },
+      throw: false,
       body: body === undefined ? undefined : JSON.stringify(body)
     });
 

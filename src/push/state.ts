@@ -153,7 +153,8 @@ export function normalizePushRuntimeState(value?: Partial<PushRuntimeState>): Pu
   return {
     anchors: Array.isArray(value?.anchors) ? value.anchors.map(normalizeAnchor).filter(Boolean) as PushContextAnchor[] : [],
     events: Array.isArray(value?.events) ? value.events.map(normalizeEvent).filter(Boolean) as PushDeliveryEvent[] : [],
-    targetCursors: normalizeCursorMap(value?.targetCursors)
+    targetCursors: normalizeCursorMap(value?.targetCursors),
+    displayCursors: normalizeCursorMap(value?.displayCursors)
   };
 }
 
@@ -227,7 +228,7 @@ function normalizeSource(value: unknown): PushContextAnchor["source"] {
 }
 
 function normalizeCandidateType(value: unknown): PushDeliveryEvent["candidateType"] {
-  return value === "workflow-file" || value === "article" ? value : "question";
+  return value === "home-summary" || value === "workflow-file" || value === "article" ? value : "question";
 }
 
 function normalizeFeedback(value: unknown): PushFeedbackAction | undefined {
@@ -299,4 +300,3 @@ function clampNumber(value: unknown, min: number, max: number, fallback: number)
 function randomFragment(): string {
   return Math.random().toString(36).slice(2, 10);
 }
-

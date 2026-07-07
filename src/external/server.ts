@@ -1,4 +1,5 @@
 import type { ArticleSummary, OpenQuestion, OpenQuestionStatus, QuestionStatusOption } from "../core/types";
+import { enrichArticleSummariesWithWorkflow } from "../core/articles";
 import { normalizeExternalApiBindHost, type ToWriteDeviceCaptureSettings, type ToWriteExternalApiSettings } from "../core/settings";
 import type { PushAnchorInput, PushFeedbackInput } from "../push/state";
 import type { PushFeedPayload } from "../push/types";
@@ -263,7 +264,11 @@ export class ToWriteExternalApiServer {
     }
 
     if (url.pathname === "/api/v1/articles") {
-      this.writeJson(response, 200, buildArticlesPayload(vaultName, this.options.getArticleSummaries()));
+      const workflowPayload = this.options.getWorkflowPayload({ limit: 200, compact: true });
+      this.writeJson(response, 200, buildArticlesPayload(
+        vaultName,
+        enrichArticleSummariesWithWorkflow(this.options.getArticleSummaries(), workflowPayload, workflowPayload.generatedAt)
+      ));
       return;
     }
 
@@ -760,7 +765,7 @@ function readPushFeedbackAction(body: Record<string, unknown>): PushFeedbackInpu
 
 function readPushCandidateType(body: Record<string, unknown>): PushFeedbackInput["candidateType"] {
   const type = readString(body, "candidateType");
-  return type === "workflow-file" || type === "article" ? type : "question";
+  return type === "home-summary" || type === "workflow-file" || type === "article" ? type : "question";
 }
 
 function readPreciseLocation(body: Record<string, unknown>): PushAnchorInput["preciseLocation"] {

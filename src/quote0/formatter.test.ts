@@ -28,9 +28,9 @@ describe("Quote0 formatter", () => {
       refreshNow: true,
       title: "Check refresh behavior",
       link: "http://192.168.1.20:48321/device/input?token=q0_test&questionId=oq_one",
-      taskKey: "text_task_1",
-      taskAlias: "ToWrite"
+      taskKey: "text_task_1"
     });
+    expect(result.payload.taskAlias).toBeUndefined();
     expect(result.payload.message).toContain("Does partial refresh ghost?");
     expect(result.payload.message).toContain("Memo: Compare three modes.");
     expect(result.payload.signature).toContain("1 / 2");
@@ -74,6 +74,15 @@ describe("Quote0 formatter", () => {
   it("does not produce NFC links without a public base URL or token", () => {
     expect(buildQuote0InputUrl("", "q0_test", "oq_one")).toBeUndefined();
     expect(buildQuote0InputUrl("http://192.168.1.20:48321", "", "oq_one")).toBeUndefined();
+  });
+
+  it("keeps taskAlias for first Text API content when taskKey is omitted", () => {
+    const result = formatQuote0DeviceFeed(makeFeed(), {
+      taskAlias: "ToWrite"
+    });
+
+    expect(result.payload.taskKey).toBeUndefined();
+    expect(result.payload.taskAlias).toBe("ToWrite");
   });
 });
 

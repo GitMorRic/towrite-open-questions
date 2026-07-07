@@ -64,7 +64,7 @@ export class PushPolicyEngine {
 
 function scoreCandidate(candidate: PushCandidate, input: PushPolicyInput, now: Date): CandidateScore {
   const reasons: string[] = [];
-  let score = candidate.type === "question" ? 20 : candidate.type === "workflow-file" ? 12 : 8;
+  let score = candidate.type === "question" ? 20 : candidate.type === "workflow-file" ? 12 : candidate.type === "article" ? 8 : 5;
 
   if (candidate.reminderDue) {
     score += 70;
@@ -167,6 +167,9 @@ function scoreHabits(
 function scoreFeedback(candidate: PushCandidate, events: PushDeliveryEvent[], now: Date): { score: number; reasons: string[] } {
   let score = 0;
   const reasons: string[] = [];
+  if (candidate.type === "home-summary") {
+    return { score, reasons };
+  }
   const matching = events
     .filter((event) => event.candidateId === candidate.id)
     .sort((left, right) => eventTime(right).localeCompare(eventTime(left)));
@@ -198,6 +201,12 @@ function scoreFeedback(candidate: PushCandidate, events: PushDeliveryEvent[], no
 }
 
 function matchesTarget(candidate: PushCandidate, target: PushTargetSettings): boolean {
+  if (candidate.reminderDue) {
+    return true;
+  }
+  if (target.defaultPage === "home") {
+    return candidate.type === "home-summary";
+  }
   if (target.defaultPage === "workflow") {
     return candidate.type === "workflow-file";
   }
@@ -259,4 +268,3 @@ export function normalizeLaneList(values: unknown[]): OpenQuestionLane[] {
 export function normalizeStatusList(values: unknown[]): OpenQuestionStatus[] {
   return values.map((value) => String(value).trim()).filter(Boolean) as OpenQuestionStatus[];
 }
-

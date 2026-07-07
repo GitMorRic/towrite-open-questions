@@ -106,7 +106,7 @@ function withTaskFields(payload: Quote0TextPayload, options: Quote0FormatOptions
   return {
     ...payload,
     taskKey: taskKey || undefined,
-    taskAlias: taskAlias || undefined
+    taskAlias: taskKey ? undefined : taskAlias || undefined
   };
 }
 

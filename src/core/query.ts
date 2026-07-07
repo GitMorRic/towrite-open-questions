@@ -78,10 +78,22 @@ export function buildArticleSummaries(questions: OpenQuestion[]): ArticleSummary
       const ignored = fileQuestions.filter((question) => question.status === "ignored").length;
       const think = fileQuestions.filter((question) => question.lane === "think").length;
       const write = fileQuestions.filter((question) => question.lane === "write").length;
+      const createdAt = earliestTimestamp(fileQuestions.map((question) => question.createdAt ?? question.updatedAt));
+      const updatedAt = latestTimestamp(fileQuestions.map((question) => question.updatedAt ?? question.createdAt));
+      const oldestOpenAt = earliestTimestamp(fileQuestions
+        .filter((question) => isWorkStatus(question.status))
+        .map((question) => question.createdAt ?? question.updatedAt));
+      const statusLabel = open > 0 ? "blocked" : candidate > 0 ? "candidate" : "clear";
 
       return {
         filePath,
         title: titleFromPath(filePath),
+        createdAt,
+        updatedAt,
+        ageDays: daysSince(createdAt),
+        oldestOpenAgeDays: daysSince(oldestOpenAt),
+        statusLabel,
+        stale: false,
         open,
         candidate,
         resolved,
@@ -133,4 +145,30 @@ function isWorkStatus(status: string): boolean {
 
 function titleFromPath(filePath: string): string {
   return filePath.split("/").pop()?.replace(/\.md$/iu, "") ?? filePath;
+}
+
+function earliestTimestamp(values: Array<string | undefined>): string | undefined {
+  return normalizeTimestamp(values
+    .map((value) => Date.parse(value ?? ""))
+    .filter(Number.isFinite)
+    .sort((left, right) => left - right)[0]);
+}
+
+function latestTimestamp(values: Array<string | undefined>): string | undefined {
+  return normalizeTimestamp(values
+    .map((value) => Date.parse(value ?? ""))
+    .filter(Number.isFinite)
+    .sort((left, right) => right - left)[0]);
+}
+
+function normalizeTimestamp(value: number | undefined): string | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? new Date(value).toISOString() : undefined;
+}
+
+function daysSince(value: string | undefined, now = Date.now()): number | undefined {
+  const timestamp = Date.parse(value ?? "");
+  if (!Number.isFinite(timestamp)) {
+    return undefined;
+  }
+  return Math.max(0, Math.floor((now - timestamp) / 86_400_000));
 }

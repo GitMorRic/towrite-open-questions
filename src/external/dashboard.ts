@@ -467,10 +467,17 @@ export function buildDashboardHtml(): string {
         for (const article of articles) {
           const item = document.createElement("article");
           item.className = "article" + (article.needsWork ? " needs" : "");
+          const articleMeta = [
+            article.stageTitle || article.statusLabel,
+            article.stale ? "stale" : "",
+            Number.isFinite(article.oldestOpenAgeDays) ? "oldest " + article.oldestOpenAgeDays + "d" : "",
+            Number.isFinite(article.ageDays) ? "updated " + article.ageDays + "d ago" : ""
+          ].filter(Boolean).join(" · ");
           item.innerHTML = [
             '<strong>' + escapeHtml(article.title) + '</strong>',
             '<small class="path">' + escapeHtml(article.filePath) + '</small>',
-            '<span class="muted">' + article.open + ' open / ' + article.candidate + ' candidate / ' + article.resolved + ' resolved</span>'
+            '<span class="muted">' + article.open + ' open / ' + article.candidate + ' candidate / ' + article.resolved + ' resolved</span>',
+            articleMeta ? '<span class="muted">' + escapeHtml(articleMeta) + '</span>' : ""
           ].join("");
           els.articleList.append(item);
         }

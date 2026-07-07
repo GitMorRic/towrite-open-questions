@@ -14,6 +14,8 @@ export interface ToWriteAiSettings {
 }
 
 export type ToWriteQuote0LaneScope = "" | OpenQuestionLane;
+export type ToWriteQuote0DashboardApi = "text" | "image" | "canvas";
+export type ToWriteQuote0ImageDitherType = "NONE" | "DIFFUSION" | "ORDERED";
 
 export interface ToWriteQuote0Settings {
   enabled: boolean;
@@ -22,6 +24,13 @@ export interface ToWriteQuote0Settings {
   deviceId: string;
   taskKey: string;
   taskAlias: string;
+  dashboardApi: ToWriteQuote0DashboardApi;
+  imageTaskKey: string;
+  imageTaskAlias: string;
+  imageDitherType: ToWriteQuote0ImageDitherType;
+  imageBorder: 0 | 1;
+  canvasTaskAlias: string;
+  canvasBorder: 0 | 1;
   refreshSeconds: number;
   lane: ToWriteQuote0LaneScope;
   nfcToken: string;
@@ -196,6 +205,13 @@ export const DEFAULT_QUOTE0_SETTINGS: ToWriteQuote0Settings = {
   deviceId: "",
   taskKey: "",
   taskAlias: "ToWrite Open Questions",
+  dashboardApi: "text",
+  imageTaskKey: "",
+  imageTaskAlias: "ToWrite Dashboard",
+  imageDitherType: "NONE",
+  imageBorder: 0,
+  canvasTaskAlias: "ToWrite Dashboard",
+  canvasBorder: 0,
   refreshSeconds: 300,
   lane: "",
   nfcToken: "",
@@ -414,6 +430,13 @@ export function normalizeQuote0Settings(settings?: Partial<ToWriteQuote0Settings
     deviceId: normalizeQuote0ShortText(settings?.deviceId, 120),
     taskKey: normalizeQuote0ShortText(settings?.taskKey, 120),
     taskAlias: normalizeQuote0ShortText(settings?.taskAlias, 100) || DEFAULT_QUOTE0_SETTINGS.taskAlias,
+    dashboardApi: normalizeQuote0DashboardApi(settings?.dashboardApi),
+    imageTaskKey: normalizeQuote0ShortText(settings?.imageTaskKey, 120),
+    imageTaskAlias: normalizeQuote0ShortText(settings?.imageTaskAlias, 100) || DEFAULT_QUOTE0_SETTINGS.imageTaskAlias,
+    imageDitherType: normalizeQuote0ImageDitherType(settings?.imageDitherType),
+    imageBorder: settings?.imageBorder === 1 ? 1 : 0,
+    canvasTaskAlias: normalizeQuote0ShortText(settings?.canvasTaskAlias, 100) || DEFAULT_QUOTE0_SETTINGS.canvasTaskAlias,
+    canvasBorder: settings?.canvasBorder === 1 ? 1 : 0,
     refreshSeconds: clampIntegerSetting(settings?.refreshSeconds, 60, 86400, DEFAULT_QUOTE0_SETTINGS.refreshSeconds),
     lane: settings?.lane === "think" || settings?.lane === "write" ? settings.lane : "",
     nfcToken: normalizeQuote0ShortText(settings?.nfcToken, 160),
@@ -496,7 +519,7 @@ function normalizePushTargets(targets: PushTargetSettings[] | undefined, quote0:
     quietHoursStart: "",
     quietHoursEnd: "",
     token: quote0.nfcToken,
-    capabilities: ["push", "nfc", "text-api"]
+    capabilities: quote0Capabilities(quote0.dashboardApi)
   };
 
   if (quoteTargetIndex >= 0) {
@@ -511,7 +534,14 @@ function normalizePushTargets(targets: PushTargetSettings[] | undefined, quote0:
       defaultLane: quote0.lane || output[quoteTargetIndex].defaultLane,
       refreshSeconds: quote0.refreshSeconds || output[quoteTargetIndex].refreshSeconds,
       token: quote0.nfcToken || output[quoteTargetIndex].token,
-      capabilities: uniquePushList([...output[quoteTargetIndex].capabilities, "push", "nfc", "text-api"]),
+      capabilities: uniquePushList([
+        ...output[quoteTargetIndex].capabilities,
+        "push",
+        "nfc",
+        "text-api",
+        quote0.dashboardApi === "image" ? "image-api" : "",
+        quote0.dashboardApi === "canvas" ? "canvas-api" : ""
+      ]),
       enabled: quote0.enabled || output[quoteTargetIndex].enabled
     };
   } else {
@@ -591,6 +621,25 @@ function uniquePushList(values: string[]): string[] {
 function normalizeTime(value: unknown): string {
   const text = String(value ?? "").trim();
   return /^([01]\d|2[0-3]):[0-5]\d$/u.test(text) ? text : "";
+}
+
+function normalizeQuote0ImageDitherType(value: unknown): ToWriteQuote0ImageDitherType {
+  return value === "DIFFUSION" || value === "ORDERED" ? value : "NONE";
+}
+
+function normalizeQuote0DashboardApi(value: unknown): ToWriteQuote0DashboardApi {
+  return value === "image" || value === "canvas" ? value : "text";
+}
+
+function quote0Capabilities(dashboardApi: ToWriteQuote0DashboardApi): string[] {
+  const values = ["push", "nfc", "text-api"];
+  if (dashboardApi === "image") {
+    values.push("image-api");
+  }
+  if (dashboardApi === "canvas") {
+    values.push("canvas-api");
+  }
+  return values;
 }
 
 export function normalizeExternalApiBindHost(value?: string): string {

@@ -3,7 +3,7 @@ import type { OpenQuestionLane, OpenQuestionStatus } from "../core/types";
 
 export type PushTargetType = "quote0" | "mobile-app" | "local-web" | "webhook";
 export type PushPrivacyLevel = "local-coarse" | "precise-location" | "no-location";
-export type PushCandidateType = "question" | "workflow-file" | "article";
+export type PushCandidateType = "home-summary" | "question" | "workflow-file" | "article";
 export type PushFeedbackAction = "useful" | "skipped" | "later" | "answered" | "opened-no-write" | "opened";
 
 export interface PushPrivacySettings {
@@ -93,6 +93,7 @@ export interface PushRuntimeState {
   anchors: PushContextAnchor[];
   events: PushDeliveryEvent[];
   targetCursors: Record<string, number>;
+  displayCursors: Record<string, number>;
 }
 
 export interface PushCandidate {
@@ -113,11 +114,44 @@ export interface PushCandidate {
   reminderNote?: string;
   reminderDue?: boolean;
   stale?: boolean;
+  ageDays?: number;
+  oldestOpenAgeDays?: number;
+  statusLabel?: string;
+  articleOpen?: number;
+  articleCandidate?: number;
+  articleResolved?: number;
+  articleThink?: number;
+  articleWrite?: number;
+  metrics?: PushDisplayMetric[];
+  badges?: string[];
+  footer?: string;
   pinned?: boolean;
   updatedAt?: string;
   openUri?: string;
   answerUrl?: string;
   questionId?: string;
+}
+
+export interface PushDisplayMetric {
+  label: string;
+  value: number | string;
+  hint?: string;
+}
+
+export interface PushDisplayCard {
+  variant: PushCandidateType | "empty";
+  icon: string;
+  kicker?: string;
+  title: string;
+  primary: string;
+  secondaryLines: string[];
+  metrics: PushDisplayMetric[];
+  badges: string[];
+  footer: string;
+  link?: string;
+  titleText: string;
+  message: string;
+  signature: string;
 }
 
 export interface PushDecision {
@@ -161,12 +195,6 @@ export interface PushFeedPayload {
     quiet: boolean;
     suppressedReason?: string;
   };
-  display: {
-    title: string;
-    message: string;
-    signature: string;
-    link?: string;
-  };
+  display: PushDisplayCard;
   candidate?: PushCandidate;
 }
-

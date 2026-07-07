@@ -17,11 +17,18 @@ import {
   type WorkflowStageSettings
 } from "../core/settings";
 import { OPEN_QUESTION_COLORS, type OpenQuestionColor, type OpenQuestionLane, type QuestionStatusOption } from "../core/types";
-import type { PushHabitRule, PushTargetSettings } from "../push/types";
+import type { PushDisplayCard, PushHabitRule, PushTargetSettings } from "../push/types";
 import type ToWritePlugin from "../main";
-import type { Quote0Device } from "../quote0/client";
+import type { Quote0CanvasPayload, Quote0Device, Quote0ImagePayload, Quote0TextPayload } from "../quote0/client";
+import type { Quote0SyncPreview } from "../quote0/sync-service";
 
 type SettingsTabId = "general" | "cards" | "workflow" | "api" | "push" | "quote0" | "ai";
+
+type Quote0PreviewAction = {
+  label: string;
+  primary?: boolean;
+  run(): Promise<void>;
+};
 
 type SettingCopy = {
   title: string;
@@ -121,14 +128,40 @@ type SettingCopy = {
   quote0TaskKeyDesc: string;
   quote0TaskAlias: string;
   quote0TaskAliasDesc: string;
+  quote0DashboardApi: string;
+  quote0DashboardApiDesc: string;
+  quote0DashboardText: string;
+  quote0DashboardImage: string;
+  quote0DashboardCanvas: string;
+  quote0ImageTaskKey: string;
+  quote0ImageTaskKeyDesc: string;
+  quote0ImageTaskAlias: string;
+  quote0ImageTaskAliasDesc: string;
+  quote0ImageDither: string;
+  quote0ImageDitherDesc: string;
+  quote0ImageBorder: string;
+  quote0ImageBorderDesc: string;
+  quote0CanvasTaskAlias: string;
+  quote0CanvasTaskAliasDesc: string;
+  quote0CanvasBorder: string;
+  quote0CanvasBorderDesc: string;
   quote0NfcToken: string;
   quote0NfcTokenDesc: string;
   quote0NfcLink: string;
   quote0NfcLinkDesc: string;
   quote0SendNext: string;
+  quote0SendDashboard: string;
   quote0SendTest: string;
   quote0ForceRefresh: string;
   quote0ApplyInterval: string;
+  quote0Preview: string;
+  quote0PreviewDesc: string;
+  quote0TextPreview: string;
+  quote0TextPreviewDesc: string;
+  quote0HomePreview: string;
+  quote0HomePreviewDesc: string;
+  quote0PreviewRefresh: string;
+  quote0PreviewUnavailable: string;
   quote0LoopNotice: string;
   quote0LastSync: string;
   quote0MissingPublicBaseUrl: string;
@@ -307,15 +340,41 @@ const COPY: Record<ToWriteLanguage, SettingCopy> = {
     "quote0TaskKeyDesc": "已有多个 Text API 内容时填写。留空则更新第一个 Text API 内容。",
     "quote0TaskAlias": "Text API taskAlias",
     "quote0TaskAliasDesc": "显示在 quote0 任务列表中的名字，用来识别 ToWrite 内容。",
+    "quote0DashboardApi": "主页渲染 API",
+    "quote0DashboardApiDesc": "Canvas API 用结构化画板渲染 dashboard，最适合分区 UI；Image API 是 PNG 备用方案；Text API 只显示文字。",
+    "quote0DashboardText": "Text API 文字首页",
+    "quote0DashboardImage": "Image API PNG 首页",
+    "quote0DashboardCanvas": "Canvas API 画板首页（推荐）",
+    "quote0ImageTaskKey": "Image API taskKey",
+    "quote0ImageTaskKeyDesc": "已有多个 Image API 内容时填写。留空则更新第一个 Image API 内容。",
+    "quote0ImageTaskAlias": "Image API taskAlias",
+    "quote0ImageTaskAliasDesc": "显示在 quote0 任务列表中的名字，用来识别 ToWrite 首页图像。",
+    "quote0ImageDither": "Image API dithering",
+    "quote0ImageDitherDesc": "dashboard 是文字图，默认 NONE 会更锐利；照片或复杂灰度图才建议 DIFFUSION。",
+    "quote0ImageBorder": "Image API 边框",
+    "quote0ImageBorderDesc": "0 为白边，1 为黑边。dashboard 图像本身已经有边框，默认白边。",
+    "quote0CanvasTaskAlias": "Canvas API taskAlias",
+    "quote0CanvasTaskAliasDesc": "显示在 quote0 任务列表中的名字，用来识别 ToWrite 画板首页。",
+    "quote0CanvasBorder": "Canvas API 边框",
+    "quote0CanvasBorderDesc": "0 为白边，1 为黑边。画板内容本身已经有分区边框，默认白边。",
     "quote0NfcToken": "Quote0 NFC token",
     "quote0NfcTokenDesc": "专用于 NFC 写回的受限 token，只允许打开写回页和提交内容。",
     "quote0NfcLink": "NFC 测试链接",
     "quote0NfcLinkDesc": "使用 External API 的手机/远程访问基地址生成。局域网模式请填电脑的局域网地址。",
     "quote0SendNext": "发送下一条",
+    "quote0SendDashboard": "发送主页",
     "quote0SendTest": "发送测试卡",
     "quote0ForceRefresh": "强制刷新设备",
     "quote0ApplyInterval": "应用设备间隔",
-    "quote0LoopNotice": "如果返回 404 或设备没有切换，请先在 Dot App/Content Studio 把 Text API 内容加入 quote0 的 Loop Content。",
+    "quote0Preview": "发送前预览",
+    "quote0PreviewDesc": "下面分别显示“发送下一条”和“发送主页”将提交给 Quote0 API 的内容。",
+    "quote0TextPreview": "文本预览",
+    "quote0TextPreviewDesc": "点击发送下一条时会推送这张 Text API 卡片。",
+    "quote0HomePreview": "主页预览",
+    "quote0HomePreviewDesc": "点击发送主页时会推送这个 dashboard；Canvas / Image 模式会尽量按设备效果预览。",
+    "quote0PreviewRefresh": "重算预览",
+    "quote0PreviewUnavailable": "暂时无法生成预览，请检查 Quote0 和 Push 设置。",
+    "quote0LoopNotice": "如果返回 404 或设备没有切换，请先在 Dot App/Content Studio 把 Text / Image / Canvas API 内容加入 quote0 的 Loop Content。",
     "quote0LastSync": "最近同步",
     "quote0MissingPublicBaseUrl": "还没有设置手机/远程访问基地址，NFC 链接暂不可用。",
     "deviceCapture": "手机输入写回",
@@ -491,15 +550,41 @@ const COPY: Record<ToWriteLanguage, SettingCopy> = {
     "quote0TaskKeyDesc": "Use when multiple Text API contents exist. Leave empty to update the first Text API content.",
     "quote0TaskAlias": "Text API taskAlias",
     "quote0TaskAliasDesc": "Name shown in the quote0 task list so this ToWrite content is easy to identify.",
+    "quote0DashboardApi": "Home rendering API",
+    "quote0DashboardApiDesc": "Canvas API renders the dashboard as structured screen content and is best for sectioned UI. Image API is the PNG fallback. Text API is plain text.",
+    "quote0DashboardText": "Text API home",
+    "quote0DashboardImage": "Image API PNG home",
+    "quote0DashboardCanvas": "Canvas API home (recommended)",
+    "quote0ImageTaskKey": "Image API taskKey",
+    "quote0ImageTaskKeyDesc": "Use when multiple Image API contents exist. Leave empty to update the first Image API content.",
+    "quote0ImageTaskAlias": "Image API taskAlias",
+    "quote0ImageTaskAliasDesc": "Name shown in the quote0 task list for the ToWrite dashboard image.",
+    "quote0ImageDither": "Image API dithering",
+    "quote0ImageDitherDesc": "Dashboard images are text-heavy, so NONE is sharper by default. Use DIFFUSION for photos or complex grayscale images.",
+    "quote0ImageBorder": "Image API border",
+    "quote0ImageBorderDesc": "0 is white border, 1 is black border. The dashboard image already has its own frame, so white is the default.",
+    "quote0CanvasTaskAlias": "Canvas API taskAlias",
+    "quote0CanvasTaskAliasDesc": "Name shown in the quote0 task list for the ToWrite canvas dashboard.",
+    "quote0CanvasBorder": "Canvas API border",
+    "quote0CanvasBorderDesc": "0 is white border, 1 is black border. The canvas dashboard already has section borders, so white is the default.",
     "quote0NfcToken": "Quote0 NFC token",
     "quote0NfcTokenDesc": "Restricted token for NFC writeback. It can open the input page and submit content, not read the full deck.",
     "quote0NfcLink": "NFC test link",
     "quote0NfcLinkDesc": "Generated from the phone/remote base URL. For LAN mode, use this computer's LAN address.",
     "quote0SendNext": "Send next card",
+    "quote0SendDashboard": "Send home",
     "quote0SendTest": "Send test card",
     "quote0ForceRefresh": "Force device refresh",
     "quote0ApplyInterval": "Apply device interval",
-    "quote0LoopNotice": "If the API returns 404 or the display does not switch, add the Text API content to quote0 Loop Content in Dot App/Content Studio first.",
+    "quote0Preview": "Preview before sending",
+    "quote0PreviewDesc": "Shows the separate payloads that Send next card and Send home will submit to the Quote0 API.",
+    "quote0TextPreview": "Text preview",
+    "quote0TextPreviewDesc": "This Text API card is what Send next card will push.",
+    "quote0HomePreview": "Home preview",
+    "quote0HomePreviewDesc": "This dashboard is what Send home will push. Canvas / Image modes are previewed as close to the device result as possible.",
+    "quote0PreviewRefresh": "Rebuild preview",
+    "quote0PreviewUnavailable": "Preview is not available yet. Check Quote0 and Push settings.",
+    "quote0LoopNotice": "If the API returns 404 or the display does not switch, add the Text / Image / Canvas API content to quote0 Loop Content in Dot App/Content Studio first.",
     "quote0LastSync": "Last sync",
     "quote0MissingPublicBaseUrl": "Phone/remote base URL is missing, so NFC links are not available yet.",
     "deviceCapture": "Phone input writeback",
@@ -1308,6 +1393,109 @@ export class ToWriteSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
+      .setName(copy.quote0DashboardApi)
+      .setDesc(copy.quote0DashboardApiDesc)
+      .addDropdown((dropdown) => {
+        dropdown
+          .addOption("text", copy.quote0DashboardText)
+          .addOption("canvas", copy.quote0DashboardCanvas)
+          .addOption("image", copy.quote0DashboardImage)
+          .setValue(quote0.dashboardApi)
+          .onChange(async (value) => {
+            quote0.dashboardApi = value === "image" || value === "canvas" ? value : "text";
+            await this.plugin.savePluginData();
+            this.refreshSettingsUi();
+          });
+      });
+
+    if (quote0.dashboardApi === "canvas") {
+      new Setting(containerEl)
+        .setName(copy.quote0CanvasTaskAlias)
+        .setDesc(copy.quote0CanvasTaskAliasDesc)
+        .addText((text) => {
+          text
+            .setValue(quote0.canvasTaskAlias)
+            .setPlaceholder("ToWrite Dashboard")
+            .onChange(async (value) => {
+              quote0.canvasTaskAlias = value.trim() || "ToWrite Dashboard";
+              await this.plugin.savePluginData();
+            });
+        });
+
+      new Setting(containerEl)
+        .setName(copy.quote0CanvasBorder)
+        .setDesc(copy.quote0CanvasBorderDesc)
+        .addDropdown((dropdown) => {
+          dropdown
+            .addOption("0", "0")
+            .addOption("1", "1")
+            .setValue(String(quote0.canvasBorder))
+            .onChange(async (value) => {
+              quote0.canvasBorder = value === "1" ? 1 : 0;
+              await this.plugin.savePluginData();
+            });
+        });
+    }
+
+    if (quote0.dashboardApi === "image") {
+      new Setting(containerEl)
+        .setName(copy.quote0ImageTaskKey)
+        .setDesc(copy.quote0ImageTaskKeyDesc)
+        .addText((text) => {
+          text
+            .setValue(quote0.imageTaskKey)
+            .setPlaceholder("image_task_1")
+            .onChange(async (value) => {
+              quote0.imageTaskKey = value.trim();
+              await this.plugin.savePluginData();
+            });
+        });
+
+      new Setting(containerEl)
+        .setName(copy.quote0ImageTaskAlias)
+        .setDesc(copy.quote0ImageTaskAliasDesc)
+        .addText((text) => {
+          text
+            .setValue(quote0.imageTaskAlias)
+            .setPlaceholder("ToWrite Dashboard")
+            .onChange(async (value) => {
+              quote0.imageTaskAlias = value.trim() || "ToWrite Dashboard";
+              await this.plugin.savePluginData();
+            });
+        });
+
+      new Setting(containerEl)
+        .setName(copy.quote0ImageDither)
+        .setDesc(copy.quote0ImageDitherDesc)
+        .addDropdown((dropdown) => {
+          dropdown
+            .addOption("NONE", "NONE")
+            .addOption("DIFFUSION", "DIFFUSION")
+            .addOption("ORDERED", "ORDERED")
+            .setValue(quote0.imageDitherType)
+            .onChange(async (value) => {
+              quote0.imageDitherType = value === "DIFFUSION" || value === "ORDERED" ? value : "NONE";
+              await this.plugin.savePluginData();
+              this.refreshSettingsUi();
+            });
+        });
+
+      new Setting(containerEl)
+        .setName(copy.quote0ImageBorder)
+        .setDesc(copy.quote0ImageBorderDesc)
+        .addDropdown((dropdown) => {
+          dropdown
+            .addOption("0", "0")
+            .addOption("1", "1")
+            .setValue(String(quote0.imageBorder))
+            .onChange(async (value) => {
+              quote0.imageBorder = value === "1" ? 1 : 0;
+              await this.plugin.savePluginData();
+            });
+        });
+    }
+
+    new Setting(containerEl)
       .setName(copy.quote0NfcToken)
       .setDesc(copy.quote0NfcTokenDesc)
       .addText((text) => {
@@ -1358,51 +1546,200 @@ export class ToWriteSettingTab extends PluginSettingTab {
       .setName(copy.quote0LastSync)
       .setDesc(formatQuote0LastSync(quote0));
 
+    this.renderQuote0Preview(containerEl, copy);
+
+    containerEl.createDiv({ cls: "towrite-quote0-action-note", text: copy.quote0LoopNotice });
+  }
+
+  private renderQuote0Preview(containerEl: HTMLElement, copy: SettingCopy): void {
     new Setting(containerEl)
-      .setName(copy.quote0SendNext)
-      .setDesc(copy.quote0LoopNotice)
+      .setName(copy.quote0Preview)
+      .setDesc(copy.quote0PreviewDesc)
       .addButton((button) => {
         button
-          .setButtonText(copy.quote0SendNext)
-          .onClick(async () => {
-            try {
-              const result = await this.plugin.syncQuote0Next();
-              new Notice(result.questionId ? `Quote0 sent ${result.questionId}.` : result.message);
-              this.refreshSettingsUi();
-            } catch (error) {
-              new Notice(`Quote0 sync failed: ${errorMessage(error)}`);
-              this.refreshSettingsUi();
-            }
-          });
-      })
-      .addButton((button) => {
-        button
-          .setButtonText(copy.quote0SendTest)
-          .onClick(async () => {
-            try {
-              const message = await this.plugin.sendQuote0TestCard();
-              new Notice(message);
-              this.refreshSettingsUi();
-            } catch (error) {
-              new Notice(`Quote0 test failed: ${errorMessage(error)}`);
-              this.refreshSettingsUi();
-            }
-          });
-      })
-      .addButton((button) => {
-        button
-          .setButtonText(copy.quote0ForceRefresh)
-          .onClick(async () => {
-            try {
-              const message = await this.plugin.switchQuote0ToNextContent();
-              new Notice(message);
-              this.refreshSettingsUi();
-            } catch (error) {
-              new Notice(`Quote0 refresh failed: ${errorMessage(error)}`);
-              this.refreshSettingsUi();
-            }
-          });
+          .setButtonText(copy.quote0PreviewRefresh)
+          .onClick(() => this.refreshSettingsUi());
       });
+
+    const previewEl = containerEl.createDiv({ cls: "towrite-quote0-preview" });
+    const list = previewEl.createDiv({ cls: "towrite-quote0-preview-list" });
+    this.renderQuote0PreviewCard(
+      list,
+      copy.quote0TextPreview,
+      copy.quote0TextPreviewDesc,
+      () => this.plugin.previewQuote0Next(),
+      copy,
+      [
+        { label: copy.quote0SendNext, primary: true, run: () => this.sendQuote0NextFromPreview() },
+        { label: copy.quote0SendTest, run: () => this.sendQuote0TestFromPreview() },
+        { label: copy.quote0ForceRefresh, run: () => this.forceQuote0RefreshFromPreview() }
+      ]
+    );
+    this.renderQuote0PreviewCard(
+      list,
+      copy.quote0HomePreview,
+      copy.quote0HomePreviewDesc,
+      () => this.plugin.previewQuote0DashboardContent(),
+      copy,
+      [
+        { label: copy.quote0SendDashboard, primary: true, run: () => this.sendQuote0DashboardFromPreview() },
+        { label: copy.quote0ForceRefresh, run: () => this.forceQuote0RefreshFromPreview() }
+      ]
+    );
+  }
+
+  private renderQuote0PreviewCard(
+    containerEl: HTMLElement,
+    titleText: string,
+    descText: string,
+    buildPreview: () => Quote0SyncPreview,
+    copy: SettingCopy,
+    actions: Quote0PreviewAction[]
+  ): void {
+    const cardEl = containerEl.createDiv({ cls: "towrite-quote0-preview-card" });
+    const headerEl = cardEl.createDiv({ cls: "towrite-quote0-preview-card-header" });
+    const titleEl = headerEl.createDiv({ cls: "towrite-quote0-preview-card-copy" });
+    titleEl.createDiv({ cls: "towrite-quote0-preview-card-title", text: titleText });
+    titleEl.createDiv({ cls: "towrite-quote0-preview-card-desc", text: descText });
+    const actionsEl = headerEl.createDiv({ cls: "towrite-quote0-preview-card-actions" });
+    for (const action of actions) {
+      const button = actionsEl.createEl("button", {
+        text: action.label,
+        cls: action.primary ? "mod-cta" : "",
+        attr: { type: "button" }
+      });
+      button.addEventListener("click", () => {
+        void this.runQuote0PreviewAction(button, action);
+      });
+    }
+
+    try {
+      const preview = buildPreview();
+      const payload = preview.payload;
+      const titleStyle = payload.styles?.title ?? {};
+      const messageStyle = payload.styles?.message ?? {};
+      const signatureStyle = payload.styles?.signature ?? {};
+      const screen = cardEl.createDiv({ cls: "towrite-quote0-preview-stage" });
+      const isDashboard = preview.display?.variant === "home-summary";
+      const isImage = Boolean(preview.imagePayload?.image);
+      const isCanvas = Boolean(preview.canvasPayload);
+      const screenClasses = ["towrite-quote0-preview-screen"];
+      if (isCanvas) {
+        screenClasses.push("is-canvas-home");
+      } else if (isImage) {
+        screenClasses.push("is-image");
+      } else if (isDashboard) {
+        screenClasses.push("is-dashboard");
+      }
+      const device = screen.createDiv({ cls: screenClasses.join(" ") });
+      if (isImage && preview.imagePayload) {
+        renderQuote0ImagePreview(device, preview.imagePayload);
+      } else if (isCanvas && preview.canvasPayload) {
+        renderQuote0CanvasDashboardPreview(device, preview.canvasPayload);
+      } else if ((isDashboard || isCanvas) && preview.display) {
+        renderQuote0DashboardPreview(device, preview.display, payload);
+      } else {
+        const title = device.createDiv({ cls: "towrite-quote0-preview-title", text: payload.title || "ToWrite" });
+        applyPreviewTextStyle(title, titleStyle);
+
+        const body = device.createDiv({ cls: "towrite-quote0-preview-message" });
+        applyPreviewTextStyle(body, messageStyle);
+        body.style.lineHeight = String(messageStyle.lineHeight ?? 1.08);
+        for (const line of splitPreviewLines(payload.message)) {
+          body.createDiv({ text: line });
+        }
+
+        const signature = device.createDiv({ cls: "towrite-quote0-preview-signature", text: payload.signature || "" });
+        applyPreviewTextStyle(signature, signatureStyle);
+      }
+
+      const meta = cardEl.createDiv({ cls: "towrite-quote0-preview-meta" });
+      meta.createSpan({ text: [preview.candidateType, preview.questionId ? shortId(preview.questionId) : ""].filter(Boolean).join(" - ") || "payload" });
+      if (preview.nfcLink) {
+        meta.createSpan({ text: "NFC ready" });
+      }
+
+      const fields = cardEl.createDiv({ cls: "towrite-quote0-preview-fields" });
+      addPreviewField(fields, "api", preview.canvasPayload ? "canvas" : preview.imagePayload ? "image" : "text");
+      addPreviewField(fields, "title", payload.title);
+      addPreviewField(fields, "message", payload.message);
+      addPreviewField(fields, "signature", payload.signature);
+      if (preview.imagePayload) {
+        addPreviewField(fields, "image", previewImageSummary(preview.imagePayload.image));
+        addPreviewField(fields, "ditherType", preview.imagePayload.ditherType);
+        addPreviewField(fields, "border", preview.imagePayload.border === undefined ? undefined : String(preview.imagePayload.border));
+        addPreviewField(fields, "imageTaskKey", preview.imagePayload.taskKey);
+        addPreviewField(fields, "imageTaskAlias", preview.imagePayload.taskAlias === null || preview.imagePayload.taskAlias === undefined ? undefined : String(preview.imagePayload.taskAlias));
+      }
+      if (preview.canvasPayload) {
+        addPreviewField(fields, "canvasTaskAlias", preview.canvasPayload.taskAlias === null || preview.canvasPayload.taskAlias === undefined ? undefined : String(preview.canvasPayload.taskAlias));
+        addPreviewField(fields, "canvasBorder", preview.canvasPayload.border === undefined ? undefined : String(preview.canvasPayload.border));
+        addPreviewField(fields, "canvasData", `${Object.keys(preview.canvasPayload.data).length} fields`);
+        addPreviewField(fields, "windowData", `${preview.canvasPayload.windowData.default.length} default layer`);
+      }
+      addPreviewField(fields, "taskKey", payload.taskKey);
+      addPreviewField(fields, "taskAlias", payload.taskAlias === null || payload.taskAlias === undefined ? undefined : String(payload.taskAlias));
+      addPreviewField(fields, "link", redactSensitiveText(preview.canvasPayload?.link || preview.imagePayload?.link || payload.link));
+    } catch (error) {
+      cardEl.createDiv({
+        cls: "towrite-quote0-preview-error",
+        text: `${copy.quote0PreviewUnavailable} ${errorMessage(error)}`
+      });
+    }
+  }
+
+  private async runQuote0PreviewAction(button: HTMLButtonElement, action: Quote0PreviewAction): Promise<void> {
+    button.disabled = true;
+    try {
+      await action.run();
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  private async sendQuote0NextFromPreview(): Promise<void> {
+    try {
+      const result = await this.plugin.syncQuote0Next();
+      const api = result.contentApi ? result.contentApi.toUpperCase() : "API";
+      new Notice(result.questionId ? `Quote0 ${api} sent ${shortId(result.questionId)}.` : result.message);
+      this.refreshSettingsUi();
+    } catch (error) {
+      new Notice(`Quote0 sync failed: ${errorMessage(error)}`);
+      this.refreshSettingsUi();
+    }
+  }
+
+  private async sendQuote0DashboardFromPreview(): Promise<void> {
+    try {
+      const message = await this.plugin.sendQuote0DashboardContent();
+      new Notice(message);
+      this.refreshSettingsUi();
+    } catch (error) {
+      new Notice(`Quote0 dashboard failed: ${errorMessage(error)}`);
+      this.refreshSettingsUi();
+    }
+  }
+
+  private async sendQuote0TestFromPreview(): Promise<void> {
+    try {
+      const message = await this.plugin.sendQuote0TestCard();
+      new Notice(message);
+      this.refreshSettingsUi();
+    } catch (error) {
+      new Notice(`Quote0 test failed: ${errorMessage(error)}`);
+      this.refreshSettingsUi();
+    }
+  }
+
+  private async forceQuote0RefreshFromPreview(): Promise<void> {
+    try {
+      const message = await this.plugin.switchQuote0ToNextContent();
+      new Notice(message);
+      this.refreshSettingsUi();
+    } catch (error) {
+      new Notice(`Quote0 refresh failed: ${errorMessage(error)}`);
+      this.refreshSettingsUi();
+    }
   }
 
   private renderPushSettings(containerEl: HTMLElement, copy: SettingCopy): void {
@@ -2586,6 +2923,171 @@ function formatQuote0LastSync(settings: ToWriteSettings["quote0"]): string {
 
 function errorMessage(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).slice(0, 400);
+}
+
+function applyPreviewTextStyle(el: HTMLElement, style: { fontFamily?: string; fontSize?: number; fontWeight?: number }): void {
+  if (style.fontFamily) {
+    el.style.fontFamily = `${style.fontFamily}, var(--font-interface)`;
+  }
+  if (style.fontSize) {
+    el.style.fontSize = `${style.fontSize}px`;
+  }
+  if (style.fontWeight) {
+    el.style.fontWeight = String(style.fontWeight);
+  }
+}
+
+function splitPreviewLines(value: string | undefined): string[] {
+  const lines = String(value ?? "").split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
+  return lines.length > 0 ? lines : ["No message"];
+}
+
+function renderQuote0ImagePreview(device: HTMLElement, payload: Quote0ImagePayload): void {
+  device.createEl("img", {
+    cls: "towrite-quote0-preview-image",
+    attr: {
+      src: payload.image,
+      alt: "Quote0 dashboard image preview"
+    }
+  });
+}
+
+function renderQuote0CanvasDashboardPreview(device: HTMLElement, payload: Quote0CanvasPayload): void {
+  const data = payload.data;
+  const shell = device.createDiv({ cls: "towrite-quote0-canvas-home" });
+
+  const header = shell.createDiv({ cls: "towrite-quote0-canvas-header" });
+  const headerRow = header.createDiv({ cls: "towrite-quote0-canvas-header-row" });
+  headerRow.createDiv({ cls: "towrite-quote0-canvas-title", text: canvasDataText(data, "title", "小屏首页") });
+  headerRow.createDiv({ cls: "towrite-quote0-canvas-subtitle", text: canvasDataText(data, "subtitle", "ToThink / ToWrite / Workflow 总览") });
+  header.createDiv({ cls: "towrite-quote0-canvas-summary", text: canvasDataText(data, "summary", "") });
+  header.createDiv({ cls: "towrite-quote0-canvas-rule" });
+
+  const metrics = shell.createDiv({ cls: "towrite-quote0-canvas-metrics" });
+  renderQuote0CanvasMetric(metrics, canvasDataText(data, "think", "0"), "ToThink");
+  renderQuote0CanvasMetric(metrics, canvasDataText(data, "write", "0"), "ToWrite");
+  renderQuote0CanvasMetric(metrics, canvasDataText(data, "open", "0"), "未解决");
+  renderQuote0CanvasMetric(metrics, canvasDataText(data, "articles", "0"), "有问题文章");
+  renderQuote0CanvasMetric(metrics, canvasDataText(data, "due", "0"), "提醒到期", true);
+
+  const workflow = shell.createDiv({ cls: "towrite-quote0-canvas-workflow" });
+  workflow.createDiv({ cls: "towrite-quote0-canvas-workflow-title", text: "Workflow 状态" });
+  const stageGrid = workflow.createDiv({ cls: "towrite-quote0-canvas-stage-grid" });
+  const stripeClasses = ["is-raw", "is-sparks", "is-initialize", "is-processing", "is-archive"];
+  for (let index = 0; index < 5; index += 1) {
+    renderQuote0CanvasStage(stageGrid, canvasDataText(data, `stage${index}`, ""), stripeClasses[index] ?? "");
+  }
+
+  shell.createDiv({ cls: "towrite-quote0-canvas-spacer" });
+
+  const footer = shell.createDiv({ cls: "towrite-quote0-canvas-footer" });
+  footer.createDiv({ cls: "towrite-quote0-canvas-nav", text: canvasDataText(data, "footerLeft", "新想法") });
+  footer.createDiv({ cls: "towrite-quote0-canvas-nav is-arrow", text: "←" });
+  footer.createDiv({ cls: "towrite-quote0-canvas-nav is-active", text: canvasDataText(data, "footerCenter", "⌂ 首页") });
+  footer.createDiv({ cls: "towrite-quote0-canvas-nav is-arrow", text: "→" });
+  footer.createDiv({ cls: "towrite-quote0-canvas-nav", text: canvasDataText(data, "footerRight", "手机输入") });
+}
+
+function renderQuote0CanvasMetric(containerEl: HTMLElement, value: string, label: string, isLast = false): void {
+  const metric = containerEl.createDiv({ cls: `towrite-quote0-canvas-metric${isLast ? " is-last" : ""}` });
+  metric.createDiv({ cls: "towrite-quote0-canvas-metric-value", text: value });
+  metric.createDiv({ cls: "towrite-quote0-canvas-metric-label", text: label });
+}
+
+function renderQuote0CanvasStage(containerEl: HTMLElement, text: string, stripeClass: string): void {
+  const stage = containerEl.createDiv({ cls: "towrite-quote0-canvas-stage" });
+  stage.createSpan({ cls: `towrite-quote0-canvas-stage-stripe ${stripeClass}` });
+  stage.createSpan({ cls: "towrite-quote0-canvas-stage-text", text });
+}
+
+function renderQuote0DashboardPreview(device: HTMLElement, display: PushDisplayCard, payload: Quote0TextPayload): void {
+  const topbar = device.createDiv({ cls: "towrite-quote0-preview-topbar" });
+  const brand = topbar.createDiv({ cls: "towrite-quote0-preview-brand" });
+  brand.createSpan({ cls: "towrite-quote0-preview-brand-mark", text: "TW" });
+  brand.createSpan({ text: "ToWrite" });
+  topbar.createSpan({ cls: "towrite-quote0-preview-pill", text: "Text API" });
+
+  const stats = [
+    { label: "OPEN", value: previewMetricValue(display, payload, ["open"], [/\bOPEN\s+(\d+)/iu, /(\d+)\s+open/iu]) },
+    { label: "THINK", value: previewMetricValue(display, payload, ["tothink", "think"], [/\bTHINK\s+(\d+)/iu]) },
+    { label: "WRITE", value: previewMetricValue(display, payload, ["towrite", "write"], [/\bWRITE\s+(\d+)/iu]) },
+    { label: "ARTICLES", value: previewMetricValue(display, payload, ["articles"], [/\bARTICLES\s+(\d+)/iu]) },
+    { label: "DUE", value: previewMetricValue(display, payload, ["due"], [/\bDUE\s+(\d+)/iu, /(\d+)\s+reminders?\s+due/iu]) },
+    { label: "STALE", value: previewMetricValue(display, payload, ["stale"], [/\bSTALE\s+(\d+)/iu]) }
+  ];
+
+  const grid = device.createDiv({ cls: "towrite-quote0-preview-stat-grid" });
+  for (const stat of stats) {
+    const item = grid.createDiv({ cls: "towrite-quote0-preview-stat" });
+    item.createEl("strong", { text: stat.value });
+    item.createSpan({ text: stat.label });
+  }
+
+  const footer = device.createDiv({ cls: "towrite-quote0-preview-footer" });
+  footer.createSpan({ text: display.kicker || "Dashboard" });
+  footer.createSpan({ text: payload.signature || display.footer || "Push ready" });
+}
+
+function previewMetricValue(
+  display: PushDisplayCard,
+  payload: Quote0TextPayload,
+  aliases: string[],
+  fallbackPatterns: RegExp[]
+): string {
+  const metrics = new Map(display.metrics.map((metric) => [normalizePreviewMetricLabel(metric.label), String(metric.value)]));
+  for (const alias of aliases) {
+    const value = metrics.get(normalizePreviewMetricLabel(alias));
+    if (value !== undefined) {
+      return value;
+    }
+  }
+  const text = [display.primary, ...display.secondaryLines, payload.message].filter(Boolean).join("\n");
+  for (const pattern of fallbackPatterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) {
+      return match[1];
+    }
+  }
+  return "0";
+}
+
+function normalizePreviewMetricLabel(value: string): string {
+  return value.toLowerCase().replace(/[^\p{Letter}\p{Number}]+/gu, "");
+}
+
+function previewImageSummary(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const prefix = "data:image/png;base64,";
+  const base64Length = value.startsWith(prefix) ? value.length - prefix.length : value.length;
+  return `PNG base64 (${base64Length} chars)`;
+}
+
+function canvasDataText(data: Record<string, unknown>, key: string, fallback: string): string {
+  const value = data[key];
+  return typeof value === "string" || typeof value === "number" ? String(value) : fallback;
+}
+
+function addPreviewField(containerEl: HTMLElement, label: string, value: string | undefined): void {
+  if (!value) {
+    return;
+  }
+  const row = containerEl.createDiv({ cls: "towrite-quote0-preview-field" });
+  row.createSpan({ cls: "towrite-quote0-preview-field-label", text: label });
+  row.createSpan({ cls: "towrite-quote0-preview-field-value", text: value });
+}
+
+function shortId(value: string): string {
+  const compact = value.trim();
+  return compact.length <= 16 ? compact : `...${compact.slice(-12)}`;
+}
+
+function redactSensitiveText(value: string | undefined): string | undefined {
+  return value
+    ?.replace(/([?&]token=)[^&]+/gu, "$1[redacted]")
+    .replace(/\bq0_[A-Za-z0-9_]+/gu, "q0_[redacted]")
+    .replace(/\btw_[A-Za-z0-9_]+/gu, "tw_[redacted]");
 }
 
 function buildExternalApiExampleUrl(settings: ToWriteSettings): string {

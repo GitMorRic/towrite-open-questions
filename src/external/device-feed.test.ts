@@ -91,6 +91,7 @@ const articles: ArticleSummary[] = [
     think: 1,
     write: 0,
     needsWork: true,
+    oldestOpenAgeDays: 2,
     topIssues: [questions[0]]
   },
   {
@@ -283,6 +284,10 @@ describe("device feed", () => {
     });
     expect(sourceNotes.screens[0].items[0]).toMatchObject({
       type: "article",
+      stageTitle: "Processing",
+      stale: true,
+      ageDays: 9,
+      oldestOpenAgeDays: 2,
       cardsUrl: "https://device.local/device?token=secret&page=cards&sourceFile=Techbench%2F02-Processing%2Feink.md"
     });
   });

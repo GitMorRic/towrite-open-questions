@@ -1,5 +1,7 @@
 import type { ArticleSummary, OpenQuestion } from "../core/types";
+import { enrichArticleSummariesWithWorkflow } from "../core/articles";
 import { stripQuestionRuleSyntax } from "../core/rule-text";
+import { buildDeviceFeedPayload } from "../external/device-feed";
 import type { WorkflowFileSummary, WorkflowIndexPayload, WorkflowStageSummary } from "../workflow";
 import type { PushCandidate } from "./types";
 
@@ -16,8 +18,12 @@ export interface PushCandidateSourceInput {
 export class PushCandidateSource {
   build(input: PushCandidateSourceInput): PushCandidate[] {
     const nowMs = Date.parse(input.now ?? new Date().toISOString());
+    const generatedAt = input.now ?? new Date().toISOString();
     const workflowContexts = workflowContextByFile(input.workflowPayload);
+    const articles = enrichArticleSummariesWithWorkflow(input.articles, input.workflowPayload, generatedAt);
     const candidates: PushCandidate[] = [];
+
+    candidates.push(homeSummaryToCandidate(input.vaultName, input.questions, articles, input.workflowPayload, generatedAt));
 
     for (const question of input.questions) {
       if (!isWorkStatus(question.status)) {
@@ -33,7 +39,7 @@ export class PushCandidateSource {
       }
     }
 
-    for (const article of input.articles) {
+    for (const article of articles) {
       if (article.needsWork || article.candidate > 0) {
         candidates.push(articleToCandidate(article, input.vaultName, input.publicBaseUrl, input.token));
       }
@@ -41,6 +47,48 @@ export class PushCandidateSource {
 
     return dedupeCandidates(candidates);
   }
+}
+
+function homeSummaryToCandidate(
+  vaultName: string,
+  questions: OpenQuestion[],
+  articles: ArticleSummary[],
+  workflowPayload: WorkflowIndexPayload,
+  generatedAt: string
+): PushCandidate {
+  const feed = buildDeviceFeedPayload(vaultName, questions, articles, workflowPayload, { page: "home", profile: "eink-bw" }, generatedAt);
+  const staleCount = feed.workflow.stages.reduce((total, stage) => total + stage.staleCount, 0);
+  const topStage = feed.workflow.stages.find((stage) => stage.count > 0);
+  return {
+    id: `home:${generatedAt.slice(0, 10)}`,
+    type: "home-summary",
+    title: "ToWrite Overview",
+    body: `${feed.summary.unresolved} open · ${feed.summary.blockedArticles} articles · ${feed.summary.remindersDue} reminders due`,
+    sourceTitle: "Dashboard",
+    workflowStageId: topStage?.id,
+    workflowStageTitle: topStage?.title,
+    tags: [],
+    stale: staleCount > 0,
+    updatedAt: generatedAt,
+    metrics: [
+      { label: "Open", value: feed.summary.unresolved },
+      { label: "? ToThink", value: feed.summary.think },
+      { label: "✎ ToWrite", value: feed.summary.write },
+      { label: "Articles", value: feed.summary.blockedArticles },
+      { label: "Due", value: feed.summary.remindersDue },
+      { label: "Stale", value: staleCount },
+      { label: "Workflow", value: feed.summary.workflowFiles },
+      { label: "Stages", value: feed.summary.workflowStages }
+    ],
+    badges: [
+      `${feed.summary.unresolved} open`,
+      `${feed.summary.candidate} candidate`,
+      `${feed.summary.workflowFiles} workflow`
+    ],
+    footer: feed.workflow.enabled
+      ? `${feed.workflow.uniqueFiles} files · ${feed.workflow.stages.length} stages`
+      : "Workflow off"
+  };
 }
 
 function questionToCandidate(
@@ -93,6 +141,11 @@ function workflowFileToCandidate(stage: WorkflowStageSummary, file: WorkflowFile
     workflowStageTitle: stage.title,
     tags: file.tags,
     stale: file.stale,
+    ageDays: file.ageDays,
+    articleOpen: file.openQuestionCount,
+    articleThink: file.thinkCount,
+    articleWrite: file.writeCount,
+    statusLabel: file.stale ? "stale" : "workflow",
     updatedAt: file.updatedAt,
     openUri: file.openUri
   };
@@ -108,10 +161,21 @@ function articleToCandidate(article: ArticleSummary, vaultName: string, publicBa
     nextAction: top?.ai?.nextAction,
     sourceFile: article.filePath,
     sourceTitle: article.title,
+    workflowStageId: article.stageId,
+    workflowStageTitle: article.stageTitle,
     lane: top?.lane,
     status: top?.status,
+    statusLabel: article.statusLabel,
     tags: top?.tags ?? [],
-    updatedAt: top?.updatedAt ?? top?.createdAt,
+    stale: article.stale,
+    ageDays: article.ageDays,
+    oldestOpenAgeDays: article.oldestOpenAgeDays,
+    articleOpen: article.open,
+    articleCandidate: article.candidate,
+    articleResolved: article.resolved,
+    articleThink: article.think,
+    articleWrite: article.write,
+    updatedAt: article.updatedAt ?? top?.updatedAt ?? top?.createdAt,
     openUri: buildObsidianUri(vaultName, article.filePath),
     answerUrl: top ? buildInputUrl(publicBaseUrl, token, top.id) : buildCardsUrl(publicBaseUrl, token, article.filePath),
     questionId: top?.id
@@ -194,4 +258,3 @@ function displayNameForPath(value: string): string {
   const leaf = parts.at(-1) || normalized;
   return leaf.toLowerCase() === "index" && parts.length > 1 ? parts.at(-2) || leaf : leaf;
 }
-

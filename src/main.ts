@@ -48,7 +48,7 @@ import { ToWriteExternalApiServer, type DeviceCaptureRequest, type DeviceCapture
 import { PushEngine } from "./push/engine";
 import { normalizePushRuntimeState, type PushAnchorInput, type PushFeedbackInput } from "./push/state";
 import type { PushFeedPayload, PushRuntimeState } from "./push/types";
-import { Quote0SyncService, type Quote0SyncResult } from "./quote0/sync-service";
+import { Quote0SyncService, type Quote0SyncPreview, type Quote0SyncResult } from "./quote0/sync-service";
 import type { Quote0Device, Quote0DeviceStatus } from "./quote0/client";
 import { WorkflowIndex } from "./workflow";
 import { createQuestionDecorations } from "./obsidian/decorations";
@@ -543,8 +543,20 @@ export default class ToWritePlugin extends Plugin {
     return this.quote0SyncService.syncNext();
   }
 
+  previewQuote0Next(): Quote0SyncPreview {
+    return this.quote0SyncService.previewNext();
+  }
+
+  previewQuote0DashboardContent(): Quote0SyncPreview {
+    return this.quote0SyncService.previewDashboardContent();
+  }
+
   async sendQuote0TestCard(): Promise<string> {
     return this.quote0SyncService.sendTestCard();
+  }
+
+  async sendQuote0DashboardContent(): Promise<string> {
+    return this.quote0SyncService.sendDashboardContent();
   }
 
   async switchQuote0ToNextContent(): Promise<string> {

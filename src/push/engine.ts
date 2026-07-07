@@ -6,7 +6,7 @@ import { quote0TextApiAdapter, type PushAdapterResult } from "./adapters";
 import { formatPushFeed } from "./formatter";
 import { PushPolicyEngine } from "./policy";
 import { PushContextStore, type PushAnchorInput, type PushFeedbackInput } from "./state";
-import type { PushFeedPayload, PushRuntimeState, PushTargetSettings } from "./types";
+import type { PushCandidate, PushDecision, PushFeedPayload, PushRuntimeState, PushTargetSettings } from "./types";
 
 export interface PushEngineOptions {
   getSettings(): ToWriteSettings;
@@ -32,7 +32,8 @@ export class PushEngine {
   getFeed(targetId?: string): PushFeedPayload {
     const settings = this.options.getSettings();
     const target = resolveTarget(settings, targetId);
-    const stateStore = new PushContextStore(this.options.getState());
+    const state = this.options.getState();
+    const stateStore = new PushContextStore(state);
     const context = stateStore.getCurrentContext();
     const now = new Date();
     const candidates = this.source.build({
@@ -44,7 +45,7 @@ export class PushEngine {
       token: tokenForTarget(settings, target),
       now: now.toISOString()
     });
-    const decision = this.policy.select({
+    const normalDecision = this.policy.select({
       candidates,
       push: settings.push,
       target,
@@ -53,6 +54,7 @@ export class PushEngine {
       now,
       activeFile: this.options.getActiveFile()
     });
+    const decision = this.applyDisplayRotation(normalDecision, candidates, target, state, now);
     return formatPushFeed(decision, {
       privacy: settings.push.privacy,
       context: {
@@ -83,8 +85,44 @@ export class PushEngine {
           decisionReason: feed.decision.reason,
           score: feed.decision.score
         });
+        const state = this.options.getState();
+        const current = state.displayCursors[feed.target.id] ?? 0;
+        state.displayCursors[feed.target.id] = feed.decision.candidateType === "home-summary" ? 0 : current + 1;
         await this.options.saveState();
       }
+    };
+  }
+
+  private applyDisplayRotation(
+    decision: PushDecision,
+    candidates: PushCandidate[],
+    target: PushTargetSettings,
+    state: PushRuntimeState,
+    now: Date
+  ): PushDecision {
+    if (decision.suppressedReason || decision.candidate?.reminderDue) {
+      return decision;
+    }
+
+    const home = candidates.find((candidate) => candidate.type === "home-summary");
+    if (!home) {
+      return decision;
+    }
+
+    const wantsHome = target.defaultPage === "home";
+    const cursor = state.displayCursors[target.id] ?? 0;
+    const rotateHome = target.type === "quote0" && target.defaultPage !== "home" && cursor >= 5;
+    if (!wantsHome && !rotateHome) {
+      return decision;
+    }
+
+    return {
+      target,
+      candidate: home,
+      score: Math.max(decision.score, 1),
+      reason: wantsHome ? "home summary target" : "home summary rotation",
+      quiet: decision.quiet,
+      generatedAt: now.toISOString()
     };
   }
 
@@ -135,4 +173,3 @@ function timeBucket(now: Date): string {
   if (hour < 23) return "evening";
   return "night";
 }
-

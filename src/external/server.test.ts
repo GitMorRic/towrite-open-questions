@@ -186,7 +186,16 @@ describe("external server", () => {
           quiet: false
         },
         display: {
+          variant: "question",
+          icon: "?",
           title: "Old title",
+          primary: "Old body",
+          secondaryLines: ["Next: review"],
+          metrics: [{ label: "? ToThink", value: 1 }],
+          badges: ["Think"],
+          footer: "Think · active note",
+          link: "http://127.0.0.1:48321/device/input?token=q0&questionId=oq_one",
+          titleText: "? Old title",
           message: "Old body",
           signature: "Think"
         }
@@ -201,7 +210,77 @@ describe("external server", () => {
     expect(JSON.parse(response.body)).toMatchObject({
       target: { id: "phone" },
       privacy: { preciseLocationIncluded: false },
-      decision: { candidateId: "oq_one" }
+      decision: { candidateId: "oq_one" },
+      display: {
+        variant: "question",
+        icon: "?",
+        metrics: [{ label: "? ToThink", value: 1 }],
+        badges: ["Think"]
+      }
+    });
+  });
+
+  it("serves article device feed items with workflow timing fields", async () => {
+    const server = makeServer({
+      getArticleSummaries: () => [{
+        filePath: "note.md",
+        title: "Note",
+        open: 1,
+        candidate: 0,
+        resolved: 0,
+        ignored: 0,
+        think: 1,
+        write: 0,
+        needsWork: true,
+        oldestOpenAgeDays: 4,
+        topIssues: [question]
+      }],
+      getWorkflowPayload: () => ({
+        schemaVersion: 1,
+        generatedAt: "2026-07-07T00:00:00.000Z",
+        vaultName: "Vault",
+        enabled: true,
+        counts: { stages: 1, uniqueFiles: 1 },
+        stages: [{
+          id: "processing",
+          title: "Processing",
+          description: "Active work",
+          color: "sky",
+          limit: 20,
+          staleAfterDays: 7,
+          count: 1,
+          staleCount: 1,
+          files: [{
+            filePath: "note.md",
+            title: "Note",
+            description: "Needs a pass",
+            tags: ["processing"],
+            createdAt: "2026-07-01T00:00:00.000Z",
+            updatedAt: "2026-07-03T00:00:00.000Z",
+            ageDays: 4,
+            stale: true,
+            openQuestionCount: 1,
+            thinkCount: 1,
+            writeCount: 0,
+            nextAction: "Review the question",
+            openUri: "obsidian://open?vault=Vault&file=note.md"
+          }]
+        }]
+      })
+    });
+
+    const response = new FakeResponse();
+    await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
+      .handleRequest(new FakeRequest("GET", "/api/v1/device-feed?page=articles", {}), response);
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body).screens[0].items[0]).toMatchObject({
+      type: "article",
+      stageTitle: "Processing",
+      stale: true,
+      ageDays: 4,
+      oldestOpenAgeDays: 4,
+      statusLabel: "stale"
     });
   });
 
