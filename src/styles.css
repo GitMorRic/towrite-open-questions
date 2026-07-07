@@ -2224,6 +2224,14 @@
   background: #f7f5ea;
 }
 
+.towrite-quote0-preview-screen.is-canvas-home.is-wide-low {
+  aspect-ratio: 296 / 128;
+  width: min(100%, 430px);
+  max-width: 430px;
+  min-width: 296px;
+  padding: 6px;
+}
+
 .towrite-quote0-preview-image {
   display: block;
   width: 100%;
@@ -2244,6 +2252,10 @@
   min-height: 0;
   overflow: hidden;
   color: #111;
+}
+
+.towrite-quote0-canvas-home.is-wide-low {
+  gap: 3px;
 }
 
 .towrite-quote0-canvas-header {
@@ -2273,6 +2285,10 @@
   white-space: nowrap;
 }
 
+.towrite-quote0-canvas-home.is-wide-low .towrite-quote0-canvas-title {
+  font-size: 24px;
+}
+
 .towrite-quote0-canvas-subtitle {
   min-width: 0;
   overflow: hidden;
@@ -2285,6 +2301,10 @@
   white-space: nowrap;
 }
 
+.towrite-quote0-canvas-home.is-wide-low .towrite-quote0-canvas-subtitle {
+  font-size: 12px;
+}
+
 .towrite-quote0-canvas-summary {
   min-width: 0;
   overflow: hidden;
@@ -2294,6 +2314,10 @@
   line-height: 1.05;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.towrite-quote0-canvas-home.is-wide-low .towrite-quote0-canvas-summary {
+  font-size: 11px;
 }
 
 .towrite-quote0-canvas-rule {
@@ -2310,6 +2334,10 @@
   overflow: hidden;
   border: 1px solid #111;
   border-radius: 4px;
+}
+
+.towrite-quote0-canvas-home.is-wide-low .towrite-quote0-canvas-metrics {
+  height: 30px;
 }
 
 .towrite-quote0-canvas-metric {
@@ -2335,6 +2363,10 @@
   white-space: nowrap;
 }
 
+.towrite-quote0-canvas-home.is-wide-low .towrite-quote0-canvas-metric-value {
+  font-size: 17px;
+}
+
 .towrite-quote0-canvas-metric-label {
   min-width: 0;
   overflow: hidden;
@@ -2344,6 +2376,10 @@
   line-height: 1;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.towrite-quote0-canvas-home.is-wide-low .towrite-quote0-canvas-metric-label {
+  font-size: 8px;
 }
 
 .towrite-quote0-canvas-workflow {
@@ -2356,6 +2392,10 @@
   border-radius: 4px;
 }
 
+.towrite-quote0-canvas-home.is-wide-low .towrite-quote0-canvas-workflow {
+  height: 44px;
+}
+
 .towrite-quote0-canvas-workflow-title {
   padding: 3px 6px 0;
   color: #111;
@@ -2363,6 +2403,11 @@
   font-size: 14px;
   font-weight: 900;
   line-height: 1;
+}
+
+.towrite-quote0-canvas-home.is-wide-low .towrite-quote0-canvas-workflow-title {
+  padding: 2px 5px 0;
+  font-size: 12px;
 }
 
 .towrite-quote0-canvas-stage-grid {
@@ -2373,6 +2418,10 @@
   padding: 0 6px 5px;
 }
 
+.towrite-quote0-canvas-home.is-wide-low .towrite-quote0-canvas-stage-grid {
+  padding: 0 5px 3px;
+}
+
 .towrite-quote0-canvas-stage {
   display: grid;
   grid-template-columns: 4px minmax(0, 1fr);
@@ -2380,6 +2429,10 @@
   min-width: 0;
   height: 12px;
   background: #ece9dc;
+}
+
+.towrite-quote0-canvas-home.is-wide-low .towrite-quote0-canvas-stage {
+  height: 10px;
 }
 
 .towrite-quote0-canvas-stage-stripe {
@@ -2416,6 +2469,10 @@
   white-space: nowrap;
 }
 
+.towrite-quote0-canvas-home.is-wide-low .towrite-quote0-canvas-stage-text {
+  font-size: 9px;
+}
+
 .towrite-quote0-canvas-spacer {
   flex: 1 1 auto;
   min-height: 0;
@@ -2428,6 +2485,12 @@
   gap: 4px;
   flex: 0 0 auto;
   height: 24px;
+}
+
+.towrite-quote0-canvas-home.is-wide-low .towrite-quote0-canvas-footer {
+  grid-template-columns: minmax(0, 1fr) 36px 64px 36px minmax(0, 1fr);
+  gap: 3px;
+  height: 18px;
 }
 
 .towrite-quote0-canvas-nav {
@@ -2443,6 +2506,10 @@
   line-height: 1;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.towrite-quote0-canvas-home.is-wide-low .towrite-quote0-canvas-nav {
+  font-size: 9px;
 }
 
 .towrite-quote0-canvas-nav.is-active {

@@ -68,6 +68,9 @@ describe("Quote0SyncService", () => {
     });
     expect(preview.canvasPayload?.data).toMatchObject({
       title: "小屏首页",
+      layoutProfile: "wide-low",
+      screenWidth: 296,
+      screenHeight: 128,
       think: "1",
       write: "1"
     });
@@ -137,11 +140,16 @@ describe("Quote0SyncService", () => {
     });
     expect(client.canvases[0].payload.data).toMatchObject({
       title: "小屏首页",
+      layoutProfile: "wide-low",
+      screenWidth: 296,
+      screenHeight: 128,
       think: "1",
       write: "1"
     });
+    expect(client.canvases[0].payload.layoutFull?.tw).toBe("p-[4px]");
     expect(client.canvases[0].payload.windowData.default[0].type).toBe("div");
     expect(JSON.stringify(client.canvases[0].payload.windowData)).not.toContain("inputData");
+    expect(JSON.stringify(client.canvases[0].payload.windowData)).toContain("\"height\":\"14px\"");
   });
 
   it("uses Canvas API when the push engine rotates to the dashboard", async () => {

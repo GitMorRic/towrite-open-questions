@@ -6,9 +6,17 @@ export interface Quote0DashboardCanvasOptions {
   link?: string;
   taskAlias?: string;
   border?: 0 | 1;
+  layout?: Quote0DashboardCanvasLayout;
+  screenWidth?: number;
+  screenHeight?: number;
 }
 
+export type Quote0DashboardCanvasLayout = "classic-27" | "wide-low";
+
 interface DashboardData extends Record<string, unknown> {
+  layoutProfile: Quote0DashboardCanvasLayout;
+  screenWidth: number;
+  screenHeight: number;
   title: string;
   subtitle: string;
   summary: string;
@@ -39,22 +47,155 @@ interface MetricSet {
   workflow: string;
 }
 
+interface DashboardCanvasLayoutSpec {
+  profile: Quote0DashboardCanvasLayout;
+  screenWidth: number;
+  screenHeight: number;
+  outerPaddingTw: string;
+  rootGap: string;
+  headerRowGap: string;
+  titleFontSize: string;
+  titleLineHeight: string;
+  subtitleFontSize: string;
+  subtitleLineHeight: string;
+  summaryFontSize: string;
+  summaryLineHeight: string;
+  ruleHeight: string;
+  ruleMarginTop: string;
+  metricHeight: string;
+  metricValueFontSize: string;
+  metricValueLineHeight: string;
+  metricLabelFontSize: string;
+  metricLabelLineHeight: string;
+  metricRadius: string;
+  workflowHeight: string;
+  workflowTitleFontSize: string;
+  workflowTitleLineHeight: string;
+  workflowTitlePaddingLeft: string;
+  workflowTitlePaddingTop: string;
+  stageGridPadding: string;
+  stageGridGap: string;
+  stagePairGap: string;
+  stageStripeWidth: string;
+  stageFontSize: string;
+  stageLineHeight: string;
+  stageHeight: string;
+  stagePaddingLeft: string;
+  footerHeight: string;
+  footerGap: string;
+  navArrowWidth: string;
+  navHomeWidth: string;
+  navFontSize: string;
+  navLineHeight: string;
+  navRadius: string;
+  spacerMarginTop: string;
+}
+
+const CLASSIC_27_LAYOUT: DashboardCanvasLayoutSpec = {
+  profile: "classic-27",
+  screenWidth: 264,
+  screenHeight: 176,
+  outerPaddingTw: "p-[8px]",
+  rootGap: "4px",
+  headerRowGap: "6px",
+  titleFontSize: "20px",
+  titleLineHeight: "22px",
+  subtitleFontSize: "11px",
+  subtitleLineHeight: "14px",
+  summaryFontSize: "10px",
+  summaryLineHeight: "12px",
+  ruleHeight: "2px",
+  ruleMarginTop: "2px",
+  metricHeight: "25px",
+  metricValueFontSize: "15px",
+  metricValueLineHeight: "15px",
+  metricLabelFontSize: "7px",
+  metricLabelLineHeight: "8px",
+  metricRadius: "3px",
+  workflowHeight: "56px",
+  workflowTitleFontSize: "13px",
+  workflowTitleLineHeight: "14px",
+  workflowTitlePaddingLeft: "5px",
+  workflowTitlePaddingTop: "2px",
+  stageGridPadding: "1px 5px 4px",
+  stageGridGap: "1px",
+  stagePairGap: "4px",
+  stageStripeWidth: "3px",
+  stageFontSize: "10px",
+  stageLineHeight: "12px",
+  stageHeight: "12px",
+  stagePaddingLeft: "4px",
+  footerHeight: "17px",
+  footerGap: "4px",
+  navArrowWidth: "42px",
+  navHomeWidth: "70px",
+  navFontSize: "9px",
+  navLineHeight: "11px",
+  navRadius: "3px",
+  spacerMarginTop: "1px"
+};
+
+const WIDE_LOW_LAYOUT: DashboardCanvasLayoutSpec = {
+  profile: "wide-low",
+  screenWidth: 296,
+  screenHeight: 128,
+  outerPaddingTw: "p-[4px]",
+  rootGap: "2px",
+  headerRowGap: "5px",
+  titleFontSize: "17px",
+  titleLineHeight: "18px",
+  subtitleFontSize: "9px",
+  subtitleLineHeight: "11px",
+  summaryFontSize: "8px",
+  summaryLineHeight: "9px",
+  ruleHeight: "2px",
+  ruleMarginTop: "1px",
+  metricHeight: "22px",
+  metricValueFontSize: "14px",
+  metricValueLineHeight: "14px",
+  metricLabelFontSize: "6px",
+  metricLabelLineHeight: "7px",
+  metricRadius: "3px",
+  workflowHeight: "42px",
+  workflowTitleFontSize: "11px",
+  workflowTitleLineHeight: "12px",
+  workflowTitlePaddingLeft: "4px",
+  workflowTitlePaddingTop: "1px",
+  stageGridPadding: "0 4px 2px",
+  stageGridGap: "1px",
+  stagePairGap: "4px",
+  stageStripeWidth: "3px",
+  stageFontSize: "8px",
+  stageLineHeight: "9px",
+  stageHeight: "9px",
+  stagePaddingLeft: "3px",
+  footerHeight: "14px",
+  footerGap: "3px",
+  navArrowWidth: "32px",
+  navHomeWidth: "56px",
+  navFontSize: "8px",
+  navLineHeight: "10px",
+  navRadius: "3px",
+  spacerMarginTop: "0"
+};
+
 export function buildQuote0DashboardCanvasPayload(
   display: PushDisplayCard,
   workflow: WorkflowIndexPayload,
   options: Quote0DashboardCanvasOptions = {}
 ): Quote0CanvasPayload {
-  const data = buildDashboardCanvasData(display, workflow);
+  const layout = resolveDashboardCanvasLayout(options);
+  const data = buildDashboardCanvasData(display, workflow, layout);
   const taskAlias = options.taskAlias?.trim();
   return {
     refreshNow: true,
     taskAlias: taskAlias || undefined,
     data,
     windowData: {
-      default: [root(data)]
+      default: [root(data, layout)]
     },
     layoutFull: {
-      tw: "p-[8px]",
+      tw: layout.outerPaddingTw,
       style: {
         backgroundColor: "#f7f5ea"
       }
@@ -64,7 +205,11 @@ export function buildQuote0DashboardCanvasPayload(
   };
 }
 
-function buildDashboardCanvasData(display: PushDisplayCard, workflow: WorkflowIndexPayload): DashboardData {
+function buildDashboardCanvasData(
+  display: PushDisplayCard,
+  workflow: WorkflowIndexPayload,
+  layout: DashboardCanvasLayoutSpec
+): DashboardData {
   const metrics = collectMetrics(display, workflow);
   const stages = workflow.enabled
     ? workflow.stages.slice(0, 5).map((stage) => `${stage.title} · ${stage.count}`)
@@ -73,6 +218,9 @@ function buildDashboardCanvasData(display: PushDisplayCard, workflow: WorkflowIn
     stages.push("");
   }
   return {
+    layoutProfile: layout.profile,
+    screenWidth: layout.screenWidth,
+    screenHeight: layout.screenHeight,
     title: "小屏首页",
     subtitle: "ToThink / ToWrite / Workflow 总览",
     summary: `ToThink ${metrics.think} · ToWrite ${metrics.write} · Workflow ${metrics.workflow} · 提醒 ${metrics.due}`,
@@ -94,18 +242,18 @@ function buildDashboardCanvasData(display: PushDisplayCard, workflow: WorkflowIn
   };
 }
 
-function root(data: DashboardData): Quote0CanvasElement {
+function root(data: DashboardData, layout: DashboardCanvasLayoutSpec): Quote0CanvasElement {
   return div("", [
-    header(data),
-    metricStrip(data),
-    workflowPanel(data),
-    spacer(),
-    footer(data)
+    header(data, layout),
+    metricStrip(data, layout),
+    workflowPanel(data, layout),
+    spacer(layout),
+    footer(data, layout)
   ], {
     boxSizing: "border-box",
     display: "flex",
     flexDirection: "column",
-    gap: "4px",
+    gap: layout.rootGap,
     width: "100%",
     height: "100%",
     minWidth: "0",
@@ -116,14 +264,14 @@ function root(data: DashboardData): Quote0CanvasElement {
   });
 }
 
-function header(data: DashboardData): Quote0CanvasElement {
+function header(data: DashboardData, layout: DashboardCanvasLayoutSpec): Quote0CanvasElement {
   return div("", [
     div("", [
       span(data.title, "", {
         flex: "0 1 auto",
         minWidth: "0",
-        fontSize: "20px",
-        lineHeight: "22px",
+        fontSize: layout.titleFontSize,
+        lineHeight: layout.titleLineHeight,
         fontFamily: "ChillDuanSans, sans-serif",
         fontWeight: 800,
         overflow: "hidden",
@@ -133,8 +281,8 @@ function header(data: DashboardData): Quote0CanvasElement {
       span(data.subtitle, "", {
         flex: "1 1 auto",
         minWidth: "0",
-        fontSize: "11px",
-        lineHeight: "14px",
+        fontSize: layout.subtitleFontSize,
+        lineHeight: layout.subtitleLineHeight,
         fontFamily: "Playfair Display, serif",
         overflow: "hidden",
         textOverflow: "ellipsis",
@@ -146,20 +294,20 @@ function header(data: DashboardData): Quote0CanvasElement {
       flexDirection: "row",
       alignItems: "flex-end",
       justifyContent: "space-between",
-      gap: "6px",
+      gap: layout.headerRowGap,
       minWidth: "0"
     }),
     span(data.summary, "", {
       minWidth: "0",
-      fontSize: "10px",
-      lineHeight: "12px",
+      fontSize: layout.summaryFontSize,
+      lineHeight: layout.summaryLineHeight,
       fontFamily: "ChillDuanSans, sans-serif",
       fontWeight: 700,
       overflow: "hidden",
       textOverflow: "ellipsis",
       whiteSpace: "nowrap"
     }),
-    div("", "", { width: "100%", height: "2px", marginTop: "2px", backgroundColor: "#111", flexShrink: 0 })
+    div("", "", { width: "100%", height: layout.ruleHeight, marginTop: layout.ruleMarginTop, backgroundColor: "#111", flexShrink: 0 })
   ], {
     display: "flex",
     flexDirection: "column",
@@ -168,36 +316,36 @@ function header(data: DashboardData): Quote0CanvasElement {
   });
 }
 
-function metricStrip(data: DashboardData): Quote0CanvasElement {
+function metricStrip(data: DashboardData, layout: DashboardCanvasLayoutSpec): Quote0CanvasElement {
   return div("", [
-    metricCell(data.think, "ToThink"),
-    metricCell(data.write, "ToWrite"),
-    metricCell(data.open, "未解决"),
-    metricCell(data.articles, "有问题文章"),
-    metricCell(data.due, "提醒到期", true)
+    metricCell(data.think, "ToThink", layout),
+    metricCell(data.write, "ToWrite", layout),
+    metricCell(data.open, "未解决", layout),
+    metricCell(data.articles, "有问题文章", layout),
+    metricCell(data.due, "提醒到期", layout, true)
   ], {
     display: "flex",
     flexDirection: "row",
     flexShrink: 0,
     width: "100%",
-    height: "25px",
+    height: layout.metricHeight,
     overflow: "hidden",
     border: "1px solid #111",
-    borderRadius: "3px"
+    borderRadius: layout.metricRadius
   });
 }
 
-function metricCell(value: string, label: string, isLast = false): Quote0CanvasElement {
+function metricCell(value: string, label: string, layout: DashboardCanvasLayoutSpec, isLast = false): Quote0CanvasElement {
   return div("", [
     span(value, "", {
-      fontSize: "15px",
-      lineHeight: "15px",
+      fontSize: layout.metricValueFontSize,
+      lineHeight: layout.metricValueLineHeight,
       fontFamily: "Playfair Display, serif",
       fontWeight: 800
     }),
     span(label, "", {
-      fontSize: "7px",
-      lineHeight: "8px",
+      fontSize: layout.metricLabelFontSize,
+      lineHeight: layout.metricLabelLineHeight,
       fontFamily: "ChillDuanSans, sans-serif",
       whiteSpace: "nowrap"
     })
@@ -212,34 +360,37 @@ function metricCell(value: string, label: string, isLast = false): Quote0CanvasE
   });
 }
 
-function workflowPanel(data: DashboardData): Quote0CanvasElement {
+function workflowPanel(data: DashboardData, layout: DashboardCanvasLayoutSpec): Quote0CanvasElement {
   return div("", [
     span("Workflow 状态", "", {
-      fontSize: "13px",
-      lineHeight: "14px",
+      fontSize: layout.workflowTitleFontSize,
+      lineHeight: layout.workflowTitleLineHeight,
       fontFamily: "Playfair Display, serif",
       fontWeight: 800,
-      paddingLeft: "5px",
-      paddingTop: "2px"
+      paddingLeft: layout.workflowTitlePaddingLeft,
+      paddingTop: layout.workflowTitlePaddingTop
     }),
     div("", [
       stagePair(
-        stageCell(data.stage0, "#111"),
-        stageCell(data.stage1, "#8b6c17")
+        stageCell(data.stage0, "#111", layout),
+        stageCell(data.stage1, "#8b6c17", layout),
+        layout
       ),
       stagePair(
-        stageCell(data.stage2, "#3a8a5a"),
-        stageCell(data.stage3, "#2e6fa8")
+        stageCell(data.stage2, "#3a8a5a", layout),
+        stageCell(data.stage3, "#2e6fa8", layout),
+        layout
       ),
       stagePair(
-        stageCell(data.stage4, "#7c62b5"),
-        stageCell("", "#f7f5ea")
+        stageCell(data.stage4, "#7c62b5", layout),
+        stageCell("", "#f7f5ea", layout),
+        layout
       )
     ], {
       display: "flex",
       flexDirection: "column",
-      gap: "1px",
-      padding: "1px 5px 4px",
+      gap: layout.stageGridGap,
+      padding: layout.stageGridPadding,
       minWidth: "0"
     })
   ], {
@@ -247,36 +398,36 @@ function workflowPanel(data: DashboardData): Quote0CanvasElement {
     flexDirection: "column",
     flexShrink: 0,
     width: "100%",
-    height: "56px",
+    height: layout.workflowHeight,
     overflow: "hidden",
     border: "1px solid #111",
     borderRadius: "3px"
   });
 }
 
-function stagePair(left: Quote0CanvasElement, right: Quote0CanvasElement): Quote0CanvasElement {
+function stagePair(left: Quote0CanvasElement, right: Quote0CanvasElement, layout?: DashboardCanvasLayoutSpec): Quote0CanvasElement {
   return div("", [left, right], {
     display: "flex",
     flexDirection: "row",
-    gap: "4px",
+    gap: layout?.stagePairGap ?? CLASSIC_27_LAYOUT.stagePairGap,
     minWidth: "0"
   });
 }
 
-function stageCell(text: string, stripeColor: string): Quote0CanvasElement {
+function stageCell(text: string, stripeColor: string, layout: DashboardCanvasLayoutSpec): Quote0CanvasElement {
   return div("", [
-    div("", "", { width: "3px", alignSelf: "stretch", backgroundColor: stripeColor, flexShrink: 0 }),
+    div("", "", { width: layout.stageStripeWidth, alignSelf: "stretch", backgroundColor: stripeColor, flexShrink: 0 }),
     span(text, "", {
       flex: "1 1 auto",
       minWidth: "0",
-      fontSize: "10px",
-      lineHeight: "12px",
+      fontSize: layout.stageFontSize,
+      lineHeight: layout.stageLineHeight,
       fontFamily: "Playfair Display, serif",
       fontWeight: 800,
       overflow: "hidden",
       textOverflow: "ellipsis",
       whiteSpace: "nowrap",
-      paddingLeft: "4px"
+      paddingLeft: layout.stagePaddingLeft
     })
   ], {
     display: "flex",
@@ -284,38 +435,38 @@ function stageCell(text: string, stripeColor: string): Quote0CanvasElement {
     alignItems: "center",
     flex: "1 1 0",
     minWidth: "0",
-    height: "12px",
+    height: layout.stageHeight,
     backgroundColor: text ? "#ece9dc" : "#f7f5ea"
   });
 }
 
-function spacer(): Quote0CanvasElement {
+function spacer(layout: DashboardCanvasLayoutSpec): Quote0CanvasElement {
   return div("", "", {
     flex: "1 1 auto",
     minHeight: "0",
     borderTop: "1px solid #111",
-    marginTop: "1px"
+    marginTop: layout.spacerMarginTop
   });
 }
 
-function footer(data: DashboardData): Quote0CanvasElement {
+function footer(data: DashboardData, layout: DashboardCanvasLayoutSpec): Quote0CanvasElement {
   return div("", [
-    navBox(data.footerLeft),
-    navBox("←", "42px"),
-    navBox(data.footerCenter, "70px", true),
-    navBox("→", "42px"),
-    navBox(data.footerRight)
+    navBox(data.footerLeft, undefined, false, layout),
+    navBox("←", layout.navArrowWidth, false, layout),
+    navBox(data.footerCenter, layout.navHomeWidth, true, layout),
+    navBox("→", layout.navArrowWidth, false, layout),
+    navBox(data.footerRight, undefined, false, layout)
   ], {
     display: "flex",
     flexDirection: "row",
     flexShrink: 0,
     width: "100%",
-    gap: "4px",
-    height: "17px"
+    gap: layout.footerGap,
+    height: layout.footerHeight
   });
 }
 
-function navBox(text: string, width?: string, active = false): Quote0CanvasElement {
+function navBox(text: string, width: string | undefined, active: boolean, layout: DashboardCanvasLayoutSpec): Quote0CanvasElement {
   return div("", text, {
     display: "flex",
     alignItems: "center",
@@ -323,8 +474,8 @@ function navBox(text: string, width?: string, active = false): Quote0CanvasEleme
     flex: width ? "0 0 auto" : "1 1 0",
     width,
     minWidth: "0",
-    fontSize: "9px",
-    lineHeight: "11px",
+    fontSize: layout.navFontSize,
+    lineHeight: layout.navLineHeight,
     fontFamily: "ChillDuanSans, sans-serif",
     fontWeight: active ? 800 : 700,
     overflow: "hidden",
@@ -332,7 +483,7 @@ function navBox(text: string, width?: string, active = false): Quote0CanvasEleme
     color: active ? "#f7f5ea" : "#111",
     backgroundColor: active ? "#111" : "#f7f5ea",
     border: "1px solid #111",
-    borderRadius: "3px"
+    borderRadius: layout.navRadius
   });
 }
 
@@ -356,6 +507,30 @@ function span(children: string, tw = "", style?: Record<string, unknown>): Quote
       children
     }
   };
+}
+
+function resolveDashboardCanvasLayout(options: Quote0DashboardCanvasOptions): DashboardCanvasLayoutSpec {
+  if (options.layout === "classic-27") {
+    return CLASSIC_27_LAYOUT;
+  }
+  if (options.layout === "wide-low") {
+    return WIDE_LOW_LAYOUT;
+  }
+
+  const width = finitePositive(options.screenWidth);
+  const height = finitePositive(options.screenHeight);
+  if (width && height) {
+    const aspectRatio = width / height;
+    if (aspectRatio >= 1.85 || height <= 152) {
+      return WIDE_LOW_LAYOUT;
+    }
+  }
+
+  return CLASSIC_27_LAYOUT;
+}
+
+function finitePositive(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
 function collectMetrics(display: PushDisplayCard, workflow: WorkflowIndexPayload): MetricSet {

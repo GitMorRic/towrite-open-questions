@@ -391,7 +391,8 @@ export class Quote0SyncService {
         canvasPayload: buildQuote0DashboardCanvasPayload(prepared.display, this.options.getWorkflowPayload(), {
           link: prepared.nfcLink || prepared.display.link || buildQuote0InputUrl(settings.externalApi.publicBaseUrl || "", settings.quote0.nfcToken),
           taskAlias: settings.quote0.canvasTaskAlias,
-          border: settings.quote0.canvasBorder
+          border: settings.quote0.canvasBorder,
+          ...quote0CanvasLayoutOptions(settings)
         })
       };
     }
@@ -450,6 +451,17 @@ function quote0PushTarget(settings: ToWriteSettings): PushTargetSettings {
     quietHoursEnd: "",
     token: settings.quote0.nfcToken,
     capabilities: ["push", "nfc", "text-api", "image-api", "canvas-api"]
+  };
+}
+
+function quote0CanvasLayoutOptions(settings: ToWriteSettings): { layout?: "wide-low"; screenWidth?: number; screenHeight?: number } {
+  const target = quote0PushTarget(settings);
+  if (target.width === 264 && target.height === 176) {
+    return { layout: "wide-low", screenWidth: 296, screenHeight: 128 };
+  }
+  return {
+    screenWidth: target.width,
+    screenHeight: target.height
   };
 }
 

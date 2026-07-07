@@ -1626,12 +1626,22 @@ export class ToWriteSettingTab extends PluginSettingTab {
       const screenClasses = ["towrite-quote0-preview-screen"];
       if (isCanvas) {
         screenClasses.push("is-canvas-home");
+        if (canvasDataText(preview.canvasPayload?.data ?? {}, "layoutProfile", "") === "wide-low") {
+          screenClasses.push("is-wide-low");
+        }
       } else if (isImage) {
         screenClasses.push("is-image");
       } else if (isDashboard) {
         screenClasses.push("is-dashboard");
       }
       const device = screen.createDiv({ cls: screenClasses.join(" ") });
+      if (isCanvas && preview.canvasPayload) {
+        const screenWidth = canvasDataNumber(preview.canvasPayload.data, "screenWidth");
+        const screenHeight = canvasDataNumber(preview.canvasPayload.data, "screenHeight");
+        if (screenWidth && screenHeight) {
+          device.style.aspectRatio = `${screenWidth} / ${screenHeight}`;
+        }
+      }
       if (isImage && preview.imagePayload) {
         renderQuote0ImagePreview(device, preview.imagePayload);
       } else if (isCanvas && preview.canvasPayload) {
@@ -1674,6 +1684,8 @@ export class ToWriteSettingTab extends PluginSettingTab {
       if (preview.canvasPayload) {
         addPreviewField(fields, "canvasTaskAlias", preview.canvasPayload.taskAlias === null || preview.canvasPayload.taskAlias === undefined ? undefined : String(preview.canvasPayload.taskAlias));
         addPreviewField(fields, "canvasBorder", preview.canvasPayload.border === undefined ? undefined : String(preview.canvasPayload.border));
+        addPreviewField(fields, "canvasLayout", canvasDataText(preview.canvasPayload.data, "layoutProfile", ""));
+        addPreviewField(fields, "canvasScreen", `${canvasDataText(preview.canvasPayload.data, "screenWidth", "?")}x${canvasDataText(preview.canvasPayload.data, "screenHeight", "?")}`);
         addPreviewField(fields, "canvasData", `${Object.keys(preview.canvasPayload.data).length} fields`);
         addPreviewField(fields, "windowData", `${preview.canvasPayload.windowData.default.length} default layer`);
       }
@@ -2954,7 +2966,11 @@ function renderQuote0ImagePreview(device: HTMLElement, payload: Quote0ImagePaylo
 
 function renderQuote0CanvasDashboardPreview(device: HTMLElement, payload: Quote0CanvasPayload): void {
   const data = payload.data;
-  const shell = device.createDiv({ cls: "towrite-quote0-canvas-home" });
+  const shellClasses = ["towrite-quote0-canvas-home"];
+  if (canvasDataText(data, "layoutProfile", "") === "wide-low") {
+    shellClasses.push("is-wide-low");
+  }
+  const shell = device.createDiv({ cls: shellClasses.join(" ") });
 
   const header = shell.createDiv({ cls: "towrite-quote0-canvas-header" });
   const headerRow = header.createDiv({ cls: "towrite-quote0-canvas-header-row" });
@@ -3067,6 +3083,12 @@ function previewImageSummary(value: string | undefined): string | undefined {
 function canvasDataText(data: Record<string, unknown>, key: string, fallback: string): string {
   const value = data[key];
   return typeof value === "string" || typeof value === "number" ? String(value) : fallback;
+}
+
+function canvasDataNumber(data: Record<string, unknown>, key: string): number | undefined {
+  const value = data[key];
+  const parsed = typeof value === "number" ? value : Number.parseFloat(String(value ?? ""));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 function addPreviewField(containerEl: HTMLElement, label: string, value: string | undefined): void {
