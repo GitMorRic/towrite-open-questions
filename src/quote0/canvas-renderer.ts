@@ -140,41 +140,41 @@ const WIDE_LOW_LAYOUT: DashboardCanvasLayoutSpec = {
   screenWidth: 296,
   screenHeight: 128,
   outerPaddingTw: "p-[4px]",
-  rootGap: "2px",
-  headerRowGap: "5px",
-  titleFontSize: "17px",
-  titleLineHeight: "18px",
-  subtitleFontSize: "9px",
-  subtitleLineHeight: "11px",
-  summaryFontSize: "8px",
-  summaryLineHeight: "9px",
+  rootGap: "3px",
+  headerRowGap: "6px",
+  titleFontSize: "22px",
+  titleLineHeight: "23px",
+  subtitleFontSize: "11px",
+  subtitleLineHeight: "12px",
+  summaryFontSize: "10px",
+  summaryLineHeight: "11px",
   ruleHeight: "2px",
   ruleMarginTop: "1px",
-  metricHeight: "22px",
-  metricValueFontSize: "14px",
-  metricValueLineHeight: "14px",
-  metricLabelFontSize: "6px",
-  metricLabelLineHeight: "7px",
+  metricHeight: "31px",
+  metricValueFontSize: "18px",
+  metricValueLineHeight: "18px",
+  metricLabelFontSize: "8px",
+  metricLabelLineHeight: "9px",
   metricRadius: "3px",
-  workflowHeight: "42px",
-  workflowTitleFontSize: "11px",
-  workflowTitleLineHeight: "12px",
+  workflowHeight: "55px",
+  workflowTitleFontSize: "13px",
+  workflowTitleLineHeight: "14px",
   workflowTitlePaddingLeft: "4px",
   workflowTitlePaddingTop: "1px",
-  stageGridPadding: "0 4px 2px",
+  stageGridPadding: "1px 5px 3px",
   stageGridGap: "1px",
   stagePairGap: "4px",
   stageStripeWidth: "3px",
-  stageFontSize: "8px",
-  stageLineHeight: "9px",
-  stageHeight: "9px",
+  stageFontSize: "10px",
+  stageLineHeight: "11px",
+  stageHeight: "11px",
   stagePaddingLeft: "3px",
-  footerHeight: "14px",
+  footerHeight: "16px",
   footerGap: "3px",
-  navArrowWidth: "32px",
-  navHomeWidth: "56px",
-  navFontSize: "8px",
-  navLineHeight: "10px",
+  navArrowWidth: "34px",
+  navHomeWidth: "58px",
+  navFontSize: "9px",
+  navLineHeight: "11px",
   navRadius: "3px",
   spacerMarginTop: "0"
 };
@@ -213,7 +213,7 @@ function buildDashboardCanvasData(
   const metrics = collectMetrics(display, workflow);
   const stages = workflow.enabled
     ? workflow.stages.slice(0, 5).map((stage) => `${stage.title} · ${stage.count}`)
-    : ["Workflow 未启用 · 0"];
+    : [layout.profile === "wide-low" ? "Workflow off · 0" : "Workflow 未启用 · 0"];
   while (stages.length < 5) {
     stages.push("");
   }
@@ -221,9 +221,11 @@ function buildDashboardCanvasData(
     layoutProfile: layout.profile,
     screenWidth: layout.screenWidth,
     screenHeight: layout.screenHeight,
-    title: "小屏首页",
-    subtitle: "ToThink / ToWrite / Workflow 总览",
-    summary: `ToThink ${metrics.think} · ToWrite ${metrics.write} · Workflow ${metrics.workflow} · 提醒 ${metrics.due}`,
+    title: layout.profile === "wide-low" ? "ToWrite" : "小屏首页",
+    subtitle: layout.profile === "wide-low" ? "Overview" : "ToThink / ToWrite / Workflow 总览",
+    summary: layout.profile === "wide-low"
+      ? `Think ${metrics.think} · Write ${metrics.write} · Open ${metrics.open} · Due ${metrics.due}`
+      : `ToThink ${metrics.think} · ToWrite ${metrics.write} · Workflow ${metrics.workflow} · 提醒 ${metrics.due}`,
     think: metrics.think,
     write: metrics.write,
     open: metrics.open,
@@ -236,9 +238,9 @@ function buildDashboardCanvasData(
     stage2: stages[2] ?? "",
     stage3: stages[3] ?? "",
     stage4: stages[4] ?? "",
-    footerLeft: "新想法",
-    footerCenter: "⌂ 首页",
-    footerRight: "手机输入"
+    footerLeft: layout.profile === "wide-low" ? "New" : "新想法",
+    footerCenter: layout.profile === "wide-low" ? "Home" : "⌂ 首页",
+    footerRight: layout.profile === "wide-low" ? "Input" : "手机输入"
   };
 }
 
@@ -283,7 +285,8 @@ function header(data: DashboardData, layout: DashboardCanvasLayoutSpec): Quote0C
         minWidth: "0",
         fontSize: layout.subtitleFontSize,
         lineHeight: layout.subtitleLineHeight,
-        fontFamily: "Playfair Display, serif",
+        fontFamily: "ChillDuanSans, sans-serif",
+        fontWeight: 700,
         overflow: "hidden",
         textOverflow: "ellipsis",
         whiteSpace: "nowrap",
@@ -318,11 +321,11 @@ function header(data: DashboardData, layout: DashboardCanvasLayoutSpec): Quote0C
 
 function metricStrip(data: DashboardData, layout: DashboardCanvasLayoutSpec): Quote0CanvasElement {
   return div("", [
-    metricCell(data.think, "ToThink", layout),
-    metricCell(data.write, "ToWrite", layout),
-    metricCell(data.open, "未解决", layout),
-    metricCell(data.articles, "有问题文章", layout),
-    metricCell(data.due, "提醒到期", layout, true)
+    metricCell(data.open, layout.profile === "wide-low" ? "Open" : "未解决", layout),
+    metricCell(data.think, layout.profile === "wide-low" ? "Think" : "ToThink", layout),
+    metricCell(data.write, layout.profile === "wide-low" ? "Write" : "ToWrite", layout),
+    metricCell(data.articles, layout.profile === "wide-low" ? "Art" : "有问题文章", layout),
+    metricCell(data.due, layout.profile === "wide-low" ? "Due" : "提醒到期", layout, true)
   ], {
     display: "flex",
     flexDirection: "row",
@@ -340,13 +343,14 @@ function metricCell(value: string, label: string, layout: DashboardCanvasLayoutS
     span(value, "", {
       fontSize: layout.metricValueFontSize,
       lineHeight: layout.metricValueLineHeight,
-      fontFamily: "Playfair Display, serif",
-      fontWeight: 800
+      fontFamily: "ChillDuanSans, sans-serif",
+      fontWeight: 900
     }),
     span(label, "", {
       fontSize: layout.metricLabelFontSize,
       lineHeight: layout.metricLabelLineHeight,
       fontFamily: "ChillDuanSans, sans-serif",
+      fontWeight: 700,
       whiteSpace: "nowrap"
     })
   ], {
@@ -362,10 +366,10 @@ function metricCell(value: string, label: string, layout: DashboardCanvasLayoutS
 
 function workflowPanel(data: DashboardData, layout: DashboardCanvasLayoutSpec): Quote0CanvasElement {
   return div("", [
-    span("Workflow 状态", "", {
+    span(layout.profile === "wide-low" ? "Workflow" : "Workflow 状态", "", {
       fontSize: layout.workflowTitleFontSize,
       lineHeight: layout.workflowTitleLineHeight,
-      fontFamily: "Playfair Display, serif",
+      fontFamily: "ChillDuanSans, sans-serif",
       fontWeight: 800,
       paddingLeft: layout.workflowTitlePaddingLeft,
       paddingTop: layout.workflowTitlePaddingTop
@@ -422,7 +426,7 @@ function stageCell(text: string, stripeColor: string, layout: DashboardCanvasLay
       minWidth: "0",
       fontSize: layout.stageFontSize,
       lineHeight: layout.stageLineHeight,
-      fontFamily: "Playfair Display, serif",
+      fontFamily: "ChillDuanSans, sans-serif",
       fontWeight: 800,
       overflow: "hidden",
       textOverflow: "ellipsis",
@@ -442,7 +446,7 @@ function stageCell(text: string, stripeColor: string, layout: DashboardCanvasLay
 
 function spacer(layout: DashboardCanvasLayoutSpec): Quote0CanvasElement {
   return div("", "", {
-    flex: "1 1 auto",
+    flex: layout.profile === "wide-low" ? "0 0 5px" : "1 1 auto",
     minHeight: "0",
     borderTop: "1px solid #111",
     marginTop: layout.spacerMarginTop

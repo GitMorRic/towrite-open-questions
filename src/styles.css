@@ -2255,7 +2255,7 @@
 }
 
 .towrite-quote0-canvas-home.is-wide-low {
-  gap: 3px;
+  gap: 4px;
 }
 
 .towrite-quote0-canvas-header {
@@ -2286,7 +2286,7 @@
 }
 
 .towrite-quote0-canvas-home.is-wide-low .towrite-quote0-canvas-title {
-  font-size: 24px;
+  font-size: 31px;
 }
 
 .towrite-quote0-canvas-subtitle {
@@ -2302,7 +2302,9 @@
 }
 
 .towrite-quote0-canvas-home.is-wide-low .towrite-quote0-canvas-subtitle {
-  font-size: 12px;
+  font-family: ChillDuanSans, var(--font-interface);
+  font-size: 15px;
+  font-weight: 800;
 }
 
 .towrite-quote0-canvas-summary {
@@ -2317,7 +2319,8 @@
 }
 
 .towrite-quote0-canvas-home.is-wide-low .towrite-quote0-canvas-summary {
-  font-size: 11px;
+  font-size: 14px;
+  font-weight: 800;
 }
 
 .towrite-quote0-canvas-rule {
@@ -2337,7 +2340,7 @@
 }
 
 .towrite-quote0-canvas-home.is-wide-low .towrite-quote0-canvas-metrics {
-  height: 30px;
+  height: 42px;
 }
 
 .towrite-quote0-canvas-metric {
@@ -2364,7 +2367,8 @@
 }
 
 .towrite-quote0-canvas-home.is-wide-low .towrite-quote0-canvas-metric-value {
-  font-size: 17px;
+  font-family: ChillDuanSans, var(--font-interface);
+  font-size: 24px;
 }
 
 .towrite-quote0-canvas-metric-label {
@@ -2379,7 +2383,8 @@
 }
 
 .towrite-quote0-canvas-home.is-wide-low .towrite-quote0-canvas-metric-label {
-  font-size: 8px;
+  font-size: 11px;
+  font-weight: 800;
 }
 
 .towrite-quote0-canvas-workflow {
@@ -2393,7 +2398,7 @@
 }
 
 .towrite-quote0-canvas-home.is-wide-low .towrite-quote0-canvas-workflow {
-  height: 44px;
+  height: 72px;
 }
 
 .towrite-quote0-canvas-workflow-title {
@@ -2407,7 +2412,8 @@
 
 .towrite-quote0-canvas-home.is-wide-low .towrite-quote0-canvas-workflow-title {
   padding: 2px 5px 0;
-  font-size: 12px;
+  font-family: ChillDuanSans, var(--font-interface);
+  font-size: 17px;
 }
 
 .towrite-quote0-canvas-stage-grid {
@@ -2432,7 +2438,7 @@
 }
 
 .towrite-quote0-canvas-home.is-wide-low .towrite-quote0-canvas-stage {
-  height: 10px;
+  height: 15px;
 }
 
 .towrite-quote0-canvas-stage-stripe {
@@ -2470,7 +2476,8 @@
 }
 
 .towrite-quote0-canvas-home.is-wide-low .towrite-quote0-canvas-stage-text {
-  font-size: 9px;
+  font-family: ChillDuanSans, var(--font-interface);
+  font-size: 13px;
 }
 
 .towrite-quote0-canvas-spacer {
@@ -2490,7 +2497,7 @@
 .towrite-quote0-canvas-home.is-wide-low .towrite-quote0-canvas-footer {
   grid-template-columns: minmax(0, 1fr) 36px 64px 36px minmax(0, 1fr);
   gap: 3px;
-  height: 18px;
+  height: 22px;
 }
 
 .towrite-quote0-canvas-nav {
@@ -2509,7 +2516,7 @@
 }
 
 .towrite-quote0-canvas-home.is-wide-low .towrite-quote0-canvas-nav {
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .towrite-quote0-canvas-nav.is-active {

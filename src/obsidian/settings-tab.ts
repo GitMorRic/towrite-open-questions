@@ -2966,8 +2966,9 @@ function renderQuote0ImagePreview(device: HTMLElement, payload: Quote0ImagePaylo
 
 function renderQuote0CanvasDashboardPreview(device: HTMLElement, payload: Quote0CanvasPayload): void {
   const data = payload.data;
+  const isWideLow = canvasDataText(data, "layoutProfile", "") === "wide-low";
   const shellClasses = ["towrite-quote0-canvas-home"];
-  if (canvasDataText(data, "layoutProfile", "") === "wide-low") {
+  if (isWideLow) {
     shellClasses.push("is-wide-low");
   }
   const shell = device.createDiv({ cls: shellClasses.join(" ") });
@@ -2980,14 +2981,22 @@ function renderQuote0CanvasDashboardPreview(device: HTMLElement, payload: Quote0
   header.createDiv({ cls: "towrite-quote0-canvas-rule" });
 
   const metrics = shell.createDiv({ cls: "towrite-quote0-canvas-metrics" });
-  renderQuote0CanvasMetric(metrics, canvasDataText(data, "think", "0"), "ToThink");
-  renderQuote0CanvasMetric(metrics, canvasDataText(data, "write", "0"), "ToWrite");
-  renderQuote0CanvasMetric(metrics, canvasDataText(data, "open", "0"), "未解决");
-  renderQuote0CanvasMetric(metrics, canvasDataText(data, "articles", "0"), "有问题文章");
-  renderQuote0CanvasMetric(metrics, canvasDataText(data, "due", "0"), "提醒到期", true);
+  if (isWideLow) {
+    renderQuote0CanvasMetric(metrics, canvasDataText(data, "open", "0"), "Open");
+    renderQuote0CanvasMetric(metrics, canvasDataText(data, "think", "0"), "Think");
+    renderQuote0CanvasMetric(metrics, canvasDataText(data, "write", "0"), "Write");
+    renderQuote0CanvasMetric(metrics, canvasDataText(data, "articles", "0"), "Art");
+    renderQuote0CanvasMetric(metrics, canvasDataText(data, "due", "0"), "Due", true);
+  } else {
+    renderQuote0CanvasMetric(metrics, canvasDataText(data, "think", "0"), "ToThink");
+    renderQuote0CanvasMetric(metrics, canvasDataText(data, "write", "0"), "ToWrite");
+    renderQuote0CanvasMetric(metrics, canvasDataText(data, "open", "0"), "未解决");
+    renderQuote0CanvasMetric(metrics, canvasDataText(data, "articles", "0"), "有问题文章");
+    renderQuote0CanvasMetric(metrics, canvasDataText(data, "due", "0"), "提醒到期", true);
+  }
 
   const workflow = shell.createDiv({ cls: "towrite-quote0-canvas-workflow" });
-  workflow.createDiv({ cls: "towrite-quote0-canvas-workflow-title", text: "Workflow 状态" });
+  workflow.createDiv({ cls: "towrite-quote0-canvas-workflow-title", text: isWideLow ? "Workflow" : "Workflow 状态" });
   const stageGrid = workflow.createDiv({ cls: "towrite-quote0-canvas-stage-grid" });
   const stripeClasses = ["is-raw", "is-sparks", "is-initialize", "is-processing", "is-archive"];
   for (let index = 0; index < 5; index += 1) {
