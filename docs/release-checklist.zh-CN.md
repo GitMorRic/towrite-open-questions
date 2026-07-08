@@ -9,6 +9,8 @@
 - 更新 `CHANGELOG.md`。
 - 运行 `npm.cmd run test`。
 - 运行 `npm.cmd run build`。
+- 确认 README、CHANGELOG、versions.json 与当前版本一致。
+- 确认文档、测试或日志里没有真实 Dot API key、External API token、AI key。
 
 ## Release 资产
 
@@ -30,6 +32,10 @@
 - 折叠/展开 ToThink 和 ToWrite 分区。
 - 测试单条和全局的编辑器高亮隐藏。
 - 导出 JSON。
+- 打开 Dashboard，确认 Article Type、Workflow Stage、ToThink/ToWrite 统计和侧栏一致。
+- 打开 `/api/v1/device-feed?page=home` 与 `/api/v1/device-feed?page=articles`，确认 workflow/tag-only 笔记也能进入设备数据。
+- 如果测试 Quote0：获取设备、发送测试卡、发送下一张、发送主页、强制刷新设备，确认 Dot App/Content Studio 的 Loop 内容选择了对应 Text / Image / Canvas API。
+- 如果测试 NFC：确认 External API 开启、bind host/publicBaseUrl 可被手机访问，手机打开 `/device/input` 后能追加 note 或创建 capture。
 - 重启 Obsidian，确认状态仍然存在。
 
 ## 上架提交

@@ -164,8 +164,14 @@ export interface ArticleSummary {
   ageDays?: number;
   oldestOpenAgeDays?: number;
   statusLabel?: string;
+  tags?: string[];
+  description?: string;
+  typeId?: string;
+  typeTitle?: string;
+  typeColor?: OpenQuestionColor;
   stageId?: string;
   stageTitle?: string;
+  stageColor?: OpenQuestionColor;
   stale?: boolean;
   open: number;
   candidate: number;

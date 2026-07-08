@@ -9,7 +9,8 @@ import type {
   QuestionStatusOption,
   StoredQuestionState
 } from "../core/types";
-import type { ToWriteLanguage, ToWriteReminderPreset } from "../core/settings";
+import type { ArticleTypeSettings, ToWriteLanguage, ToWriteReminderPreset } from "../core/settings";
+import type { WorkflowIndexPayload } from "../workflow";
 
 export interface ActiveLineRange {
   filePath: string;
@@ -28,6 +29,8 @@ export interface ToWriteUiApi {
   getActiveLineRange(): ActiveLineRange | null;
   getQuestions(query?: OpenQuestionQuery): OpenQuestion[];
   getArticleSummaries(): ArticleSummary[];
+  getArticleTypes(): ArticleTypeSettings[];
+  getWorkflowPayload(): WorkflowIndexPayload;
   getStatusOptions(): QuestionStatusOption[];
   getLanguage(): ToWriteLanguage;
   getGroupCurrentByHeading(): boolean;

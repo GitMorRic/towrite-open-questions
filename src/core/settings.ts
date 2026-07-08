@@ -32,6 +32,7 @@ export interface ToWriteQuote0Settings {
   canvasTaskAlias: string;
   canvasBorder: 0 | 1;
   refreshSeconds: number;
+  forceRefreshAfterSend: boolean;
   lane: ToWriteQuote0LaneScope;
   nfcToken: string;
   cursor: number;
@@ -63,6 +64,20 @@ export interface WorkflowStageSettings {
 export interface WorkflowStagesSettings {
   enabled: boolean;
   stages: WorkflowStageSettings[];
+}
+
+export interface ArticleTypeSettings {
+  id: string;
+  title: string;
+  color: OpenQuestionColor;
+  folderPrefixes: string[];
+  tags: string[];
+}
+
+export interface ArticleTypesSettings {
+  enabled: boolean;
+  parseHierarchicalTags: boolean;
+  types: ArticleTypeSettings[];
 }
 
 export interface ToWriteDeviceCaptureSettings {
@@ -108,6 +123,7 @@ export interface ToWriteSettings {
   externalApi: ToWriteExternalApiSettings;
   deviceCapture: ToWriteDeviceCaptureSettings;
   deviceProfiles: ToWriteDeviceProfileSettings[];
+  articleTypes: ArticleTypesSettings;
   workflowStages: WorkflowStagesSettings;
   reminderPresets: ToWriteReminderPreset[];
   ai: ToWriteAiSettings;
@@ -184,6 +200,30 @@ export const DEFAULT_WORKFLOW_STAGES: WorkflowStageSettings[] = [
   }
 ];
 
+export const DEFAULT_ARTICLE_TYPES: ArticleTypeSettings[] = [
+  {
+    id: "mindflow",
+    title: "MindFlow",
+    color: "mint",
+    folderPrefixes: ["MindFlow", "ByteDance/MindFlow"],
+    tags: ["mindflow"]
+  },
+  {
+    id: "tech",
+    title: "Tech",
+    color: "sky",
+    folderPrefixes: ["Techbench", "Tech"],
+    tags: ["tech"]
+  },
+  {
+    id: "project",
+    title: "Project",
+    color: "violet",
+    folderPrefixes: ["Projects", "Project"],
+    tags: ["project"]
+  }
+];
+
 export const DEFAULT_DEVICE_PROFILES: ToWriteDeviceProfileSettings[] = [
   {
     id: "eink-27-landscape",
@@ -213,6 +253,7 @@ export const DEFAULT_QUOTE0_SETTINGS: ToWriteQuote0Settings = {
   canvasTaskAlias: "ToWrite Dashboard",
   canvasBorder: 0,
   refreshSeconds: 300,
+  forceRefreshAfterSend: true,
   lane: "",
   nfcToken: "",
   cursor: 0,
@@ -355,6 +396,11 @@ export const DEFAULT_SETTINGS: ToWriteSettings = {
     defaultTags: ["capture", "device"]
   },
   deviceProfiles: DEFAULT_DEVICE_PROFILES,
+  articleTypes: {
+    enabled: true,
+    parseHierarchicalTags: true,
+    types: DEFAULT_ARTICLE_TYPES
+  },
   workflowStages: {
     enabled: false,
     stages: DEFAULT_WORKFLOW_STAGES
@@ -373,6 +419,40 @@ export const DEFAULT_SETTINGS: ToWriteSettings = {
   push: DEFAULT_PUSH_SETTINGS,
   writeArticleProperties: false
 };
+
+export function normalizeArticleTypesSettings(settings?: Partial<ArticleTypesSettings>): ArticleTypesSettings {
+  const types = Array.isArray(settings?.types) && settings.types.length > 0
+    ? settings.types
+    : DEFAULT_ARTICLE_TYPES;
+  const normalized = normalizeArticleTypeList(types);
+  return {
+    enabled: settings?.enabled !== false,
+    parseHierarchicalTags: settings?.parseHierarchicalTags !== false,
+    types: normalized.length > 0 ? normalized : DEFAULT_ARTICLE_TYPES
+  };
+}
+
+export function normalizeArticleTypeList(types: ArticleTypeSettings[]): ArticleTypeSettings[] {
+  const seen = new Set<string>();
+  const output: ArticleTypeSettings[] = [];
+
+  for (const type of types) {
+    const id = normalizeArticleTypeId(type.id || type.title);
+    if (!id || seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    output.push({
+      id,
+      title: String(type.title ?? "").trim() || id,
+      color: isSettingsColor(type.color) ? type.color : "slate",
+      folderPrefixes: normalizeArticleStringList(type.folderPrefixes),
+      tags: normalizeArticleTagList(type.tags)
+    });
+  }
+
+  return output;
+}
 
 export function normalizeDeviceProfiles(profiles?: ToWriteDeviceProfileSettings[]): ToWriteDeviceProfileSettings[] {
   const source = Array.isArray(profiles) && profiles.length > 0 ? profiles : DEFAULT_DEVICE_PROFILES;
@@ -438,6 +518,7 @@ export function normalizeQuote0Settings(settings?: Partial<ToWriteQuote0Settings
     canvasTaskAlias: normalizeQuote0ShortText(settings?.canvasTaskAlias, 100) || DEFAULT_QUOTE0_SETTINGS.canvasTaskAlias,
     canvasBorder: settings?.canvasBorder === 1 ? 1 : 0,
     refreshSeconds: clampIntegerSetting(settings?.refreshSeconds, 60, 86400, DEFAULT_QUOTE0_SETTINGS.refreshSeconds),
+    forceRefreshAfterSend: settings?.forceRefreshAfterSend !== false,
     lane: settings?.lane === "think" || settings?.lane === "write" ? settings.lane : "",
     nfcToken: normalizeQuote0ShortText(settings?.nfcToken, 160),
     cursor: clampIntegerSetting(settings?.cursor, 0, 100000, 0),
@@ -732,6 +813,52 @@ function normalizeDeviceProfileId(value: string): string {
     .toLowerCase()
     .replace(/\s+/gu, "-")
     .replace(/[^a-z0-9_-]/gu, "");
+}
+
+function normalizeArticleTypeId(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/gu, "-")
+    .replace(/[^a-z0-9_-]/gu, "");
+}
+
+function normalizeArticleStringList(value: unknown): string[] {
+  const items = Array.isArray(value) ? value : String(value ?? "").split(/[,;\n|\uFF0C\u3001\uFF1B]+/u);
+  const seen = new Set<string>();
+  const output: string[] = [];
+  for (const item of items) {
+    const normalized = String(item).trim().replace(/\\/gu, "/").replace(/^\/+|\/+$/gu, "");
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    output.push(normalized);
+  }
+  return output;
+}
+
+function normalizeArticleTagList(value: unknown): string[] {
+  const seen = new Set<string>();
+  const output: string[] = [];
+  for (const item of normalizeArticleStringList(value)) {
+    const tag = item.replace(/^#+/u, "").toLowerCase();
+    if (!tag || seen.has(tag)) {
+      continue;
+    }
+    seen.add(tag);
+    output.push(tag);
+  }
+  return output;
+}
+
+function isSettingsColor(value: unknown): value is OpenQuestionColor {
+  return value === "amber"
+    || value === "mint"
+    || value === "sky"
+    || value === "rose"
+    || value === "violet"
+    || value === "slate";
 }
 
 function normalizeDeviceProfileKind(value: unknown): ToWriteDeviceProfileKind {

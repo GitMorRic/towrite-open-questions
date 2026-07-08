@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { WorkflowIndexPayload } from "../workflow";
 import type { ArticleSummary } from "./types";
-import { enrichArticleSummariesWithWorkflow } from "./articles";
+import { enrichArticleSummariesWithWorkflow, mergeArticleSummariesWithWorkflow } from "./articles";
 
 describe("enrichArticleSummariesWithWorkflow", () => {
   it("prefers workflow file metadata and preserves question age fallback", () => {
@@ -36,6 +36,45 @@ describe("enrichArticleSummariesWithWorkflow", () => {
       oldestOpenAgeDays: 5,
       statusLabel: "blocked",
       stale: false
+    });
+  });
+
+  it("adds workflow-only classified notes to display article summaries", () => {
+    const articles = mergeArticleSummariesWithWorkflow([], {
+      ...workflow,
+      files: [
+        {
+          filePath: "ByteDance/MindFlow/01-Sparks/adventureX.md",
+          title: "adventureX",
+          description: "Raw idea note",
+          tags: ["mindflow/spark"],
+          createdAt: "2026-06-22T00:00:00.000Z",
+          updatedAt: "2026-07-06T00:00:00.000Z",
+          ageDays: 15,
+          stale: false,
+          typeId: "mindflow",
+          typeTitle: "MindFlow",
+          typeColor: "mint",
+          stageId: "sparks",
+          stageTitle: "Sparks",
+          stageColor: "amber",
+          openQuestionCount: 0,
+          thinkCount: 0,
+          writeCount: 0,
+          nextAction: "",
+          openUri: "obsidian://open?vault=Vault&file=ByteDance%2FMindFlow%2F01-Sparks%2FadventureX.md"
+        }
+      ]
+    }, "2026-07-07T00:00:00.000Z");
+
+    expect(articles).toHaveLength(1);
+    expect(articles[0]).toMatchObject({
+      filePath: "ByteDance/MindFlow/01-Sparks/adventureX.md",
+      typeTitle: "MindFlow",
+      stageTitle: "Sparks",
+      open: 0,
+      needsWork: false,
+      statusLabel: "clear"
     });
   });
 });

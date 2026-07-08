@@ -1,5 +1,5 @@
 import type { ArticleSummary, OpenQuestion } from "../core/types";
-import { enrichArticleSummariesWithWorkflow } from "../core/articles";
+import { mergeArticleSummariesWithWorkflow } from "../core/articles";
 import { stripQuestionRuleSyntax } from "../core/rule-text";
 import { buildDeviceFeedPayload } from "../external/device-feed";
 import type { WorkflowFileSummary, WorkflowIndexPayload, WorkflowStageSummary } from "../workflow";
@@ -20,7 +20,7 @@ export class PushCandidateSource {
     const nowMs = Date.parse(input.now ?? new Date().toISOString());
     const generatedAt = input.now ?? new Date().toISOString();
     const workflowContexts = workflowContextByFile(input.workflowPayload);
-    const articles = enrichArticleSummariesWithWorkflow(input.articles, input.workflowPayload, generatedAt);
+    const articles = mergeArticleSummariesWithWorkflow(input.articles, input.workflowPayload, generatedAt);
     const candidates: PushCandidate[] = [];
 
     candidates.push(homeSummaryToCandidate(input.vaultName, input.questions, articles, input.workflowPayload, generatedAt));

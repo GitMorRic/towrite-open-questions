@@ -1,5 +1,5 @@
 import type { ArticleSummary, OpenQuestion, OpenQuestionLane, OpenQuestionStatus } from "../core/types";
-import { enrichArticleSummariesWithWorkflow } from "../core/articles";
+import { mergeArticleSummariesWithWorkflow } from "../core/articles";
 import { stripQuestionRuleSyntax } from "../core/rule-text";
 import type { WorkflowFileSummary, WorkflowIndexPayload, WorkflowStageSummary } from "../workflow";
 import { buildObsidianUri } from "./payloads";
@@ -406,7 +406,7 @@ export function buildDeviceFeedPayload(
   const offset = parseCursor(cursor);
   const workQuestions = questions.filter((question) => isWorkStatus(question.status));
   const nowMs = Date.parse(generatedAt);
-  const enrichedArticles = enrichArticleSummariesWithWorkflow(articles, workflowPayload, generatedAt);
+  const enrichedArticles = mergeArticleSummariesWithWorkflow(articles, workflowPayload, generatedAt);
   const summary = buildSummary(workQuestions, questions, enrichedArticles, workflowPayload, Number.isFinite(nowMs) ? nowMs : Date.now());
   const workflow = buildWorkflowSummary(workflowPayload, spec);
   const pageData = buildScreenForPage({
@@ -675,7 +675,7 @@ function buildArticlesScreen(options: {
   spec: ProfileSpec;
 }): { screens: DeviceScreen[]; total: number } {
   const articles = options.articles
-    .filter((article) => article.needsWork || article.candidate > 0)
+    .filter((article) => article.needsWork || article.candidate > 0 || Boolean(article.typeId || article.stageId))
     .sort((left, right) => (right.open + right.candidate) - (left.open + left.candidate) || left.title.localeCompare(right.title));
   const items = articles.slice(options.offset, options.offset + options.limit)
     .map((article) => toDeviceArticle(options.vaultName, article, options.spec, options.query));

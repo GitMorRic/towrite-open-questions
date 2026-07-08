@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_DEVICE_PROFILES, DEFAULT_REMINDER_PRESETS, normalizeDeviceProfiles, normalizeExternalApiBindHost, normalizeExternalApiPublicBaseUrl, normalizePushSettings, normalizeQuote0Settings, normalizeReminderPresets } from "./settings";
+import { DEFAULT_ARTICLE_TYPES, DEFAULT_DEVICE_PROFILES, DEFAULT_REMINDER_PRESETS, normalizeArticleTypesSettings, normalizeDeviceProfiles, normalizeExternalApiBindHost, normalizeExternalApiPublicBaseUrl, normalizePushSettings, normalizeQuote0Settings, normalizeReminderPresets } from "./settings";
 
 describe("settings normalization", () => {
   it("normalizes common External API bind host values", () => {
@@ -67,6 +67,40 @@ describe("settings normalization", () => {
     ]);
   });
 
+  it("normalizes article type settings", () => {
+    expect(normalizeArticleTypesSettings({ types: [] }).types).toEqual(DEFAULT_ARTICLE_TYPES);
+    expect(normalizeArticleTypesSettings({
+      enabled: true,
+      parseHierarchicalTags: true,
+      types: [
+        {
+          id: "Mind Flow!",
+          title: "",
+          color: "bad" as never,
+          folderPrefixes: [" /ByteDance/MindFlow/ ", "ByteDance\\MindFlow"],
+          tags: [" #MindFlow ", "mindflow"]
+        },
+        {
+          id: "mind-flow",
+          title: "Duplicate",
+          color: "sky",
+          folderPrefixes: [],
+          tags: []
+        }
+      ]
+    })).toMatchObject({
+      enabled: true,
+      parseHierarchicalTags: true,
+      types: [{
+        id: "mind-flow",
+        title: "mind-flow",
+        color: "slate",
+        folderPrefixes: ["ByteDance/MindFlow"],
+        tags: ["mindflow"]
+      }]
+    });
+  });
+
   it("normalizes Quote0 settings", () => {
     expect(normalizeQuote0Settings({
       enabled: true,
@@ -82,6 +116,7 @@ describe("settings normalization", () => {
       imageBorder: 1,
       canvasTaskAlias: "",
       canvasBorder: 1,
+      forceRefreshAfterSend: false,
       refreshSeconds: 1,
       lane: "write",
       nfcToken: " q0_test ",
@@ -103,6 +138,7 @@ describe("settings normalization", () => {
       imageBorder: 1,
       canvasTaskAlias: "ToWrite Dashboard",
       canvasBorder: 1,
+      forceRefreshAfterSend: false,
       refreshSeconds: 60,
       lane: "write",
       nfcToken: "q0_test",
@@ -111,6 +147,8 @@ describe("settings normalization", () => {
       lastSyncedAt: "2026-07-01T00:00:00.000Z",
       lastError: "no problem"
     });
+
+    expect(normalizeQuote0Settings({}).forceRefreshAfterSend).toBe(true);
   });
 
   it("normalizes push settings and migrates Quote0 into a target", () => {

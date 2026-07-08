@@ -1,5 +1,5 @@
 import { TFile, type App } from "obsidian";
-import type { WorkflowStageSettings, WorkflowStagesSettings } from "../core/settings";
+import type { ArticleTypeSettings, ArticleTypesSettings, WorkflowStageSettings, WorkflowStagesSettings } from "../core/settings";
 import type { OpenQuestion, OpenQuestionColor } from "../core/types";
 
 export interface WorkflowSourceDocument {
@@ -26,6 +26,12 @@ export interface WorkflowFileSummary {
   updatedAt: string;
   ageDays: number;
   stale: boolean;
+  typeId?: string;
+  typeTitle?: string;
+  typeColor?: OpenQuestionColor;
+  stageId?: string;
+  stageTitle?: string;
+  stageColor?: OpenQuestionColor;
   openQuestionCount: number;
   thinkCount: number;
   writeCount: number;
@@ -54,6 +60,7 @@ export interface WorkflowIndexPayload {
     stages: number;
     uniqueFiles: number;
   };
+  files?: WorkflowFileSummary[];
   stages: WorkflowStageSummary[];
 }
 
@@ -80,16 +87,18 @@ export class WorkflowIndex {
   constructor(
     private readonly app: App,
     private readonly getWorkflowSettings: () => WorkflowStagesSettings,
+    private readonly getArticleTypesSettings: () => ArticleTypesSettings,
     private readonly getExportDirectory: () => string,
     private readonly getQuestions: () => OpenQuestion[]
   ) {}
 
   async rebuild(): Promise<void> {
     const settings = this.getWorkflowSettings();
+    const articleTypes = this.getArticleTypesSettings();
     const vaultName = this.app.vault.getName();
     const generatedAt = new Date().toISOString();
 
-    if (!settings.enabled) {
+    if (!settings.enabled && !articleTypes.enabled) {
       this.payload = emptyWorkflowPayload(vaultName, false, generatedAt);
       return;
     }
@@ -97,6 +106,7 @@ export class WorkflowIndex {
     const documents = await readWorkflowDocuments(this.app, this.getExportDirectory());
     this.payload = buildWorkflowPayload({
       settings,
+      articleTypes,
       documents,
       questions: this.getQuestions(),
       vaultName,
@@ -129,6 +139,7 @@ export class WorkflowIndex {
 
 export function buildWorkflowPayload(options: {
   settings: WorkflowStagesSettings;
+  articleTypes?: ArticleTypesSettings;
   documents: WorkflowSourceDocument[];
   questions: OpenQuestion[];
   vaultName: string;
@@ -136,13 +147,17 @@ export function buildWorkflowPayload(options: {
   query?: WorkflowQuery;
 }): WorkflowIndexPayload {
   const generatedAt = options.generatedAt ?? new Date().toISOString();
-  if (!options.settings.enabled) {
+  const articleTypes = normalizeArticleTypes(options.articleTypes);
+  if (!options.settings.enabled && !articleTypes.enabled) {
     return emptyWorkflowPayload(options.vaultName, false, generatedAt);
   }
 
   const questionMap = groupQuestionsByFile(options.questions);
-  const stages = normalizeStages(options.settings.stages)
-    .map((stage) => buildStage(stage, options.documents, questionMap, options.vaultName, generatedAt));
+  const stages = options.settings.enabled
+    ? normalizeStages(options.settings.stages)
+      .map((stage) => buildStage(stage, options.documents, questionMap, options.vaultName, generatedAt, articleTypes))
+    : [];
+  const files = buildClassifiedFiles(options.documents, questionMap, options.vaultName, generatedAt, stages, articleTypes);
 
   const payload: WorkflowIndexPayload = {
     schemaVersion: 1,
@@ -151,8 +166,9 @@ export function buildWorkflowPayload(options: {
     enabled: true,
     counts: {
       stages: stages.length,
-      uniqueFiles: uniqueFileCount(stages)
+      uniqueFiles: files.length
     },
+    files,
     stages
   };
 
@@ -163,6 +179,12 @@ export function queryWorkflowPayload(payload: WorkflowIndexPayload, query: Workf
   const search = query.search?.trim().toLowerCase();
   const limit = query.limit && query.limit > 0 ? Math.min(query.limit, 200) : undefined;
   const stageId = query.stage?.trim();
+  const matchedFiles = (payload.files ?? []).filter((file) => {
+    if (stageId && file.stageId !== stageId) {
+      return false;
+    }
+    return !search || workflowFileMatchesSearch(file, search);
+  });
 
   const stageMatches = payload.stages
     .filter((stage) => !stageId || stage.id === stageId)
@@ -186,8 +208,9 @@ export function queryWorkflowPayload(payload: WorkflowIndexPayload, query: Workf
     ...payload,
     counts: {
       stages: stages.length,
-      uniqueFiles: new Set(stageMatches.flatMap(({ matched }) => matched.map((file) => file.filePath))).size
+      uniqueFiles: matchedFiles.length
     },
+    files: (limit ? matchedFiles.slice(0, limit) : matchedFiles).map((file) => query.compact ? compactWorkflowFile(file) : file),
     stages
   };
 }
@@ -204,11 +227,15 @@ export function workflowQueryFromUrl(url: URL): WorkflowQuery {
   };
 }
 
-export function matchWorkflowStage(document: Pick<WorkflowSourceDocument, "filePath" | "tags">, stage: WorkflowStageSettings): boolean {
+export function matchWorkflowStage(
+  document: Pick<WorkflowSourceDocument, "filePath" | "tags">,
+  stage: WorkflowStageSettings,
+  parseHierarchicalTags = true
+): boolean {
   const folders = normalizeList(stage.folderPrefixes).map(normalizePath);
   const tags = new Set(normalizeList(stage.tags).map(normalizeTag));
   const filePath = normalizePath(document.filePath);
-  const documentTags = new Set(document.tags.map(normalizeTag));
+  const documentTags = tagTokens(document.tags, parseHierarchicalTags);
 
   const folderMatched = folders.some((prefix) => pathStartsWith(filePath, prefix));
   const tagMatched = Array.from(tags).some((tag) => documentTags.has(tag));
@@ -248,12 +275,21 @@ function buildStage(
   documents: WorkflowSourceDocument[],
   questionMap: Map<string, OpenQuestion[]>,
   vaultName: string,
-  generatedAt: string
+  generatedAt: string,
+  articleTypes: NormalizedArticleTypes
 ): WorkflowStageSummary {
   const limit = clampInteger(stage.limit, 1, 200, 20);
   const files = documents
-    .filter((document) => matchWorkflowStage(document, stage))
-    .map((document) => summarizeWorkflowFile(document, questionMap.get(document.filePath) ?? [], vaultName, generatedAt, stage.staleAfterDays))
+    .filter((document) => matchWorkflowStage(document, stage, articleTypes.parseHierarchicalTags))
+    .map((document) => summarizeWorkflowFile(
+      document,
+      questionMap.get(document.filePath) ?? [],
+      vaultName,
+      generatedAt,
+      stage.staleAfterDays,
+      stage,
+      matchArticleType(document, articleTypes)
+    ))
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.title.localeCompare(right.title));
 
   return {
@@ -274,7 +310,9 @@ function summarizeWorkflowFile(
   questions: OpenQuestion[],
   vaultName: string,
   generatedAt: string,
-  staleAfterDays: number
+  staleAfterDays: number,
+  stage?: WorkflowStageSettings,
+  articleType?: ArticleTypeSettings
 ): WorkflowFileSummary {
   const workQuestions = questions.filter((question) => isWorkStatus(question.status));
   const ageDays = daysBetween(document.updatedAt, generatedAt);
@@ -289,6 +327,12 @@ function summarizeWorkflowFile(
     updatedAt: document.updatedAt,
     ageDays,
     stale: staleAfterDays > 0 && ageDays >= staleAfterDays,
+    typeId: articleType?.id,
+    typeTitle: articleType?.title,
+    typeColor: articleType?.color,
+    stageId: stage?.id,
+    stageTitle: stage?.title,
+    stageColor: stage?.color,
     openQuestionCount: workQuestions.length,
     thinkCount: workQuestions.filter((question) => question.lane === "think").length,
     writeCount: workQuestions.filter((question) => question.lane === "write").length,
@@ -338,8 +382,92 @@ function emptyWorkflowPayload(vaultName: string, enabled: boolean, generatedAt =
       stages: 0,
       uniqueFiles: 0
     },
+    files: [],
     stages: []
   };
+}
+
+interface NormalizedArticleTypes {
+  enabled: boolean;
+  parseHierarchicalTags: boolean;
+  types: ArticleTypeSettings[];
+}
+
+function normalizeArticleTypes(settings?: ArticleTypesSettings): NormalizedArticleTypes {
+  return {
+    enabled: settings?.enabled === true,
+    parseHierarchicalTags: settings?.parseHierarchicalTags !== false,
+    types: settings?.types ?? []
+  };
+}
+
+function buildClassifiedFiles(
+  documents: WorkflowSourceDocument[],
+  questionMap: Map<string, OpenQuestion[]>,
+  vaultName: string,
+  generatedAt: string,
+  stages: WorkflowStageSummary[],
+  articleTypes: NormalizedArticleTypes
+): WorkflowFileSummary[] {
+  const byFile = new Map<string, WorkflowFileSummary>();
+  for (const stage of stages) {
+    for (const file of stage.files) {
+      if (!byFile.has(file.filePath)) {
+        byFile.set(file.filePath, file);
+      }
+    }
+  }
+
+  for (const document of documents) {
+    if (byFile.has(document.filePath)) {
+      continue;
+    }
+    const articleType = matchArticleType(document, articleTypes);
+    if (!articleType) {
+      continue;
+    }
+    byFile.set(document.filePath, summarizeWorkflowFile(
+      document,
+      questionMap.get(document.filePath) ?? [],
+      vaultName,
+      generatedAt,
+      0,
+      undefined,
+      articleType
+    ));
+  }
+
+  return Array.from(byFile.values())
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.title.localeCompare(right.title));
+}
+
+function matchArticleType(
+  document: Pick<WorkflowSourceDocument, "filePath" | "tags">,
+  articleTypes: NormalizedArticleTypes
+): ArticleTypeSettings | undefined {
+  if (!articleTypes.enabled) {
+    return undefined;
+  }
+  const filePath = normalizePath(document.filePath);
+  const documentTags = tagTokens(document.tags, articleTypes.parseHierarchicalTags);
+  const hierarchicalTypes = new Set(
+    articleTypes.parseHierarchicalTags
+      ? document.tags
+        .map(normalizeTag)
+        .filter((tag) => tag.includes("/"))
+        .map((tag) => tag.split("/").filter(Boolean)[0])
+        .filter(Boolean)
+      : []
+  );
+
+  return articleTypes.types.find((type) => {
+    const folders = normalizeList(type.folderPrefixes).map(normalizePath);
+    const tags = new Set(normalizeList(type.tags).map(normalizeTag));
+    const folderMatched = folders.some((prefix) => pathStartsWith(filePath, prefix));
+    const tagMatched = Array.from(tags).some((tag) => documentTags.has(tag));
+    const hierarchyMatched = hierarchicalTypes.has(normalizeTag(type.id));
+    return folderMatched || tagMatched || hierarchyMatched;
+  });
 }
 
 function normalizeStages(stages: WorkflowStageSettings[]): WorkflowStageSettings[] {
@@ -450,6 +578,8 @@ function workflowFileMatchesSearch(file: WorkflowFileSummary, search: string): b
     file.title,
     file.description,
     file.nextAction,
+    file.typeTitle,
+    file.stageTitle,
     file.tags.join(" "),
     stringifyFrontmatter(file.frontmatter)
   ]
@@ -520,6 +650,27 @@ function normalizeList(value: string[] | undefined): string[] {
 
 function normalizeTag(value: string): string {
   return value.trim().replace(/^#+/u, "").toLowerCase();
+}
+
+function tagTokens(values: string[], parseHierarchicalTags: boolean): Set<string> {
+  const tokens = new Set<string>();
+  for (const value of values) {
+    const tag = normalizeTag(value);
+    if (!tag) {
+      continue;
+    }
+    tokens.add(tag);
+    if (!parseHierarchicalTags || !tag.includes("/")) {
+      continue;
+    }
+    for (const part of tag.split("/")) {
+      const normalized = normalizeTag(part);
+      if (normalized) {
+        tokens.add(normalized);
+      }
+    }
+  }
+  return tokens;
 }
 
 function normalizeStageId(value: string): string {

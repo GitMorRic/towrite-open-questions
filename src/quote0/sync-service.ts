@@ -154,13 +154,14 @@ export class Quote0SyncService {
       quote0.lastSyncedQuestionId = prepared.questionId;
       quote0.lastSyncedAt = new Date().toISOString();
       quote0.lastError = "";
+      const refreshMessage = await this.forceRefreshAfterSend(quote0);
       await this.options.saveSettings();
 
       return {
         questionId: prepared.questionId,
         total: prepared.total,
         nextCursor: prepared.nextCursor,
-        message: response.message || prepared.message || "Quote0 content updated.",
+        message: appendRefreshMessage(response.message || prepared.message || "Quote0 content updated.", refreshMessage),
         nfcLink: prepared.nfcLink,
         contentApi: prepared.contentApi
       };
@@ -202,8 +203,9 @@ export class Quote0SyncService {
       quote0.lastSyncedQuestionId = prepared.questionId;
       quote0.lastSyncedAt = new Date().toISOString();
       quote0.lastError = "";
+      const refreshMessage = await this.forceRefreshAfterSend(quote0);
       await this.options.saveSettings();
-      return response.message || "Quote0 dashboard sent.";
+      return appendRefreshMessage(response.message || "Quote0 dashboard sent.", refreshMessage);
     } catch (error) {
       quote0.lastError = sanitizeError(error);
       await this.options.saveSettings();
@@ -236,8 +238,9 @@ export class Quote0SyncService {
       quote0.lastSyncedQuestionId = "";
       quote0.lastSyncedAt = new Date().toISOString();
       quote0.lastError = "";
+      const refreshMessage = await this.forceRefreshAfterSend(quote0);
       await this.options.saveSettings();
-      return response.message || "Quote0 test card sent.";
+      return appendRefreshMessage(response.message || "Quote0 test card sent.", refreshMessage);
     } catch (error) {
       quote0.lastError = sanitizeError(error);
       await this.options.saveSettings();
@@ -248,6 +251,20 @@ export class Quote0SyncService {
   private canSync(): boolean {
     const settings = this.options.getSettings().quote0;
     return settings.enabled && Boolean(settings.apiKey.trim()) && Boolean(settings.deviceId.trim());
+  }
+
+  private async forceRefreshAfterSend(settings: ToWriteSettings["quote0"]): Promise<string | undefined> {
+    if (!settings.forceRefreshAfterSend) {
+      return undefined;
+    }
+    try {
+      const response = await this.client.switchToNextContent(settings.deviceId);
+      return response.message || "device refresh requested";
+    } catch (error) {
+      const message = `Refresh after send failed: ${sanitizeError(error)}`;
+      settings.lastError = message;
+      return message;
+    }
   }
 
   private scheduleNext(): void {
@@ -496,6 +513,10 @@ function roundToMinute(value: number): number {
 function sanitizeError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return message.replace(/Bearer\s+[A-Za-z0-9._-]+/gu, "Bearer [redacted]").slice(0, 400);
+}
+
+function appendRefreshMessage(message: string, refreshMessage: string | undefined): string {
+  return refreshMessage ? `${message} · ${refreshMessage}` : message;
 }
 
 function buildSourceContexts(

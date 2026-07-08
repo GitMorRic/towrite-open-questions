@@ -1,5 +1,25 @@
 # Changelog / 更新日志
 
+## 0.2.8-beta.1 - 2026-07-08
+
+- Added Quote0 integration with Text / Image / Canvas dashboard previews, device selection, manual send, forced refresh, and NFC writeback links.
+- Added an optional automatic Dot device refresh after successful Quote0 sends to reduce visible screen-update delay.
+- Added the Push Engine foundation for reusable targets, display cards, context-aware scheduling, and Quote0 as the first hardware adapter.
+- Added Article Types and hierarchical tag parsing so notes can be classified by content type and Workflow stage at the same time.
+- Upgraded the sidebar with current-note lane sections, article type tabs, all Workflow stage tabs including zero-count stages, compact classified-note cards, and removable editor markers.
+- Unified article/workflow display data across the sidebar, Obsidian dashboard, `/api/v1/device-feed`, and Quote0 dashboard sources.
+- Added documentation for Quote0 setup, data consistency, demo scripts, promotion copy, and release checks.
+
+中文摘要：
+
+- 新增 Quote0 接入，支持 Text / Image / Canvas dashboard 预览、设备选择、手动发送、强制刷新和 NFC 写回链接。
+- 新增 Quote0 发送成功后的自动设备强刷选项，减少屏幕迟迟不更新的等待感。
+- 新增通用 Push Engine 基础能力，把目标设备、展示卡片、情境调度和 Quote0 适配器拆开。
+- 新增 Article Types 和层级 tag 解析，让笔记可以同时按内容类型和 Workflow 阶段归类。
+- 升级右侧栏：当前笔记 lane 分区、文章类型 tabs、包含 0 数量的完整 Workflow tabs、紧凑归类笔记卡片，以及可移除的编辑器标记。
+- 统一侧栏、Obsidian dashboard、`/api/v1/device-feed` 和 Quote0 dashboard 的文章/workflow 数据来源。
+- 补充 Quote0 配置、数据一致性、演示脚本、宣传文案和发布检查文档。
+
 ## 0.2.7 - 2026-07-02
 
 - Removed the remaining Obsidian 1.13 settings APIs from the settings tab so the declared 1.5.0 minimum app version is accurate.

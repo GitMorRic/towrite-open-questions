@@ -1,11 +1,13 @@
 import { App, Notice, PluginSettingTab, Setting, setIcon } from "obsidian";
 import {
+  DEFAULT_ARTICLE_TYPES,
   DEFAULT_STATUS_OPTIONS,
   DEFAULT_DEVICE_PROFILES,
   DEFAULT_REMINDER_PRESETS,
   DEFAULT_WORKFLOW_STAGES,
   normalizeExternalApiBindHost,
   normalizeExternalApiPublicBaseUrl,
+  normalizeArticleTypesSettings,
   normalizeDeviceProfiles,
   normalizePushSettings,
   normalizeQuote0ApiBaseUrl,
@@ -14,6 +16,7 @@ import {
   type ToWriteLanguage,
   type ToWriteReminderPreset,
   type ToWriteSettings,
+  type ArticleTypeSettings,
   type WorkflowStageSettings
 } from "../core/settings";
 import { OPEN_QUESTION_COLORS, type OpenQuestionColor, type OpenQuestionLane, type QuestionStatusOption } from "../core/types";
@@ -124,6 +127,8 @@ type SettingCopy = {
   quote0WriteOnly: string;
   quote0RefreshSeconds: string;
   quote0RefreshSecondsDesc: string;
+  quote0ForceRefreshAfterSend: string;
+  quote0ForceRefreshAfterSendDesc: string;
   quote0TaskKey: string;
   quote0TaskKeyDesc: string;
   quote0TaskAlias: string;
@@ -188,6 +193,23 @@ type SettingCopy = {
   deviceProfileFeedUrl: string;
   deviceProfileAdd: string;
   deviceProfileRemove: string;
+  articleTypes: string;
+  articleTypesDesc: string;
+  articleTypesParseHierarchy: string;
+  articleTypesParseHierarchyDesc: string;
+  articleTypeTitle: string;
+  articleTypeTitlePlaceholder: string;
+  articleTypeId: string;
+  articleTypeIdPlaceholder: string;
+  articleTypeColor: string;
+  articleTypeFolders: string;
+  articleTypeFoldersDesc: string;
+  articleTypeTags: string;
+  articleTypeTagsDesc: string;
+  articleTypeAdd: string;
+  articleTypeRemove: string;
+  articleTypeMoveUp: string;
+  articleTypeMoveDown: string;
   regenerateToken: string;
   workflowStages: string;
   workflowStagesDesc: string;
@@ -336,6 +358,8 @@ const COPY: Record<ToWriteLanguage, SettingCopy> = {
     "quote0WriteOnly": "只看 ToWrite",
     "quote0RefreshSeconds": "刷新间隔（秒）",
     "quote0RefreshSecondsDesc": "插件定时推送下一张卡片的间隔。quote0 接电时官方最小刷新间隔为 1 分钟。",
+    "quote0ForceRefreshAfterSend": "发送后自动强制刷新",
+    "quote0ForceRefreshAfterSendDesc": "发送下一条、主页或测试卡成功后，额外调用 Dot 的设备切换/刷新接口。若你的 Loop 会跳到其他内容，可以关闭。",
     "quote0TaskKey": "Text API taskKey",
     "quote0TaskKeyDesc": "已有多个 Text API 内容时填写。留空则更新第一个 Text API 内容。",
     "quote0TaskAlias": "Text API taskAlias",
@@ -400,6 +424,23 @@ const COPY: Record<ToWriteLanguage, SettingCopy> = {
     "deviceProfileFeedUrl": "Device feed URL",
     "deviceProfileAdd": "添加设备 profile",
     "deviceProfileRemove": "删除设备 profile",
+    "articleTypes": "文章类型",
+    "articleTypesDesc": "按大类组织笔记，例如 MindFlow、Tech、Project。可匹配文件夹、tag，或层级 tag 的第一段。",
+    "articleTypesParseHierarchy": "解析层级 tag",
+    "articleTypesParseHierarchyDesc": "把 mindflow/spark 解析为 type=mindflow、stage=spark，同时保留完整 tag。",
+    "articleTypeTitle": "显示标题",
+    "articleTypeTitlePlaceholder": "例如 MindFlow",
+    "articleTypeId": "Type id",
+    "articleTypeIdPlaceholder": "例如 mindflow",
+    "articleTypeColor": "颜色",
+    "articleTypeFolders": "文件夹前缀",
+    "articleTypeFoldersDesc": "一行一个路径前缀，例如 ByteDance/MindFlow。",
+    "articleTypeTags": "匹配标签",
+    "articleTypeTagsDesc": "一行一个 tag，可写 mindflow 或 #mindflow。层级 tag 也会使用第一段。",
+    "articleTypeAdd": "添加类型",
+    "articleTypeRemove": "删除类型",
+    "articleTypeMoveUp": "上移",
+    "articleTypeMoveDown": "下移",
     "regenerateToken": "重新生成 token",
     "workflowStages": "Workflow Stages",
     "workflowStagesDesc": "按文件夹、frontmatter tags 或正文 #tag，把 Markdown 文件分组为 Raw、Sparks、Processing 等自定义状态，并通过 workflows.json 和 API 暴露。",
@@ -546,6 +587,8 @@ const COPY: Record<ToWriteLanguage, SettingCopy> = {
     "quote0WriteOnly": "ToWrite only",
     "quote0RefreshSeconds": "Refresh interval (seconds)",
     "quote0RefreshSecondsDesc": "How often the plugin pushes the next card. Dot documents 1 minute as the powered minimum.",
+    "quote0ForceRefreshAfterSend": "Force refresh after send",
+    "quote0ForceRefreshAfterSendDesc": "After sending a card, home dashboard, or test card, also call Dot's device switch/refresh endpoint. Turn this off if your Loop jumps to another item.",
     "quote0TaskKey": "Text API taskKey",
     "quote0TaskKeyDesc": "Use when multiple Text API contents exist. Leave empty to update the first Text API content.",
     "quote0TaskAlias": "Text API taskAlias",
@@ -610,6 +653,23 @@ const COPY: Record<ToWriteLanguage, SettingCopy> = {
     "deviceProfileFeedUrl": "Device feed URL",
     "deviceProfileAdd": "Add device profile",
     "deviceProfileRemove": "Remove device profile",
+    "articleTypes": "Article Types",
+    "articleTypesDesc": "Group notes by broad type such as MindFlow, Tech, or Project. Types can match folder prefixes, tags, or the first part of hierarchical tags.",
+    "articleTypesParseHierarchy": "Parse hierarchical tags",
+    "articleTypesParseHierarchyDesc": "Treat mindflow/spark as type mindflow and stage spark while keeping the full tag available.",
+    "articleTypeTitle": "Display title",
+    "articleTypeTitlePlaceholder": "For example MindFlow",
+    "articleTypeId": "Type id",
+    "articleTypeIdPlaceholder": "For example mindflow",
+    "articleTypeColor": "Color",
+    "articleTypeFolders": "Folder prefixes",
+    "articleTypeFoldersDesc": "One path prefix per line, for example ByteDance/MindFlow.",
+    "articleTypeTags": "Matching tags",
+    "articleTypeTagsDesc": "One tag per line. Use mindflow or #mindflow. Hierarchical tags also use their first part.",
+    "articleTypeAdd": "Add type",
+    "articleTypeRemove": "Remove type",
+    "articleTypeMoveUp": "Move up",
+    "articleTypeMoveDown": "Move down",
     "regenerateToken": "Regenerate token",
     "workflowStages": "Workflow Stages",
     "workflowStagesDesc": "Group Markdown files into custom states such as Raw, Sparks, and Processing by folder, frontmatter tags, or inline #tags, then expose them through workflows.json and the API.",
@@ -702,6 +762,7 @@ const AI_PROVIDER_PRESETS = [
 ] as const;
 
 export class ToWriteSettingTab extends PluginSettingTab {
+  private readonly openArticleTypeIds = new Set<string>();
   private readonly openWorkflowStageIds = new Set<string>();
   private readonly openDeviceProfileIds = new Set<string>();
   private quote0Devices: Quote0Device[] = [];
@@ -1363,6 +1424,18 @@ export class ToWriteSettingTab extends PluginSettingTab {
             } catch (error) {
               new Notice(`Quote0 interval failed: ${errorMessage(error)}`);
             }
+          });
+      });
+
+    new Setting(containerEl)
+      .setName(copy.quote0ForceRefreshAfterSend)
+      .setDesc(copy.quote0ForceRefreshAfterSendDesc)
+      .addToggle((toggle) => {
+        toggle
+          .setValue(quote0.forceRefreshAfterSend)
+          .onChange(async (value) => {
+            quote0.forceRefreshAfterSend = value;
+            await this.plugin.savePluginData();
           });
       });
 
@@ -2263,6 +2336,40 @@ export class ToWriteSettingTab extends PluginSettingTab {
 
   private renderWorkflowSettings(containerEl: HTMLElement, copy: SettingCopy): void {
     new Setting(containerEl)
+      .setName(copy.articleTypes)
+      .setDesc(copy.articleTypesDesc)
+      .addToggle((toggle) => {
+        toggle
+          .setValue(this.plugin.settings.articleTypes.enabled)
+          .onChange(async (value) => {
+            this.plugin.settings.articleTypes.enabled = value;
+            if (this.plugin.settings.articleTypes.types.length === 0) {
+              this.plugin.settings.articleTypes.types = DEFAULT_ARTICLE_TYPES.map((type) => ({ ...type }));
+            }
+            await this.plugin.savePluginData();
+            await this.plugin.refreshIndex();
+            this.refreshSettingsUi();
+          });
+      });
+
+    if (this.plugin.settings.articleTypes.enabled) {
+      new Setting(containerEl)
+        .setName(copy.articleTypesParseHierarchy)
+        .setDesc(copy.articleTypesParseHierarchyDesc)
+        .addToggle((toggle) => {
+          toggle
+            .setValue(this.plugin.settings.articleTypes.parseHierarchicalTags)
+            .onChange(async (value) => {
+              this.plugin.settings.articleTypes.parseHierarchicalTags = value;
+              await this.plugin.savePluginData();
+              await this.plugin.refreshIndex();
+              this.refreshSettingsUi();
+            });
+        });
+      this.renderArticleTypeEditor(containerEl, copy);
+    }
+
+    new Setting(containerEl)
       .setName(copy.workflowStages)
       .setDesc(copy.workflowStagesDesc)
       .addToggle((toggle) => {
@@ -2526,6 +2633,138 @@ export class ToWriteSettingTab extends PluginSettingTab {
         return;
       }
       void this.saveStatusOptions([...statuses, { id, label: labelInput.value.trim() || id }]);
+    });
+  }
+
+  private renderArticleTypeEditor(containerEl: HTMLElement, copy: SettingCopy): void {
+    const types = this.plugin.settings.articleTypes.types;
+    const list = containerEl.createDiv({ cls: "towrite-workflow-stage-editor" });
+
+    for (const [index, articleType] of types.entries()) {
+      const card = list.createEl("details", { cls: `towrite-workflow-stage-card towrite-color-${articleType.color}` });
+      card.open = this.openArticleTypeIds.has(articleType.id);
+      card.addEventListener("toggle", () => {
+        if (card.open) {
+          this.openArticleTypeIds.add(articleType.id);
+        } else {
+          this.openArticleTypeIds.delete(articleType.id);
+        }
+      });
+
+      const header = card.createEl("summary", { cls: "towrite-workflow-stage-header" });
+      const title = header.createDiv({ cls: "towrite-workflow-stage-title" });
+      title.createEl("strong", { text: `${articleType.title || articleType.id} (${articleType.id})` });
+      title.createSpan({
+        cls: "towrite-workflow-stage-meta",
+        text: `${articleType.folderPrefixes.length} folders · ${articleType.tags.length} tags`
+      });
+      const actions = header.createDiv({ cls: "towrite-workflow-stage-actions" });
+      const up = createIconButton(actions, "arrow-up", copy.articleTypeMoveUp);
+      const down = createIconButton(actions, "arrow-down", copy.articleTypeMoveDown);
+      const remove = createIconButton(actions, "trash-2", copy.articleTypeRemove);
+      up.disabled = index === 0;
+      down.disabled = index === types.length - 1;
+      for (const button of [up, down, remove]) {
+        button.addEventListener("click", (event) => {
+          event.stopPropagation();
+        });
+      }
+
+      const body = card.createDiv({ cls: "towrite-workflow-stage-body" });
+
+      up.addEventListener("click", () => {
+        const next = [...types];
+        [next[index - 1], next[index]] = [next[index], next[index - 1]];
+        void this.saveArticleTypes(next, true);
+      });
+      down.addEventListener("click", () => {
+        const next = [...types];
+        [next[index], next[index + 1]] = [next[index + 1], next[index]];
+        void this.saveArticleTypes(next, true);
+      });
+      remove.addEventListener("click", () => {
+        const next = [...types];
+        next.splice(index, 1);
+        void this.saveArticleTypes(next, true);
+      });
+
+      new Setting(body)
+        .setName(copy.articleTypeTitle)
+        .addText((text) => {
+          text
+            .setValue(articleType.title)
+            .setPlaceholder(copy.articleTypeTitlePlaceholder)
+            .onChange(async (value) => {
+              await this.patchArticleType(index, { title: value.trim() });
+            });
+        });
+
+      new Setting(body)
+        .setName(copy.articleTypeId)
+        .addText((text) => {
+          text
+            .setValue(articleType.id)
+            .setPlaceholder(copy.articleTypeIdPlaceholder)
+            .onChange(async (value) => {
+              await this.patchArticleType(index, { id: normalizeStageId(value) }, true);
+            });
+        });
+
+      this.renderColorSetting(
+        body,
+        copy.articleTypeColor,
+        "",
+        articleType.color,
+        async (color) => {
+          await this.patchArticleType(index, { color }, true);
+        }
+      );
+
+      new Setting(body)
+        .setName(copy.articleTypeFolders)
+        .setDesc(copy.articleTypeFoldersDesc)
+        .addTextArea((text) => {
+          text
+            .setValue(articleType.folderPrefixes.join("\n"))
+            .setPlaceholder("ByteDance/MindFlow\nTechbench")
+            .onChange(async (value) => {
+              await this.patchArticleType(index, { folderPrefixes: splitWorkflowList(value) });
+            });
+          text.inputEl.rows = 3;
+        });
+
+      new Setting(body)
+        .setName(copy.articleTypeTags)
+        .setDesc(copy.articleTypeTagsDesc)
+        .addTextArea((text) => {
+          text
+            .setValue(articleType.tags.map((tag) => `#${tag.replace(/^#/u, "")}`).join("\n"))
+            .setPlaceholder("#mindflow\n#project")
+            .onChange(async (value) => {
+              await this.patchArticleType(index, { tags: splitWorkflowList(value).map((tag) => tag.replace(/^#+/u, "")) });
+            });
+          text.inputEl.rows = 3;
+        });
+    }
+
+    const addRow = containerEl.createDiv({ cls: "towrite-workflow-stage-add" });
+    const addButton = addRow.createEl("button", {
+      text: copy.articleTypeAdd,
+      attr: { type: "button" }
+    });
+    addButton.addEventListener("click", () => {
+      const nextId = nextArticleTypeId(types);
+      this.openArticleTypeIds.add(nextId);
+      void this.saveArticleTypes([
+        ...types,
+        {
+          id: nextId,
+          title: `Type ${types.length + 1}`,
+          color: "slate",
+          folderPrefixes: [],
+          tags: []
+        }
+      ], true);
     });
   }
 
@@ -2836,6 +3075,28 @@ export class ToWriteSettingTab extends PluginSettingTab {
     }
     stages[index] = { ...current, ...patch };
     await this.saveWorkflowStages(stages, redisplay);
+  }
+
+  private async patchArticleType(index: number, patch: Partial<ArticleTypeSettings>, redisplay = false): Promise<void> {
+    const types = [...this.plugin.settings.articleTypes.types];
+    const current = types[index];
+    if (!current) {
+      return;
+    }
+    types[index] = { ...current, ...patch };
+    await this.saveArticleTypes(types, redisplay);
+  }
+
+  private async saveArticleTypes(types: ArticleTypeSettings[], redisplay = false): Promise<void> {
+    this.plugin.settings.articleTypes = normalizeArticleTypesSettings({
+      ...this.plugin.settings.articleTypes,
+      types
+    });
+    await this.plugin.savePluginData();
+    await this.plugin.refreshIndex();
+    if (redisplay) {
+      this.refreshSettingsUi();
+    }
   }
 
   private async saveWorkflowStages(stages: WorkflowStageSettings[], redisplay = false): Promise<void> {
@@ -3272,6 +3533,15 @@ function nextDeviceProfileId(profiles: ToWriteDeviceProfileSettings[]): string {
     index += 1;
   }
   return "device-" + index;
+}
+
+function nextArticleTypeId(types: ArticleTypeSettings[]): string {
+  const ids = new Set(types.map((type) => type.id));
+  let index = types.length + 1;
+  while (ids.has("type-" + index)) {
+    index += 1;
+  }
+  return "type-" + index;
 }
 
 function normalizeDeviceProfileId(value: string): string {

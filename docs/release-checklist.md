@@ -9,6 +9,8 @@
 - Update `CHANGELOG.md`.
 - Run `npm.cmd run test`.
 - Run `npm.cmd run build`.
+- Confirm README, CHANGELOG, and versions.json match the current version.
+- Confirm docs, tests, and logs do not contain real Dot API keys, External API tokens, or AI keys.
 
 ## Release Assets
 
@@ -30,6 +32,10 @@ Do not upload a vault folder, `data.json`, `.obsidian-open-questions`, API token
 - Collapse and expand ToThink / ToWrite sections.
 - Toggle single-card and global compact editor highlights.
 - Export JSON.
+- Open the Dashboard and confirm Article Type, Workflow Stage, ToThink, and ToWrite counts match the sidebar.
+- Open `/api/v1/device-feed?page=home` and `/api/v1/device-feed?page=articles`; workflow/tag-only notes should appear in device data.
+- If testing Quote0: fetch devices, send a test card, send next card, send home dashboard, force refresh, and confirm Dot App/Content Studio Loop uses the matching Text / Image / Canvas API content.
+- If testing NFC: confirm External API is enabled, bind host/publicBaseUrl are reachable from the phone, and `/device/input` can append a note or create a capture.
 - Restart Obsidian and confirm state persists.
 
 ## Marketplace Submission

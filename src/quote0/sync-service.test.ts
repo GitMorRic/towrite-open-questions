@@ -23,6 +23,7 @@ describe("Quote0SyncService", () => {
       "Newer question",
       "Older question"
     ]);
+    expect(client.switches).toEqual(["ABCD1234", "ABCD1234"]);
   });
 
   it("keeps the cursor on failed sends", async () => {
@@ -104,7 +105,7 @@ describe("Quote0SyncService", () => {
 
     const message = await service.sendDashboardContent();
 
-    expect(message).toBe("image ok");
+    expect(message).toBe("image ok · switched");
     expect(client.sent).toHaveLength(0);
     expect(client.images[0]).toMatchObject({
       deviceId: "ABCD1234",
@@ -128,7 +129,7 @@ describe("Quote0SyncService", () => {
 
     const message = await service.sendDashboardContent();
 
-    expect(message).toBe("canvas ok");
+    expect(message).toBe("canvas ok · switched");
     expect(client.sent).toHaveLength(0);
     expect(client.images).toHaveLength(0);
     expect(client.canvases[0]).toMatchObject({
@@ -181,7 +182,7 @@ describe("Quote0SyncService", () => {
     expect(marked).toBe(true);
     expect(client.sent).toHaveLength(0);
     expect(client.canvases).toHaveLength(1);
-    expect(client.switches).toHaveLength(0);
+    expect(client.switches).toHaveLength(1);
   });
 
   it("keeps a complete text dashboard fallback", async () => {
@@ -207,6 +208,19 @@ describe("Quote0SyncService", () => {
     expect(client.sent[0].payload.message).toContain("OPEN 2");
     expect(client.sent[0].payload.message).toContain("WORKFLOW 0");
     expect(client.sent[0].payload.message).toContain("STAGES 0");
+    expect(client.switches).toEqual(["ABCD1234"]);
+  });
+
+  it("can leave the display refresh to Quote0 refreshNow without calling next", async () => {
+    const settings = makeSettings();
+    settings.quote0.forceRefreshAfterSend = false;
+    const client = new FakeQuote0Client();
+    const service = makeService(settings, client);
+
+    await service.syncNext();
+
+    expect(client.sent).toHaveLength(1);
+    expect(client.switches).toHaveLength(0);
   });
 
   it("omits taskAlias during updates when taskKey is configured", async () => {

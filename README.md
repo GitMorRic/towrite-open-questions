@@ -16,8 +16,10 @@ It is not a general TODO list. It gives your vault a ToThink / ToWrite annotatio
 - Store selection cards in sidecar JSON without changing your Markdown unless you explicitly pin a source anchor.
 - Highlight source text in the editor, with per-card and global compact display modes.
 - Configure Workflow Stages that group Markdown files by folder prefixes, frontmatter tags, or inline `#tags`.
+- Configure Article Types that group notes by content area such as MindFlow, Tech, or Project; the sidebar and dashboard show both type and Workflow stage.
 - Export JSON for dashboards, desktop widgets, scripts, and eink devices.
 - Run an optional local desktop HTTP API for JSON, RSS, SSE events, dashboard views, mobile device previews, companion phone input, and note/status/capture writeback.
+- Run an optional Push Engine and Quote0 integration for eink overview dashboards, rotating ToThink/ToWrite cards, and NFC phone writeback.
 - Run optional OpenAI-compatible summaries and local-note recommendations after you configure your own endpoint.
 
 ## Screenshots
@@ -27,6 +29,8 @@ It is not a general TODO list. It gives your vault a ToThink / ToWrite annotatio
 ![Small-screen and External API overview](docs/assets/to-write-elink-api-overview.png)
 
 ![Web dashboard](docs/assets/to-write-web-dashboard.png)
+
+For launch messaging and demo scripts, see the Chinese [promo and demo guide](docs/promo-demo-guide.zh-CN.md).
 
 ## Desktop Only
 
@@ -77,6 +81,33 @@ Workflow Stages are a file/project lifecycle index separate from ToThink / ToWri
 The feature is disabled by default. When enabled, it exports `workflows.json` and exposes `GET /api/v1/workflows` for dashboards, widgets, eink devices, or later AI reminders.
 
 Use `Stage` for lifecycle state, such as Raw, Sparks, Initialize, Processing, and Archive. Use top-level folders or tags for content areas, such as MindFlow, Techbench, or OCStory. If you later want API/dashboard breakdowns by both area and stage, that should become a separate `Workflow Areas` dimension instead of duplicating stages into long names such as `raw-mindflow` and `raw-techbench`.
+
+## Article Types, Sidebar, And Dashboard
+
+Article Types are a second dimension for content areas. The default examples are `mindflow`, `tech`, and `project`, and each type can be renamed, recolored, and matched by folder prefixes or tags.
+
+Hierarchical tags are split into both dimensions. For example, `#mindflow/spark` can match type=`mindflow` and stage=`spark`; a plain `#spark` tag can still match the Workflow stage. A note does not need any ToThink/ToWrite cards to appear in the classified note list: matching a type or stage is enough.
+
+The sidebar exposes three layers of filtering:
+
+- ToThink / ToWrite lane filter for current-note cards and expanded article cards.
+- Article Type tabs from the configured type list, including zero-count types.
+- Workflow stage tabs from the configured stage list, including zero-count stages.
+
+The Obsidian dashboard view, External API `/api/v1/device-feed`, and Quote0 dashboard all use the same question, article, and workflow/tag indexes. Each surface adapts the display: the sidebar keeps editing controls, the dashboard favors scan-friendly tables and metrics, Quote0 Text API compresses content into a few lines, and Quote0 Canvas/Image dashboards prioritize home metrics and Workflow status.
+
+## Quote0 And Push
+
+Quote0 output has two common modes:
+
+- Text cards: send the next ToThink/ToWrite card with title, question, next action, recent note, stage, and status.
+- Home overview: send a dashboard through Text / Image / Canvas API with ToThink, ToWrite, unresolved articles, reminders, Workflow files, and stage status.
+
+The NFC link points to `External API publicBaseUrl + /device/input?token=<quote0-nfc-token>&questionId=<id>` by default. The Quote0 NFC token is restricted to phone input, input context, appending notes, and capture creation. It is not the full External API token.
+
+For NFC writeback to work, Obsidian Desktop must be running, External API must be enabled, `bindHost` should be `0.0.0.0` for LAN/Tailscale access, and `publicBaseUrl` must be reachable from the phone, for example `http://100.x.y.z:48321` or `http://192.168.1.20:48321`. In Dot App/Content Studio, add the Text / Image / Canvas API content to the Quote0 Loop content list; otherwise Dot API may accept updates while the screen keeps showing another Loop item.
+
+By default, the plugin also calls Dot's device switch/refresh endpoint (`/next`) after a successful send to reduce visible delay. This still depends on Dot cloud queueing, the active Loop item, and physical eink refresh time. Turn off "Force refresh after send" if your Loop advances to the wrong item.
 
 ## Data Files
 

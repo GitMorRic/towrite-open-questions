@@ -13,6 +13,7 @@ interface QuestionDecorationOptions {
   getActiveFileQuestions: () => OpenQuestion[];
   getActiveFileSuggestions: () => OpenQuestionSuggestion[];
   getCompactEditorDecorations: () => boolean;
+  onDeleteQuestion: (id: string) => void | Promise<void>;
   onAcceptSuggestion: (id: string) => void | Promise<void>;
   onIgnoreSuggestion: (id: string) => void | Promise<void>;
 }
@@ -67,6 +68,14 @@ function buildDecorations(view: EditorView, options: QuestionDecorationOptions):
             }
           })
         });
+        ranges.push({
+          from: to,
+          to,
+          decoration: Decoration.widget({
+            side: 1,
+            widget: new QuestionRemoveWidget(question, options.onDeleteQuestion)
+          })
+        });
         continue;
       }
     }
@@ -83,6 +92,14 @@ function buildDecorations(view: EditorView, options: QuestionDecorationOptions):
       to: line.from,
       decoration: Decoration.line({
         class: `towrite-editor-line-${statusClass} towrite-line-${question.color} towrite-line-lane-${question.lane}${compactLineClass}`
+      })
+    });
+    ranges.push({
+      from: line.to,
+      to: line.to,
+      decoration: Decoration.widget({
+        side: 1,
+        widget: new QuestionRemoveWidget(question, options.onDeleteQuestion)
       })
     });
   }
@@ -119,6 +136,58 @@ function buildDecorations(view: EditorView, options: QuestionDecorationOptions):
   return builder.finish();
 }
 
+class QuestionRemoveWidget extends WidgetType {
+  constructor(
+    private readonly question: OpenQuestion,
+    private readonly onDeleteQuestion: (id: string) => void | Promise<void>
+  ) {
+    super();
+  }
+
+  eq(other: QuestionRemoveWidget): boolean {
+    return other.question.id === this.question.id
+      && other.question.lane === this.question.lane
+      && other.question.color === this.question.color
+      && other.question.status === this.question.status;
+  }
+
+  toDOM(view: EditorView): HTMLElement {
+    const doc = view.dom.ownerDocument;
+    const win = doc.defaultView ?? window;
+    const wrapper = doc.createElement("span");
+    wrapper.className = "towrite-mark-remove-anchor";
+
+    const button = doc.createElement("button");
+    button.type = "button";
+    button.className = `towrite-mark-remove towrite-mark-remove-${this.question.color}`;
+    button.textContent = "x";
+    const label = `Remove ${this.question.lane === "write" ? "ToWrite" : "ToThink"} marker`;
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    button.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      button.disabled = true;
+      void Promise.resolve(this.onDeleteQuestion(this.question.id))
+        .catch((error) => console.error("Failed to remove ToWrite marker", error))
+        .finally(() => {
+          win.setTimeout(() => view.dispatch({}), 0);
+        });
+    });
+
+    wrapper.append(button);
+    return wrapper;
+  }
+
+  ignoreEvent(): boolean {
+    return false;
+  }
+}
+
 class SuggestionActionsWidget extends WidgetType {
   constructor(
     private readonly suggestion: OpenQuestionSuggestion,
@@ -141,7 +210,7 @@ class SuggestionActionsWidget extends WidgetType {
     const button = doc.createElement("button");
     button.type = "button";
     button.className = `towrite-suggestion-add towrite-suggestion-add-${this.suggestion.lane}`;
-    button.textContent = this.suggestion.lane === "write" ? "+ Write" : "+ Think";
+    button.textContent = this.suggestion.lane === "write" ? "+ ToWrite" : "+ ToThink";
     button.title = this.suggestion.lane === "write" ? "Add this line to ToWrite" : "Add this line to ToThink";
     button.addEventListener("mousedown", (event) => {
       event.preventDefault();

@@ -47,6 +47,12 @@
   </button>
 
   <div class="towrite-article-badges">
+    {#if article.typeTitle}
+      <span class={`towrite-article-taxonomy towrite-article-taxonomy-${article.typeColor ?? "slate"}`}>{article.typeTitle}</span>
+    {/if}
+    {#if article.stageTitle}
+      <span class={`towrite-article-stage towrite-article-stage-${article.stageColor ?? "slate"}`}>{article.stageTitle}</span>
+    {/if}
     <span>{article.think} {copy.think}</span>
     <span>{article.write} {copy.write}</span>
     <span>{article.candidate} {copy.candidate}</span>

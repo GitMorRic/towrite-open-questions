@@ -20,6 +20,7 @@ import {
   DEFAULT_WORKFLOW_STAGES,
   normalizeExternalApiBindHost,
   normalizeExternalApiPublicBaseUrl,
+  normalizeArticleTypesSettings,
   normalizeDeviceProfiles,
   normalizePushSettings,
   normalizeQuote0Settings,
@@ -95,6 +96,7 @@ export default class ToWritePlugin extends Plugin {
     this.workflowIndex = new WorkflowIndex(
       this.app,
       () => this.settings.workflowStages,
+      () => this.settings.articleTypes,
       () => this.settings.exportDirectory,
       () => this.store.getAllQuestions()
     );
@@ -253,6 +255,7 @@ export default class ToWritePlugin extends Plugin {
             return activePath ? this.store.getSuggestions(activePath) : [];
           },
           getCompactEditorDecorations: () => this.settings.compactEditorDecorations,
+          onDeleteQuestion: (id) => this.deleteQuestion(id),
           onAcceptSuggestion: (id) => {
             void this.acceptSuggestion(id);
           },
@@ -852,6 +855,10 @@ export default class ToWritePlugin extends Plugin {
         return this.store.query(query);
       },
       getArticleSummaries: () => this.store.getArticleSummaries(),
+      getArticleTypes: () => this.settings.articleTypes.enabled
+        ? this.settings.articleTypes.types.map((type) => ({ ...type }))
+        : [],
+      getWorkflowPayload: () => this.workflowIndex.getPayload({ limit: 200, compact: true }),
       getStatusOptions: () => this.settings.statusOptions,
       getLanguage: () => this.settings.language,
       getGroupCurrentByHeading: () => this.settings.groupCurrentByHeading,
@@ -1392,6 +1399,7 @@ function normalizeSettings(settings?: Partial<ToWriteSettings>): ToWriteSettings
     externalApi: normalizeExternalApiSettings(settings?.externalApi),
     deviceCapture: normalizeDeviceCaptureSettings(settings?.deviceCapture),
     deviceProfiles: normalizeDeviceProfiles(settings?.deviceProfiles),
+    articleTypes: normalizeArticleTypesSettings(settings?.articleTypes),
     workflowStages: normalizeWorkflowStages(settings?.workflowStages),
     reminderPresets: normalizeReminderPresets(settings?.reminderPresets),
     ai: {

@@ -60,7 +60,7 @@ export function formatQuote0DeviceFeed(
   const position = options.total && options.total > 0 && options.index !== undefined
     ? `${Math.min(options.index + 1, options.total)} / ${options.total}`
     : "";
-  const lane = card.lane === "think" ? "Think" : "Write";
+  const lane = card.lane === "think" ? "ToThink" : "ToWrite";
   const status = card.status && card.status !== "open" ? card.status : "";
   const source = context?.workflowStageTitle || context?.sourceTitle || displayNameForPath(card.sourceFile);
   const signature = truncateText([position, lane, status, source].filter(Boolean).join(" · "), 44);

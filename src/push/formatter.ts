@@ -85,7 +85,7 @@ function homeDisplay(candidate: PushCandidate, reason: string): PushDisplayCard 
 
 function questionDisplay(candidate: PushCandidate, reason: string): PushDisplayCard {
   const icon = candidate.lane === "write" ? "✎" : "?";
-  const lane = candidate.lane === "write" ? "Write" : "Think";
+  const lane = candidate.lane === "write" ? "ToWrite" : "ToThink";
   const badges = [
     lane,
     candidate.status && candidate.status !== "open" ? candidate.status : "",
@@ -148,8 +148,8 @@ function articleDisplay(candidate: PushCandidate, reason: string): PushDisplayCa
 function workflowDisplay(candidate: PushCandidate, reason: string): PushDisplayCard {
   const metrics = [
     { label: "open", value: candidate.articleOpen ?? 0 },
-    { label: "think", value: candidate.articleThink ?? 0 },
-    { label: "write", value: candidate.articleWrite ?? 0 }
+    { label: "ToThink", value: candidate.articleThink ?? 0 },
+    { label: "ToWrite", value: candidate.articleWrite ?? 0 }
   ];
   const badges = [
     candidate.workflowStageTitle,

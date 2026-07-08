@@ -72,11 +72,11 @@ export class SelectionQuestionToolbar {
       });
     }
 
-    this.actionButton("Think", () => {
+    this.actionButton("ToThink", () => {
       this.options.onCreate("think", this.selectedColor ?? undefined);
       this.hide();
     }, "towrite-action-think");
-    this.actionButton("Write", () => {
+    this.actionButton("ToWrite", () => {
       this.options.onCreate("write", this.selectedColor ?? undefined);
       this.hide();
     }, "towrite-action-write");

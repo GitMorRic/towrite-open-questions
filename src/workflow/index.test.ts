@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { WorkflowStagesSettings } from "../core/settings";
+import type { ArticleTypesSettings, WorkflowStagesSettings } from "../core/settings";
 import type { OpenQuestion } from "../core/types";
 import {
   buildWorkflowPayload,
@@ -34,6 +34,20 @@ const settings: WorkflowStagesSettings = {
       tags: ["processing"],
       limit: 2,
       staleAfterDays: 10
+    }
+  ]
+};
+
+const articleTypes: ArticleTypesSettings = {
+  enabled: true,
+  parseHierarchicalTags: true,
+  types: [
+    {
+      id: "mindflow",
+      title: "MindFlow",
+      color: "mint",
+      folderPrefixes: ["ByteDance/MindFlow"],
+      tags: ["mindflow"]
     }
   ]
 };
@@ -111,7 +125,44 @@ describe("workflow stages", () => {
   it("matches folder prefixes and tags", () => {
     expect(matchWorkflowStage(documents[0], settings.stages[0])).toBe(true);
     expect(matchWorkflowStage({ filePath: "Other/file.md", tags: ["spark"] }, settings.stages[0])).toBe(true);
+    expect(matchWorkflowStage({ filePath: "Other/file.md", tags: ["mindflow/spark"] }, settings.stages[0])).toBe(true);
     expect(matchWorkflowStage(documents[0], settings.stages[1])).toBe(false);
+  });
+
+  it("classifies hierarchical tags as article type and workflow stage", () => {
+    const payload = buildWorkflowPayload({
+      settings,
+      articleTypes,
+      documents: [{
+        filePath: "ByteDance/MindFlow/01-Sparks/adventureX.md",
+        basename: "adventureX",
+        content: "# adventureX\n\nA tagged note without open questions.",
+        tags: ["mindflow/spark"],
+        headings: [{ heading: "adventureX", level: 1 }],
+        frontmatter: { tags: ["mindflow/spark"] },
+        createdAt: "2026-06-22T00:00:00.000Z",
+        updatedAt: "2026-06-28T00:00:00.000Z"
+      }],
+      questions: [],
+      vaultName: "Capture",
+      generatedAt
+    });
+
+    expect(payload.counts).toEqual({ stages: 2, uniqueFiles: 1 });
+    expect(payload.stages[0]).toMatchObject({
+      id: "sparks",
+      count: 1
+    });
+    expect(payload.files?.[0]).toMatchObject({
+      filePath: "ByteDance/MindFlow/01-Sparks/adventureX.md",
+      typeId: "mindflow",
+      typeTitle: "MindFlow",
+      stageId: "sparks",
+      stageTitle: "Sparks",
+      openQuestionCount: 0,
+      thinkCount: 0,
+      writeCount: 0
+    });
   });
 
   it("extracts title, description, and next action by priority", () => {

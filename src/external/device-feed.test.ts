@@ -292,6 +292,45 @@ describe("device feed", () => {
     });
   });
 
+  it("includes workflow-only tagged notes on the articles page", () => {
+    const payload = buildDeviceFeedPayload(
+      "Capture",
+      questions,
+      articles,
+      {
+        ...workflows,
+        files: [
+          ...(workflows.files ?? []),
+          {
+            filePath: "MindFlow/01-Sparks/tagged-only.md",
+            title: "Tagged only",
+            description: "A classified idea without open cards yet.",
+            tags: ["mindflow/spark"],
+            createdAt: "2026-06-28T00:00:00.000Z",
+            updatedAt: "2026-06-29T00:00:00.000Z",
+            ageDays: 0,
+            stale: false,
+            typeId: "mindflow",
+            typeTitle: "MindFlow",
+            typeColor: "mint",
+            stageId: "sparks",
+            stageTitle: "Sparks",
+            stageColor: "amber",
+            openQuestionCount: 0,
+            thinkCount: 0,
+            writeCount: 0,
+            nextAction: "",
+            openUri: "obsidian://open?vault=Capture&file=MindFlow%2F01-Sparks%2Ftagged-only.md"
+          }
+        ]
+      },
+      { page: "articles" },
+      generatedAt
+    );
+
+    expect(payload.screens[0].items.some((item) => item.type === "article" && item.filePath === "MindFlow/01-Sparks/tagged-only.md")).toBe(true);
+  });
+
   it("uses compact profile truncation for tiny eink clients", () => {
     const payload = buildDeviceFeedPayload("Capture", questions, articles, workflows, { page: "cards", profile: "eink-bw" }, generatedAt);
     const card = payload.screens[0].items[0];

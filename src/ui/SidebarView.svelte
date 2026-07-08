@@ -12,7 +12,10 @@
     Search
   } from "lucide-svelte";
   import { onDestroy } from "svelte";
+  import type { ArticleTypeSettings } from "../core/settings";
+  import { mergeArticleSummariesWithWorkflow } from "../core/articles";
   import type { ArticleSummary, OpenQuestion, OpenQuestionLane } from "../core/types";
+  import type { WorkflowIndexPayload } from "../workflow";
   import type { ActiveLineRange, ToWriteUiApi } from "./api";
   import ArticleSummaryCard from "./ArticleSummaryCard.svelte";
   import QuestionCard from "./QuestionCard.svelte";
@@ -22,10 +25,19 @@
 
   type OtherMode = "list" | "tree";
   type LaneFilter = "all" | OpenQuestionLane;
+  type ArticleFilterTab = {
+    id: string;
+    label: string;
+    count: number;
+    color?: string;
+    tag?: string;
+  };
 
   let search = "";
   let otherMode: OtherMode = "list";
   let laneFilter: LaneFilter = "all";
+  let typeFilter = "";
+  let stageFilter = "";
   let activeFile: string | null = null;
   let activeLineRange: ActiveLineRange | null = null;
   let activePathExpanded = false;
@@ -36,6 +48,8 @@
   };
   let currentQuestions: OpenQuestion[] = [];
   let otherArticles: ArticleSummary[] = [];
+  let articleTypes: ArticleTypeSettings[] = api.getArticleTypes();
+  let workflowPayload: WorkflowIndexPayload = api.getWorkflowPayload();
 
   const unsubscribe = api.subscribe(reload);
   onDestroy(unsubscribe);
@@ -51,7 +65,12 @@
   $: filteredCurrentQuestions = currentQuestions.filter(matchesLaneFilter);
   $: currentLaneSections = buildLaneSections(filteredCurrentQuestions);
   $: groupCurrentByHeading = api.getGroupCurrentByHeading();
-  $: visibleOtherArticles = otherArticles.filter(matchesArticleLaneFilter);
+  $: typeTabs = buildTypeTabs(otherArticles, articleTypes, language);
+  $: typeFilteredOtherArticles = otherArticles.filter(matchesArticleTypeFilter);
+  $: stageTabs = buildStageTabs(typeFilteredOtherArticles, workflowPayload.stages, language);
+  $: if (typeFilter && !typeTabs.some((tab) => tab.id === typeFilter)) typeFilter = "";
+  $: if (stageFilter && !stageTabs.some((tab) => tab.id === stageFilter)) stageFilter = "";
+  $: visibleOtherArticles = typeFilteredOtherArticles.filter(matchesArticleStageFilter).filter(matchesArticleLaneFilter);
   $: folderGroups = groupArticlesByFolder(visibleOtherArticles);
   $: activePathLabel = activeFile ? (activePathExpanded ? activeFile : compactPath(activeFile, 3)) : "";
   $: language = api.getLanguage();
@@ -61,6 +80,8 @@
     activeFile = api.getActiveFile();
     activeLineRange = api.getActiveLineRange();
     compactEditorDecorations = api.getCompactEditorDecorations();
+    articleTypes = api.getArticleTypes();
+    workflowPayload = api.getWorkflowPayload();
     currentQuestions = activeFile
       ? sortCurrentQuestions(
           api
@@ -74,13 +95,19 @@
       : [];
 
     const needle = search.trim().toLowerCase();
-    otherArticles = api
-      .getArticleSummaries()
+    otherArticles = mergeArticleSummariesWithWorkflow(api.getArticleSummaries(), workflowPayload, workflowPayload.generatedAt)
       .filter((summary) => summary.filePath !== activeFile)
-      .filter((summary) => summary.needsWork || summary.candidate > 0)
+      .filter((summary) => summary.needsWork || summary.candidate > 0 || Boolean(summary.typeId || summary.stageId))
       .filter((summary) => {
         if (!needle) return true;
-        return `${summary.title} ${summary.filePath}`.toLowerCase().includes(needle);
+        return [
+          summary.title,
+          summary.filePath,
+          summary.description,
+          summary.typeTitle,
+          summary.stageTitle,
+          summary.tags?.join(" ")
+        ].filter(Boolean).join(" ").toLowerCase().includes(needle);
       });
   }
 
@@ -124,13 +151,101 @@
   }
 
   function matchesArticleLaneFilter(article: ArticleSummary) {
-    if (laneFilter === "think") {
-      return article.think > 0;
-    }
-    if (laneFilter === "write") {
-      return article.write > 0;
-    }
     return true;
+  }
+
+  function matchesArticleTypeFilter(article: ArticleSummary) {
+    return !typeFilter || article.typeId === typeFilter;
+  }
+
+  function matchesArticleStageFilter(article: ArticleSummary) {
+    return !stageFilter || article.stageId === stageFilter;
+  }
+
+  function buildTypeTabs(
+    items: ArticleSummary[],
+    configuredTypes: ArticleTypeSettings[],
+    currentLanguage: "zh" | "en"
+  ): ArticleFilterTab[] {
+    const counts = countBy(items, (article) => article.typeId);
+    const tabs: ArticleFilterTab[] = configuredTypes.map((type) => ({
+      id: type.id,
+      label: type.title || type.id,
+      count: counts.get(type.id) ?? 0,
+      color: type.color,
+      tag: firstTagLabel(type.tags)
+    }));
+    const seen = new Set(tabs.map((tab) => tab.id));
+
+    for (const article of items) {
+      if (!article.typeId || seen.has(article.typeId)) continue;
+      seen.add(article.typeId);
+      tabs.push({
+        id: article.typeId,
+        label: article.typeTitle || article.typeId,
+        count: counts.get(article.typeId) ?? 0,
+        color: article.typeColor
+      });
+    }
+
+    return [
+      {
+        id: "",
+        label: currentLanguage === "zh" ? "全部分类" : "All types",
+        count: items.length
+      },
+      ...tabs
+    ];
+  }
+
+  function buildStageTabs(
+    items: ArticleSummary[],
+    stages: WorkflowIndexPayload["stages"],
+    currentLanguage: "zh" | "en"
+  ): ArticleFilterTab[] {
+    const counts = countBy(items, (article) => article.stageId);
+    const tabs: ArticleFilterTab[] = stages.map((stage) => ({
+      id: stage.id,
+      label: stage.title || stage.id,
+      count: counts.get(stage.id) ?? 0,
+      color: stage.color
+    }));
+    const seen = new Set(tabs.map((tab) => tab.id));
+
+    for (const article of items) {
+      if (!article.stageId || seen.has(article.stageId)) continue;
+      seen.add(article.stageId);
+      tabs.push({
+        id: article.stageId,
+        label: article.stageTitle || article.stageId,
+        count: counts.get(article.stageId) ?? 0,
+        color: article.stageColor
+      });
+    }
+
+    return [
+      {
+        id: "",
+        label: currentLanguage === "zh" ? "全部阶段" : "All stages",
+        count: items.length
+      },
+      ...tabs
+    ];
+  }
+
+  function countBy(items: ArticleSummary[], getId: (article: ArticleSummary) => string | undefined): Map<string, number> {
+    const counts = new Map<string, number>();
+    for (const article of items) {
+      const id = getId(article);
+      if (!id) continue;
+      counts.set(id, (counts.get(id) ?? 0) + 1);
+    }
+    return counts;
+  }
+
+  function firstTagLabel(tags: string[]): string | undefined {
+    const tag = tags.find(Boolean);
+    return tag ? `#${tag.replace(/^#+/u, "")}` : undefined;
   }
 
   function sortCurrentQuestions(items: OpenQuestion[], focus: ActiveLineRange | null): OpenQuestion[] {
@@ -294,6 +409,56 @@
       <small>{currentWrite}</small>
     </button>
   </div>
+
+  {#if typeTabs.length > 1 || stageTabs.length > 1}
+    <div class="towrite-filter-stack">
+      {#if typeTabs.length > 1}
+        <div class="towrite-filter-row">
+          <span>{language === "zh" ? "分类" : "Types"}</span>
+          <div class="towrite-filter-tabs" role="group" aria-label={language === "zh" ? "文章分类筛选" : "Article type filter"}>
+            {#each typeTabs as tab (tab.id)}
+              <button
+                type="button"
+                class={`towrite-filter-chip towrite-filter-chip-${tab.color ?? "slate"}`}
+                class:active={typeFilter === tab.id}
+                title={`${tab.label}${tab.tag ? ` ${tab.tag}` : ""} ${tab.count}`}
+                on:click={() => {
+                  typeFilter = tab.id;
+                  stageFilter = "";
+                }}
+              >
+                <span>{tab.label}</span>
+                {#if tab.tag}
+                  <small class="towrite-filter-tag">{tab.tag}</small>
+                {/if}
+                <small class="towrite-filter-count">{tab.count}</small>
+              </button>
+            {/each}
+          </div>
+        </div>
+      {/if}
+
+      {#if stageTabs.length > 1}
+        <div class="towrite-filter-row">
+          <span>{language === "zh" ? "Workflow" : "Workflow"}</span>
+          <div class="towrite-filter-tabs" role="group" aria-label={language === "zh" ? "Workflow 阶段筛选" : "Workflow stage filter"}>
+            {#each stageTabs as tab (tab.id)}
+              <button
+                type="button"
+                class={`towrite-filter-chip towrite-filter-chip-${tab.color ?? "slate"}`}
+                class:active={stageFilter === tab.id}
+                title={`${tab.label} ${tab.count}`}
+                on:click={() => (stageFilter = tab.id)}
+              >
+                <span>{tab.label}</span>
+                <small class="towrite-filter-count">{tab.count}</small>
+              </button>
+            {/each}
+          </div>
+        </div>
+      {/if}
+    </div>
+  {/if}
 
   <main class="towrite-card-list">
     <section class="towrite-current-note">
