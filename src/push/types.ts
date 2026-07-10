@@ -1,5 +1,6 @@
 import type { DeviceFeedPage, DeviceProfile } from "../external/device-feed";
 import type { OpenQuestionLane, OpenQuestionStatus } from "../core/types";
+import type { DeviceButtonMapping, DeviceInteractionAction, DeviceSourceRef } from "../device-interactions";
 
 export type PushTargetType = "quote0" | "mobile-app" | "local-web" | "webhook";
 export type PushPrivacyLevel = "local-coarse" | "precise-location" | "no-location";
@@ -28,6 +29,7 @@ export interface PushTargetSettings {
   quietHoursEnd: string;
   token: string;
   capabilities: string[];
+  buttonMappings?: DeviceButtonMapping[];
 }
 
 export interface PushHabitRule {
@@ -105,6 +107,11 @@ export interface PushCandidate {
   nextAction?: string;
   sourceFile?: string;
   sourceTitle?: string;
+  sourceLine?: number;
+  sourceEndLine?: number;
+  sourceBlockId?: string;
+  sourcePage?: number;
+  sourceRef?: DeviceSourceRef;
   workflowStageId?: string;
   workflowStageTitle?: string;
   lane?: OpenQuestionLane;
@@ -149,6 +156,7 @@ export interface PushDisplayCard {
   badges: string[];
   footer: string;
   link?: string;
+  actions?: DeviceInteractionAction[];
   titleText: string;
   message: string;
   signature: string;
@@ -190,6 +198,7 @@ export interface PushFeedPayload {
   decision: {
     candidateId?: string;
     candidateType?: PushCandidateType;
+    deliveryId?: string;
     score: number;
     reason: string;
     quiet: boolean;

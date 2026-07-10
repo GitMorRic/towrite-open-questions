@@ -45,7 +45,7 @@ import { LocalKnowledgeIndex } from "./ai/local-index";
 import { OpenAiCompatibleProvider } from "./ai/openai-provider";
 import { AiQuestionService } from "./ai/service";
 import { QuestionExporter } from "./export/exporter";
-import { ToWriteExternalApiServer, type DeviceCaptureRequest, type DeviceCaptureResult } from "./external/server";
+import { ToWriteExternalApiServer, type DeviceCaptureRequest, type DeviceCaptureResult, type DeviceWritebackMetadata } from "./external/server";
 import { PushEngine } from "./push/engine";
 import { normalizePushRuntimeState, type PushAnchorInput, type PushFeedbackInput } from "./push/state";
 import type { PushFeedPayload, PushRuntimeState } from "./push/types";
@@ -126,12 +126,14 @@ export default class ToWritePlugin extends Plugin {
       getWorkflowSummary: () => this.workflowIndex.getSummary(),
       getDeviceCaptureSettings: () => this.settings.deviceCapture,
       getRestrictedAccessToken: () => this.settings.quote0.enabled ? this.settings.quote0.nfcToken : "",
+      getRestrictedAccessTokens: () => this.settings.push.targets.map((target) => target.token).filter(Boolean),
+      getPushTargets: () => this.settings.push.targets,
       getPushFeed: (targetId) => this.getPushFeed(targetId),
       recordPushFeedback: (input) => this.recordPushFeedback(input),
       recordContextAnchor: (input) => this.recordContextAnchor(input),
       getStatusOptions: () => this.settings.statusOptions,
       updateQuestionStatus: (id, status, note, clientId) => this.updateQuestionStatusFromExternal(id, status, note, clientId),
-      appendQuestionNote: (id, text, clientId) => this.appendQuestionNoteFromExternal(id, text, clientId),
+      appendQuestionNote: (id, text, clientId, metadata) => this.appendQuestionNoteFromExternal(id, text, clientId, metadata),
       updateQuestionFields: (id, patch) => this.updateQuestionFieldsFromExternal(id, patch),
       createDeviceCapture: (request) => this.createDeviceCaptureFromExternal(request),
       subscribe: (listener) => this.subscribe(listener)
@@ -621,12 +623,12 @@ export default class ToWritePlugin extends Plugin {
     return this.store.getQuestion(id);
   }
 
-  private async appendQuestionNoteFromExternal(id: string, text: string, clientId?: string): Promise<OpenQuestion | undefined> {
+  private async appendQuestionNoteFromExternal(id: string, text: string, clientId?: string, metadata?: DeviceWritebackMetadata): Promise<OpenQuestion | undefined> {
     const question = this.store.getQuestion(id);
     if (!question) {
       return undefined;
     }
-    const note = createExternalQuestionNote(text, clientId);
+    const note = createExternalQuestionNote(text, clientId, metadata);
     if (!note) {
       return question;
     }
@@ -704,6 +706,11 @@ export default class ToWritePlugin extends Plugin {
     const createdAt = new Date().toISOString();
     const text = request.text.trim();
     const target = this.resolveDeviceCaptureTarget(request);
+    const metadata = cleanWritebackMetadata({
+      ...request.metadata,
+      input_mode: request.metadata?.input_mode || "capture",
+      created_at: request.metadata?.created_at || createdAt
+    });
     const tags = normalizeCaptureTags([
       ...this.settings.deviceCapture.defaultTags,
       ...request.tags,
@@ -720,7 +727,8 @@ export default class ToWritePlugin extends Plugin {
         text,
         tags,
         createdAt,
-        clientId: request.clientId
+        clientId: request.clientId,
+        metadata
       });
       await this.appendToMarkdownFile(filePath, entry);
     } else {
@@ -733,7 +741,8 @@ export default class ToWritePlugin extends Plugin {
         tags,
         createdAt,
         clientId: request.clientId,
-        workflowStage: target.stage
+        workflowStage: target.stage,
+        metadata
       });
       await this.app.vault.create(filePath, content);
     }
@@ -1172,6 +1181,7 @@ export default class ToWritePlugin extends Plugin {
       color: suggestion.color,
       question: suggestion.question,
       anchorText: suggestion.anchorText,
+      source: suggestion.source,
       createdAt: new Date().toISOString()
     });
     await this.savePluginData();
@@ -1504,19 +1514,21 @@ function clampNumber(value: number, min: number, max: number, fallback: number):
   return Math.max(min, Math.min(max, Math.floor(parsed)));
 }
 
-function createExternalQuestionNote(text?: string, clientId?: string): OpenQuestionNote | undefined {
+function createExternalQuestionNote(text?: string, clientId?: string, metadata?: DeviceWritebackMetadata): OpenQuestionNote | undefined {
   const trimmed = text?.trim();
   if (!trimmed) {
     return undefined;
   }
 
+  const cleanMetadata = cleanWritebackMetadata(metadata);
   return {
     id: `oqn_${randomTokenFragment()}`,
     kind: "text",
     text: trimmed.slice(0, 4000),
     source: "api",
     clientId: clientId?.trim().slice(0, 80) || undefined,
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    metadata: Object.keys(cleanMetadata).length > 0 ? cleanMetadata : undefined
   };
 }
 
@@ -1590,21 +1602,43 @@ function normalizeCaptureTags(values: string[]): string[] {
   return output.slice(0, 20);
 }
 
+function cleanWritebackMetadata(metadata?: DeviceWritebackMetadata): Record<string, string> {
+  const output: Record<string, string> = {};
+  for (const [key, value] of Object.entries(metadata ?? {})) {
+    const normalizedKey = key.trim().toLowerCase().replace(/[^a-z0-9_]/gu, "_");
+    const normalizedValue = String(value ?? "").trim().slice(0, 300);
+    if (!normalizedKey || !normalizedValue) {
+      continue;
+    }
+    output[normalizedKey] = normalizedValue;
+  }
+  return output;
+}
+
+function formatMetadataLines(metadata?: Record<string, string>): string {
+  return Object.entries(metadata ?? {})
+    .map(([key, value]) => `${key}: ${value}`)
+    .join("\n");
+}
+
 function formatInboxCaptureEntry(options: {
   title: string;
   text: string;
   tags: string[];
   createdAt: string;
   clientId?: string;
+  metadata?: Record<string, string>;
 }): string {
   const tagLine = options.tags.length > 0 ? `\n${options.tags.map((tag) => `#${tag}`).join(" ")}` : "";
   const clientLine = options.clientId ? `\nsource_client: ${options.clientId.trim().slice(0, 80)}` : "";
+  const metadataLines = formatMetadataLines(options.metadata);
   return [
     `## ${options.title}`,
     "",
     `created: ${options.createdAt}`,
     "source: device",
     `${clientLine}${tagLine}`.trim(),
+    metadataLines,
     "",
     options.text.trim()
   ].filter((part) => part !== "").join("\n");
@@ -1617,6 +1651,7 @@ function formatCaptureNote(options: {
   createdAt: string;
   clientId?: string;
   workflowStage?: Pick<WorkflowStageSettings, "id" | "title">;
+  metadata?: Record<string, string>;
 }): string {
   const frontmatter = [
     "---",
@@ -1624,6 +1659,7 @@ function formatCaptureNote(options: {
     "source: device",
     `created: ${options.createdAt}`,
     ...(options.clientId ? [`source_client: ${yamlString(options.clientId.trim().slice(0, 80))}`] : []),
+    ...Object.entries(options.metadata ?? {}).map(([key, value]) => `${key}: ${yamlString(value)}`),
     ...(options.workflowStage ? [
       `workflow_stage: ${yamlString(options.workflowStage.id)}`,
       `workflow_stage_title: ${yamlString(options.workflowStage.title)}`,

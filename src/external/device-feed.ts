@@ -2,6 +2,7 @@ import type { ArticleSummary, OpenQuestion, OpenQuestionLane, OpenQuestionStatus
 import { mergeArticleSummariesWithWorkflow } from "../core/articles";
 import { stripQuestionRuleSyntax } from "../core/rule-text";
 import type { WorkflowFileSummary, WorkflowIndexPayload, WorkflowStageSummary } from "../workflow";
+import { buildDeviceInputUrl, deliveryIdFor, laneIntentLabel, type DeviceInteractionAction, type DeviceSourceRef } from "../device-interactions";
 import { buildObsidianUri } from "./payloads";
 
 export type DeviceProfile = "mobile-eink" | "eink-bw" | "desktop-card";
@@ -19,6 +20,7 @@ export interface DeviceFeedQuery {
   page?: DeviceFeedPage;
   cursor?: string;
   limit?: number;
+  targetId?: string;
   lane?: OpenQuestionLane;
   stage?: string;
   sourceFile?: string;
@@ -93,18 +95,7 @@ export interface DeviceNavigation {
   nextCursor?: string;
 }
 
-export interface DeviceAction {
-  id: string;
-  label: string;
-  kind: "navigate" | "open-uri" | "input";
-  page?: DeviceFeedPage;
-  cursor?: string;
-  sourceFile?: string;
-  uri?: string;
-  questionId?: string;
-  qrText?: string;
-  enabled: boolean;
-}
+export type DeviceAction = DeviceInteractionAction;
 
 export interface DeviceScreen {
   id: string;
@@ -160,7 +151,10 @@ export interface DeviceCardItem {
   source: string;
   sourceFile: string;
   sourceLine: number;
+  sourceEndLine?: number;
+  sourceBlockId?: string;
   sourcePage?: number;
+  sourceRef?: DeviceSourceRef;
   lane: OpenQuestionLane;
   status: OpenQuestionStatus;
   kind: string;
@@ -170,6 +164,7 @@ export interface DeviceCardItem {
   reminderDue?: boolean;
   openUri: string;
   answerUrl?: string;
+  deliveryId?: string;
   updatedAt?: string;
 }
 
@@ -183,6 +178,8 @@ export interface DeviceCardPreviewItem {
   kind: string;
   answerUrl?: string;
   openUri: string;
+  deliveryId?: string;
+  sourceRef?: DeviceSourceRef;
 }
 
 export interface DeviceWorkflowFileItem {
@@ -383,6 +380,7 @@ export function deviceFeedQueryFromUrl(url: URL): DeviceFeedQuery {
     page: normalizePage(url.searchParams.get("page")),
     cursor: normalizeCursor(url.searchParams.get("cursor")),
     limit: parsePositiveInteger(url.searchParams.get("limit"), 0) || undefined,
+    targetId: url.searchParams.get("targetId")?.trim() || undefined,
     lane: normalizeLane(url.searchParams.get("lane")),
     stage: url.searchParams.get("stage")?.trim() || undefined,
     sourceFile: url.searchParams.get("sourceFile")?.trim() || undefined
@@ -619,9 +617,9 @@ function buildCardsScreen(options: {
         companionUrl: answerUrl ?? quickCaptureUrl,
         qrText: answerUrl ?? quickCaptureUrl,
         actions: [
-          ...(answerUrl && cards[0] ? [answerCardAction(cards[0].id, answerUrl)] : []),
+          ...(answerUrl && cards[0] ? [answerCardAction(cards[0].id, answerUrl, cards[0])] : []),
           quickCaptureAction(quickCaptureUrl),
-          ...(openUri ? [openSourceAction(openUri)] : [])
+          ...(openUri ? [openSourceAction(openUri, cards[0]?.sourceRef)] : [])
         ],
         items: cards.length > 0 ? cards : [{ type: "empty", text: "没有可刷的卡片。" }],
         peekItems
@@ -658,7 +656,7 @@ function buildWorkflowScreen(options: {
         qrText: quickCaptureUrl,
         actions: [
           quickCaptureAction(quickCaptureUrl),
-          ...(openUri ? [openSourceAction(openUri)] : [])
+          ...(openUri ? [openSourceAction(openUri, items[0] ? { filePath: items[0].filePath } : undefined)] : [])
         ],
         items: items.length > 0 ? items : [{ type: "empty", text: "没有匹配的 Workflow 文件。" }]
       }
@@ -697,7 +695,7 @@ function buildArticlesScreen(options: {
         actions: [
           quickCaptureAction(quickCaptureUrl),
           ...(firstSourceFile ? [viewCardsAction(firstSourceFile)] : []),
-          ...(openUri ? [openSourceAction(openUri)] : [])
+          ...(openUri ? [openSourceAction(openUri, firstSourceFile ? { filePath: firstSourceFile } : undefined)] : [])
         ],
         items: items.length > 0 ? items : [{ type: "empty", text: "没有需要处理的来源笔记。" }]
       }
@@ -709,9 +707,19 @@ function toDeviceCard(vaultName: string, question: OpenQuestion, spec: ProfileSp
   const body = stripQuestionRuleSyntax(question.question, question.source.rule);
   const latestNote = question.notes?.at(-1)?.text ?? question.note ?? "";
   const sourceLine = question.source.lineStart + 1;
+  const sourceEndLine = question.source.lineEnd + 1;
   const source = question.source.page
     ? `${question.source.file} P${question.source.page}`
     : `${question.source.file}:${sourceLine}`;
+  const sourceRef: DeviceSourceRef = {
+    vaultName,
+    filePath: question.source.file,
+    lineStart: sourceLine,
+    lineEnd: sourceEndLine,
+    blockId: question.source.blockId,
+    page: question.source.page
+  };
+  const deliveryId = deliveryIdFor(query.targetId ?? "device-feed", question.id, new Date(nowMs).toISOString());
 
   return {
     type: "card",
@@ -722,7 +730,10 @@ function toDeviceCard(vaultName: string, question: OpenQuestion, spec: ProfileSp
     source: truncateText(source, spec.workflowDescriptionLength),
     sourceFile: question.source.file,
     sourceLine,
+    sourceEndLine,
+    sourceBlockId: question.source.blockId,
     sourcePage: question.source.page,
+    sourceRef,
     lane: question.lane,
     status: question.status,
     kind: question.kind,
@@ -731,7 +742,12 @@ function toDeviceCard(vaultName: string, question: OpenQuestion, spec: ProfileSp
     reminderNote: question.reminderNote ? truncateText(question.reminderNote, spec.noteLength) : undefined,
     reminderDue: isReminderDue(question.reminderAt, nowMs),
     openUri: buildObsidianUri(vaultName, question),
-    answerUrl: buildInputUrl(query, question.id),
+    answerUrl: buildInputUrl(query, question.id, {
+      candidateId: question.id,
+      deliveryId,
+      sourceRef
+    }),
+    deliveryId,
     updatedAt: question.updatedAt ?? question.createdAt
   };
 }
@@ -742,6 +758,15 @@ function toDeviceCardPreview(vaultName: string, question: OpenQuestion, spec: Pr
   const source = question.source.page
     ? `${question.source.file} P${question.source.page}`
     : `${question.source.file}:${sourceLine}`;
+  const sourceRef: DeviceSourceRef = {
+    vaultName,
+    filePath: question.source.file,
+    lineStart: sourceLine,
+    lineEnd: question.source.lineEnd + 1,
+    blockId: question.source.blockId,
+    page: question.source.page
+  };
+  const deliveryId = deliveryIdFor(query.targetId ?? "device-feed", question.id, question.updatedAt ?? question.createdAt ?? new Date().toISOString());
 
   return {
     type: "card-preview",
@@ -751,8 +776,14 @@ function toDeviceCardPreview(vaultName: string, question: OpenQuestion, spec: Pr
     lane: question.lane,
     status: question.status,
     kind: question.kind,
-    answerUrl: buildInputUrl(query, question.id),
-    openUri: buildObsidianUri(vaultName, question)
+    answerUrl: buildInputUrl(query, question.id, {
+      candidateId: question.id,
+      deliveryId,
+      sourceRef
+    }),
+    openUri: buildObsidianUri(vaultName, question),
+    deliveryId,
+    sourceRef
   };
 }
 
@@ -876,22 +907,30 @@ function viewCardsAction(sourceFile: string): DeviceAction {
   };
 }
 
-function openSourceAction(uri: string): DeviceAction {
+function openSourceAction(uri: string, sourceRef?: DeviceSourceRef): DeviceAction {
   return {
     id: "openSource",
     label: "打开来源",
-    kind: "open-uri",
+    kind: "open-source",
+    url: uri,
     uri,
+    obsidianUri: uri,
+    sourceRef,
     enabled: true
   };
 }
 
-function answerCardAction(questionId: string, uri: string): DeviceAction {
+function answerCardAction(questionId: string, uri: string, card?: DeviceCardItem): DeviceAction {
   return {
     id: "answerCard",
-    label: "回答",
-    kind: "input",
+    label: card ? laneIntentLabel(card.lane) : "回答",
+    kind: "respond",
     questionId,
+    candidateId: card?.id ?? questionId,
+    candidateType: "question",
+    deliveryId: card?.deliveryId,
+    sourceRef: card?.sourceRef,
+    url: uri,
     uri,
     qrText: uri,
     enabled: true
@@ -902,7 +941,8 @@ function quickCaptureAction(uri: string | undefined): DeviceAction {
   return {
     id: "quickCapture",
     label: "新想法",
-    kind: "input",
+    kind: "capture",
+    url: uri,
     uri,
     qrText: uri,
     enabled: Boolean(uri)
@@ -917,22 +957,25 @@ function buildCardsUrl(query: DeviceFeedQuery, sourceFile: string): string | und
   params.set("token", query.token);
   params.set("page", "cards");
   params.set("sourceFile", sourceFile);
+  if (query.targetId) params.set("targetId", query.targetId);
   if (query.profile) params.set("profile", query.profile);
   const path = `/device?${params.toString()}`;
   return query.companionBaseUrl ? `${query.companionBaseUrl.replace(/\/+$/u, "")}${path}` : path;
 }
 
-function buildInputUrl(query: DeviceFeedQuery, questionId?: string): string | undefined {
-  if (!query.token) {
-    return undefined;
-  }
-  const params = new URLSearchParams();
-  params.set("token", query.token);
-  if (questionId) {
-    params.set("questionId", questionId);
-  }
-  const path = `/device/input?${params.toString()}`;
-  return query.companionBaseUrl ? `${query.companionBaseUrl.replace(/\/+$/u, "")}${path}` : path;
+function buildInputUrl(query: DeviceFeedQuery, questionId?: string, options: {
+  candidateId?: string;
+  deliveryId?: string;
+  sourceRef?: DeviceSourceRef;
+} = {}): string | undefined {
+  return buildDeviceInputUrl(query.companionBaseUrl, {
+    token: query.token,
+    questionId,
+    targetId: query.targetId,
+    candidateId: options.candidateId,
+    deliveryId: options.deliveryId,
+    sourceRef: options.sourceRef
+  });
 }
 
 function basenameWithoutExtension(path: string): string {

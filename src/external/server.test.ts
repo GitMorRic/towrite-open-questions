@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { OpenQuestion } from "../core/types";
+import type { PushFeedPayload } from "../push/types";
 import { ToWriteExternalApiServer } from "./server";
 
 const question: OpenQuestion = {
@@ -78,7 +79,15 @@ describe("external server", () => {
         text: "Dictated from phone",
         tags: "capture, phone",
         target: { kind: "folderPath", folderPath: "01-Sparks" },
-        clientId: "mobile"
+        clientId: "mobile",
+        metadata: {
+          target_id: "desk",
+          candidate_id: "oq_one",
+          delivery_id: "delivery_1",
+          source_file: "note.md",
+          source_line: "1",
+          input_mode: "capture"
+        }
       }), response);
 
     expect(response.statusCode).toBe(201);
@@ -87,7 +96,21 @@ describe("external server", () => {
       text: "Dictated from phone",
       tags: ["capture", "phone"],
       target: { kind: "folderPath", folderPath: "01-Sparks" },
-      clientId: "mobile"
+      clientId: "mobile",
+      metadata: {
+        target_id: "desk",
+        candidate_id: "oq_one",
+        delivery_id: "delivery_1",
+        source_file: "note.md",
+        source_line: "1",
+        input_mode: "capture",
+        created_at: undefined,
+        place_label: undefined,
+        source_block_id: undefined,
+        source_device: undefined,
+        source_end_line: undefined,
+        source_page: undefined
+      }
     });
     expect(JSON.parse(response.body).data).toMatchObject({
       filePath: "00-Raw/Device Inbox.md",
@@ -111,8 +134,8 @@ describe("external server", () => {
     let appended: unknown;
     const server = makeServer({
       getRestrictedAccessToken: () => "quote0-token",
-      appendQuestionNote: async (id, text, clientId) => {
-        appended = { id, text, clientId };
+      appendQuestionNote: async (id, text, clientId, metadata) => {
+        appended = { id, text, clientId, metadata };
         return question;
       }
     });
@@ -130,14 +153,33 @@ describe("external server", () => {
     await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
       .handleRequest(new FakeRequest("POST", "/api/v1/questions/oq_one/notes", {
         text: "Answered from NFC",
-        clientId: "quote0"
+        clientId: "quote0",
+        metadata: {
+          target_id: "quote0",
+          delivery_id: "delivery_nfc",
+          input_mode: "answer"
+        }
       }, { authorization: "Bearer quote0-token" }), writeResponse);
 
     expect(writeResponse.statusCode).toBe(200);
     expect(appended).toEqual({
       id: "oq_one",
       text: "Answered from NFC",
-      clientId: "quote0"
+      clientId: "quote0",
+      metadata: {
+        target_id: "quote0",
+        candidate_id: undefined,
+        created_at: undefined,
+        delivery_id: "delivery_nfc",
+        input_mode: "answer",
+        place_label: undefined,
+        source_block_id: undefined,
+        source_device: undefined,
+        source_end_line: undefined,
+        source_file: undefined,
+        source_line: undefined,
+        source_page: undefined
+      }
     });
   });
 
@@ -354,7 +396,228 @@ describe("external server", () => {
 
     expect(response.statusCode).toBe(401);
   });
+
+  it("redirects static NFC device go links to the current card input", async () => {
+    const server = makeServer({
+      getRestrictedAccessToken: () => "quote0-token",
+      getPushFeed: () => makePushFeed("desk"),
+      getPushTargets: () => [{
+        id: "desk",
+        name: "Desk screen",
+        type: "local-web",
+        enabled: true,
+        profile: "eink-bw",
+        width: 264,
+        height: 176,
+        inches: 2.7,
+        defaultPage: "cards",
+        defaultLane: "",
+        refreshSeconds: 60,
+        quietHoursStart: "",
+        quietHoursEnd: "",
+        token: "quote0-token",
+        capabilities: ["nfc", "input"]
+      }]
+    });
+
+    const response = new FakeResponse();
+    await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
+      .handleRequest(new FakeRequest("GET", "/device/go?token=quote0-token&targetId=desk&intent=respond", {}, {
+        authorization: undefined
+      }), response);
+
+    expect(response.statusCode).toBe(302);
+    expect(response.headers.location).toContain("/device/input?");
+    expect(response.headers.location).toContain("token=quote0-token");
+    expect(response.headers.location).toContain("questionId=oq_one");
+    expect(response.headers.location).toContain("targetId=desk");
+    expect(response.headers.location).toContain("deliveryId=delivery_abc");
+    expect(response.headers.location).toContain("sourceFile=note.md");
+  });
+
+  it("handles button events with restricted target tokens and keeps event ids idempotent", async () => {
+    const calls: unknown[] = [];
+    const server = makeServer({
+      getRestrictedAccessTokens: () => ["desk-token"],
+      getPushTargets: () => [{
+        id: "desk",
+        name: "Desk screen",
+        type: "local-web",
+        enabled: true,
+        profile: "eink-bw",
+        width: 264,
+        height: 176,
+        inches: 2.7,
+        defaultPage: "cards",
+        defaultLane: "",
+        refreshSeconds: 60,
+        quietHoursStart: "",
+        quietHoursEnd: "",
+        token: "desk-token",
+        capabilities: ["buttons", "input"],
+        buttonMappings: [{ button: "center", action: "respond", label: "Answer" }]
+      }],
+      getPushFeed: () => makePushFeed("desk"),
+      recordPushFeedback: async (input) => {
+        calls.push(input);
+      }
+    });
+
+    const first = new FakeResponse();
+    await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
+      .handleRequest(new FakeRequest("POST", "/api/v1/device/events", {
+        eventId: "desk-1",
+        targetId: "desk",
+        deviceId: "small-screen-01",
+        button: "center",
+        occurredAt: "2026-07-09T12:00:00+08:00"
+      }, { authorization: "Bearer desk-token" }), first);
+
+    const duplicate = new FakeResponse();
+    await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
+      .handleRequest(new FakeRequest("POST", "/api/v1/device/events", {
+        eventId: "desk-1",
+        targetId: "desk",
+        button: "center"
+      }, { authorization: "Bearer desk-token" }), duplicate);
+
+    expect(first.statusCode).toBe(200);
+    const body = JSON.parse(first.body);
+    expect(body).toMatchObject({
+      ok: true,
+      duplicate: false,
+      action: "respond",
+      targetId: "desk",
+      candidateId: "oq_one"
+    });
+    expect(body.openUrl).toContain("token=desk-token");
+    expect(body.openUrl).toContain("questionId=oq_one");
+    expect(JSON.parse(duplicate.body)).toMatchObject({ duplicate: true });
+    expect(calls).toEqual([{
+      targetId: "desk",
+      candidateId: "oq_one",
+      candidateType: "question",
+      action: "opened",
+      note: undefined,
+      clientId: "small-screen-01",
+      at: "2026-07-09T04:00:00.000Z"
+    }]);
+  });
+
+  it("creates short handoff links that resolve without exposing the long token", async () => {
+    const server = makeServer({
+      getRestrictedAccessTokens: () => ["desk-token"],
+      getPushTargets: () => [{
+        id: "desk",
+        name: "Desk screen",
+        type: "local-web",
+        enabled: true,
+        profile: "eink-bw",
+        width: 264,
+        height: 176,
+        inches: 2.7,
+        defaultPage: "cards",
+        defaultLane: "",
+        refreshSeconds: 60,
+        quietHoursStart: "",
+        quietHoursEnd: "",
+        token: "desk-token",
+        capabilities: ["handoff", "input"]
+      }],
+      getPushFeed: () => makePushFeed("desk")
+    });
+
+    const create = new FakeResponse();
+    await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
+      .handleRequest(new FakeRequest("POST", "/api/v1/device/handoffs", {
+        targetId: "desk",
+        intent: "capture",
+        candidateId: "oq_one",
+        ttlSeconds: 120
+      }, { authorization: "Bearer desk-token" }), create);
+
+    const created = JSON.parse(create.body);
+    expect(create.statusCode).toBe(201);
+    expect(created.url).toContain("/device/go?handoff=");
+    expect(created.url).not.toContain("desk-token");
+
+    const handoffPath = new URL(created.url).pathname + new URL(created.url).search;
+    const follow = new FakeResponse();
+    await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
+      .handleRequest(new FakeRequest("GET", handoffPath, {}, { authorization: undefined }), follow);
+
+    expect(follow.statusCode).toBe(302);
+    expect(follow.headers.location).toContain("/device/input?");
+    expect(follow.headers.location).toContain("token=desk-token");
+    expect(follow.headers.location).toContain("intent=capture");
+  });
 });
+
+function makePushFeed(targetId: string): PushFeedPayload {
+  return {
+    schemaVersion: 1,
+    generatedAt: "2026-07-09T04:00:00.000Z",
+    target: {
+      id: targetId,
+      name: "Desk screen",
+      type: "local-web",
+      profile: "eink-bw",
+      width: 264,
+      height: 176,
+      inches: 2.7,
+      capabilities: ["input"]
+    },
+    privacy: {
+      level: "local-coarse",
+      preciseLocationIncluded: false
+    },
+    context: {
+      timeBucket: "noon"
+    },
+    decision: {
+      candidateId: "oq_one",
+      candidateType: "question",
+      deliveryId: "delivery_abc",
+      score: 30,
+      reason: "test",
+      quiet: false
+    },
+    display: {
+      variant: "question",
+      icon: "?",
+      title: "Old title",
+      primary: "Old body",
+      secondaryLines: [],
+      metrics: [],
+      badges: ["ToThink"],
+      footer: "Think",
+      link: "http://127.0.0.1:48321/device/input?token=desk-token&questionId=oq_one",
+      titleText: "? Old title",
+      message: "Old body",
+      signature: "Think",
+      actions: []
+    },
+    candidate: {
+      id: "oq_one",
+      type: "question",
+      title: "Old title",
+      body: "Old body",
+      sourceFile: "note.md",
+      sourceRef: {
+        vaultName: "Vault",
+        filePath: "note.md",
+        lineStart: 1,
+        lineEnd: 1
+      },
+      lane: "think",
+      status: "open",
+      tags: [],
+      openUri: "obsidian://open?vault=Vault&file=note.md",
+      answerUrl: "http://127.0.0.1:48321/device/input?token=desk-token&questionId=oq_one",
+      questionId: "oq_one"
+    }
+  };
+}
 
 function makeServer(overrides: Partial<ConstructorParameters<typeof ToWriteExternalApiServer>[0]> = {}): ToWriteExternalApiServer {
   return new ToWriteExternalApiServer({

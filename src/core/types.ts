@@ -74,6 +74,7 @@ export interface OpenQuestionNote {
   source: "api" | "obsidian" | (string & {});
   clientId?: string;
   createdAt: string;
+  metadata?: Record<string, string>;
 }
 
 export interface QuestionStatusOption {
@@ -140,6 +141,7 @@ export interface StoredQuestionState {
   reminderDismissedAt?: string;
   anchorText?: string;
   anchor?: QuestionAnchor;
+  source?: OpenQuestionSource;
   ai?: OpenQuestionAi;
   createdAt?: string;
   updatedAt?: string;

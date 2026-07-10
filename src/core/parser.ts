@@ -433,7 +433,7 @@ function parseSuggestions(
     ) {
       const lane = suggestionLane;
       suggestions.push({
-        id: makeQuestionId(filePath, start, text),
+        id: makeQuestionId(filePath, -1, `candidate:${lane}:${stripBlockId(text)}`),
         lane,
         kind: lane === "write" ? "todo" : inferKind(text),
         tags: [],

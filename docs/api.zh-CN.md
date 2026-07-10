@@ -239,6 +239,7 @@ http://127.0.0.1:48321/device?token=填你的token
 - `page=articles`：有问题文章翻页。
 - `cursor=0`：分页游标，响应里的 `navigation.nextCursor` 可直接用于下一页。
 - `limit=1`：每屏返回多少项；手机刷卡片默认 1。
+- `targetId=desk-eink`：可选设备目标 ID；用于生成 `deliveryId` 和回写上下文。
 - `lane=think` 或 `lane=write`：只看某一类卡片。
 - `stage=processing`：只看某个 Workflow stage。
 - `width` / `height` / `inches`：设备屏幕尺寸。服务端会据此返回 `orientation`、`aspectRatio`、`ppi` 和 `layout`；横屏设备会自动使用更紧凑的文本长度和布局。
@@ -315,17 +316,17 @@ GET /api/v1/device-feed?token=填你的token&page=cards&sourceFile=MindFlow%2F01
 }
 ```
 
-卡片页会返回一张或多张主卡，另带 `peekItems` 作为下一张预览。卡片项里会包含 `reminderAt`、`reminderNote`、`reminderDue`、`answerUrl` 和 `openUri`。
+卡片页会返回一张或多张主卡，另带 `peekItems` 作为下一张预览。卡片项里会包含 `reminderAt`、`reminderNote`、`reminderDue`、`answerUrl`、`openUri`、`deliveryId` 和 `sourceRef`。`answerUrl` 会带上 `candidateId`、`deliveryId`、`sourceFile`、`sourceLine` 等回写上下文，手机输入页会把这些字段保存进 metadata。
 
 `screens[].actions` 会返回可渲染动作：
 
-- `answerCard`：打开 `/device/input?questionId=...`，用于回答当前卡片并追加 note。
-- `quickCapture`：打开 `/device/input`，用于记录独立灵感。
+- `answerCard` / `kind=respond`：打开 `/device/input?questionId=...`，用于回答当前卡片并追加 note。
+- `quickCapture` / `kind=capture`：打开 `/device/input`，用于记录独立灵感。
 - `viewCards`：从来源笔记页进入 `page=cards&sourceFile=...`，只刷当前笔记里的卡片。
-- `openSource`：打开 Obsidian 来源链接。
+- `openSource` / `kind=open-source`：打开 Obsidian 来源链接。
 - `prev` / `next`：翻页。
 
-真实墨水屏可以只显示二维码、短链接或硬件按钮；手机、桌面组件可以直接把 `uri` 渲染成链接。后续如果需要状态写回，可以在同一协议里继续增加 `resolve`、`pause`、`setReminder` 等动作。
+真实墨水屏可以只显示二维码、短链接或硬件按钮；手机、桌面组件可以直接把 `url` 或兼容字段 `uri` 渲染成链接。硬件不需要理解 ToThink/ToWrite 业务，只需要执行 action。
 
 ### `GET /dashboard`
 
@@ -376,6 +377,12 @@ GET /device/input?token=填你的token&questionId=oq_xxx
 GET /device/input?token=填你的token
 ```
 
+带回写上下文的示例：
+
+```text
+GET /device/input?token=填你的token&questionId=oq_xxx&targetId=desk-eink&candidateId=oq_xxx&deliveryId=delivery_abc&sourceFile=note.md&sourceLine=12
+```
+
 页面支持：
 
 - 文本输入。
@@ -383,6 +390,117 @@ GET /device/input?token=填你的token
 - tags 输入。
 - 选择保存到默认 Inbox 文件、目标文件夹或 Workflow stage。
 - 带 `questionId` 时默认提交到 `POST /api/v1/questions/<id>/notes`；也可以切换为另存为新想法。
+
+提交时会附带 `metadata`，例如：
+
+```json
+{
+  "source_device": "device-input",
+  "target_id": "desk-eink",
+  "candidate_id": "oq_xxx",
+  "delivery_id": "delivery_abc",
+  "source_file": "note.md",
+  "source_line": "12",
+  "input_mode": "answer",
+  "created_at": "2026-07-09T04:00:00.000Z"
+}
+```
+
+### `GET /device/go`
+
+统一跳转入口，适合静态 NFC、二维码、手机快捷方式和不方便动态改写链接的自研硬件。
+
+```text
+GET /device/go?token=填你的受限token&targetId=desk-eink&intent=respond
+```
+
+- `intent=respond`：根据 `targetId` 当前推送卡片打开回答页。
+- `intent=capture`：打开统一快速记录页。
+- `intent=open`：优先打开 Obsidian `obsidian://open` 来源链接，失败时可回退到输入页。
+- `intent=next` / `prev` / `later` / `skipped`：用于实体按键或设备端动作，服务端返回下一步 URL。
+
+如果设备支持动态链接，仍可以直接使用 `/device/input?questionId=...`；如果设备只有一个静态 NFC tag，推荐固定写入 `/device/go?targetId=...`。
+
+### `POST /api/v1/device/events`
+
+硬件按键事件入口。适合 ESP32、自研小屏、手机 App 或桌面小组件把“中键短按 / 右键长按”等事件交给 Obsidian Hub 解析。
+
+必须使用受限 target token 或完整 API token：
+
+```http
+POST /api/v1/device/events
+Authorization: Bearer <restricted-device-token>
+Content-Type: application/json
+```
+
+请求：
+
+```json
+{
+  "schemaVersion": 1,
+  "eventId": "desk-eink-000123",
+  "targetId": "desk-eink",
+  "deviceId": "small-screen-01",
+  "deliveryId": "delivery_abc",
+  "candidateId": "oq_xxx",
+  "button": "center",
+  "action": "respond",
+  "occurredAt": "2026-07-09T12:00:00+08:00"
+}
+```
+
+`eventId` 幂等；离线设备可以缓存事件，恢复网络后补交，重复提交不会重复记录 feedback。
+
+响应：
+
+```json
+{
+  "ok": true,
+  "duplicate": false,
+  "action": "respond",
+  "targetId": "desk-eink",
+  "candidateId": "oq_xxx",
+  "deliveryId": "delivery_abc",
+  "openUrl": "http://192.168.1.20:48321/device/input?...",
+  "obsidianUri": "obsidian://open?vault=Capture&file=note.md",
+  "feedUrl": "http://192.168.1.20:48321/api/v1/push/feed?targetId=desk-eink",
+  "displayMessage": "Open phone input"
+}
+```
+
+每个 Push target 可以在设置页编辑按键映射，默认：
+
+- `center -> respond`
+- `center-long -> capture`
+- `center-double -> open`
+- `left -> prev`
+- `right -> next`
+- `right-long -> later`
+
+### `POST /api/v1/device/handoffs`
+
+创建短期 handoff 链接，适合把短 URL 写进二维码/NFC，避免直接暴露长期 token。
+
+```json
+{
+  "targetId": "desk-eink",
+  "intent": "capture",
+  "candidateId": "oq_xxx",
+  "ttlSeconds": 300
+}
+```
+
+响应：
+
+```json
+{
+  "id": "dho_xxx",
+  "expiresAt": "2026-07-09T04:05:00.000Z",
+  "url": "http://192.168.1.20:48321/device/go?handoff=dho_xxx"
+}
+```
+
+handoff 默认 5 分钟有效，最长 30 分钟；重启 Obsidian 后内存中的 handoff 会失效。
 
 ### `GET /api/v1/rss.xml`
 
@@ -439,10 +557,20 @@ await fetch(`${API_BASE}/api/v1/questions/${encodeURIComponent(id)}/notes`, {
   },
   body: JSON.stringify({
     text: "手机上突然想到：这里可以补一个对比表。",
-    clientId: "phone"
+    clientId: "phone",
+    metadata: {
+      target_id: "desk-eink",
+      candidate_id: id,
+      delivery_id: "delivery_abc",
+      source_file: "note.md",
+      source_line: "12",
+      input_mode: "answer"
+    }
   })
 });
 ```
+
+`metadata` 可选；来自 `/device/input`、NFC 或硬件按键时建议带上，便于后续统计、AI 复盘和追踪“这条记录从哪块屏幕/哪张卡片回来”。
 
 ### `POST /api/v1/captures`
 
@@ -461,7 +589,15 @@ await fetch(`${API_BASE}/api/v1/questions/${encodeURIComponent(id)}/notes`, {
     "kind": "inboxFile",
     "inboxFile": "00-Raw/Device Inbox.md"
   },
-  "clientId": "phone"
+  "clientId": "phone",
+  "metadata": {
+    "target_id": "desk-eink",
+    "candidate_id": "oq_xxx",
+    "delivery_id": "delivery_abc",
+    "source_file": "note.md",
+    "source_line": "12",
+    "input_mode": "capture"
+  }
 }
 ```
 

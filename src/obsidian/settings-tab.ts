@@ -21,6 +21,7 @@ import {
 } from "../core/settings";
 import { OPEN_QUESTION_COLORS, type OpenQuestionColor, type OpenQuestionLane, type QuestionStatusOption } from "../core/types";
 import type { PushDisplayCard, PushHabitRule, PushTargetSettings } from "../push/types";
+import { DEFAULT_DEVICE_BUTTON_MAPPINGS, normalizeDeviceButtonMappings } from "../device-interactions";
 import type ToWritePlugin from "../main";
 import type { Quote0CanvasPayload, Quote0Device, Quote0ImagePayload, Quote0TextPayload } from "../quote0/client";
 import type { Quote0SyncPreview } from "../quote0/sync-service";
@@ -2032,6 +2033,15 @@ export class ToWriteSettingTab extends PluginSettingTab {
           });
           text.inputEl.rows = 3;
         });
+      new Setting(body)
+        .setName("Button mappings")
+        .setDesc("One per line: center: respond, center-long: capture, center-double: open, left: prev, right: next, right-long: later.")
+        .addTextArea((text) => {
+          text.setValue(formatButtonMappings(target.buttonMappings)).onChange(async (value) => {
+            await this.patchPushTarget(index, { buttonMappings: parseButtonMappings(value) });
+          });
+          text.inputEl.rows = 6;
+        });
       const feedUrl = buildPushFeedUrl(this.plugin.settings, target);
       new Setting(body)
         .setName(copy.pushFeedUrl)
@@ -2067,7 +2077,8 @@ export class ToWriteSettingTab extends PluginSettingTab {
           quietHoursStart: "",
           quietHoursEnd: "",
           token: "",
-          capabilities: ["pull", "sse", "feedback", "input"]
+          capabilities: ["pull", "sse", "feedback", "input"],
+          buttonMappings: DEFAULT_DEVICE_BUTTON_MAPPINGS
         }
       ], true);
     });
@@ -3119,6 +3130,29 @@ function buildPushFeedUrl(settings: ToWriteSettings, target: PushTargetSettings)
   params.set("token", settings.externalApi.token || "TOKEN");
   params.set("targetId", target.id);
   return `${baseUrl}/api/v1/push/feed?${params.toString()}`;
+}
+
+function formatButtonMappings(mappings: PushTargetSettings["buttonMappings"]): string {
+  return normalizeDeviceButtonMappings(mappings)
+    .map((mapping) => `${mapping.button}: ${mapping.action}`)
+    .join("\n");
+}
+
+function parseButtonMappings(value: string): PushTargetSettings["buttonMappings"] {
+  const parsed = value
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [button, ...rest] = line.split(/[:=]/u);
+      const action = rest.join(":").trim();
+      return {
+        button: button.trim(),
+        action,
+        label: `${button.trim()}: ${action}`
+      };
+    });
+  return normalizeDeviceButtonMappings(parsed);
 }
 
 function normalizePushEditorId(value: string): string {

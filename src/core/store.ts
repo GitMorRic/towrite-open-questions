@@ -1,5 +1,6 @@
 import { buildArticleSummaries, queryQuestions } from "./query";
 import { stripQuestionRuleSyntax } from "./rule-text";
+import { slugify } from "./hash";
 import type {
   ArticleSummary,
   OpenQuestion,
@@ -99,13 +100,17 @@ export class OpenQuestionStore {
   }
 
   getAllSuggestions(): OpenQuestionSuggestion[] {
-    const existingQuestionIds = new Set(this.getAllQuestions().map((question) => question.id));
-    const stateIds = new Set(this.stateById.keys());
+    const questions = this.getAllQuestions();
+    const existingQuestionIds = new Set(questions.map((question) => question.id));
+    const states = Array.from(this.stateById.values());
+    const stateIds = new Set(states.map((state) => state.id));
 
     return Array.from(this.suggestionsByFile.values())
       .flat()
       .filter((suggestion) => !existingQuestionIds.has(suggestion.id))
-      .filter((suggestion) => !stateIds.has(suggestion.id));
+      .filter((suggestion) => !stateIds.has(suggestion.id))
+      .filter((suggestion) => !questions.some((question) => matchesSuggestionSignature(suggestion, question)))
+      .filter((suggestion) => !states.some((state) => matchesIgnoredSuggestionSignature(suggestion, state)));
   }
 
   getSuggestions(filePath?: string): OpenQuestionSuggestion[] {
@@ -174,6 +179,39 @@ export class OpenQuestionStore {
       updatedAt: state.updatedAt ?? question.updatedAt
     });
   }
+}
+
+function matchesSuggestionSignature(suggestion: OpenQuestionSuggestion, question: OpenQuestion): boolean {
+  if (question.status === "ignored") {
+    return false;
+  }
+  if (question.lane !== suggestion.lane || question.source.file !== suggestion.source.file) {
+    return false;
+  }
+  return normalizedCandidateText(question.question || question.anchorText) === normalizedCandidateText(suggestion.question || suggestion.anchorText);
+}
+
+function matchesIgnoredSuggestionSignature(suggestion: OpenQuestionSuggestion, state: StoredQuestionState): boolean {
+  if (state.status !== "ignored" || state.lane !== suggestion.lane) {
+    return false;
+  }
+  const stateText = normalizedCandidateText(state.question || state.anchorText);
+  const suggestionText = normalizedCandidateText(suggestion.question || suggestion.anchorText);
+  if (!stateText || stateText !== suggestionText) {
+    return false;
+  }
+
+  if (state.source?.file) {
+    return state.source.file === suggestion.source.file;
+  }
+
+  return state.id.startsWith(`oq_${slugify(suggestion.source.file.split(/[\\/]/u).pop() ?? suggestion.source.file)}_`);
+}
+
+function normalizedCandidateText(text?: string): string {
+  return stripQuestionRuleSyntax(text ?? "")
+    .replace(/\s+/gu, " ")
+    .trim();
 }
 
 function cleanQuestionDisplayText(question: OpenQuestion): OpenQuestion {

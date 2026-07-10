@@ -46,7 +46,7 @@ export function formatQuote0DeviceFeed(
     };
   }
 
-  const nfcLink = buildQuote0InputUrl(options.nfcBaseUrl, options.nfcToken, card.id);
+  const nfcLink = card.answerUrl || buildQuote0InputUrl(options.nfcBaseUrl, options.nfcToken, card.id);
   const context = options.sourceContexts?.[card.sourceFile];
   const title = truncateText(card.title || card.body || displayNameForPath(card.sourceFile), 24);
   const cue = cleanMemoryCue(card.note);

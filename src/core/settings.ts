@@ -1,5 +1,6 @@
 import type { OpenQuestionColor, OpenQuestionLane, QuestionStatusOption } from "./types";
 import type { PushHabitRule, PushRuntimeState, PushTargetSettings, ToWritePushSettings } from "../push/types";
+import { DEFAULT_DEVICE_BUTTON_MAPPINGS, normalizeDeviceButtonMappings } from "../device-interactions";
 
 export type ToWriteLanguage = "zh" | "en";
 
@@ -285,7 +286,8 @@ export const DEFAULT_PUSH_SETTINGS: ToWritePushSettings = {
       quietHoursStart: "",
       quietHoursEnd: "",
       token: "",
-      capabilities: ["pull", "sse", "feedback", "input"]
+      capabilities: ["pull", "sse", "feedback", "input"],
+      buttonMappings: DEFAULT_DEVICE_BUTTON_MAPPINGS
     },
     {
       id: "quote0",
@@ -302,7 +304,8 @@ export const DEFAULT_PUSH_SETTINGS: ToWritePushSettings = {
       quietHoursStart: "",
       quietHoursEnd: "",
       token: "",
-      capabilities: ["push", "nfc", "text-api"]
+      capabilities: ["push", "nfc", "text-api"],
+      buttonMappings: DEFAULT_DEVICE_BUTTON_MAPPINGS
     }
   ],
   habits: [
@@ -580,7 +583,8 @@ function normalizePushTargets(targets: PushTargetSettings[] | undefined, quote0:
       quietHoursStart: normalizeTime(target.quietHoursStart),
       quietHoursEnd: normalizeTime(target.quietHoursEnd),
       token: normalizePushShortText(target.token, 200),
-      capabilities: normalizePushStringList(target.capabilities).slice(0, 12)
+      capabilities: normalizePushStringList(target.capabilities).slice(0, 12),
+      buttonMappings: normalizeDeviceButtonMappings(target.buttonMappings)
     });
   }
 
@@ -600,7 +604,8 @@ function normalizePushTargets(targets: PushTargetSettings[] | undefined, quote0:
     quietHoursStart: "",
     quietHoursEnd: "",
     token: quote0.nfcToken,
-    capabilities: quote0Capabilities(quote0.dashboardApi)
+    capabilities: quote0Capabilities(quote0.dashboardApi),
+    buttonMappings: DEFAULT_DEVICE_BUTTON_MAPPINGS
   };
 
   if (quoteTargetIndex >= 0) {
@@ -623,6 +628,7 @@ function normalizePushTargets(targets: PushTargetSettings[] | undefined, quote0:
         quote0.dashboardApi === "image" ? "image-api" : "",
         quote0.dashboardApi === "canvas" ? "canvas-api" : ""
       ]),
+      buttonMappings: output[quoteTargetIndex].buttonMappings,
       enabled: quote0.enabled || output[quoteTargetIndex].enabled
     };
   } else {

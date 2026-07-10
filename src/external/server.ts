@@ -2,9 +2,22 @@ import type { ArticleSummary, OpenQuestion, OpenQuestionStatus, QuestionStatusOp
 import { enrichArticleSummariesWithWorkflow } from "../core/articles";
 import { normalizeExternalApiBindHost, type ToWriteDeviceCaptureSettings, type ToWriteExternalApiSettings } from "../core/settings";
 import type { PushAnchorInput, PushFeedbackInput } from "../push/state";
-import type { PushFeedPayload } from "../push/types";
+import type { PushFeedPayload, PushTargetSettings } from "../push/types";
 import type { WorkflowIndexPayload, WorkflowSummaryPayload } from "../workflow";
 import { workflowQueryFromUrl, type WorkflowQuery } from "../workflow";
+import {
+  buildDeviceGoUrl,
+  buildDeviceInputUrl,
+  deliveryIdFor,
+  feedbackActionForIntent,
+  normalizeDeviceButtonMappings,
+  normalizeDeviceEventInput,
+  sourceRefToObsidianUri,
+  type DeviceActionIntent,
+  type DeviceEventInput,
+  type DeviceEventResult,
+  type DeviceSourceRef
+} from "../device-interactions";
 import { buildDashboardHtml } from "./dashboard";
 import { buildDeviceInputPageHtml } from "./device-input-page";
 import { buildDevicePageHtml } from "./device-page";
@@ -31,12 +44,14 @@ interface ExternalApiServerOptions {
   getWorkflowSummary(): WorkflowSummaryPayload;
   getDeviceCaptureSettings(): ToWriteDeviceCaptureSettings;
   getRestrictedAccessToken?(): string;
+  getRestrictedAccessTokens?(): string[];
+  getPushTargets?(): PushTargetSettings[];
   getPushFeed?(targetId?: string): PushFeedPayload;
   recordPushFeedback?(input: PushFeedbackInput): Promise<void>;
   recordContextAnchor?(input: PushAnchorInput): Promise<void>;
   getStatusOptions(): QuestionStatusOption[];
   updateQuestionStatus(id: string, status: OpenQuestionStatus, note?: string, clientId?: string): Promise<OpenQuestion | undefined>;
-  appendQuestionNote(id: string, text: string, clientId?: string): Promise<OpenQuestion | undefined>;
+  appendQuestionNote(id: string, text: string, clientId?: string, metadata?: DeviceWritebackMetadata): Promise<OpenQuestion | undefined>;
   updateQuestionFields(id: string, patch: QuestionFieldPatch): Promise<OpenQuestion | undefined>;
   createDeviceCapture(request: DeviceCaptureRequest): Promise<DeviceCaptureResult>;
   subscribe(listener: () => void): () => void;
@@ -55,6 +70,7 @@ export interface DeviceCaptureRequest {
   tags: string[];
   target?: DeviceCaptureTarget;
   clientId?: string;
+  metadata?: DeviceWritebackMetadata;
 }
 
 export interface DeviceCaptureResult {
@@ -64,6 +80,32 @@ export interface DeviceCaptureResult {
   targetKind: DeviceCaptureTarget["kind"];
   createdAt: string;
   openUri: string;
+}
+
+export interface DeviceWritebackMetadata {
+  source_device?: string;
+  target_id?: string;
+  candidate_id?: string;
+  delivery_id?: string;
+  source_file?: string;
+  source_line?: string;
+  source_end_line?: string;
+  source_block_id?: string;
+  source_page?: string;
+  place_label?: string;
+  input_mode?: string;
+  created_at?: string;
+}
+
+interface DeviceHandoff {
+  id: string;
+  expiresAt: string;
+  targetId?: string;
+  intent: DeviceActionIntent;
+  questionId?: string;
+  candidateId?: string;
+  deliveryId?: string;
+  sourceRef?: DeviceSourceRef;
 }
 
 interface QuestionFieldPatch {
@@ -120,6 +162,8 @@ export class ToWriteExternalApiServer {
   private unsubscribe?: () => void;
   private readonly sseClients = new Set<HttpResponse>();
   private readonly pushSseClients = new Map<HttpResponse, string | undefined>();
+  private readonly handoffs = new Map<string, DeviceHandoff>();
+  private readonly deviceEventResults = new Map<string, DeviceEventResult>();
 
   constructor(private readonly options: ExternalApiServerOptions) {}
 
@@ -257,6 +301,19 @@ export class ToWriteExternalApiServer {
   private handleGet(request: HttpRequest, response: HttpResponse, url: URL): void {
     const vaultName = this.options.getVaultName();
 
+    if (url.pathname === "/device/go") {
+      const result = this.resolveDeviceAction(request, url);
+      const redirectUrl = result.action === "open"
+        ? result.obsidianUri || result.openUrl
+        : result.openUrl || result.obsidianUri;
+      if (!redirectUrl) {
+        throw new ExternalApiError(404, "No device action is available.");
+      }
+      response.writeHead(302, { location: redirectUrl });
+      response.end();
+      return;
+    }
+
     if (url.pathname === "/api/v1/questions") {
       const questions = this.options.getQuestions(queryFromUrl(url));
       this.writeJson(response, 200, buildQuestionsPayload(vaultName, questions));
@@ -385,7 +442,7 @@ export class ToWriteExternalApiServer {
         throw new ExternalApiError(400, "Missing note text.");
       }
       const clientId = readOptionalText(body, "clientId");
-      const updated = await this.options.appendQuestionNote(id, text, clientId);
+      const updated = await this.options.appendQuestionNote(id, text, clientId, readWritebackMetadata(body));
       if (!updated) {
         throw new ExternalApiError(404, "Question not found.");
       }
@@ -407,11 +464,38 @@ export class ToWriteExternalApiServer {
         text,
         tags: readStringList(body, "tags"),
         target: readCaptureTarget(body),
-        clientId: readOptionalText(body, "clientId")
+        clientId: readOptionalText(body, "clientId"),
+        metadata: readWritebackMetadata(body)
       };
       const result = await this.options.createDeviceCapture(capture);
       this.writeJson(response, 201, {
         data: result
+      });
+      return;
+    }
+
+    if (url.pathname === "/api/v1/device/events") {
+      const body = await readJsonBody(request);
+      const event = this.readDeviceEvent(body);
+      const cached = this.deviceEventResults.get(event.eventId);
+      if (cached) {
+        this.writeJson(response, 200, { ...cached, duplicate: true });
+        return;
+      }
+      const result = this.resolveDeviceAction(request, url, event);
+      await this.recordDeviceEventFeedback(event, result);
+      this.rememberDeviceEventResult(result);
+      this.writeJson(response, 200, result);
+      return;
+    }
+
+    if (url.pathname === "/api/v1/device/handoffs") {
+      const body = await readJsonBody(request);
+      const handoff = this.createDeviceHandoff(body);
+      this.writeJson(response, 201, {
+        id: handoff.id,
+        expiresAt: handoff.expiresAt,
+        url: buildDeviceGoUrl(this.baseUrlForRequest(request), { handoff: handoff.id })
       });
       return;
     }
@@ -554,6 +638,151 @@ export class ToWriteExternalApiServer {
     );
   }
 
+  private resolveDeviceAction(request: HttpRequest, url: URL, event?: DeviceEventInput): DeviceEventResult {
+    const handoff = this.resolveDeviceHandoff(url.searchParams.get("handoff"));
+    const targetId = event?.targetId || handoff?.targetId || url.searchParams.get("targetId")?.trim() || "quote0";
+    const intent = event?.action || handoff?.intent || readDeviceIntent(url.searchParams.get("intent")) || "respond";
+    const feed = this.options.getPushFeed?.(targetId);
+    const candidate = feed?.candidate;
+    const candidateId = event?.candidateId || handoff?.candidateId || url.searchParams.get("candidateId")?.trim() || feed?.decision.candidateId;
+    const candidateType = event?.candidateType || feed?.decision.candidateType;
+    const deliveryId = event?.deliveryId || handoff?.deliveryId || url.searchParams.get("deliveryId")?.trim() || feed?.decision.deliveryId || deliveryIdFor(targetId, candidateId, new Date().toISOString());
+    const questionId = handoff?.questionId || candidate?.questionId || (candidateType === "question" ? candidateId : undefined);
+    const sourceRef = handoff?.sourceRef || candidate?.sourceRef || sourceRefFromUrl(url, this.options.getVaultName());
+    const token = this.deviceTokenForRequest(request, url, targetId);
+    const baseUrl = this.baseUrlForRequest(request);
+    const openUrl = this.openUrlForIntent(intent, baseUrl, token, {
+      questionId,
+      targetId,
+      candidateId,
+      deliveryId,
+      sourceRef
+    });
+    const obsidianUri = candidate?.openUri || sourceRefToObsidianUri(sourceRef, this.options.getVaultName());
+    const feedUrl = `${baseUrl}/api/v1/push/feed?targetId=${encodeURIComponent(targetId)}`;
+
+    return {
+      ok: true,
+      eventId: event?.eventId || handoff?.id || `go_${Date.now().toString(36)}`,
+      duplicate: false,
+      action: intent,
+      targetId,
+      candidateId,
+      candidateType,
+      deliveryId,
+      openUrl: intent === "open" ? obsidianUri || openUrl : openUrl,
+      obsidianUri,
+      feedUrl,
+      displayMessage: displayMessageForDeviceIntent(intent)
+    };
+  }
+
+  private openUrlForIntent(intent: DeviceActionIntent, baseUrl: string, token: string | undefined, options: {
+    questionId?: string;
+    targetId: string;
+    candidateId?: string;
+    deliveryId?: string;
+    sourceRef?: DeviceSourceRef;
+  }): string | undefined {
+    if (intent === "open") {
+      return sourceRefToObsidianUri(options.sourceRef, this.options.getVaultName());
+    }
+    if (intent === "next" || intent === "prev" || intent === "later" || intent === "skipped") {
+      return buildDeviceGoUrl(baseUrl, {
+        token,
+        targetId: options.targetId,
+        intent: "respond",
+        candidateId: options.candidateId,
+        deliveryId: options.deliveryId
+      });
+    }
+    return buildDeviceInputUrl(baseUrl, {
+      token,
+      questionId: intent === "capture" ? undefined : options.questionId,
+      targetId: options.targetId,
+      candidateId: options.candidateId,
+      deliveryId: options.deliveryId,
+      intent,
+      sourceRef: options.sourceRef
+    });
+  }
+
+  private readDeviceEvent(body: Record<string, unknown>): DeviceEventInput {
+    const targetId = readString(body, "targetId");
+    const target = this.options.getPushTargets?.().find((item) => item.id === targetId);
+    try {
+      return normalizeDeviceEventInput(body, normalizeDeviceButtonMappings(target?.buttonMappings));
+    } catch (error) {
+      throw new ExternalApiError(400, error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  private async recordDeviceEventFeedback(event: DeviceEventInput, result: DeviceEventResult): Promise<void> {
+    const action = feedbackActionForIntent(result.action);
+    const candidateId = result.candidateId || event.candidateId;
+    if (!action || !candidateId || !this.options.recordPushFeedback) {
+      return;
+    }
+    await this.options.recordPushFeedback({
+      targetId: result.targetId,
+      candidateId,
+      candidateType: result.candidateType || event.candidateType,
+      action,
+      note: event.note,
+      clientId: event.deviceId || "device-event",
+      at: event.occurredAt
+    });
+  }
+
+  private rememberDeviceEventResult(result: DeviceEventResult): void {
+    this.deviceEventResults.set(result.eventId, result);
+    if (this.deviceEventResults.size <= 300) {
+      return;
+    }
+    const firstKey = this.deviceEventResults.keys().next().value as string | undefined;
+    if (firstKey) {
+      this.deviceEventResults.delete(firstKey);
+    }
+  }
+
+  private createDeviceHandoff(body: Record<string, unknown>): DeviceHandoff {
+    const ttlSeconds = Math.max(30, Math.min(readPositiveInteger(body, "ttlSeconds") ?? 300, 60 * 30));
+    const intent = readDeviceIntent(readString(body, "intent")) || "respond";
+    const targetId = readString(body, "targetId");
+    const candidateId = readString(body, "candidateId");
+    const id = `dho_${randomFragment()}`;
+    const handoff: DeviceHandoff = {
+      id,
+      expiresAt: new Date(Date.now() + ttlSeconds * 1000).toISOString(),
+      targetId,
+      intent,
+      questionId: readString(body, "questionId"),
+      candidateId,
+      deliveryId: readString(body, "deliveryId") || deliveryIdFor(targetId || "device", candidateId, new Date().toISOString()),
+      sourceRef: readSourceRefBody(body)
+    };
+    this.handoffs.set(id, handoff);
+    this.purgeHandoffs();
+    return handoff;
+  }
+
+  private resolveDeviceHandoff(id: string | null): DeviceHandoff | undefined {
+    if (!id) {
+      return undefined;
+    }
+    this.purgeHandoffs();
+    return this.handoffs.get(id) ?? undefined;
+  }
+
+  private purgeHandoffs(): void {
+    const now = Date.now();
+    for (const [id, handoff] of this.handoffs.entries()) {
+      if (Date.parse(handoff.expiresAt) <= now) {
+        this.handoffs.delete(id);
+      }
+    }
+  }
+
   private buildDeviceInputContext(url: URL) {
     const questionId = url.searchParams.get("questionId")?.trim();
     const question = questionId
@@ -561,8 +790,25 @@ export class ToWriteExternalApiServer {
       : undefined;
     const capture = this.options.getDeviceCaptureSettings();
     const workflow = this.options.getWorkflowSummary();
+    const questionSourceRef = question ? {
+      vaultName: this.options.getVaultName(),
+      filePath: question.source.file,
+      lineStart: question.source.lineStart + 1,
+      lineEnd: question.source.lineEnd + 1,
+      blockId: question.source.blockId,
+      page: question.source.page
+    } : undefined;
+    const sourceRef = sourceRefFromUrl(url, this.options.getVaultName()) || questionSourceRef;
     return {
       schemaVersion: 1,
+      interaction: {
+        targetId: url.searchParams.get("targetId")?.trim() || undefined,
+        candidateId: url.searchParams.get("candidateId")?.trim() || questionId || undefined,
+        deliveryId: url.searchParams.get("deliveryId")?.trim() || undefined,
+        intent: readDeviceIntent(url.searchParams.get("intent")) || (questionId ? "respond" : "capture"),
+        sourceRef,
+        obsidianUri: sourceRefToObsidianUri(sourceRef, this.options.getVaultName())
+      },
       capture: {
         enabled: capture.enabled,
         inboxFile: capture.inboxFile,
@@ -588,6 +834,11 @@ export class ToWriteExternalApiServer {
         lane: question.lane,
         status: question.status,
         kind: question.kind,
+        sourceFile: question.source.file,
+        sourceLine: question.source.lineStart + 1,
+        sourceEndLine: question.source.lineEnd + 1,
+        sourceBlockId: question.source.blockId,
+        sourcePage: question.source.page,
         source: question.source.page
           ? `${question.source.file} P${question.source.page}`
           : `${question.source.file}:${question.source.lineStart + 1}`
@@ -606,6 +857,32 @@ export class ToWriteExternalApiServer {
     return this.options.getPushFeed(targetId);
   }
 
+  private baseUrlForRequest(request: HttpRequest): string {
+    return this.options.getSettings().publicBaseUrl.trim().replace(/\/+$/u, "") || `http://${hostHeader(request)}`;
+  }
+
+  private deviceTokenForRequest(request: HttpRequest, url: URL, targetId: string): string | undefined {
+    const authorization = headerValue(request, "authorization");
+    const bearer = authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length).trim() : "";
+    if (bearer && this.restrictedTokens().includes(bearer)) {
+      return bearer;
+    }
+    const queryToken = url.searchParams.get("token")?.trim();
+    if (queryToken && this.restrictedTokens().includes(queryToken)) {
+      return queryToken;
+    }
+    const settings = this.options.getSettings();
+    const targetToken = this.options.getPushTargets?.().find((target) => target.id === targetId)?.token?.trim();
+    if (targetToken) {
+      return targetToken;
+    }
+    const quote0Token = this.options.getRestrictedAccessToken?.()?.trim();
+    if (targetId === "quote0" && quote0Token) {
+      return quote0Token;
+    }
+    return settings.token.trim();
+  }
+
   private writeSse(response: HttpResponse, event: string, payload: unknown): void {
     response.write(`event: ${event}\n`);
     response.write(`data: ${JSON.stringify(payload)}\n\n`);
@@ -614,7 +891,6 @@ export class ToWriteExternalApiServer {
   private isAuthorized(request: HttpRequest, url: URL, method: string): boolean {
     const settings = this.options.getSettings();
     const token = settings.token.trim();
-    const restrictedToken = this.options.getRestrictedAccessToken?.()?.trim() ?? "";
     const authorization = headerValue(request, "authorization");
     if (authorization === `Bearer ${token}`) {
       return true;
@@ -622,21 +898,49 @@ export class ToWriteExternalApiServer {
     if (method === "GET" && settings.allowQueryTokenForRead && url.searchParams.get("token") === token) {
       return true;
     }
-    if (!restrictedToken || !this.isRestrictedRoute(method, url.pathname)) {
-      return false;
-    }
-    if (authorization === `Bearer ${restrictedToken}`) {
+    if (method === "GET" && url.pathname === "/device/go" && this.resolveDeviceHandoff(url.searchParams.get("handoff"))) {
       return true;
     }
-    return method === "GET" && url.searchParams.get("token") === restrictedToken;
+    const restrictedTokens = this.restrictedTokens();
+    if (restrictedTokens.length === 0 || !this.isRestrictedRoute(method, url.pathname)) {
+      return false;
+    }
+    const bearer = authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length).trim() : "";
+    if (bearer && restrictedTokens.includes(bearer)) {
+      return true;
+    }
+    const queryToken = url.searchParams.get("token")?.trim();
+    return method === "GET" && Boolean(queryToken && restrictedTokens.includes(queryToken));
+  }
+
+  private restrictedTokens(): string[] {
+    const values = [
+      this.options.getRestrictedAccessToken?.(),
+      ...(this.options.getRestrictedAccessTokens?.() ?? [])
+    ];
+    const seen = new Set<string>();
+    const output: string[] = [];
+    for (const value of values) {
+      const token = value?.trim();
+      if (!token || seen.has(token)) {
+        continue;
+      }
+      seen.add(token);
+      output.push(token);
+    }
+    return output;
   }
 
   private isRestrictedRoute(method: string, pathname: string): boolean {
     if (method === "GET") {
-      return pathname === "/device/input" || pathname === "/api/v1/device-input-context";
+      return pathname === "/device/input" || pathname === "/device/go" || pathname === "/api/v1/device-input-context";
     }
     if (method === "POST") {
-      return pathname === "/api/v1/captures" || /^\/api\/v1\/questions\/[^/]+\/notes$/u.test(pathname);
+      return pathname === "/api/v1/captures"
+        || pathname === "/api/v1/device/events"
+        || pathname === "/api/v1/device/handoffs"
+        || pathname === "/api/v1/push/feedback"
+        || /^\/api\/v1\/questions\/[^/]+\/notes$/u.test(pathname);
     }
     return false;
   }
@@ -721,6 +1025,50 @@ function readStringList(body: Record<string, unknown>, key: string): string[] {
   return [];
 }
 
+function readWritebackMetadata(body: Record<string, unknown>): DeviceWritebackMetadata | undefined {
+  const raw = body.metadata;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return undefined;
+  }
+  const record = raw as Record<string, unknown>;
+  const metadata: DeviceWritebackMetadata = {
+    source_device: readMetadataString(record, "source_device"),
+    target_id: readMetadataString(record, "target_id"),
+    candidate_id: readMetadataString(record, "candidate_id"),
+    delivery_id: readMetadataString(record, "delivery_id"),
+    source_file: readMetadataString(record, "source_file"),
+    source_line: readMetadataString(record, "source_line"),
+    source_end_line: readMetadataString(record, "source_end_line"),
+    source_block_id: readMetadataString(record, "source_block_id"),
+    source_page: readMetadataString(record, "source_page"),
+    place_label: readMetadataString(record, "place_label"),
+    input_mode: readMetadataString(record, "input_mode"),
+    created_at: normalizeMetadataIso(record.created_at)
+  };
+  return Object.values(metadata).some(Boolean) ? metadata : undefined;
+}
+
+function readMetadataString(record: Record<string, unknown>, key: keyof DeviceWritebackMetadata): string | undefined {
+  return readLooseString(record, key);
+}
+
+function readLooseString(record: Record<string, unknown>, key: string, maxLength = 240): string | undefined {
+  const value = record[key];
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed ? trimmed.slice(0, maxLength) : undefined;
+}
+
+function normalizeMetadataIso(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : undefined;
+}
+
 function splitListText(value: string): string[] {
   return value
     .split(/[，,、;；\s]+/u)
@@ -754,6 +1102,72 @@ function readCaptureTarget(body: Record<string, unknown>): DeviceCaptureTarget |
     };
   }
   return undefined;
+}
+
+function readSourceRefBody(body: Record<string, unknown>): DeviceSourceRef | undefined {
+  const raw = body.sourceRef;
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    const record = raw as Record<string, unknown>;
+    return compactSourceRef({
+      vaultName: readLooseString(record, "vaultName"),
+      filePath: readLooseString(record, "filePath"),
+      lineStart: readNumber(record.lineStart),
+      lineEnd: readNumber(record.lineEnd),
+      blockId: readLooseString(record, "blockId"),
+      page: readNumber(record.page)
+    });
+  }
+  return compactSourceRef({
+    filePath: readString(body, "sourceFile"),
+    lineStart: readNumber(body.sourceLine),
+    lineEnd: readNumber(body.sourceEndLine),
+    blockId: readString(body, "sourceBlockId"),
+    page: readNumber(body.sourcePage)
+  });
+}
+
+function sourceRefFromUrl(url: URL, vaultName?: string): DeviceSourceRef | undefined {
+  return compactSourceRef({
+    vaultName,
+    filePath: url.searchParams.get("sourceFile")?.trim() || undefined,
+    lineStart: readNumber(url.searchParams.get("sourceLine")),
+    lineEnd: readNumber(url.searchParams.get("sourceEndLine")),
+    blockId: url.searchParams.get("sourceBlockId")?.trim() || undefined,
+    page: readNumber(url.searchParams.get("sourcePage"))
+  });
+}
+
+function compactSourceRef(sourceRef: DeviceSourceRef): DeviceSourceRef | undefined {
+  return sourceRef.filePath || sourceRef.blockId || sourceRef.page !== undefined
+    ? sourceRef
+    : undefined;
+}
+
+function readNumber(value: unknown): number | undefined {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.floor(number) : undefined;
+}
+
+function readDeviceIntent(value: string | null | undefined): DeviceActionIntent | undefined {
+  return value === "respond" || value === "capture" || value === "open" || value === "next" || value === "prev"
+    || value === "later" || value === "skipped" || value === "useful" || value === "answered" || value === "opened" || value === "opened-no-write"
+    ? value
+    : undefined;
+}
+
+function displayMessageForDeviceIntent(intent: DeviceActionIntent): string {
+  if (intent === "capture") return "Open quick capture";
+  if (intent === "open") return "Open source note";
+  if (intent === "next") return "Refresh next content";
+  if (intent === "prev") return "Refresh previous content";
+  if (intent === "later") return "Marked for later";
+  if (intent === "skipped") return "Skipped current card";
+  if (intent === "answered") return "Marked answered";
+  return "Open phone input";
+}
+
+function randomFragment(): string {
+  return globalThis.crypto?.randomUUID?.().replace(/-/gu, "") ?? `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
 }
 
 function readPushFeedbackAction(body: Record<string, unknown>): PushFeedbackInput["action"] | undefined {

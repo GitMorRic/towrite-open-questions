@@ -213,14 +213,16 @@ describe("device feed", () => {
     expect(first.screens[0].items[0]).toMatchObject({
       type: "card",
       id: "oq_think",
-      body: "Check whether partial refresh leaves ghosting",
-      answerUrl: "https://device.local/device/input?token=secret&questionId=oq_think"
+      body: "Check whether partial refresh leaves ghosting"
     });
+    expect(first.screens[0].items[0]).toHaveProperty("answerUrl");
+    expect(String(first.screens[0].items[0].type === "card" ? first.screens[0].items[0].answerUrl : "")).toContain("questionId=oq_think");
+    expect(String(first.screens[0].items[0].type === "card" ? first.screens[0].items[0].answerUrl : "")).toContain("deliveryId=");
     expect(first.screens[0].peekItems?.[0]).toMatchObject({
       type: "card-preview",
-      id: "oq_write",
-      answerUrl: "https://device.local/device/input?token=secret&questionId=oq_write"
+      id: "oq_write"
     });
+    expect(first.screens[0].peekItems?.[0]?.answerUrl).toContain("questionId=oq_write");
     expect(first.screens[0].actions.map((action) => action.id)).toEqual([
       "answerCard",
       "quickCapture",

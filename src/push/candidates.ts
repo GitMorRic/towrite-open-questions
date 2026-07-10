@@ -111,6 +111,18 @@ function questionToCandidate(
     nextAction: question.ai?.nextAction || workflowContext?.file.nextAction,
     sourceFile: question.source.file,
     sourceTitle,
+    sourceLine: question.source.lineStart + 1,
+    sourceEndLine: question.source.lineEnd + 1,
+    sourceBlockId: question.source.blockId,
+    sourcePage: question.source.page,
+    sourceRef: {
+      vaultName,
+      filePath: question.source.file,
+      lineStart: question.source.lineStart + 1,
+      lineEnd: question.source.lineEnd + 1,
+      blockId: question.source.blockId,
+      page: question.source.page
+    },
     workflowStageId: workflowContext?.stage.id,
     workflowStageTitle: workflowContext?.stage.title,
     lane: question.lane,
@@ -137,6 +149,9 @@ function workflowFileToCandidate(stage: WorkflowStageSummary, file: WorkflowFile
     nextAction: file.nextAction,
     sourceFile: file.filePath,
     sourceTitle: file.title,
+    sourceRef: {
+      filePath: file.filePath
+    },
     workflowStageId: stage.id,
     workflowStageTitle: stage.title,
     tags: file.tags,
@@ -161,6 +176,10 @@ function articleToCandidate(article: ArticleSummary, vaultName: string, publicBa
     nextAction: top?.ai?.nextAction,
     sourceFile: article.filePath,
     sourceTitle: article.title,
+    sourceRef: {
+      vaultName,
+      filePath: article.filePath
+    },
     workflowStageId: article.stageId,
     workflowStageTitle: article.stageTitle,
     lane: top?.lane,

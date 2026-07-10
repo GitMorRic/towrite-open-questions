@@ -169,6 +169,17 @@ export function buildDeviceInputPageHtml(): string {
       const params = new URLSearchParams(location.search);
       const token = params.get("token") || localStorage.getItem("towrite-device-token") || "";
       const questionId = params.get("questionId") || "";
+      const interaction = {
+        targetId: params.get("targetId") || "",
+        candidateId: params.get("candidateId") || "",
+        deliveryId: params.get("deliveryId") || "",
+        sourceFile: params.get("sourceFile") || "",
+        sourceLine: params.get("sourceLine") || "",
+        sourceEndLine: params.get("sourceEndLine") || "",
+        sourceBlockId: params.get("sourceBlockId") || "",
+        sourcePage: params.get("sourcePage") || "",
+        intent: params.get("intent") || ""
+      };
       const subtitleEl = document.getElementById("subtitle");
       const questionPanelEl = document.getElementById("questionPanel");
       const modeEl = document.getElementById("mode");
@@ -206,8 +217,12 @@ export function buildDeviceInputPageHtml(): string {
         }
         localStorage.setItem("towrite-device-token", token);
         backLinkEl.href = "/device?token=" + encodeURIComponent(token);
-        const query = questionId ? "&questionId=" + encodeURIComponent(questionId) : "";
-        const response = await fetch(apiUrl("/api/v1/device-input-context?" + query.slice(1)), { cache: "no-store" });
+        const query = new URLSearchParams();
+        if (questionId) query.set("questionId", questionId);
+        for (const key of Object.keys(interaction)) {
+          if (interaction[key]) query.set(key, interaction[key]);
+        }
+        const response = await fetch(apiUrl("/api/v1/device-input-context?" + query.toString()), { cache: "no-store" });
         if (!response.ok) {
           throw new Error("HTTP " + response.status);
         }
@@ -295,7 +310,8 @@ export function buildDeviceInputPageHtml(): string {
           if (modeEl.value === "answer" && questionId) {
             await postJson("/api/v1/questions/" + encodeURIComponent(questionId) + "/notes", {
               text,
-              clientId: "device-input"
+              clientId: "device-input",
+              metadata: interactionMetadata("answer")
             });
             setStatus("已追加到卡片。", false);
           } else {
@@ -305,7 +321,8 @@ export function buildDeviceInputPageHtml(): string {
               text,
               tags: splitTags(tagsEl.value),
               target,
-              clientId: "device-input"
+              clientId: "device-input",
+              metadata: interactionMetadata("capture")
             };
             const result = await postJson("/api/v1/captures", payload);
             setStatus("已保存到 " + (result.data && result.data.filePath ? result.data.filePath : "Inbox") + "。", false);
@@ -332,6 +349,22 @@ export function buildDeviceInputPageHtml(): string {
           throw new Error(body.error || "HTTP " + response.status);
         }
         return body;
+      }
+
+      function interactionMetadata(inputMode) {
+        return {
+          source_device: "device-input",
+          target_id: interaction.targetId,
+          candidate_id: interaction.candidateId || questionId,
+          delivery_id: interaction.deliveryId,
+          source_file: interaction.sourceFile || (context && context.question && context.question.sourceFile) || "",
+          source_line: interaction.sourceLine,
+          source_end_line: interaction.sourceEndLine,
+          source_block_id: interaction.sourceBlockId,
+          source_page: interaction.sourcePage,
+          input_mode: inputMode,
+          created_at: new Date().toISOString()
+        };
       }
 
       function splitTags(value) {

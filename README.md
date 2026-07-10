@@ -149,10 +149,13 @@ GET   /api/v1/rss.xml
 GET   /api/v1/events
 GET   /dashboard
 GET   /device
+GET   /device/go
 GET   /device/input
 POST  /api/v1/questions/<id>/status
 POST  /api/v1/questions/<id>/notes
 POST  /api/v1/captures
+POST  /api/v1/device/events
+POST  /api/v1/device/handoffs
 PATCH /api/v1/questions/<id>
 ```
 
@@ -168,7 +171,7 @@ http://<desktop-tailscale-ip>:48321/device?token=<your-token>
 
 `/device` simulates an eink or small-screen device. It calls `GET /api/v1/device-feed`, which returns a server-prepared view model for home, cards, next-card previews, workflow files, and source-note status pages. Supported profiles are `mobile-eink` for the phone/PWA preview, `eink-bw` for compact black-and-white eink devices, and `desktop-card` for denser desktop widgets. Clients can pass `width`, `height`, and `inches`; landscape screens receive a compact layout automatically.
 
-Real eink hardware can stay simple: display the card, a QR/short link, or a hardware-button action. The companion `/device/input` page handles text input, mobile Web Speech dictation, tags, target folders, answering a card via `POST /api/v1/questions/<id>/notes`, or saving a standalone idea through `POST /api/v1/captures`. The phone preview also shows a direct `Voice` action so you can dictate a new idea without leaving the `/device` page.
+Real eink hardware can stay simple: display the card, a QR/short link, or a hardware-button action. The companion `/device/input` page handles text input, mobile Web Speech dictation, tags, target folders, answering a card via `POST /api/v1/questions/<id>/notes`, or saving a standalone idea through `POST /api/v1/captures`. Static NFC tags can point at `/device/go?targetId=...`, where the desktop hub resolves the latest card into an input page, source note, or quick capture. Hardware buttons can POST to `/api/v1/device/events` and use the same action layer. The phone preview also shows a direct `Voice` action so you can dictate a new idea without leaving the `/device` page.
 
 The phone preview shows a five-key hint bar inside the simulated screen: `New Idea / Previous / Home + Voice / Next / Phone Input or current action`. Tap the center key to return home; long-press it to dictate a new idea and save it through Device Capture. On source-note pages, the right key becomes `Cards` and opens that note's filtered card queue. Real hardware can map the same labels to physical buttons around the display.
 

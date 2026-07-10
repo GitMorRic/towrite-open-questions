@@ -141,10 +141,13 @@ GET   /api/v1/rss.xml
 GET   /api/v1/events
 GET   /dashboard
 GET   /device
+GET   /device/go
 GET   /device/input
 POST  /api/v1/questions/<id>/status
 POST  /api/v1/questions/<id>/notes
 POST  /api/v1/captures
+POST  /api/v1/device/events
+POST  /api/v1/device/handoffs
 PATCH /api/v1/questions/<id>
 ```
 
@@ -162,7 +165,7 @@ http://<电脑的 Tailscale IP>:48321/device?token=<你的 token>
 
 `/device` 是小屏预览页，视觉上模拟墨水屏，支持左右滑动和屏幕上的上一页/下一页按钮。它内置屏幕模拟器，可以选择 2.7 寸、2.13 寸、4.2 寸等预设，也可以手动输入宽度、高度和英寸数；模拟屏幕会按比例居中显示。页面会请求 `GET /api/v1/device-feed`，由电脑端插件提前整理首页、Workflow 状态、下一步、ToThink/ToWrite 卡片、下一张预览和来源笔记状态。未来 ESP32、桌面小组件或其他设备也可以复用这个接口，只负责渲染。
 
-真实墨水屏不需要负责复杂输入。卡片页会提供“回答”和“新想法”入口，打开 `/device/input` 手机 companion 页面：带 `questionId` 时默认追加到那张卡片的 note；不带 `questionId` 时可以把独立灵感写入设置里的默认 Inbox 文件、目标文件夹或 Workflow stage。手机预览页里还会额外显示“语音”按钮，可以不离开当前页面，直接用浏览器语音转文字保存为一条新想法。
+真实墨水屏不需要负责复杂输入。卡片页会提供“回答”和“新想法”入口，打开 `/device/input` 手机 companion 页面：带 `questionId` 时默认追加到那张卡片的 note；不带 `questionId` 时可以把独立灵感写入设置里的默认 Inbox 文件、目标文件夹或 Workflow stage。静态 NFC 或二维码可以固定指向 `/device/go?targetId=...`，由桌面端根据该设备最近显示的卡片决定打开回答页、原笔记或统一记录入口。硬件按键可以 POST 到 `/api/v1/device/events`，由同一套 action 层解析。手机预览页里还会额外显示“语音”按钮，可以不离开当前页面，直接用浏览器语音转文字保存为一条新想法。
 
 手机预览页会在模拟屏幕底部显示五键提示栏：`新想法 / 上一页 / 首页+录音 / 下一页 / 手机输入或当前动作`。中间键短按回首页，长按直接语音记录新想法并写入 Device Inbox；右侧键在来源笔记页会变成“看卡片”，进入当前笔记的卡片队列。真实硬件可以把这五个提示映射到屏幕下方或侧边的实体按键。
 

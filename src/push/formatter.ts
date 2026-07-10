@@ -1,4 +1,5 @@
 import type { PushCandidate, PushDecision, PushDisplayCard, PushFeedPayload, PushPrivacySettings } from "./types";
+import { buildDeviceInputUrl, deliveryIdFor, type DeviceInteractionAction } from "../device-interactions";
 
 export interface PushFeedFormatOptions {
   privacy: PushPrivacySettings;
@@ -12,7 +13,14 @@ export interface PushFeedFormatOptions {
 }
 
 export function formatPushFeed(decision: PushDecision, options: PushFeedFormatOptions): PushFeedPayload {
-  const display = decision.candidate ? displayForCandidate(decision.candidate, decision.reason) : emptyDisplay(decision.reason);
+  const deliveryId = deliveryIdFor(decision.target.id, decision.candidate?.id, decision.generatedAt);
+  const baseDisplay = decision.candidate ? displayForCandidate(decision.candidate, decision.reason) : emptyDisplay(decision.reason);
+  const actions = decision.candidate ? actionsForCandidate(decision.candidate, decision.target.id, deliveryId) : [];
+  const display = {
+    ...baseDisplay,
+    actions,
+    link: actions.find((action) => action.id === "respond")?.url ?? baseDisplay.link
+  };
   return {
     schemaVersion: 1,
     generatedAt: decision.generatedAt,
@@ -39,6 +47,7 @@ export function formatPushFeed(decision: PushDecision, options: PushFeedFormatOp
     decision: {
       candidateId: decision.candidate?.id,
       candidateType: decision.candidate?.type,
+      deliveryId,
       score: Math.round(decision.score),
       reason: decision.reason,
       quiet: decision.quiet,
@@ -186,6 +195,7 @@ function buildDisplay(input: {
   badges: string[];
   footer: string;
   link?: string;
+  actions?: DeviceInteractionAction[];
 }): PushDisplayCard {
   const title = truncate(input.title, 48);
   const primary = truncate(input.primary, 120);
@@ -202,6 +212,7 @@ function buildDisplay(input: {
     badges: input.badges,
     footer: truncate(input.footer, 90),
     link: input.link,
+    actions: input.actions ?? [],
     titleText: `${input.icon} ${title}`,
     message: [primary, ...secondaryLines].filter(Boolean).join("\n"),
     signature
@@ -220,6 +231,125 @@ function emptyDisplay(reason: string): PushDisplayCard {
     badges: [],
     footer: reason
   });
+}
+
+function actionsForCandidate(candidate: PushCandidate, targetId: string, deliveryId: string | undefined): DeviceInteractionAction[] {
+  const output: DeviceInteractionAction[] = [];
+  const respondUrl = candidate.questionId
+    ? withQueryParams(candidate.answerUrl, {
+      targetId,
+      candidateId: candidate.id,
+      deliveryId,
+      sourceFile: candidate.sourceRef?.filePath,
+      sourceLine: candidate.sourceRef?.lineStart !== undefined ? String(candidate.sourceRef.lineStart) : undefined,
+      sourceEndLine: candidate.sourceRef?.lineEnd !== undefined ? String(candidate.sourceRef.lineEnd) : undefined,
+      sourceBlockId: candidate.sourceRef?.blockId,
+      sourcePage: candidate.sourceRef?.page !== undefined ? String(candidate.sourceRef.page) : undefined
+    })
+    : undefined;
+  if (candidate.questionId && respondUrl) {
+    output.push({
+      id: "respond",
+      label: candidate.lane === "write" ? "回答 ToWrite" : "回答 ToThink",
+      kind: "respond",
+      enabled: true,
+      questionId: candidate.questionId,
+      candidateId: candidate.id,
+      candidateType: candidate.type,
+      deliveryId,
+      sourceRef: candidate.sourceRef,
+      url: respondUrl,
+      uri: respondUrl,
+      qrText: respondUrl
+    });
+  }
+
+  const captureUrl = captureUrlFromAnswerUrl(candidate.answerUrl, targetId, candidate.id, deliveryId);
+  if (captureUrl) {
+    output.push({
+      id: "capture",
+      label: "新想法",
+      kind: "capture",
+      enabled: true,
+      candidateId: candidate.id,
+      candidateType: candidate.type,
+      deliveryId,
+      sourceRef: candidate.sourceRef,
+      url: captureUrl,
+      uri: captureUrl,
+      qrText: captureUrl
+    });
+  }
+
+  if (candidate.openUri) {
+    output.push({
+      id: "openSource",
+      label: "打开来源",
+      kind: "open-source",
+      enabled: true,
+      candidateId: candidate.id,
+      candidateType: candidate.type,
+      deliveryId,
+      sourceRef: candidate.sourceRef,
+      url: candidate.openUri,
+      uri: candidate.openUri,
+      obsidianUri: candidate.openUri
+    });
+  }
+
+  for (const feedback of ["later", "skipped"] as const) {
+    output.push({
+      id: feedback,
+      label: feedback === "later" ? "稍后" : "跳过",
+      kind: "feedback",
+      enabled: true,
+      candidateId: candidate.id,
+      candidateType: candidate.type,
+      deliveryId,
+      feedbackAction: feedback
+    });
+  }
+
+  return output;
+}
+
+function captureUrlFromAnswerUrl(answerUrl: string | undefined, targetId: string, candidateId: string, deliveryId: string | undefined): string | undefined {
+  if (!answerUrl) {
+    return undefined;
+  }
+  const params = new URLSearchParams(queryPart(answerUrl));
+  const token = params.get("token") ?? undefined;
+  const base = basePart(answerUrl).replace(/\/device\/input$/u, "");
+  return buildDeviceInputUrl(base || undefined, {
+    token,
+    targetId,
+    candidateId,
+    deliveryId,
+    intent: "capture"
+  });
+}
+
+function withQueryParams(value: string | undefined, params: Record<string, string | undefined>): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const base = basePart(value);
+  const search = new URLSearchParams(queryPart(value));
+  for (const [key, param] of Object.entries(params)) {
+    if (param) {
+      search.set(key, param);
+    }
+  }
+  return `${base}?${search.toString()}`;
+}
+
+function basePart(value: string): string {
+  return value.split("?")[0] ?? value;
+}
+
+function queryPart(value: string): string {
+  const index = value.indexOf("?");
+  return index >= 0 ? value.slice(index + 1) : "";
 }
 
 function sanitizeCandidate(candidate: PushCandidate): PushCandidate {
