@@ -23,6 +23,7 @@
     Lightbulb,
     ListTodo,
     MessageCircleQuestion,
+    MessageSquarePlus,
     PauseCircle,
     Pencil,
     PenLine,
@@ -796,6 +797,7 @@
         reopen: "重新打开",
         refreshAi: "刷新 AI",
         refreshingAi: "正在刷新 AI",
+        answerCapture: "回答并可归档为笔记",
         compactHighlights: "隐藏这条的整行高亮，仅保留左侧竖线",
         fullHighlights: "恢复这条的整行高亮",
         globalCompactActive: "顶部整体隐藏已开启，先用顶部按钮恢复全部",
@@ -843,6 +845,7 @@
       reopen: "Reopen",
       refreshAi: "Refresh AI",
       refreshingAi: "Refreshing AI",
+      answerCapture: "Answer and optionally archive as a note",
       compactHighlights: "Hide this card's full-row highlight",
       fullHighlights: "Restore this card's full-row highlight",
       globalCompactActive: "Global compact highlights are active; use the top button to restore all",
@@ -1119,6 +1122,9 @@
   <div class="towrite-card-actions">
     <button type="button" title={copy.jump} on:click={() => api.jumpToQuestion(question.id)}>
       <ArrowRight size={15} />
+    </button>
+    <button type="button" title={copy.answerCapture} aria-label={copy.answerCapture} aria-haspopup="dialog" on:click={() => api.openCaptureForQuestion(question.id)}>
+      <MessageSquarePlus size={15} />
     </button>
     <button type="button" class:towrite-action-active={question.pinned} title={question.pinned ? copy.unpin : copy.pin} on:click={togglePinned}>
       {#if question.pinned}

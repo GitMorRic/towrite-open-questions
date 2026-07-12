@@ -6,6 +6,14 @@ import type { PushFeedPayload, PushTargetSettings } from "../push/types";
 import type { WorkflowIndexPayload, WorkflowSummaryPayload } from "../workflow";
 import { workflowQueryFromUrl, type WorkflowQuery } from "../workflow";
 import {
+  CaptureConflictError,
+  CaptureUndoTokenError,
+  type CaptureDraft,
+  type CaptureTargetAction,
+  type CaptureTargetCandidate,
+  type CaptureUndoResult
+} from "../capture";
+import {
   buildDeviceGoUrl,
   buildDeviceInputUrl,
   deliveryIdFor,
@@ -53,21 +61,29 @@ interface ExternalApiServerOptions {
   updateQuestionStatus(id: string, status: OpenQuestionStatus, note?: string, clientId?: string): Promise<OpenQuestion | undefined>;
   appendQuestionNote(id: string, text: string, clientId?: string, metadata?: DeviceWritebackMetadata): Promise<OpenQuestion | undefined>;
   updateQuestionFields(id: string, patch: QuestionFieldPatch): Promise<OpenQuestion | undefined>;
+  recommendCapture?(draft: CaptureDraft): Promise<CaptureTargetCandidate[]>;
   createDeviceCapture(request: DeviceCaptureRequest): Promise<DeviceCaptureResult>;
+  undoCapture?(captureId: string, undoToken: string): Promise<CaptureUndoResult>;
   subscribe(listener: () => void): () => void;
 }
 
 export interface DeviceCaptureTarget {
-  kind: "inboxFile" | "folderPath" | "stageId";
+  kind: "inboxFile" | "folderPath" | "stageId" | "existingNote";
   inboxFile?: string;
   folderPath?: string;
   stageId?: string;
+  filePath?: string;
+  heading?: string;
 }
 
 export interface DeviceCaptureRequest {
   title?: string;
   text: string;
   tags: string[];
+  captureId?: string;
+  candidateId?: string;
+  action?: CaptureTargetAction;
+  targetRevision?: string;
   target?: DeviceCaptureTarget;
   clientId?: string;
   metadata?: DeviceWritebackMetadata;
@@ -80,6 +96,12 @@ export interface DeviceCaptureResult {
   targetKind: DeviceCaptureTarget["kind"];
   createdAt: string;
   openUri: string;
+  captureId?: string;
+  candidateId?: string;
+  action?: CaptureTargetAction;
+  undoToken?: string;
+  targetRevision?: string;
+  idempotent?: boolean;
 }
 
 export interface DeviceWritebackMetadata {
@@ -291,6 +313,10 @@ export class ToWriteExternalApiServer {
     } catch (error) {
       const apiError = error instanceof ExternalApiError
         ? error
+        : error instanceof CaptureConflictError
+          ? new ExternalApiError(409, error.message)
+          : error instanceof CaptureUndoTokenError
+            ? new ExternalApiError(400, error.message)
         : new ExternalApiError(500, error instanceof Error ? error.message : String(error));
       this.writeJson(response, apiError.statusCode, {
         error: apiError.message
@@ -450,6 +476,43 @@ export class ToWriteExternalApiServer {
       return;
     }
 
+    if (url.pathname === "/api/v1/capture/recommendations") {
+      if (!this.options.getDeviceCaptureSettings().enabled) {
+        throw new ExternalApiError(403, "Device capture is disabled.");
+      }
+      if (!this.options.recommendCapture) {
+        throw new ExternalApiError(501, "Capture recommendations are not available.");
+      }
+      const body = await readJsonBody(request);
+      const draft = readCaptureDraft(body);
+      const candidates = await this.options.recommendCapture(draft);
+      this.writeJson(response, 200, {
+        schemaVersion: 1,
+        draftId: draft.id,
+        candidates
+      });
+      return;
+    }
+
+    const undoCaptureMatch = /^\/api\/v1\/captures\/([^/]+)\/undo$/u.exec(url.pathname);
+    if (undoCaptureMatch) {
+      if (!this.options.undoCapture) {
+        throw new ExternalApiError(501, "Capture undo is not available.");
+      }
+      const body = await readJsonBody(request);
+      const undoToken = readOptionalText(body, "undoToken");
+      if (!undoToken) {
+        throw new ExternalApiError(400, "Missing undoToken.");
+      }
+      const captureId = decodeURIComponent(undoCaptureMatch[1]);
+      const result = await this.options.undoCapture(captureId, undoToken);
+      if (result.captureId !== captureId) {
+        throw new ExternalApiError(409, "Undo token does not match capture id.");
+      }
+      this.writeJson(response, 200, { data: result });
+      return;
+    }
+
     if (url.pathname === "/api/v1/captures") {
       if (!this.options.getDeviceCaptureSettings().enabled) {
         throw new ExternalApiError(403, "Device capture is disabled.");
@@ -463,6 +526,10 @@ export class ToWriteExternalApiServer {
         title: readOptionalText(body, "title"),
         text,
         tags: readStringList(body, "tags"),
+        captureId: readOptionalText(body, "captureId"),
+        candidateId: readOptionalText(body, "candidateId"),
+        action: readCaptureAction(body.action),
+        targetRevision: readOptionalText(body, "targetRevision"),
         target: readCaptureTarget(body),
         clientId: readOptionalText(body, "clientId"),
         metadata: readWritebackMetadata(body)
@@ -937,6 +1004,8 @@ export class ToWriteExternalApiServer {
     }
     if (method === "POST") {
       return pathname === "/api/v1/captures"
+        || pathname === "/api/v1/capture/recommendations"
+        || /^\/api\/v1\/captures\/[^/]+\/undo$/u.test(pathname)
         || pathname === "/api/v1/device/events"
         || pathname === "/api/v1/device/handoffs"
         || pathname === "/api/v1/push/feedback"
@@ -1076,10 +1145,60 @@ function splitListText(value: string): string[] {
     .filter(Boolean);
 }
 
+function readCaptureDraft(body: Record<string, unknown>): CaptureDraft {
+  const nested = body.draft;
+  const record = nested && typeof nested === "object" && !Array.isArray(nested)
+    ? nested as Record<string, unknown>
+    : body;
+  if (record.schemaVersion !== undefined && record.schemaVersion !== 1) {
+    throw new ExternalApiError(400, `Unsupported capture schema version: ${String(record.schemaVersion)}.`);
+  }
+  const captureBody = readOptionalText(record, "body") ?? readOptionalText(record, "text");
+  if (!captureBody) {
+    throw new ExternalApiError(400, "Missing capture body.");
+  }
+  const rawSource = record.source;
+  const source = rawSource && typeof rawSource === "object" && !Array.isArray(rawSource)
+    ? rawSource as Record<string, unknown>
+    : undefined;
+  const rawIntent = readOptionalText(record, "intent");
+  return {
+    schemaVersion: 1,
+    id: readOptionalText(record, "id") ?? readOptionalText(record, "captureId") ?? `capture_${randomFragment()}`,
+    intent: rawIntent === "selection" || rawIntent === "answer" ? rawIntent : "new",
+    body: captureBody,
+    title: readOptionalText(record, "title"),
+    tags: readStringList(record, "tags"),
+    links: readStringList(record, "links"),
+    source: source ? {
+      file: readOptionalText(source, "file"),
+      headingPath: readStringList(source, "headingPath"),
+      questionId: readOptionalText(source, "questionId"),
+      entryPoint: readOptionalText(source, "entryPoint") ?? "external-api",
+      articleTypeId: readOptionalText(source, "articleTypeId"),
+      workflowStageId: readOptionalText(source, "workflowStageId")
+    } : undefined,
+    createdAt: normalizeMetadataIso(record.createdAt)
+  };
+}
+
+function readCaptureAction(value: unknown): CaptureTargetAction | undefined {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+  if (value === "append" || value === "create") {
+    return value;
+  }
+  throw new ExternalApiError(400, "Capture action must be 'append' or 'create'.");
+}
+
 function readCaptureTarget(body: Record<string, unknown>): DeviceCaptureTarget | undefined {
   const value = body.target;
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
+  if (value === undefined || value === null) {
     return undefined;
+  }
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new ExternalApiError(400, "Capture target must be an object.");
   }
   const target = value as Record<string, unknown>;
   const kind = typeof target.kind === "string" ? target.kind : "";
@@ -1101,7 +1220,18 @@ function readCaptureTarget(body: Record<string, unknown>): DeviceCaptureTarget |
       stageId: typeof target.stageId === "string" ? target.stageId.trim().slice(0, 120) : undefined
     };
   }
-  return undefined;
+  if (kind === "existingNote") {
+    const filePath = typeof target.filePath === "string" ? target.filePath.trim().slice(0, 240) : "";
+    if (!filePath) {
+      throw new ExternalApiError(400, "Existing-note capture target requires filePath.");
+    }
+    return {
+      kind,
+      filePath,
+      heading: typeof target.heading === "string" ? target.heading.trim().replace(/^#+\s*/u, "").slice(0, 120) : undefined
+    };
+  }
+  throw new ExternalApiError(400, `Unknown capture target kind: ${kind || "(missing)"}.`);
 }
 
 function readSourceRefBody(body: Record<string, unknown>): DeviceSourceRef | undefined {

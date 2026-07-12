@@ -168,6 +168,14 @@ export function buildDeviceInputPageHtml(): string {
     <script>
       const params = new URLSearchParams(location.search);
       const token = params.get("token") || localStorage.getItem("towrite-device-token") || "";
+      if (token) {
+        localStorage.setItem("towrite-device-token", token);
+      }
+      if (params.has("token")) {
+        params.delete("token");
+        const cleanQuery = params.toString();
+        history.replaceState(null, "", location.pathname + (cleanQuery ? "?" + cleanQuery : "") + location.hash);
+      }
       const questionId = params.get("questionId") || "";
       const interaction = {
         targetId: params.get("targetId") || "",
@@ -195,6 +203,8 @@ export function buildDeviceInputPageHtml(): string {
       const backLinkEl = document.getElementById("backLink");
       let context = null;
       let recognition = null;
+      let recommendationTimer = 0;
+      let captureDraftId = newCaptureId();
 
       function h(value) {
         return String(value == null ? "" : value)
@@ -205,24 +215,22 @@ export function buildDeviceInputPageHtml(): string {
           .replace(/'/g, "&#39;");
       }
 
-      function apiUrl(path) {
-        return path + (path.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(token);
-      }
-
       async function loadContext() {
         if (!token) {
           setStatus("URL 缺少 token。", true);
           submitEl.disabled = true;
           return;
         }
-        localStorage.setItem("towrite-device-token", token);
-        backLinkEl.href = "/device?token=" + encodeURIComponent(token);
+        backLinkEl.href = "/device";
         const query = new URLSearchParams();
         if (questionId) query.set("questionId", questionId);
         for (const key of Object.keys(interaction)) {
           if (interaction[key]) query.set(key, interaction[key]);
         }
-        const response = await fetch(apiUrl("/api/v1/device-input-context?" + query.toString()), { cache: "no-store" });
+        const response = await fetch("/api/v1/device-input-context?" + query.toString(), {
+          cache: "no-store",
+          headers: { "authorization": "Bearer " + token }
+        });
         if (!response.ok) {
           throw new Error("HTTP " + response.status);
         }
@@ -255,10 +263,65 @@ export function buildDeviceInputPageHtml(): string {
         targetEl.innerHTML = "";
         for (const target of context.capture.targets || []) {
           const option = document.createElement("option");
-          option.value = JSON.stringify(target.value);
+          option.value = JSON.stringify({ target: target.value });
           option.textContent = target.label;
           targetEl.appendChild(option);
         }
+      }
+
+      function newCaptureId() {
+        const fragment = window.crypto && window.crypto.randomUUID
+          ? window.crypto.randomUUID().replace(/-/g, "")
+          : Date.now().toString(36) + Math.random().toString(36).slice(2);
+        return "capture_" + fragment;
+      }
+
+      function scheduleRecommendations() {
+        window.clearTimeout(recommendationTimer);
+        if (modeEl.value !== "capture" || !textEl.value.trim()) return;
+        recommendationTimer = window.setTimeout(function() {
+          refreshRecommendations().catch(function() { /* keep configured fallback targets */ });
+        }, 220);
+      }
+
+      async function refreshRecommendations() {
+        const text = textEl.value.trim();
+        if (!text || modeEl.value !== "capture") return;
+        const result = await postJson("/api/v1/capture/recommendations", {
+          draft: {
+            schemaVersion: 1,
+            id: captureDraftId,
+            intent: "new",
+            body: text,
+            title: titleEl.value.trim(),
+            tags: splitTags(tagsEl.value),
+            links: [],
+            source: {
+              file: interaction.sourceFile || "",
+              entryPoint: "device"
+            }
+          }
+        });
+        const candidates = Array.isArray(result.candidates) ? result.candidates : [];
+        if (!candidates.length) return;
+        targetEl.innerHTML = "";
+        candidates.slice(0, 3).forEach(function(candidate) {
+          const target = candidate.kind === "existingNote"
+            ? { kind: "existingNote", filePath: candidate.path, heading: candidate.heading || "" }
+            : candidate.kind === "folder"
+              ? { kind: "folderPath", folderPath: candidate.path }
+              : { kind: "inboxFile", inboxFile: candidate.path };
+          const option = document.createElement("option");
+          option.value = JSON.stringify({
+            target,
+            candidateId: candidate.id,
+            action: candidate.action,
+            targetRevision: candidate.targetRevision
+          });
+          option.textContent = (candidate.kind === "existingNote" ? "追加：" : candidate.kind === "folder" ? "新建：" : "Inbox：")
+            + candidate.path + " · " + candidate.confidence + " · " + candidate.reason;
+          targetEl.appendChild(option);
+        });
       }
 
       function syncMode() {
@@ -315,19 +378,32 @@ export function buildDeviceInputPageHtml(): string {
             });
             setStatus("已追加到卡片。", false);
           } else {
-            const target = targetEl.value ? JSON.parse(targetEl.value) : { kind: "inboxFile" };
+            let selection = targetEl.value ? JSON.parse(targetEl.value) : { target: { kind: "inboxFile" } };
+            if (!selection.candidateId) {
+              await refreshRecommendations();
+              selection = targetEl.value ? JSON.parse(targetEl.value) : selection;
+            }
+            const versioned = Boolean(selection.candidateId);
             const payload = {
               title: titleEl.value.trim(),
               text,
               tags: splitTags(tagsEl.value),
-              target,
+              target: selection.target,
               clientId: "device-input",
-              metadata: interactionMetadata("capture")
+              metadata: interactionMetadata("capture"),
+              ...(versioned ? {
+                captureId: captureDraftId,
+                candidateId: selection.candidateId,
+                action: selection.action,
+                targetRevision: selection.targetRevision
+              } : {})
             };
             const result = await postJson("/api/v1/captures", payload);
             setStatus("已保存到 " + (result.data && result.data.filePath ? result.data.filePath : "Inbox") + "。", false);
           }
           textEl.value = "";
+          captureDraftId = newCaptureId();
+          renderTargets();
         } catch (error) {
           setStatus("提交失败：" + (error.message || error), true);
         } finally {
@@ -380,6 +456,9 @@ export function buildDeviceInputPageHtml(): string {
       }
 
       modeEl.addEventListener("change", syncMode);
+      textEl.addEventListener("input", scheduleRecommendations);
+      titleEl.addEventListener("input", scheduleRecommendations);
+      tagsEl.addEventListener("input", scheduleRecommendations);
       submitEl.addEventListener("click", submit);
       voiceEl.addEventListener("click", function() {
         if (!recognition) return;

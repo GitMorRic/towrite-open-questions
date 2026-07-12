@@ -11,6 +11,7 @@ import type {
 } from "../core/types";
 import type { ArticleTypeSettings, ToWriteLanguage, ToWriteReminderPreset } from "../core/settings";
 import type { WorkflowIndexPayload } from "../workflow";
+import type { ProactiveSuggestion, ProactiveSuggestionAction } from "../suggestions";
 
 export interface ActiveLineRange {
   filePath: string;
@@ -36,6 +37,7 @@ export interface ToWriteUiApi {
   getGroupCurrentByHeading(): boolean;
   getCompactEditorDecorations(): boolean;
   getReminderPresets(): ToWriteReminderPreset[];
+  getProactiveSuggestions(): ProactiveSuggestion[];
   getDefaultColor(lane: OpenQuestionLane): OpenQuestionColor;
   renderMarkdown(markdown: string, element: HTMLElement, sourcePath: string): Promise<void>;
   getLinkSuggestions(query: string, sourcePath: string): LinkSuggestion[];
@@ -44,6 +46,9 @@ export interface ToWriteUiApi {
   openObsidianLink(linktext: string, sourcePath: string): Promise<void>;
   updateQuestion(id: string, patch: Omit<Partial<StoredQuestionState>, "id">): Promise<void>;
   createQuestionFromSelection(lane: OpenQuestionLane, color?: OpenQuestionColor): Promise<void>;
+  openCapture(): void;
+  openCaptureForQuestion(id: string): void;
+  actOnSuggestion(id: string, action: ProactiveSuggestionAction): Promise<void>;
   acceptSuggestion(id: string): Promise<void>;
   editQuestion(id: string): Promise<void>;
   deleteQuestion(id: string): Promise<void>;

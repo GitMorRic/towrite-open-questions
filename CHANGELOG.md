@@ -1,5 +1,15 @@
 # Changelog / 更新日志
 
+## 0.3.0-beta.1 - 2026-07-12
+
+- Added the native Smart Capture modal for new notes, selections, and question-card answers.
+- Added local existing-note, folder/Workflow, and Inbox recommendations with previews, revision checks, idempotent writes, and safe undo.
+- Added versioned capture recommendation, commit, and undo endpoints while preserving legacy capture clients.
+- Added content-free session learning, user-approved habit candidates, the sidebar Now center, quiet hours, and notification limits.
+- Added optional Obsidian AI Backend capability negotiation, allow-listed target reranking, and aggregate-only habit-copy enhancement.
+- Added incremental local indexing, privacy scopes, readable learning/capture-target exports, and query-token migration hardening.
+- Added bilingual privacy and security documentation for the new local and optional network data flows.
+
 ## 0.2.8-beta.1 - 2026-07-08
 
 - Added Quote0 integration with Text / Image / Canvas dashboard previews, device selection, manual send, forced refresh, and NFC writeback links.

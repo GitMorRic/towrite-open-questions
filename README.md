@@ -21,6 +21,9 @@ It is not a general TODO list. It gives your vault a ToThink / ToWrite annotatio
 - Run an optional local desktop HTTP API for JSON, RSS, SSE events, dashboard views, mobile device previews, companion phone input, and note/status/capture writeback.
 - Run an optional Push Engine and Quote0 integration for eink overview dashboards, rotating ToThink/ToWrite cards, and NFC phone writeback.
 - Run optional OpenAI-compatible summaries and local-note recommendations after you configure your own endpoint.
+- Open a native Smart Capture modal for a new idea, a Markdown selection, or an answer to a ToThink/ToWrite card, with local destination recommendations and a conflict-safe preview.
+- Optionally learn coarse work-session and routing patterns. Detected patterns remain pending until you explicitly confirm them.
+- Optionally connect a separately licensed Obsidian AI Backend to rerank local destination candidates or improve habit-candidate wording; capture continues to work without it.
 
 ## Screenshots
 
@@ -43,6 +46,38 @@ This plugin is marked `isDesktopOnly: true` because the optional External API us
 3. Click `Think` or `Write` in the floating toolbar.
 4. Use the sidebar card to edit the title, note, status, and type.
 5. Click the arrow on a card to jump back to the source.
+
+## Local-First Smart Capture
+
+Open Smart Capture from the ribbon, the command palette, a Markdown selection, or a question card. The native Obsidian modal supports three intents:
+
+- `New`: save a standalone idea.
+- `Selection`: keep the selected text and source context while deciding where the note belongs.
+- `Answer`: append to the question card by default; optionally also archive the answer as a note.
+
+ToWrite computes and displays at most three local destination candidates before any optional network request:
+
+| Candidate | Result |
+| --- | --- |
+| Most relevant existing note | Append under the configured capture heading. |
+| Recommended folder or Workflow stage | Create a new Markdown note with a previewed path. |
+| Inbox fallback | Use the configured Inbox when the stronger matches are uncertain. |
+
+The local index respects the Capture include/exclude folders, excluded tags, and truthy privacy frontmatter settings. You can inspect the path and excerpt, change the candidate, then save with `Ctrl/Cmd+Enter`. A successful capture can be opened immediately and, when a safe undo token is available, undone without overwriting later edits.
+
+The Obsidian AI Backend is an optional enhancement, not a dependency. Local candidates appear first and remain the allow-list; an enabled Backend may asynchronously reorder those candidates and revise their displayed reason, but it cannot introduce an arbitrary vault path. If the Backend is disabled, offline, incompatible, or times out, local capture and local recommendations continue normally.
+
+Backend implementers can use the versioned [ToWrite v1 integration contract](docs/obsidian-ai-backend-towrite-v1.md).
+
+## Habit Learning And Proactive Suggestions
+
+Habit learning is off by default. When enabled, ToWrite records coarse structural events such as file switches, edit-presence periods, confirmed capture destinations, question actions, and suggestion feedback. It does not record note bodies, selections, clipboard contents, or individual keystrokes as learning events.
+
+Raw learning events are automatically purged after 30 days. Pattern inference can create a pending habit candidate, but a pending candidate cannot change routing or generate a habit notification. Only a habit you explicitly accept can influence future behavior. You can inspect evidence, edit the label, dismiss or postpone a candidate, export the learning data, or clear all learned data.
+
+Proactive notifications are also off by default. When enabled, only due reminders and confirmed habits can notify; new habit candidates stay silently in the sidebar. The default quiet period is `23:00-08:00`, with a default limit of three habit notifications per day.
+
+See [PRIVACY.md](PRIVACY.md) for the exact learning-event and optional Backend data boundaries.
 
 ## Supported Markdown Rules
 
@@ -119,11 +154,14 @@ ToWrite writes vault-readable JSON under the configured export directory:
   articles.json
   eink-compact.json
   workflows.json
+  learning/
+    events.jsonl
+    habits.json
   questions/
     <question-sidecar>.json
 ```
 
-These exports may contain selected note text, PDF excerpts, titles, notes, tags, statuses, source paths, Workflow file summaries, frontmatter, and card metadata. Do not publish the export folder unless you intend to share that content.
+These exports may contain selected note text, PDF excerpts, titles, notes, tags, statuses, source paths, Workflow file summaries, frontmatter, card metadata, and—when learning is enabled—coarse activity events and habit candidates. Do not publish the export folder unless you intend to share that content.
 
 ## External API
 
@@ -231,6 +269,8 @@ npm.cmd run deploy:capture
 
 - `Open questions sidebar`
 - `Open question dashboard`
+- `Open smart capture`
+- `Capture selection to a note or folder`
 - `Refresh open question index`
 - `Export open question JSON`
 - `Add ToThink from selection`
@@ -238,12 +278,14 @@ npm.cmd run deploy:capture
 
 ## Privacy
 
-Core indexing runs locally inside Obsidian. External API and AI features are opt-in. API tokens and AI API keys are stored in local Obsidian plugin data and are not written to exported JSON.
+Core indexing, the three-candidate capture recommender, and habit inference run locally inside Obsidian. Learning, External API, notifications, AI, and the Obsidian AI Backend integration are opt-in. API tokens and AI API keys are stored in local Obsidian plugin data and are not written to exported JSON. The Backend token is sent in the `X-Capture-Token` header, not in a URL.
 
-Because ToWrite stores selected source text in sidecar JSON and export files, treat those files as part of your private vault data.
+Because ToWrite stores selected source text, source paths, and optional learning events in sidecar JSON and export files, treat those files as part of your private vault data. Read [PRIVACY.md](PRIVACY.md) and [SECURITY.md](SECURITY.md) before enabling remote access or optional network services.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+The ToWrite Open Questions plugin is MIT licensed. See [LICENSE](LICENSE).
+
+The optional Obsidian AI Backend is a separate project with its own license terms. The plugin's MIT license does not grant rights to Backend code or hosted services; consult the Backend distribution's `LICENSE` and commercial-license documents.
 
 For ESP32/e-ink integrations, see the Chinese device protocol guide: [docs/device-feed-protocol.zh-CN.md](docs/device-feed-protocol.zh-CN.md).

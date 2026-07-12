@@ -11,6 +11,18 @@ export interface LocalKnowledgeDocument {
   content: string;
 }
 
+export interface LocalKnowledgeScope {
+  includeFolders?: string[];
+  excludeFolders?: string[];
+  excludeTags?: string[];
+  excludeFrontmatter?: string[];
+}
+
+export interface LocalKnowledgeTextQuery {
+  text: string;
+  excludeFile?: string;
+}
+
 interface IndexedDocument extends LocalKnowledgeDocument {
   tokens: Map<string, number>;
   searchText: string;
@@ -38,11 +50,33 @@ const STOPWORDS = new Set([
 export class LocalKnowledgeIndex {
   private documents: IndexedDocument[] = [];
 
-  async rebuild(app: App, exportDirectory: string): Promise<void> {
+  async rebuild(app: App, exportDirectory: string, scope: LocalKnowledgeScope = {}): Promise<void> {
     const ignoredPrefix = normalizePath(exportDirectory);
-    const files = app.vault.getMarkdownFiles().filter((file) => !normalizePath(file.path).startsWith(`${ignoredPrefix}/`));
+    const files = app.vault.getMarkdownFiles()
+      .filter((file) => !normalizePath(file.path).startsWith(`${ignoredPrefix}/`))
+      .filter((file) => pathAllowed(file.path, scope));
     const documents = await Promise.all(files.map((file) => readDocument(app, file)));
-    this.replaceDocuments(documents);
+    this.replaceDocuments(documents.filter((document) => documentAllowed(document, scope)));
+  }
+
+  async upsert(app: App, file: TFile, exportDirectory: string, scope: LocalKnowledgeScope = {}): Promise<void> {
+    const normalized = normalizePath(file.path);
+    const ignoredPrefix = normalizePath(exportDirectory);
+    if (file.extension !== "md" || normalized.startsWith(`${ignoredPrefix}/`) || !pathAllowed(file.path, scope)) {
+      this.remove(file.path);
+      return;
+    }
+    const document = await readDocument(app, file);
+    if (!documentAllowed(document, scope)) {
+      this.remove(file.path);
+      return;
+    }
+    const remaining = this.documents.filter((item) => item.file !== file.path).map(stripIndexedFields);
+    this.replaceDocuments([...remaining, document]);
+  }
+
+  remove(filePath: string): void {
+    this.documents = this.documents.filter((item) => item.file !== filePath);
   }
 
   replaceDocuments(documents: LocalKnowledgeDocument[]): void {
@@ -76,10 +110,15 @@ export class LocalKnowledgeIndex {
     ]
       .filter(Boolean)
       .join("\n");
-    const queryTokens = Array.from(countTokens(queryText).entries());
+    return this.queryText({ text: queryText, excludeFile: question.source.file }, limit);
+  }
+
+  queryText(query: LocalKnowledgeTextQuery | string, limit = 20): LocalKnowledgeCandidate[] {
+    const input = typeof query === "string" ? { text: query } : query;
+    const queryTokens = Array.from(countTokens(input.text).entries());
 
     return this.documents
-      .filter((document) => document.file !== question.source.file)
+      .filter((document) => document.file !== input.excludeFile)
       .map((document) => ({
         document,
         score: scoreDocument(queryTokens, document)
@@ -101,6 +140,21 @@ export class LocalKnowledgeIndex {
     const document = this.documents.find((item) => item.file === filePath);
     return document ? bestSnippet(document.content, []) : undefined;
   }
+
+  size(): number {
+    return this.documents.length;
+  }
+}
+
+function stripIndexedFields(document: IndexedDocument): LocalKnowledgeDocument {
+  return {
+    file: document.file,
+    title: document.title,
+    headings: [...document.headings],
+    tags: [...document.tags],
+    frontmatter: document.frontmatter,
+    content: document.content
+  };
 }
 
 async function readDocument(app: App, file: TFile): Promise<LocalKnowledgeDocument> {
@@ -202,6 +256,40 @@ function stringifyFrontmatter(frontmatter?: Record<string, unknown>): string {
 
 function normalizePath(path: string): string {
   return path.replace(/\\/gu, "/").replace(/\/+$/u, "");
+}
+
+function pathAllowed(filePath: string, scope: LocalKnowledgeScope): boolean {
+  const path = normalizePath(filePath).replace(/^\/+|\/+$/gu, "");
+  const includes = normalizeFolders(scope.includeFolders);
+  const excludes = normalizeFolders(scope.excludeFolders);
+  if (includes.length > 0 && !includes.some((folder) => path === folder || path.startsWith(`${folder}/`))) {
+    return false;
+  }
+  return !excludes.some((folder) => path === folder || path.startsWith(`${folder}/`));
+}
+
+function documentAllowed(document: LocalKnowledgeDocument, scope: LocalKnowledgeScope): boolean {
+  const excludedTags = new Set((scope.excludeTags ?? []).map(normalizeTag).filter(Boolean));
+  if (document.tags.some((tag) => excludedTags.has(normalizeTag(tag)))) {
+    return false;
+  }
+  const frontmatter = document.frontmatter ?? {};
+  return !(scope.excludeFrontmatter ?? []).some((key) => isTruthyFrontmatter(frontmatter[key]));
+}
+
+function normalizeFolders(values: string[] | undefined): string[] {
+  return (values ?? []).map((value) => normalizePath(String(value)).replace(/^\/+|\/+$/gu, "")).filter(Boolean);
+}
+
+function normalizeTag(value: string): string {
+  return value.replace(/^#+/u, "").trim().toLowerCase();
+}
+
+function isTruthyFrontmatter(value: unknown): boolean {
+  if (value === true || typeof value === "number" && value !== 0) {
+    return true;
+  }
+  return typeof value === "string" && ["1", "true", "yes", "on", "private"].includes(value.trim().toLowerCase());
 }
 
 function unique(values: string[]): string[] {

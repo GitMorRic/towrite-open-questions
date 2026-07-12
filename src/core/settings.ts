@@ -1,5 +1,7 @@
 import type { OpenQuestionColor, OpenQuestionLane, QuestionStatusOption } from "./types";
 import type { PushHabitRule, PushRuntimeState, PushTargetSettings, ToWritePushSettings } from "../push/types";
+import type { HabitLearningState } from "../learning/types";
+import type { SuggestionNotificationEvent } from "../suggestions/types";
 import { DEFAULT_DEVICE_BUTTON_MAPPINGS, normalizeDeviceButtonMappings } from "../device-interactions";
 
 export type ToWriteLanguage = "zh" | "en";
@@ -86,6 +88,31 @@ export interface ToWriteDeviceCaptureSettings {
   inboxFile: string;
   targetFolders: string[];
   defaultTags: string[];
+  appendHeading: string;
+  localRecommendations: boolean;
+  includeFolders: string[];
+  excludeFolders: string[];
+  excludeTags: string[];
+  excludeFrontmatter: string[];
+}
+
+export interface ToWriteLearningSettings {
+  enabled: boolean;
+  retentionDays: number;
+  idleMinutes: number;
+  notificationsEnabled: boolean;
+  quietHoursStart: string;
+  quietHoursEnd: string;
+  maxHabitNotificationsPerDay: number;
+}
+
+export interface ToWriteBackendSettings {
+  enabled: boolean;
+  baseUrl: string;
+  token: string;
+  useForRecommendations: boolean;
+  useForHabitSuggestions: boolean;
+  timeoutMs: number;
 }
 
 export type ToWriteDeviceProfileKind = "mobile-eink" | "eink-bw" | "desktop-card";
@@ -123,6 +150,8 @@ export interface ToWriteSettings {
   defaultWriteColor: OpenQuestionColor;
   externalApi: ToWriteExternalApiSettings;
   deviceCapture: ToWriteDeviceCaptureSettings;
+  learning: ToWriteLearningSettings;
+  backend: ToWriteBackendSettings;
   deviceProfiles: ToWriteDeviceProfileSettings[];
   articleTypes: ArticleTypesSettings;
   workflowStages: WorkflowStagesSettings;
@@ -137,6 +166,10 @@ export interface ToWriteSavedData {
   settings: ToWriteSettings;
   questionStates: Record<string, import("./types").StoredQuestionState>;
   pushState?: PushRuntimeState;
+  learningState?: HabitLearningState;
+  suggestionNotifications?: SuggestionNotificationEvent[];
+  snoozedSuggestions?: Record<string, string>;
+  securityMigrationVersion?: number;
 }
 
 export const DEFAULT_STATUS_OPTIONS: QuestionStatusOption[] = [
@@ -389,14 +422,37 @@ export const DEFAULT_SETTINGS: ToWriteSettings = {
     bindHost: "127.0.0.1",
     port: 48321,
     token: "",
-    allowQueryTokenForRead: true,
+    allowQueryTokenForRead: false,
     publicBaseUrl: ""
   },
   deviceCapture: {
     enabled: true,
     inboxFile: "00-Raw/Device Inbox.md",
     targetFolders: ["00-Raw", "01-Sparks", "02-Processing"],
-    defaultTags: ["capture", "device"]
+    defaultTags: ["capture", "device"],
+    appendHeading: "Captures",
+    localRecommendations: true,
+    includeFolders: [],
+    excludeFolders: [".obsidian-open-questions", "99-System", "Templates", ".trash"],
+    excludeTags: ["private", "no-ai"],
+    excludeFrontmatter: ["private", "no_ai", "ai_private"]
+  },
+  learning: {
+    enabled: false,
+    retentionDays: 30,
+    idleMinutes: 5,
+    notificationsEnabled: false,
+    quietHoursStart: "23:00",
+    quietHoursEnd: "08:00",
+    maxHabitNotificationsPerDay: 3
+  },
+  backend: {
+    enabled: false,
+    baseUrl: "http://127.0.0.1:8790",
+    token: "",
+    useForRecommendations: true,
+    useForHabitSuggestions: false,
+    timeoutMs: 2500
   },
   deviceProfiles: DEFAULT_DEVICE_PROFILES,
   articleTypes: {

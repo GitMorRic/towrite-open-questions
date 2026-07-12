@@ -44,11 +44,37 @@ import type {
 import { LocalKnowledgeIndex } from "./ai/local-index";
 import { OpenAiCompatibleProvider } from "./ai/openai-provider";
 import { AiQuestionService } from "./ai/service";
+import { BackendEnhancementClient } from "./backend/client";
+import {
+  CAPTURE_SCHEMA_VERSION,
+  CaptureConflictError,
+  CaptureService,
+  CaptureTargetRecommender,
+  captureRecommendationSettingsFromPluginSettings,
+  captureServiceOptionsFromPluginSettings,
+  type CaptureCommitResult,
+  type CaptureDraft,
+  type CaptureIntent,
+  type CaptureTargetCandidate
+} from "./capture";
 import { QuestionExporter } from "./export/exporter";
 import { ToWriteExternalApiServer, type DeviceCaptureRequest, type DeviceCaptureResult, type DeviceWritebackMetadata } from "./external/server";
 import { PushEngine } from "./push/engine";
 import { normalizePushRuntimeState, type PushAnchorInput, type PushFeedbackInput } from "./push/state";
 import type { PushFeedPayload, PushRuntimeState } from "./push/types";
+import {
+  HabitLearningService,
+  migrateManualPushHabits,
+  type HabitCandidate,
+  type HabitLearningState,
+  type NewActivityEvent
+} from "./learning";
+import {
+  SuggestionService,
+  type ProactiveSuggestion,
+  type ProactiveSuggestionAction,
+  type SuggestionNotificationEvent
+} from "./suggestions";
 import { Quote0SyncService, type Quote0SyncPreview, type Quote0SyncResult } from "./quote0/sync-service";
 import type { Quote0Device, Quote0DeviceStatus } from "./quote0/client";
 import { WorkflowIndex } from "./workflow";
@@ -56,6 +82,7 @@ import { createQuestionDecorations } from "./obsidian/decorations";
 import { OpenQuestionIndexer } from "./obsidian/indexer";
 import { jumpToQuestion as jumpToQuestionInWorkspace } from "./obsidian/jump";
 import { AddQuestionModal } from "./obsidian/modal";
+import { CaptureModal } from "./obsidian/capture-modal";
 import { PdfQuestionLayer, pdfAnchorFromCurrentSelection } from "./obsidian/pdf-layer";
 import { SelectionQuestionToolbar } from "./obsidian/selection-toolbar";
 import { ToWriteSettingTab } from "./obsidian/settings-tab";
@@ -67,6 +94,17 @@ import {
   ToWriteSidebarItemView
 } from "./obsidian/views";
 import type { ActiveLineRange, LinkSuggestion, ToWriteUiApi } from "./ui/api";
+import type { CaptureModalSubmitRequest, CaptureModalSubmitResult } from "./ui/capture-modal-types";
+
+interface CaptureLaunchOptions {
+  intent?: CaptureIntent;
+  body?: string;
+  sourceFile?: string;
+  headingPath?: string[];
+  selection?: string;
+  questionId?: string;
+  entryPoint?: string;
+}
 
 export default class ToWritePlugin extends Plugin {
   settings: ToWriteSettings = { ...DEFAULT_SETTINGS };
@@ -77,20 +115,37 @@ export default class ToWritePlugin extends Plugin {
   private workflowIndex!: WorkflowIndex;
   private localKnowledgeIndex!: LocalKnowledgeIndex;
   private aiService!: AiQuestionService;
+  private backendClient!: BackendEnhancementClient;
+  private captureService!: CaptureService;
+  private captureRecommender!: CaptureTargetRecommender;
   private externalApiServer!: ToWriteExternalApiServer;
   private pushEngine!: PushEngine;
   private quote0SyncService!: Quote0SyncService;
+  private learningService!: HabitLearningService;
+  private suggestionService!: SuggestionService;
   private uiApi!: ToWriteUiApi;
   private selectionToolbar?: SelectionQuestionToolbar;
   private pdfQuestionLayer?: PdfQuestionLayer;
   private backgroundRefreshTimer = 0;
   private backgroundRefreshRunning = false;
   private backgroundRefreshQueued = false;
+  private readonly lastLearningEditPresence = new Map<string, number>();
+  private readonly captureSuggestedTargets = new Map<string, string>();
+  private readonly captureCommittedCandidates = new Map<string, CaptureTargetCandidate>();
+  private readonly habitBackendRequests = new Set<string>();
+  private suggestionNotifications: SuggestionNotificationEvent[] = [];
+  private snoozedSuggestions: Record<string, string> = {};
+  private securityMigrationVersion = 0;
+  private showQueryTokenMigrationNotice = false;
+  private lastCaptureTargetCatalogJson = "";
 
   async onload(): Promise<void> {
     await this.loadPluginData();
 
     this.store = new OpenQuestionStore(this.savedQuestionStates);
+    this.learningService = new HabitLearningService(this.savedLearningState);
+    this.learningService.setCollectionPaused(!this.settings.learning.enabled);
+    this.suggestionService = new SuggestionService();
     this.indexer = new OpenQuestionIndexer(this.app, this.store, () => this.settings);
     this.sidecars = new QuestionSidecarRepository(this.app, () => this.settings);
     this.workflowIndex = new WorkflowIndex(
@@ -102,6 +157,18 @@ export default class ToWritePlugin extends Plugin {
     );
     this.exporter = new QuestionExporter(this.app, this.store, () => this.settings, () => this.workflowIndex.getPayload());
     this.localKnowledgeIndex = new LocalKnowledgeIndex();
+    this.backendClient = new BackendEnhancementClient(() => this.settings.backend);
+    this.captureRecommender = new CaptureTargetRecommender(
+      this.app,
+      this.captureRecommendationSettings(),
+      this.localKnowledgeIndex
+    );
+    this.captureService = new CaptureService(
+      this.app,
+      captureServiceOptionsFromPluginSettings(this.settings, {
+        onVaultChanged: (path, operation) => this.onCaptureVaultChanged(path, operation)
+      })
+    );
     this.aiService = new AiQuestionService({
       app: this.app,
       store: this.store,
@@ -135,7 +202,11 @@ export default class ToWritePlugin extends Plugin {
       updateQuestionStatus: (id, status, note, clientId) => this.updateQuestionStatusFromExternal(id, status, note, clientId),
       appendQuestionNote: (id, text, clientId, metadata) => this.appendQuestionNoteFromExternal(id, text, clientId, metadata),
       updateQuestionFields: (id, patch) => this.updateQuestionFieldsFromExternal(id, patch),
+      recommendCapture: (draft) => this.recommendCaptureTargets(draft),
       createDeviceCapture: (request) => this.createDeviceCaptureFromExternal(request),
+      undoCapture: async (captureId, undoToken) => {
+        return this.captureService.undo(undoToken, captureId);
+      },
       subscribe: (listener) => this.subscribe(listener)
     });
     this.pushEngine = new PushEngine({
@@ -161,6 +232,16 @@ export default class ToWritePlugin extends Plugin {
     this.selectionToolbar = new SelectionQuestionToolbar({
       onCreate: (lane, color) => {
         void this.createQuestionFromSelection(lane, color);
+      },
+      onCapture: (selectedText) => {
+        const file = this.app.workspace.getActiveFile();
+        this.openCaptureModal({
+          intent: "selection",
+          body: selectedText,
+          selection: selectedText,
+          sourceFile: file?.path,
+          entryPoint: "selection"
+        });
       }
     });
     this.pdfQuestionLayer = new PdfQuestionLayer({
@@ -183,6 +264,9 @@ export default class ToWritePlugin extends Plugin {
     this.addRibbonIcon("circle-help", "Open ToWrite questions", () => {
       void this.activateSidebar();
     });
+    this.addRibbonIcon("square-pen", "Open smart capture", () => {
+      this.openCaptureModal({ entryPoint: "ribbon" });
+    });
 
     this.addCommand({
       id: "open-towrite-sidebar",
@@ -197,6 +281,39 @@ export default class ToWritePlugin extends Plugin {
       name: "Open question dashboard",
       callback: () => {
         void this.activateDashboard();
+      }
+    });
+
+    this.addCommand({
+      id: "open-smart-capture",
+      name: "Open smart capture",
+      callback: () => {
+        this.openCaptureModal({ entryPoint: "command" });
+      }
+    });
+
+    this.addCommand({
+      id: "capture-selection-to-note",
+      name: "Capture selection to a note or folder",
+      editorCallback: (editor, view) => {
+        const file = view.file;
+        if (!file) {
+          new Notice("ToWrite needs an active Markdown file.");
+          return;
+        }
+        const selection = editor.getSelection().trim();
+        if (!selection) {
+          new Notice("Select some text first.");
+          return;
+        }
+        this.openCaptureModal({
+          intent: "selection",
+          body: selection,
+          selection,
+          sourceFile: file.path,
+          headingPath: this.headingPathForLine(file, editor.getCursor("from").line),
+          entryPoint: "selection"
+        });
       }
     });
 
@@ -270,6 +387,9 @@ export default class ToWritePlugin extends Plugin {
 
     this.addSettingTab(new ToWriteSettingTab(this.app, this));
     this.registerEvents();
+    this.registerInterval(window.setInterval(() => {
+      void this.runSuggestionNotifications();
+    }, 15 * 60 * 1000));
     void this.configureExternalApiServer(false);
     this.configureQuote0Sync();
 
@@ -280,7 +400,15 @@ export default class ToWritePlugin extends Plugin {
           void this.activateSidebar();
         }, 250);
       }
+      void this.runSuggestionNotifications();
     });
+    if (this.securityMigrationVersion < 1) {
+      this.securityMigrationVersion = 1;
+      await this.savePluginData();
+    }
+    if (this.showQueryTokenMigrationNotice) {
+      new Notice("ToWrite disabled External API query-token reads during the security upgrade. Re-enable them explicitly in Advanced API settings only if a restricted device flow requires it.", 12000);
+    }
   }
 
   onunload(): void {
@@ -319,6 +447,259 @@ export default class ToWritePlugin extends Plugin {
 
     const leaf = this.app.workspace.getLeaf(false);
     await leaf.openFile(file, { active: true });
+  }
+
+  openCaptureModal(options: CaptureLaunchOptions = {}): void {
+    if (!this.settings.deviceCapture.enabled) {
+      new Notice("Smart capture is disabled in ToWrite settings.");
+      return;
+    }
+    this.refreshCaptureConfiguration();
+    const sourceFile = options.sourceFile ?? this.getActiveFile() ?? undefined;
+    const question = options.questionId ? this.store.getQuestion(options.questionId) : undefined;
+    const intent = options.intent ?? (question ? "answer" : options.selection ? "selection" : "new");
+    const sourceLearningContext = sourceFile ? this.learningContextForFile(sourceFile) : {};
+    const draft: CaptureDraft = {
+      schemaVersion: CAPTURE_SCHEMA_VERSION,
+      id: `capture_${randomTokenFragment()}`,
+      intent,
+      body: options.body ?? (intent === "selection" ? options.selection ?? "" : ""),
+      tags: [],
+      links: [],
+      source: sourceFile || options.questionId || options.selection ? {
+        file: sourceFile,
+        headingPath: options.headingPath,
+        selection: options.selection,
+        questionId: options.questionId,
+        entryPoint: options.entryPoint ?? "command",
+        ...sourceLearningContext
+      } : undefined,
+      createdAt: new Date().toISOString()
+    };
+
+    const modal = new CaptureModal(this.app, {
+      draft,
+      language: this.settings.language,
+      context: {
+        sourceLabel: sourceFile ? "Obsidian" : undefined,
+        sourceFile,
+        headingPath: options.headingPath,
+        selection: options.selection,
+        questionId: question?.id,
+        questionTitle: question?.title || question?.question,
+        questionText: question?.question
+      },
+      initialCandidates: [],
+      callbacks: {
+        recommend: async (currentDraft, signal, publishUpdate) => {
+          const local = await this.recommendCaptureTargets(currentDraft);
+          if (signal.aborted) {
+            return local;
+          }
+          this.captureSuggestedTargets.set(currentDraft.id, local[0]?.id ?? "");
+          if (this.settings.backend.enabled && this.settings.backend.useForRecommendations) {
+            void this.backendClient.rerankTargets(currentDraft, local).then((enhanced) => {
+              if (!signal.aborted) {
+                this.captureSuggestedTargets.set(currentDraft.id, enhanced[0]?.id ?? local[0]?.id ?? "");
+                publishUpdate(enhanced);
+              }
+            }).catch(() => undefined);
+          }
+          return local;
+        },
+        preview: async (currentDraft, candidate) => {
+          this.refreshCaptureConfiguration();
+          return this.captureService.preview(currentDraft, candidate);
+        },
+        submit: (request) => this.submitCaptureModal(request),
+        openResult: async (result) => {
+          if (result.capture?.finalPath) {
+            await this.openFile(result.capture.finalPath);
+          }
+        },
+        undoResult: async (result) => {
+          const capture = result.capture;
+          if (!capture?.undoToken) {
+            return;
+          }
+          const undone = await this.captureService.undo(capture.undoToken);
+          if (!undone.undone) {
+            new Notice("The capture was already removed.");
+            return;
+          }
+          const candidate = this.captureCommittedCandidates.get(capture.captureId);
+          if (candidate) {
+            await this.recordCaptureRouteLearning(draft, candidate, "undone");
+          }
+          new Notice("Capture undone.");
+        }
+      },
+      onClosed: () => {
+        this.captureSuggestedTargets.delete(draft.id);
+      }
+    });
+    modal.open();
+  }
+
+  openCaptureForQuestion(questionId: string): void {
+    const question = this.store.getQuestion(questionId);
+    if (!question) {
+      new Notice("ToWrite question not found.");
+      return;
+    }
+    this.openCaptureModal({
+      intent: "answer",
+      sourceFile: question.source.file,
+      headingPath: question.source.headingPath,
+      questionId,
+      entryPoint: "question-card"
+    });
+  }
+
+  private refreshCaptureConfiguration(): void {
+    this.captureRecommender.updateSettings(this.captureRecommendationSettings());
+    this.captureService.updateOptions(captureServiceOptionsFromPluginSettings(this.settings, {
+      onVaultChanged: (path, operation) => this.onCaptureVaultChanged(path, operation)
+    }));
+  }
+
+  private captureRecommendationSettings() {
+    const base = captureRecommendationSettingsFromPluginSettings(this.settings);
+    const confirmedRoutes = this.learningService.getAcceptedHabits()
+      .filter((habit) => habit.rule.kind === "routing")
+      .map((habit) => habit.rule.kind === "routing" ? {
+        targetId: habit.rule.targetId,
+        context: { ...habit.rule.context }
+      } : undefined)
+      .filter((route): route is NonNullable<typeof route> => Boolean(route));
+    return { ...base, confirmedRoutes };
+  }
+
+  private async recommendCaptureTargets(draft: CaptureDraft): Promise<CaptureTargetCandidate[]> {
+    this.refreshCaptureConfiguration();
+    return this.captureRecommender.recommendCandidates(draft);
+  }
+
+  private async submitCaptureModal(request: CaptureModalSubmitRequest): Promise<CaptureModalSubmitResult> {
+    const { draft, candidate, preview, archiveAnswer } = request;
+    if (draft.intent === "answer" && (!draft.source?.questionId || !this.store.getQuestion(draft.source.questionId))) {
+      throw new Error("The source question no longer exists.");
+    }
+    let capture: CaptureCommitResult | undefined;
+    if (draft.intent !== "answer" || archiveAnswer) {
+      if (!candidate) {
+        throw new Error("Choose a capture destination before saving.");
+      }
+      this.refreshCaptureConfiguration();
+      const currentCandidates = await this.recommendCaptureTargets(draft);
+      const currentCandidate = currentCandidates.find((item) => item.id === candidate.id);
+      if (!currentCandidate
+        || currentCandidate.path !== candidate.path
+        || currentCandidate.action !== candidate.action
+        || currentCandidate.kind !== candidate.kind) {
+        throw new CaptureConflictError("target-changed", "The selected capture target is no longer authorized. Refresh recommendations before saving.");
+      }
+      const targetRevision = request.targetRevision ?? preview?.targetRevision ?? candidate.targetRevision;
+      if (currentCandidate.action === "create" && targetRevision !== currentCandidate.targetRevision) {
+        throw new CaptureConflictError("target-changed", "Capture folder settings changed after preview. Refresh recommendations before saving.");
+      }
+      capture = await this.captureService.commit({
+        draft,
+        candidate: currentCandidate,
+        targetRevision
+      });
+      this.captureCommittedCandidates.set(draft.id, currentCandidate);
+      await this.recordCaptureRouteLearning(draft, currentCandidate, this.captureSelectionFor(draft, currentCandidate));
+    }
+
+    if (draft.intent === "answer") {
+      const questionId = draft.source?.questionId;
+      if (!questionId) {
+        throw new Error("The source question is missing.");
+      }
+      const link = capture ? `\n\nSaved to [[${capture.finalPath.replace(/\.md$/iu, "")}]]` : "";
+      const updated = await this.appendQuestionNoteFromExternal(
+        questionId,
+        `${draft.body}${link}`,
+        "native-capture",
+        {
+          source_device: "obsidian-modal",
+          source_file: draft.source?.file,
+          input_mode: "answer",
+          created_at: new Date().toISOString()
+        }
+      );
+      if (!updated) {
+        throw new Error("The source question no longer exists.");
+      }
+      const context = this.learningContextForFile(draft.source?.file ?? "");
+      await this.recordLearningEvent({
+        kind: "question-action",
+        at: new Date().toISOString(),
+        timezoneOffsetMinutes: -new Date().getTimezoneOffset(),
+        questionId,
+        action: "answered",
+        sourceFilePath: draft.source?.file,
+        ...context
+      });
+    }
+
+    return {
+      capture,
+      message: capture
+        ? `Saved to ${capture.finalPath}`
+        : "Answer appended to the question card.",
+      openLabel: capture ? "Open note" : undefined,
+      canOpen: Boolean(capture),
+      canUndo: draft.intent !== "answer" && Boolean(capture?.undoToken)
+    };
+  }
+
+  private captureSelectionFor(draft: CaptureDraft, candidate: CaptureTargetCandidate): "accepted" | "reselected" | "inbox" {
+    if (candidate.kind === "inbox") {
+      return "inbox";
+    }
+    return this.captureSuggestedTargets.get(draft.id) === candidate.id ? "accepted" : "reselected";
+  }
+
+  private async recordCaptureRouteLearning(
+    draft: CaptureDraft,
+    candidate: CaptureTargetCandidate,
+    selection: "accepted" | "reselected" | "inbox" | "undone"
+  ): Promise<void> {
+    const sourceFile = draft.source?.file;
+    const context = sourceFile ? this.learningContextForFile(sourceFile) : {};
+    await this.recordLearningEvent({
+      kind: "capture-route",
+      at: new Date().toISOString(),
+      timezoneOffsetMinutes: -new Date().getTimezoneOffset(),
+      captureId: draft.id,
+      entryPoint: draft.source?.entryPoint ?? "command",
+      suggestedTargetId: this.captureSuggestedTargets.get(draft.id),
+      selectedTargetId: candidate.id,
+      selectedTargetKind: candidate.kind === "existingNote" ? "existing-note" : candidate.kind,
+      selection,
+      sourceFilePath: sourceFile,
+      ...context
+    });
+  }
+
+  private async onCaptureVaultChanged(path: string, _operation: "commit" | "undo"): Promise<void> {
+    const file = this.app.vault.getFileByPath(path);
+    if (file) {
+      await this.indexer.indexFile(file);
+      if (this.shouldBuildLocalKnowledgeIndex()) {
+        await this.localKnowledgeIndex.upsert(this.app, file, this.settings.exportDirectory, this.getLocalKnowledgeScope());
+      }
+    } else {
+      this.indexer.removeFile(path);
+      this.localKnowledgeIndex.remove(path);
+    }
+    await this.workflowIndex.rebuild();
+    if (this.settings.autoExport) {
+      await this.exportNow(false, { rebuildWorkflow: false });
+    }
+    this.store.notify();
   }
 
   async renderMarkdown(markdown: string, element: HTMLElement, sourcePath: string): Promise<void> {
@@ -399,7 +780,7 @@ export default class ToWritePlugin extends Plugin {
     await this.indexer.rebuildVault();
     await this.refreshSidecars({ rebuildWorkflow: false });
     if (this.shouldBuildLocalKnowledgeIndex()) {
-      await this.localKnowledgeIndex.rebuild(this.app, this.settings.exportDirectory);
+      await this.localKnowledgeIndex.rebuild(this.app, this.settings.exportDirectory, this.getLocalKnowledgeScope());
     }
     await this.workflowIndex.rebuild();
     if (this.settings.autoExport) {
@@ -414,9 +795,10 @@ export default class ToWritePlugin extends Plugin {
       await this.workflowIndex.rebuild();
     }
     await this.exporter.exportAll();
+    await this.exportCaptureTargetCatalog();
     if (showNotice) {
       const directory = this.settings.exportDirectory.replace(/\\/gu, "/").replace(/\/+$/u, "");
-      new Notice(`ToWrite JSON exported to ${directory}/index.json, articles.json, eink-compact.json, workflows.json.`);
+      new Notice(`ToWrite JSON exported to ${directory}, including capture-targets.json.`);
     }
   }
 
@@ -438,9 +820,6 @@ export default class ToWritePlugin extends Plugin {
 
     this.backgroundRefreshRunning = true;
     try {
-      if (this.shouldBuildLocalKnowledgeIndex()) {
-        await this.localKnowledgeIndex.rebuild(this.app, this.settings.exportDirectory);
-      }
       await this.workflowIndex.rebuild();
       if (this.settings.autoExport) {
         await this.exportNow(false, { rebuildWorkflow: false });
@@ -457,7 +836,16 @@ export default class ToWritePlugin extends Plugin {
   }
 
   private shouldBuildLocalKnowledgeIndex(): boolean {
-    return this.settings.ai.enabled;
+    return this.settings.ai.enabled || this.settings.deviceCapture.localRecommendations;
+  }
+
+  private getLocalKnowledgeScope() {
+    return {
+      includeFolders: this.settings.deviceCapture.includeFolders,
+      excludeFolders: this.settings.deviceCapture.excludeFolders,
+      excludeTags: this.settings.deviceCapture.excludeTags,
+      excludeFrontmatter: this.settings.deviceCapture.excludeFrontmatter
+    };
   }
 
   subscribe(listener: () => void): () => void {
@@ -468,9 +856,298 @@ export default class ToWritePlugin extends Plugin {
     const data: ToWriteSavedData = {
       settings: this.settings,
       questionStates: this.store?.serializeStates() ?? this.savedQuestionStates,
-      pushState: this.pushState
+      pushState: this.pushState,
+      learningState: this.learningService?.getState() ?? this.savedLearningState,
+      suggestionNotifications: this.suggestionNotifications,
+      snoozedSuggestions: this.snoozedSuggestions,
+      securityMigrationVersion: this.securityMigrationVersion
     };
     await this.saveData(data);
+    await this.exportCaptureTargetCatalog();
+  }
+
+  async testBackendConnection(): Promise<void> {
+    try {
+      const capabilities = await this.backendClient.getCapabilities();
+      const features = [
+        capabilities.recommendTargets ? "target recommendations" : "",
+        capabilities.suggestHabits ? "habit suggestions" : "",
+        capabilities.mobileCapture ? "mobile capture" : ""
+      ].filter(Boolean).join(", ") || "no optional features";
+      new Notice(`Obsidian AI Backend protocol ${capabilities.protocolVersion}: ${features}.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      new Notice(`Obsidian AI Backend unavailable: ${message}`);
+    }
+  }
+
+  async exportLearningData(showNotice = true): Promise<void> {
+    if (!this.learningService) {
+      return;
+    }
+    const bundle = this.learningService.exportBundle();
+    const root = normalizeVaultPath(this.settings.exportDirectory);
+    await this.writeVaultText(`${root}/${bundle.files.events}`, bundle.eventsJsonl ? `${bundle.eventsJsonl}\n` : "");
+    await this.writeVaultText(`${root}/${bundle.files.habits}`, `${bundle.habitsJson}\n`);
+    await this.savePluginData();
+    if (showNotice) {
+      new Notice(`ToWrite learning data exported to ${root}/learning/.`);
+    }
+  }
+
+  async setLearningEnabled(enabled: boolean): Promise<void> {
+    this.settings.learning.enabled = enabled;
+    this.learningService.setCollectionPaused(!enabled);
+    await this.exportLearningData(false);
+    this.store.notify();
+  }
+
+  private async exportCaptureTargetCatalog(): Promise<void> {
+    const root = normalizeVaultPath(this.settings.exportDirectory);
+    const recommendation = captureRecommendationSettingsFromPluginSettings(this.settings);
+    const catalog = {
+      schemaVersion: 1,
+      revision: recommendation.settingsRevision,
+      inboxFile: recommendation.inboxFile,
+      targetFolders: recommendation.targetFolders,
+      appendHeading: recommendation.appendHeading,
+      defaultTags: this.settings.deviceCapture.defaultTags,
+      includeFolders: recommendation.includeFolders ?? [],
+      excludeFolders: recommendation.excludeFolders ?? [],
+      excludeTags: recommendation.excludeTags ?? [],
+      excludeFrontmatter: recommendation.excludeFrontmatter ?? [],
+      workflowStages: recommendation.workflowStages ?? []
+    };
+    const content = `${JSON.stringify(catalog, null, 2)}\n`;
+    if (content === this.lastCaptureTargetCatalogJson) {
+      return;
+    }
+    await this.writeVaultText(`${root}/capture-targets.json`, content);
+    this.lastCaptureTargetCatalogJson = content;
+  }
+
+  async clearLearningData(): Promise<void> {
+    if (!window.confirm("Clear all ToWrite learning events, candidates, and accepted learned habits? Manual Push rules are kept.")) {
+      return;
+    }
+    this.learningService.clearLearningData({ preservePause: false, preserveManualHabits: true });
+    this.learningService.setCollectionPaused(!this.settings.learning.enabled);
+    await this.exportLearningData(false);
+    this.store.notify();
+    new Notice("ToWrite learning data cleared.");
+  }
+
+  getProactiveSuggestions(): ProactiveSuggestion[] {
+    if (this.settings.learning.enabled) {
+      const candidates = this.learningService.inferCandidates();
+      void this.maybeEnhanceHabitCandidateCopy(candidates);
+    }
+    const now = new Date();
+    const suggestions = this.suggestionService.build({
+      questions: this.store.query(),
+      habits: this.learningService.getCandidates(),
+      activeFile: this.getActiveFile(),
+      now,
+      timezoneOffsetMinutes: -now.getTimezoneOffset()
+    });
+    const nowMs = now.getTime();
+    for (const [id, until] of Object.entries(this.snoozedSuggestions)) {
+      if (!Number.isFinite(Date.parse(until)) || Date.parse(until) <= nowMs) {
+        delete this.snoozedSuggestions[id];
+      }
+    }
+    return suggestions.filter((suggestion) => {
+      const until = Date.parse(this.snoozedSuggestions[suggestion.id] ?? "");
+      return !Number.isFinite(until) || until <= nowMs;
+    });
+  }
+
+  async actOnSuggestion(id: string, action: ProactiveSuggestionAction): Promise<void> {
+    const suggestion = this.getProactiveSuggestions().find((item) => item.id === id);
+    if (!suggestion) {
+      return;
+    }
+
+    if (action === "open-source") {
+      if (suggestion.questionId) {
+        await this.jumpToQuestion(suggestion.questionId);
+      } else {
+        this.openCaptureModal({ entryPoint: "sidebar" });
+      }
+    } else if (action === "start-capture") {
+      this.openCaptureModal({ entryPoint: "sidebar" });
+    } else if (action === "accept" && suggestion.habitId) {
+      this.learningService.acceptCandidate(suggestion.habitId);
+      await this.exportLearningData(false);
+      new Notice("Habit confirmed. It can now influence suggestions.");
+    } else if (action === "edit" && suggestion.habitId) {
+      const candidate = this.learningService.getCandidates().find((item) => item.id === suggestion.habitId);
+      if (candidate) {
+        const label = window.prompt("Habit label", candidate.label);
+        if (label !== null) {
+          const description = window.prompt("Habit description", candidate.description);
+          this.learningService.rewriteCandidateCopy(candidate.id, {
+            label,
+            description: description ?? candidate.description
+          }, new Date(), false);
+          await this.exportLearningData(false);
+        }
+      }
+    } else if (action === "view-evidence" && suggestion.evidence) {
+      const evidence = suggestion.evidence;
+      new Notice(`${suggestion.title}\n${evidence.matchingSamples}/${evidence.sampleSize} matches across ${evidence.distinctDays} days (${Math.round(evidence.ratio * 100)}%).`, 10000);
+    } else if (action === "later" || action === "snooze") {
+      this.snoozedSuggestions[suggestion.id] = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      await this.savePluginData();
+    } else if (action === "dismiss") {
+      if (suggestion.habitId) {
+        this.learningService.dismissCandidate(suggestion.habitId);
+        await this.exportLearningData(false);
+      } else if (suggestion.questionId && suggestion.source === "due-reminder") {
+        await this.updateQuestionFromUi(suggestion.questionId, { reminderDismissedAt: new Date().toISOString() });
+      } else {
+        this.snoozedSuggestions[suggestion.id] = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+        await this.savePluginData();
+      }
+    }
+
+    await this.recordSuggestionFeedback(suggestion, action);
+    this.store.notify();
+  }
+
+  private async recordSuggestionFeedback(suggestion: ProactiveSuggestion, action: ProactiveSuggestionAction): Promise<void> {
+    const feedbackAction = action === "accept"
+      ? "accepted"
+      : action === "edit"
+        ? "edited"
+        : action === "dismiss"
+          ? "dismissed"
+          : action === "later" || action === "snooze"
+            ? "later"
+            : "opened";
+    await this.recordLearningEvent({
+      kind: "suggestion-feedback",
+      at: new Date().toISOString(),
+      timezoneOffsetMinutes: -new Date().getTimezoneOffset(),
+      suggestionId: suggestion.id,
+      habitId: suggestion.habitId,
+      action: feedbackAction
+    });
+  }
+
+  private async runSuggestionNotifications(): Promise<void> {
+    if (!this.settings.learning.notificationsEnabled) {
+      return;
+    }
+    const now = new Date();
+    const cutoff = now.getTime() - 30 * 24 * 60 * 60 * 1000;
+    this.suggestionNotifications = this.suggestionNotifications.filter((event) => Date.parse(event.notifiedAt) >= cutoff);
+    let changed = false;
+    for (const suggestion of this.getProactiveSuggestions()) {
+      const eligibility = this.suggestionService.notificationEligibility(suggestion, {
+        enabled: this.settings.learning.notificationsEnabled,
+        quietHoursStart: this.settings.learning.quietHoursStart,
+        quietHoursEnd: this.settings.learning.quietHoursEnd,
+        dailyHabitLimit: this.settings.learning.maxHabitNotificationsPerDay,
+        timezoneOffsetMinutes: -now.getTimezoneOffset()
+      }, this.suggestionNotifications, now);
+      if (!eligibility.eligible) {
+        continue;
+      }
+      new Notice(`${suggestion.title}\n${suggestion.triggerReason}`, 10000);
+      this.suggestionNotifications.push({
+        suggestionId: suggestion.id,
+        source: suggestion.source,
+        habitId: suggestion.habitId,
+        notifiedAt: now.toISOString()
+      });
+      changed = true;
+    }
+    if (changed) {
+      await this.savePluginData();
+    }
+  }
+
+  private async recordLearningEvent(event: NewActivityEvent): Promise<void> {
+    if (!this.settings.learning.enabled || !this.learningService) {
+      return;
+    }
+    this.learningService.setCollectionPaused(false);
+    this.learningService.recordEvent(event);
+    const candidates = this.learningService.inferCandidates();
+    void this.maybeEnhanceHabitCandidateCopy(candidates);
+    await this.exportLearningData(false);
+    this.store.notify();
+  }
+
+  private async maybeEnhanceHabitCandidateCopy(candidates: HabitCandidate[]): Promise<void> {
+    if (!this.settings.backend.enabled || !this.settings.backend.useForHabitSuggestions) {
+      return;
+    }
+    const pending = candidates
+      .filter((candidate) => candidate.status === "pending" && !candidate.copyEditedByAiAt && !this.habitBackendRequests.has(candidate.id))
+      .slice(0, 5);
+    if (pending.length === 0) {
+      return;
+    }
+    for (const candidate of pending) {
+      this.habitBackendRequests.add(candidate.id);
+    }
+    try {
+      const response = await this.backendClient.suggestHabits<{
+        schemaVersion: 1;
+        candidates: Array<Pick<HabitCandidate, "id" | "label" | "description" | "rule" | "evidence">>;
+      }, { candidateId?: unknown; id?: unknown; label?: unknown; description?: unknown }>({
+        schemaVersion: 1,
+        candidates: pending.map(({ id, label, description, rule, evidence }) => ({
+          id,
+          label,
+          description,
+          rule,
+          evidence
+        }))
+      });
+      let changed = false;
+      for (const suggestion of response.suggestions) {
+        const id = typeof suggestion.candidateId === "string"
+          ? suggestion.candidateId
+          : typeof suggestion.id === "string" ? suggestion.id : "";
+        if (!pending.some((candidate) => candidate.id === id)) {
+          continue;
+        }
+        const current = this.learningService.getCandidates().find((candidate) => candidate.id === id);
+        if (!current || current.status !== "pending") {
+          continue;
+        }
+        const label = typeof suggestion.label === "string" ? suggestion.label : undefined;
+        const description = typeof suggestion.description === "string" ? suggestion.description : undefined;
+        if (!label && !description) {
+          continue;
+        }
+        this.learningService.rewriteCandidateCopy(id, { label, description });
+        changed = true;
+      }
+      if (changed) {
+        await this.exportLearningData(false);
+        this.store.notify();
+      }
+    } catch {
+      // Local rule-generated copy remains authoritative when Backend is unavailable.
+    }
+  }
+
+  private async writeVaultText(path: string, content: string): Promise<void> {
+    const normalized = normalizeVaultPath(path);
+    await this.ensureParentFolder(normalized);
+    const file = this.app.vault.getAbstractFileByPath(normalized);
+    if (file instanceof TFile) {
+      await this.app.vault.modify(file, content);
+      return;
+    }
+    if (file) {
+      throw new Error(`${normalized} exists and is not a file.`);
+    }
+    await this.app.vault.create(normalized, content);
   }
 
   async setCompactEditorDecorations(value: boolean): Promise<void> {
@@ -703,6 +1380,9 @@ export default class ToWritePlugin extends Plugin {
   }
 
   private async createDeviceCaptureFromExternal(request: DeviceCaptureRequest): Promise<DeviceCaptureResult> {
+    if (request.captureId || request.candidateId || request.action || request.targetRevision || request.target?.kind === "existingNote") {
+      return this.createVersionedDeviceCapture(request);
+    }
     const createdAt = new Date().toISOString();
     const text = request.text.trim();
     const target = this.resolveDeviceCaptureTarget(request);
@@ -757,6 +1437,73 @@ export default class ToWritePlugin extends Plugin {
       targetKind: target.kind,
       createdAt,
       openUri: buildFileObsidianUri(this.app.vault.getName(), filePath)
+    };
+  }
+
+  private async createVersionedDeviceCapture(request: DeviceCaptureRequest): Promise<DeviceCaptureResult> {
+    const createdAt = new Date().toISOString();
+    const draft: CaptureDraft = {
+      schemaVersion: CAPTURE_SCHEMA_VERSION,
+      id: request.captureId?.trim() || `capture_${randomTokenFragment()}`,
+      intent: "new",
+      body: request.text.trim(),
+      title: request.title?.trim() || undefined,
+      tags: normalizeCaptureTags(request.tags),
+      links: Array.from(request.text.matchAll(/https?:\/\/[^\s<>{}\[\]"']+/giu)).map((match) => match[0]).slice(0, 10),
+      source: request.metadata?.source_file ? {
+        file: request.metadata.source_file,
+        entryPoint: "external-api",
+        ...this.learningContextForFile(request.metadata.source_file)
+      } : { entryPoint: "external-api" },
+      createdAt
+    };
+    const candidates = await this.recommendCaptureTargets(draft);
+    let candidate = request.candidateId
+      ? candidates.find((item) => item.id === request.candidateId)
+      : undefined;
+    if (!candidate && request.target?.kind === "existingNote") {
+      candidate = candidates.find((item) => item.kind === "existingNote" && item.path === request.target?.filePath);
+    }
+    if (!candidate && request.target?.kind === "inboxFile") {
+      candidate = candidates.find((item) => item.kind === "inbox" && (!request.target?.inboxFile || item.path === request.target.inboxFile));
+    }
+    if (!candidate && (request.target?.kind === "folderPath" || request.target?.kind === "stageId")) {
+      candidate = candidates.find((item) => item.kind === "folder" && (
+        request.target?.kind === "folderPath"
+          ? item.path === request.target.folderPath
+          : item.stageId === request.target?.stageId
+      ));
+    }
+    if (!candidate) {
+      throw new Error("Capture target is no longer in the current recommendation catalog. Refresh recommendations before saving.");
+    }
+    if (request.action && request.action !== candidate.action) {
+      throw new Error("Capture action does not match the selected target.");
+    }
+    if (candidate.action === "create" && request.targetRevision && request.targetRevision !== candidate.targetRevision) {
+      throw new CaptureConflictError("target-changed", "Capture folder settings changed after preview. Refresh recommendations before saving.");
+    }
+    const result = await this.captureService.commit({
+      draft,
+      candidate,
+      targetRevision: request.targetRevision ?? candidate.targetRevision
+    });
+    this.captureCommittedCandidates.set(draft.id, candidate);
+    this.captureSuggestedTargets.set(draft.id, candidates[0]?.id ?? "");
+    await this.recordCaptureRouteLearning(draft, candidate, this.captureSelectionFor(draft, candidate));
+    return {
+      filePath: result.finalPath,
+      title: request.title?.trim() || defaultTitleFromBody(request.text),
+      tags: normalizeCaptureTags([...this.settings.deviceCapture.defaultTags, ...request.tags]),
+      targetKind: candidate.kind === "existingNote" ? "existingNote" : candidate.kind === "folder" ? "folderPath" : "inboxFile",
+      createdAt: result.createdAt,
+      openUri: result.openUri,
+      captureId: result.captureId,
+      candidateId: result.candidateId,
+      action: result.action,
+      undoToken: result.undoToken,
+      targetRevision: result.targetRevision,
+      idempotent: result.idempotent
     };
   }
 
@@ -845,12 +1592,29 @@ export default class ToWritePlugin extends Plugin {
 
   private savedQuestionStates: Record<string, StoredQuestionState> = {};
   private pushState: PushRuntimeState = normalizePushRuntimeState();
+  private savedLearningState?: HabitLearningState;
 
   private async loadPluginData(): Promise<void> {
     const data = (await this.loadData()) as Partial<ToWriteSavedData> | null;
     this.settings = normalizeSettings(data?.settings);
+    this.securityMigrationVersion = Number.isFinite(data?.securityMigrationVersion)
+      ? Math.max(0, Math.floor(data?.securityMigrationVersion ?? 0))
+      : 0;
+    if (this.securityMigrationVersion < 1) {
+      this.showQueryTokenMigrationNotice = data?.settings?.externalApi?.allowQueryTokenForRead === true;
+      this.settings.externalApi.allowQueryTokenForRead = false;
+    }
     this.savedQuestionStates = data?.questionStates ?? {};
     this.pushState = normalizePushRuntimeState(data?.pushState);
+    this.savedLearningState = migrateManualPushHabits(
+      data?.learningState,
+      this.settings,
+      Array.isArray(data?.settings?.push?.habits)
+    );
+    this.suggestionNotifications = Array.isArray(data?.suggestionNotifications) ? data.suggestionNotifications : [];
+    this.snoozedSuggestions = data?.snoozedSuggestions && typeof data.snoozedSuggestions === "object"
+      ? { ...data.snoozedSuggestions }
+      : {};
   }
 
   private createUiApi(): ToWriteUiApi {
@@ -873,6 +1637,7 @@ export default class ToWritePlugin extends Plugin {
       getGroupCurrentByHeading: () => this.settings.groupCurrentByHeading,
       getCompactEditorDecorations: () => this.settings.compactEditorDecorations,
       getReminderPresets: () => this.settings.reminderPresets,
+      getProactiveSuggestions: () => this.getProactiveSuggestions(),
       getDefaultColor: (lane) => this.defaultColorForLane(lane),
       renderMarkdown: (markdown, element, sourcePath) => this.renderMarkdown(markdown, element, sourcePath),
       getLinkSuggestions: (query, sourcePath) => this.getLinkSuggestions(query, sourcePath),
@@ -883,6 +1648,9 @@ export default class ToWritePlugin extends Plugin {
         await this.updateQuestionFromUi(id, patch);
       },
       createQuestionFromSelection: (lane, color) => this.createQuestionFromSelection(lane, color),
+      openCapture: () => this.openCaptureModal({ entryPoint: "sidebar" }),
+      openCaptureForQuestion: (id) => this.openCaptureForQuestion(id),
+      actOnSuggestion: (id, action) => this.actOnSuggestion(id, action),
       acceptSuggestion: (id) => this.acceptSuggestion(id),
       editQuestion: (id) => this.editQuestion(id),
       deleteQuestion: (id) => this.deleteQuestion(id),
@@ -931,6 +1699,9 @@ export default class ToWritePlugin extends Plugin {
   private registerEvents(): void {
     const reindexFile = debounce((file: TFile) => {
       void this.indexer.indexFile(file).then(async () => {
+        if (this.shouldBuildLocalKnowledgeIndex()) {
+          await this.localKnowledgeIndex.upsert(this.app, file, this.settings.exportDirectory, this.getLocalKnowledgeScope());
+        }
         await this.refreshSidecars({ rebuildWorkflow: false });
         this.store.notify();
         this.scheduleBackgroundRefresh();
@@ -944,6 +1715,7 @@ export default class ToWritePlugin extends Plugin {
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
         if (file instanceof TFile && file.extension === "md") {
+          this.recordEditPresenceLearning(file);
           reindexFile(file);
         }
       })
@@ -966,6 +1738,7 @@ export default class ToWritePlugin extends Plugin {
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
         this.indexer.removeFile(oldPath);
+        this.localKnowledgeIndex.remove(oldPath);
         if (file instanceof TFile && file.extension === "md") {
           reindexFile(file);
         }
@@ -975,6 +1748,7 @@ export default class ToWritePlugin extends Plugin {
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", () => {
         this.aiService.refreshMissingForActiveNote(this.getActiveFile());
+        this.recordFileSwitchLearning();
         this.store.notify();
       })
     );
@@ -990,7 +1764,8 @@ export default class ToWritePlugin extends Plugin {
   private handleDeletedFile(file: TAbstractFile): void {
     if (file instanceof TFile && file.extension === "md") {
       this.indexer.removeFile(file.path);
-      void this.localKnowledgeIndex.rebuild(this.app, this.settings.exportDirectory).then(async () => {
+      this.localKnowledgeIndex.remove(file.path);
+      void Promise.resolve().then(async () => {
         await this.workflowIndex.rebuild();
         if (this.settings.autoExport) {
           await this.exportNow(false);
@@ -998,6 +1773,56 @@ export default class ToWritePlugin extends Plugin {
         this.store.notify();
       });
     }
+  }
+
+  private recordFileSwitchLearning(): void {
+    const filePath = this.getActiveFile();
+    if (!filePath || !this.settings.learning.enabled) {
+      return;
+    }
+    const context = this.learningContextForFile(filePath);
+    void this.recordLearningEvent({
+      kind: "file-switched",
+      at: new Date().toISOString(),
+      timezoneOffsetMinutes: -new Date().getTimezoneOffset(),
+      filePath,
+      ...context
+    });
+  }
+
+  private recordEditPresenceLearning(file: TFile): void {
+    if (!this.settings.learning.enabled) {
+      return;
+    }
+    const now = Date.now();
+    const previous = this.lastLearningEditPresence.get(file.path) ?? 0;
+    if (now - previous < 60_000) {
+      return;
+    }
+    this.lastLearningEditPresence.set(file.path, now);
+    const context = this.learningContextForFile(file.path);
+    void this.recordLearningEvent({
+      kind: "edit-presence",
+      at: new Date(now).toISOString(),
+      timezoneOffsetMinutes: -new Date(now).getTimezoneOffset(),
+      filePath: file.path,
+      ...context
+    });
+  }
+
+  private learningContextForFile(filePath: string): { articleTypeId?: string; workflowStageId?: string } {
+    const article = this.store.getArticleSummary(filePath);
+    if (article?.typeId || article?.stageId) {
+      return {
+        articleTypeId: article.typeId,
+        workflowStageId: article.stageId
+      };
+    }
+    const workflowFile = this.workflowIndex.getPayload({ limit: 500, compact: true }).files?.find((item) => item.filePath === filePath);
+    return {
+      articleTypeId: workflowFile?.typeId,
+      workflowStageId: workflowFile?.stageId
+    };
   }
 
   private openAddQuestionModal(
@@ -1242,7 +2067,7 @@ export default class ToWritePlugin extends Plugin {
       updatedAt: new Date().toISOString()
     };
 
-    if (question.source.rule === "selection") {
+    if (this.store.isSidecarQuestion(question.id)) {
       await this.sidecars.upsert(updated);
       await this.refreshSidecars();
     } else {
@@ -1340,7 +2165,7 @@ export default class ToWritePlugin extends Plugin {
       return lines.join("\n");
     });
 
-    if (question.source.rule === "selection") {
+    if (this.store.isSidecarQuestion(question.id)) {
       await this.sidecars.upsert({
         ...question,
         source: {
@@ -1408,6 +2233,8 @@ function normalizeSettings(settings?: Partial<ToWriteSettings>): ToWriteSettings
     defaultWriteColor: isQuestionColor(settings?.defaultWriteColor) ? settings.defaultWriteColor : DEFAULT_SETTINGS.defaultWriteColor,
     externalApi: normalizeExternalApiSettings(settings?.externalApi),
     deviceCapture: normalizeDeviceCaptureSettings(settings?.deviceCapture),
+    learning: normalizeLearningSettings(settings?.learning),
+    backend: normalizeBackendSettings(settings?.backend),
     deviceProfiles: normalizeDeviceProfiles(settings?.deviceProfiles),
     articleTypes: normalizeArticleTypesSettings(settings?.articleTypes),
     workflowStages: normalizeWorkflowStages(settings?.workflowStages),
@@ -1428,8 +2255,51 @@ function normalizeDeviceCaptureSettings(settings?: Partial<ToWriteSettings["devi
     targetFolders: normalizeWorkflowList(settings?.targetFolders).length > 0
       ? normalizeWorkflowList(settings?.targetFolders)
       : DEFAULT_SETTINGS.deviceCapture.targetFolders,
-    defaultTags: normalizeCaptureTags(settings?.defaultTags ?? DEFAULT_SETTINGS.deviceCapture.defaultTags)
+    defaultTags: normalizeCaptureTags(settings?.defaultTags ?? DEFAULT_SETTINGS.deviceCapture.defaultTags),
+    appendHeading: String(settings?.appendHeading ?? DEFAULT_SETTINGS.deviceCapture.appendHeading)
+      .replace(/^#+\s*/u, "")
+      .trim()
+      .slice(0, 120) || DEFAULT_SETTINGS.deviceCapture.appendHeading,
+    localRecommendations: settings?.localRecommendations !== false,
+    includeFolders: normalizeWorkflowList(settings?.includeFolders),
+    excludeFolders: normalizeWorkflowList(settings?.excludeFolders ?? DEFAULT_SETTINGS.deviceCapture.excludeFolders),
+    excludeTags: normalizeCaptureTags(settings?.excludeTags ?? DEFAULT_SETTINGS.deviceCapture.excludeTags),
+    excludeFrontmatter: normalizeCaptureTags(settings?.excludeFrontmatter ?? DEFAULT_SETTINGS.deviceCapture.excludeFrontmatter)
   };
+}
+
+function normalizeLearningSettings(settings?: Partial<ToWriteSettings["learning"]>): ToWriteSettings["learning"] {
+  return {
+    enabled: settings?.enabled === true,
+    retentionDays: 30,
+    idleMinutes: 5,
+    notificationsEnabled: settings?.notificationsEnabled === true,
+    quietHoursStart: normalizeClock(settings?.quietHoursStart, DEFAULT_SETTINGS.learning.quietHoursStart),
+    quietHoursEnd: normalizeClock(settings?.quietHoursEnd, DEFAULT_SETTINGS.learning.quietHoursEnd),
+    maxHabitNotificationsPerDay: clampNumber(
+      settings?.maxHabitNotificationsPerDay ?? DEFAULT_SETTINGS.learning.maxHabitNotificationsPerDay,
+      0,
+      20,
+      3
+    )
+  };
+}
+
+function normalizeBackendSettings(settings?: Partial<ToWriteSettings["backend"]>): ToWriteSettings["backend"] {
+  const rawBaseUrl = String(settings?.baseUrl ?? DEFAULT_SETTINGS.backend.baseUrl).trim().replace(/\/+$/u, "");
+  return {
+    enabled: settings?.enabled === true,
+    baseUrl: /^https?:\/\//iu.test(rawBaseUrl) ? rawBaseUrl : DEFAULT_SETTINGS.backend.baseUrl,
+    token: String(settings?.token ?? "").trim().slice(0, 500),
+    useForRecommendations: settings?.useForRecommendations !== false,
+    useForHabitSuggestions: settings?.useForHabitSuggestions === true,
+    timeoutMs: clampNumber(settings?.timeoutMs ?? DEFAULT_SETTINGS.backend.timeoutMs, 500, 10000, 2500)
+  };
+}
+
+function normalizeClock(value: unknown, fallback: string): string {
+  const text = String(value ?? "").trim();
+  return /^([01]\d|2[0-3]):[0-5]\d$/u.test(text) ? text : fallback;
 }
 
 function normalizeWorkflowStages(settings?: Partial<ToWriteSettings["workflowStages"]>): ToWriteSettings["workflowStages"] {
@@ -1501,7 +2371,7 @@ function normalizeExternalApiSettings(settings?: Partial<ToWriteSettings["extern
     bindHost,
     port: Number.isInteger(port) ? Math.max(1024, Math.min(65535, port)) : DEFAULT_SETTINGS.externalApi.port,
     token: settings?.token?.trim() || createExternalApiToken(),
-    allowQueryTokenForRead: settings?.allowQueryTokenForRead !== false,
+    allowQueryTokenForRead: settings?.allowQueryTokenForRead === true,
     publicBaseUrl: normalizeExternalApiPublicBaseUrl(settings?.publicBaseUrl)
   };
 }

@@ -1,11 +1,16 @@
 <script lang="ts">
   import {
+    Bell,
+    Brain,
+    Check,
     ChevronDown,
     ChevronRight,
+    Clock3,
     Download,
     Eye,
     EyeOff,
     FolderTree,
+    FilePenLine,
     List,
     Plus,
     RefreshCw,
@@ -16,6 +21,7 @@
   import { mergeArticleSummariesWithWorkflow } from "../core/articles";
   import type { ArticleSummary, OpenQuestion, OpenQuestionLane } from "../core/types";
   import type { WorkflowIndexPayload } from "../workflow";
+  import type { ProactiveSuggestion, ProactiveSuggestionAction } from "../suggestions";
   import type { ActiveLineRange, ToWriteUiApi } from "./api";
   import ArticleSummaryCard from "./ArticleSummaryCard.svelte";
   import QuestionCard from "./QuestionCard.svelte";
@@ -50,6 +56,9 @@
   let otherArticles: ArticleSummary[] = [];
   let articleTypes: ArticleTypeSettings[] = api.getArticleTypes();
   let workflowPayload: WorkflowIndexPayload = api.getWorkflowPayload();
+  let suggestions: ProactiveSuggestion[] = [];
+  let busySuggestionId = "";
+  let suggestionError = "";
 
   const unsubscribe = api.subscribe(reload);
   onDestroy(unsubscribe);
@@ -82,6 +91,7 @@
     compactEditorDecorations = api.getCompactEditorDecorations();
     articleTypes = api.getArticleTypes();
     workflowPayload = api.getWorkflowPayload();
+    suggestions = api.getProactiveSuggestions();
     currentQuestions = activeFile
       ? sortCurrentQuestions(
           api
@@ -109,6 +119,29 @@
           summary.tags?.join(" ")
         ].filter(Boolean).join(" ").toLowerCase().includes(needle);
       });
+  }
+
+  async function actOnSuggestion(suggestion: ProactiveSuggestion, action: ProactiveSuggestionAction) {
+    if (busySuggestionId) {
+      return;
+    }
+    busySuggestionId = suggestion.id;
+    suggestionError = "";
+    try {
+      await api.actOnSuggestion(suggestion.id, action);
+      reload();
+    } catch (error) {
+      suggestionError = error instanceof Error ? error.message : String(error);
+    } finally {
+      busySuggestionId = "";
+    }
+  }
+
+  function suggestionSourceLabel(suggestion: ProactiveSuggestion) {
+    if (suggestion.source === "due-reminder") return language === "zh" ? "到期" : "Due";
+    if (suggestion.source === "active-question") return language === "zh" ? "当前笔记" : "Current note";
+    if (suggestion.source === "confirmed-habit") return language === "zh" ? "已确认习惯" : "Confirmed habit";
+    return language === "zh" ? "习惯候选" : "Habit candidate";
   }
 
   function groupByHeading(items: OpenQuestion[]) {
@@ -367,6 +400,15 @@
   </header>
 
   <div class="towrite-toolbar">
+    <button
+      type="button"
+      title={language === "zh" ? "智能记录" : "Smart capture"}
+      aria-label={language === "zh" ? "智能记录" : "Smart capture"}
+      aria-haspopup="dialog"
+      on:click={() => api.openCapture()}
+    >
+      <FilePenLine size={15} />
+    </button>
     <button type="button" title={copy.createThink} on:click={() => api.createQuestionFromSelection("think")}>
       <Plus size={15} />
     </button>
@@ -461,6 +503,64 @@
   {/if}
 
   <main class="towrite-card-list">
+    <section class="towrite-now-section" aria-labelledby="towrite-now-heading">
+      <div class="towrite-section-title">
+        <span id="towrite-now-heading">{language === "zh" ? "现在" : "Now"}</span>
+        <small>{suggestions.length}</small>
+      </div>
+      {#if suggestionError}<p class="towrite-suggestion-error" role="alert">{suggestionError}</p>{/if}
+      {#if suggestions.length === 0}
+        <div class="towrite-empty">{language === "zh" ? "当前没有需要提醒或确认的建议。" : "Nothing needs attention right now."}</div>
+      {:else}
+        <div class="towrite-suggestion-list">
+          {#each suggestions.slice(0, 8) as suggestion (suggestion.id)}
+            <article
+              class={`towrite-suggestion towrite-suggestion-${suggestion.source}`}
+              aria-busy={busySuggestionId === suggestion.id}
+            >
+              <div class="towrite-suggestion-icon" aria-hidden="true">
+                {#if suggestion.source === "due-reminder"}
+                  <Bell size={15} />
+                {:else if suggestion.source === "habit-candidate" || suggestion.source === "confirmed-habit"}
+                  <Brain size={15} />
+                {:else}
+                  <Clock3 size={15} />
+                {/if}
+              </div>
+              <div class="towrite-suggestion-main">
+                <small>{suggestionSourceLabel(suggestion)}</small>
+                <strong>{suggestion.title}</strong>
+                <p>{suggestion.triggerReason}</p>
+                {#if suggestion.detail && suggestion.detail !== suggestion.title}
+                  <p class="towrite-suggestion-detail">{suggestion.detail}</p>
+                {/if}
+                <div class="towrite-suggestion-actions">
+                  {#if suggestion.allowedActions.includes("accept")}
+                    <button type="button" disabled={Boolean(busySuggestionId)} aria-label={`${language === "zh" ? "接受" : "Accept"}: ${suggestion.title}`} on:click={() => actOnSuggestion(suggestion, "accept")}><Check size={12} />{language === "zh" ? "接受" : "Accept"}</button>
+                  {/if}
+                  {#if suggestion.allowedActions.includes("open-source")}
+                    <button type="button" disabled={Boolean(busySuggestionId)} aria-label={`${language === "zh" ? "打开" : "Open"}: ${suggestion.title}`} on:click={() => actOnSuggestion(suggestion, "open-source")}>{language === "zh" ? "打开" : "Open"}</button>
+                  {/if}
+                  {#if suggestion.allowedActions.includes("view-evidence")}
+                    <button type="button" disabled={Boolean(busySuggestionId)} aria-label={`${language === "zh" ? "证据" : "Evidence"}: ${suggestion.title}`} on:click={() => actOnSuggestion(suggestion, "view-evidence")}>{language === "zh" ? "证据" : "Evidence"}</button>
+                  {/if}
+                  {#if suggestion.allowedActions.includes("edit")}
+                    <button type="button" disabled={Boolean(busySuggestionId)} aria-label={`${language === "zh" ? "编辑" : "Edit"}: ${suggestion.title}`} on:click={() => actOnSuggestion(suggestion, "edit")}>{language === "zh" ? "编辑" : "Edit"}</button>
+                  {/if}
+                  {#if suggestion.allowedActions.includes("later") || suggestion.allowedActions.includes("snooze")}
+                    <button type="button" disabled={Boolean(busySuggestionId)} aria-label={`${language === "zh" ? "稍后" : "Later"}: ${suggestion.title}`} on:click={() => actOnSuggestion(suggestion, suggestion.allowedActions.includes("snooze") ? "snooze" : "later")}>{language === "zh" ? "稍后" : "Later"}</button>
+                  {/if}
+                  {#if suggestion.allowedActions.includes("dismiss")}
+                    <button type="button" disabled={Boolean(busySuggestionId)} aria-label={`${language === "zh" ? "忽略" : "Dismiss"}: ${suggestion.title}`} on:click={() => actOnSuggestion(suggestion, "dismiss")}>{language === "zh" ? "忽略" : "Dismiss"}</button>
+                  {/if}
+                </div>
+              </div>
+            </article>
+          {/each}
+        </div>
+      {/if}
+    </section>
+
     <section class="towrite-current-note">
       <div class="towrite-section-title">
         <span>{copy.currentNote}</span>

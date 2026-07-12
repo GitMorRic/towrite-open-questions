@@ -1,4 +1,11 @@
 import { describe, expect, it } from "vitest";
+import {
+  CaptureConflictError,
+  CaptureUndoTokenError,
+  type CaptureDraft,
+  type CaptureTargetCandidate,
+  type CaptureUndoResult
+} from "../capture";
 import type { OpenQuestion } from "../core/types";
 import type { PushFeedPayload } from "../push/types";
 import { ToWriteExternalApiServer } from "./server";
@@ -116,6 +123,209 @@ describe("external server", () => {
       filePath: "00-Raw/Device Inbox.md",
       targetKind: "folderPath"
     });
+    const legacy = captureBody as Record<string, unknown>;
+    expect({
+      captureId: legacy.captureId,
+      candidateId: legacy.candidateId,
+      action: legacy.action,
+      targetRevision: legacy.targetRevision
+    }).toEqual({
+      captureId: undefined,
+      candidateId: undefined,
+      action: undefined,
+      targetRevision: undefined
+    });
+  });
+
+  it("returns normalized capture recommendations", async () => {
+    let received: CaptureDraft | undefined;
+    const candidates: CaptureTargetCandidate[] = [{
+      schemaVersion: 1,
+      id: "existing-launch",
+      kind: "existingNote",
+      action: "append",
+      path: "Projects/Launch.md",
+      heading: "Captures",
+      reason: "Same project and tags",
+      confidence: "strong",
+      score: 18,
+      targetRevision: "rev-before"
+    }];
+    const server = makeServer({
+      recommendCapture: async (draft) => {
+        received = draft;
+        return candidates;
+      }
+    });
+
+    const response = new FakeResponse();
+    await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
+      .handleRequest(new FakeRequest("POST", "/api/v1/capture/recommendations", {
+        draft: {
+          schemaVersion: 1,
+          id: "capture-api-1",
+          intent: "selection",
+          body: "Capture this launch decision",
+          title: "Launch decision",
+          tags: ["launch", "decision"],
+          links: ["https://example.com/source"],
+          source: {
+            file: "Projects/Source.md",
+            headingPath: ["Plan"],
+            questionId: "oq_one",
+            entryPoint: "mobile",
+            selection: "must not be forwarded"
+          },
+          createdAt: "2026-07-12T03:00:00.000Z"
+        }
+      }), response);
+
+    expect(response.statusCode).toBe(200);
+    expect(received).toEqual({
+      schemaVersion: 1,
+      id: "capture-api-1",
+      intent: "selection",
+      body: "Capture this launch decision",
+      title: "Launch decision",
+      tags: ["launch", "decision"],
+      links: ["https://example.com/source"],
+      source: {
+        file: "Projects/Source.md",
+        headingPath: ["Plan"],
+        questionId: "oq_one",
+        entryPoint: "mobile"
+      },
+      createdAt: "2026-07-12T03:00:00.000Z"
+    });
+    expect(JSON.stringify(received ?? {})).not.toContain("must not be forwarded");
+    expect(JSON.parse(response.body)).toEqual({
+      schemaVersion: 1,
+      draftId: "capture-api-1",
+      candidates
+    });
+  });
+
+  it("forwards the versioned existing-note capture contract", async () => {
+    let received: unknown;
+    const result = {
+      filePath: "Projects/Launch.md",
+      title: "Launch decision",
+      tags: ["capture", "launch"],
+      targetKind: "existingNote" as const,
+      createdAt: "2026-07-12T03:00:00.000Z",
+      openUri: "obsidian://open?vault=Vault&file=Projects%2FLaunch.md",
+      captureId: "capture-api-1",
+      candidateId: "existing-launch",
+      action: "append" as const,
+      undoToken: "undo-token-1",
+      targetRevision: "rev-after",
+      idempotent: false
+    };
+    const server = makeServer({
+      createDeviceCapture: async (request) => {
+        received = request;
+        return result;
+      }
+    });
+
+    const response = new FakeResponse();
+    await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
+      .handleRequest(new FakeRequest("POST", "/api/v1/captures", {
+        captureId: "capture-api-1",
+        candidateId: "existing-launch",
+        action: "append",
+        targetRevision: "rev-before",
+        title: "Launch decision",
+        text: "Capture this launch decision",
+        tags: ["capture", "launch"],
+        target: {
+          kind: "existingNote",
+          filePath: "Projects/Launch.md",
+          heading: "## Captures"
+        },
+        clientId: "mobile-v2"
+      }), response);
+
+    expect(response.statusCode).toBe(201);
+    expect(received).toMatchObject({
+      captureId: "capture-api-1",
+      candidateId: "existing-launch",
+      action: "append",
+      targetRevision: "rev-before",
+      title: "Launch decision",
+      text: "Capture this launch decision",
+      tags: ["capture", "launch"],
+      target: {
+        kind: "existingNote",
+        filePath: "Projects/Launch.md",
+        heading: "Captures"
+      },
+      clientId: "mobile-v2"
+    });
+    expect(JSON.parse(response.body)).toEqual({ data: result });
+  });
+
+  it("undoes a versioned capture by id and token", async () => {
+    let call: { captureId: string; undoToken: string } | undefined;
+    const result: CaptureUndoResult = {
+      schemaVersion: 1,
+      captureId: "capture:api-1",
+      finalPath: "Projects/Launch.md",
+      undone: true
+    };
+    const server = makeServer({
+      undoCapture: async (captureId, undoToken) => {
+        call = { captureId, undoToken };
+        return result;
+      }
+    });
+
+    const response = new FakeResponse();
+    await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
+      .handleRequest(new FakeRequest("POST", "/api/v1/captures/capture%3Aapi-1/undo", {
+        undoToken: "undo-token-1"
+      }), response);
+
+    expect(response.statusCode).toBe(200);
+    expect(call).toEqual({ captureId: "capture:api-1", undoToken: "undo-token-1" });
+    expect(JSON.parse(response.body)).toEqual({ data: result });
+  });
+
+  it("maps invalid undo tokens and changed targets to safe client errors", async () => {
+    const invalidTokenServer = makeServer({
+      undoCapture: async () => { throw new CaptureUndoTokenError(); }
+    });
+    const invalidResponse = new FakeResponse();
+    await (invalidTokenServer as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
+      .handleRequest(new FakeRequest("POST", "/api/v1/captures/capture-api-1/undo", {
+        undoToken: "invalid"
+      }), invalidResponse);
+    expect(invalidResponse.statusCode).toBe(400);
+
+    const conflictServer = makeServer({
+      createDeviceCapture: async () => {
+        throw new CaptureConflictError("target-changed", "Refresh preview.");
+      }
+    });
+    const conflictResponse = new FakeResponse();
+    await (conflictServer as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
+      .handleRequest(new FakeRequest("POST", "/api/v1/captures", { text: "Changed" }), conflictResponse);
+    expect(conflictResponse.statusCode).toBe(409);
+    expect(JSON.parse(conflictResponse.body)).toEqual({ error: "Refresh preview." });
+  });
+
+  it("rejects malformed versioned capture fields instead of falling back to Inbox", async () => {
+    const server = makeServer();
+    const response = new FakeResponse();
+    await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
+      .handleRequest(new FakeRequest("POST", "/api/v1/captures", {
+        text: "Should not be written",
+        action: "move",
+        target: { kind: "existingNote" }
+      }), response);
+
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.body).error).toContain("Capture action");
   });
 
   it("does not allow query-token writes for captures", async () => {
@@ -651,7 +861,13 @@ function makeServer(overrides: Partial<ConstructorParameters<typeof ToWriteExter
       enabled: true,
       inboxFile: "00-Raw/Device Inbox.md",
       targetFolders: ["01-Sparks"],
-      defaultTags: ["capture", "device"]
+      defaultTags: ["capture", "device"],
+      appendHeading: "Captures",
+      localRecommendations: true,
+      includeFolders: [],
+      excludeFolders: [],
+      excludeTags: [],
+      excludeFrontmatter: []
     }),
     getStatusOptions: () => [{ id: "open", label: "Open" }],
     updateQuestionStatus: async () => question,

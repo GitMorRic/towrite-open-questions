@@ -26,7 +26,7 @@ import type ToWritePlugin from "../main";
 import type { Quote0CanvasPayload, Quote0Device, Quote0ImagePayload, Quote0TextPayload } from "../quote0/client";
 import type { Quote0SyncPreview } from "../quote0/sync-service";
 
-type SettingsTabId = "general" | "cards" | "workflow" | "api" | "push" | "quote0" | "ai";
+type SettingsTabId = "general" | "cards" | "capture" | "learning" | "workflow" | "api" | "push" | "quote0" | "ai" | "backend";
 
 type Quote0PreviewAction = {
   label: string;
@@ -262,11 +262,14 @@ const COPY: Record<ToWriteLanguage, SettingCopy> = {
     "tabs": {
       "general": "通用",
       "cards": "卡片与编辑器",
+      "capture": "记录",
+      "learning": "建议与习惯",
       "workflow": "Workflow",
       "api": "API 与设备",
       "push": "推流",
       "quote0": "Quote0",
-      "ai": "AI"
+      "ai": "AI",
+      "backend": "Backend"
     },
     "language": "语言",
     "languageDesc": "设置插件界面的显示语言。默认使用中文。",
@@ -491,11 +494,14 @@ const COPY: Record<ToWriteLanguage, SettingCopy> = {
     "tabs": {
       "general": "General",
       "cards": "Cards & Editor",
+      "capture": "Capture",
+      "learning": "Suggestions & Habits",
       "workflow": "Workflow",
       "api": "API & Device",
       "push": "Push",
       "quote0": "Quote0",
-      "ai": "AI"
+      "ai": "AI",
+      "backend": "Backend"
     },
     "language": "Language",
     "languageDesc": "Choose the plugin display language. Chinese is the default.",
@@ -789,6 +795,10 @@ export class ToWriteSettingTab extends PluginSettingTab {
       this.renderGeneralSettings(panel, copy);
     } else if (this.activeSettingsTab === "cards") {
       this.renderCardsEditorSettings(panel, copy);
+    } else if (this.activeSettingsTab === "capture") {
+      this.renderCaptureSettings(panel);
+    } else if (this.activeSettingsTab === "learning") {
+      this.renderLearningSettings(panel, copy);
     } else if (this.activeSettingsTab === "workflow") {
       this.renderWorkflowSettings(panel, copy);
     } else if (this.activeSettingsTab === "api") {
@@ -797,6 +807,8 @@ export class ToWriteSettingTab extends PluginSettingTab {
       this.renderPushSettings(panel, copy);
     } else if (this.activeSettingsTab === "quote0") {
       this.renderQuote0Settings(panel, copy);
+    } else if (this.activeSettingsTab === "backend") {
+      this.renderBackendSettings(panel);
     } else {
       this.renderAiSettings(panel, copy);
     }
@@ -806,11 +818,14 @@ export class ToWriteSettingTab extends PluginSettingTab {
     const tabs: Array<{ id: SettingsTabId; label: string }> = [
       { id: "general", label: copy.tabs.general },
       { id: "cards", label: copy.tabs.cards },
+      { id: "capture", label: copy.tabs.capture },
+      { id: "learning", label: copy.tabs.learning },
       { id: "workflow", label: copy.tabs.workflow },
       { id: "api", label: copy.tabs.api },
       { id: "push", label: copy.tabs.push },
       { id: "quote0", label: copy.tabs.quote0 },
-      { id: "ai", label: copy.tabs.ai }
+      { id: "ai", label: copy.tabs.ai },
+      { id: "backend", label: copy.tabs.backend }
     ];
     const tabBar = containerEl.createDiv({ cls: "towrite-settings-tabs" });
     tabBar.setAttribute("role", "tablist");
@@ -999,6 +1014,242 @@ export class ToWriteSettingTab extends PluginSettingTab {
             await this.plugin.savePluginData();
           });
       });
+  }
+
+  private renderCaptureSettings(containerEl: HTMLElement): void {
+    const zh = this.plugin.settings.language !== "en";
+    const capture = this.plugin.settings.deviceCapture;
+
+    new Setting(containerEl)
+      .setName(zh ? "智能记录" : "Smart capture")
+      .setDesc(zh ? "在 Obsidian 内记录想法，并在保存前推荐已有笔记、文件夹和 Inbox。" : "Capture inside Obsidian and review an existing-note, folder, and Inbox destination before saving.")
+      .addButton((button) => {
+        button.setCta().setButtonText(zh ? "打开记录弹窗" : "Open capture").onClick(() => {
+          this.plugin.openCaptureModal();
+        });
+      });
+
+    new Setting(containerEl)
+      .setName(zh ? "启用记录写入" : "Enable capture writes")
+      .setDesc(zh ? "同时控制原生记录弹窗和设备输入页的独立想法写入。" : "Controls standalone writes from both the native modal and device input page.")
+      .addToggle((toggle) => toggle.setValue(capture.enabled).onChange(async (value) => {
+        capture.enabled = value;
+        await this.plugin.savePluginData();
+        this.refreshSettingsUi();
+      }));
+
+    if (!capture.enabled) {
+      return;
+    }
+
+    new Setting(containerEl)
+      .setName(zh ? "本地目标推荐" : "Local target recommendations")
+      .setDesc(zh ? "默认开启，只使用本地 Vault 索引；Backend 和远程 AI 仍需单独启用。" : "Enabled by default and uses only the local vault index; Backend and remote AI remain separate opt-ins.")
+      .addToggle((toggle) => toggle.setValue(capture.localRecommendations).onChange(async (value) => {
+        capture.localRecommendations = value;
+        await this.plugin.savePluginData();
+      }));
+
+    new Setting(containerEl)
+      .setName(zh ? "默认 Inbox" : "Default Inbox")
+      .addText((text) => text.setValue(capture.inboxFile).setPlaceholder("00-Raw/Device Inbox.md").onChange(async (value) => {
+        capture.inboxFile = normalizeMarkdownPath(value);
+        await this.plugin.savePluginData();
+      }));
+
+    new Setting(containerEl)
+      .setName(zh ? "可新建的目标文件夹" : "Create-note target folders")
+      .setDesc(zh ? "一行一个。Workflow Stage 的第一个文件夹也会自动成为候选。" : "One per line. The first folder of each Workflow Stage is also eligible.")
+      .addTextArea((text) => {
+        text.setValue(capture.targetFolders.join("\n")).setPlaceholder("00-Raw\n01-Sparks\n02-Processing").onChange(async (value) => {
+          capture.targetFolders = splitWorkflowList(value);
+          await this.plugin.savePluginData();
+        });
+        text.inputEl.rows = 4;
+      });
+
+    new Setting(containerEl)
+      .setName(zh ? "追加区段标题" : "Append section heading")
+      .setDesc(zh ? "追加到已有笔记时使用；无需输入 ##。" : "Used when appending to an existing note; omit the ## prefix.")
+      .addText((text) => text.setValue(capture.appendHeading).setPlaceholder("Captures").onChange(async (value) => {
+        capture.appendHeading = value.replace(/^#+\s*/u, "").trim().slice(0, 120) || "Captures";
+        await this.plugin.savePluginData();
+      }));
+
+    new Setting(containerEl)
+      .setName(zh ? "默认 tags" : "Default tags")
+      .addTextArea((text) => {
+        text.setValue(capture.defaultTags.map((tag) => `#${tag}`).join("\n")).onChange(async (value) => {
+          capture.defaultTags = normalizeTagList(value);
+          await this.plugin.savePluginData();
+        });
+        text.inputEl.rows = 3;
+      });
+
+    new Setting(containerEl).setName(zh ? "本地索引范围" : "Local index scope").setHeading();
+    new Setting(containerEl)
+      .setName(zh ? "仅包含文件夹" : "Include folders")
+      .setDesc(zh ? "留空表示所有 Markdown；一行一个 Vault 相对路径。" : "Leave empty for all Markdown; one vault-relative path per line.")
+      .addTextArea((text) => {
+        text.setValue(capture.includeFolders.join("\n")).onChange(async (value) => {
+          capture.includeFolders = splitWorkflowList(value);
+          await this.plugin.savePluginData();
+        });
+        text.inputEl.rows = 3;
+      });
+    new Setting(containerEl)
+      .setName(zh ? "排除文件夹" : "Exclude folders")
+      .addTextArea((text) => {
+        text.setValue(capture.excludeFolders.join("\n")).onChange(async (value) => {
+          capture.excludeFolders = splitWorkflowList(value);
+          await this.plugin.savePluginData();
+        });
+        text.inputEl.rows = 4;
+      });
+    new Setting(containerEl)
+      .setName(zh ? "排除 tags / frontmatter" : "Exclude tags / frontmatter")
+      .setDesc(zh ? "命中任一 tag 或 truthy frontmatter key 的笔记不会进入推荐或 AI 候选。" : "Notes matching any tag or truthy frontmatter key are excluded from recommendations and AI candidates.")
+      .addTextArea((text) => {
+        text.setValue(capture.excludeTags.join("\n")).setPlaceholder("private\nno-ai").onChange(async (value) => {
+          capture.excludeTags = normalizeTagList(value);
+          await this.plugin.savePluginData();
+        });
+        text.inputEl.rows = 3;
+      })
+      .addTextArea((text) => {
+        text.setValue(capture.excludeFrontmatter.join("\n")).setPlaceholder("private\nno_ai").onChange(async (value) => {
+          capture.excludeFrontmatter = normalizeTagList(value);
+          await this.plugin.savePluginData();
+        });
+        text.inputEl.rows = 3;
+      });
+  }
+
+  private renderLearningSettings(containerEl: HTMLElement, copy: SettingCopy): void {
+    const zh = this.plugin.settings.language !== "en";
+    const learning = this.plugin.settings.learning;
+
+    new Setting(containerEl)
+      .setName(zh ? "学习工作习惯" : "Learn work habits")
+      .setDesc(zh ? "只记录文件切换、有效编辑会话、时间段和显式选择；不记录正文、选区或按键。" : "Records file focus, active edit sessions, time buckets, and explicit choices; never note text, selections, or keystrokes.")
+      .addToggle((toggle) => toggle.setValue(learning.enabled).onChange(async (value) => {
+        await this.plugin.setLearningEnabled(value);
+        this.refreshSettingsUi();
+      }));
+
+    new Setting(containerEl)
+      .setName(zh ? "本地数据边界" : "Local data boundary")
+      .setDesc(zh
+        ? "原始行为事件最多保留 30 天；连续 5 分钟无活动即结束会话。"
+        : "Raw activity events are kept for at most 30 days; five inactive minutes end a session.");
+
+    new Setting(containerEl)
+      .setName(zh ? "启用主动提醒" : "Enable proactive notifications")
+      .setDesc(zh ? "只提醒到期事项和已确认习惯；新候选始终静默进入侧栏。" : "Only due items and confirmed habits may notify; new candidates stay silent in the sidebar.")
+      .addToggle((toggle) => toggle.setValue(learning.notificationsEnabled).onChange(async (value) => {
+        learning.notificationsEnabled = value;
+        await this.plugin.savePluginData();
+      }));
+    new Setting(containerEl)
+      .setName(zh ? "安静时段" : "Quiet hours")
+      .setDesc("HH:mm")
+      .addText((text) => text.setValue(learning.quietHoursStart).setPlaceholder("23:00").onChange(async (value) => {
+        learning.quietHoursStart = normalizeTimeInput(value) || "23:00";
+        await this.plugin.savePluginData();
+      }))
+      .addText((text) => text.setValue(learning.quietHoursEnd).setPlaceholder("08:00").onChange(async (value) => {
+        learning.quietHoursEnd = normalizeTimeInput(value) || "08:00";
+        await this.plugin.savePluginData();
+      }));
+    new Setting(containerEl)
+      .setName(zh ? "每天习惯提醒上限" : "Daily habit notification limit")
+      .addText((text) => text.setValue(String(learning.maxHabitNotificationsPerDay)).onChange(async (value) => {
+        learning.maxHabitNotificationsPerDay = clampInteger(value, 0, 20, 3);
+        await this.plugin.savePluginData();
+      }));
+
+    new Setting(containerEl)
+      .setName(copy.pushHabitText)
+      .setDesc(copy.pushHabitTextDesc)
+      .addTextArea((text) => {
+        text.setValue(this.plugin.settings.push.habitText).onChange(async (value) => {
+          this.plugin.settings.push.habitText = value.trim().slice(0, 4000);
+          await this.plugin.savePluginData();
+        });
+        text.inputEl.rows = 4;
+      });
+
+    new Setting(containerEl)
+      .setName(zh ? "我的学习数据" : "My learning data")
+      .setDesc(zh ? "导出用户可读 JSON，或清空事件、候选和已确认学习规则。" : "Export user-readable JSON or clear events, candidates, and confirmed learned rules.")
+      .addButton((button) => button.setButtonText(zh ? "导出" : "Export").onClick(() => {
+        void this.plugin.exportLearningData();
+      }))
+      .addButton((button) => button.setWarning().setButtonText(zh ? "全部清空" : "Clear all").onClick(() => {
+        void this.plugin.clearLearningData();
+      }));
+
+    new Setting(containerEl).setName(copy.pushHabits).setDesc(copy.pushHabitsDesc).setHeading();
+    this.renderPushHabitEditor(containerEl, copy);
+  }
+
+  private renderBackendSettings(containerEl: HTMLElement): void {
+    const zh = this.plugin.settings.language !== "en";
+    const backend = this.plugin.settings.backend;
+
+    new Setting(containerEl)
+      .setName(zh ? "连接 Obsidian AI Backend" : "Connect Obsidian AI Backend")
+      .setDesc(zh ? "可选增强。关闭或离线时，记录与本地推荐仍可正常工作。" : "Optional enhancement. Capture and local recommendations continue to work while disabled or offline.")
+      .addToggle((toggle) => toggle.setValue(backend.enabled).onChange(async (value) => {
+        backend.enabled = value;
+        await this.plugin.savePluginData();
+        this.refreshSettingsUi();
+      }));
+
+    new Setting(containerEl)
+      .setName("Backend URL")
+      .addText((text) => text.setValue(backend.baseUrl).setPlaceholder("http://127.0.0.1:8790").onChange(async (value) => {
+        backend.baseUrl = value.trim().replace(/\/+$/u, "");
+        await this.plugin.savePluginData();
+      }));
+    new Setting(containerEl)
+      .setName(zh ? "访问 token" : "Access token")
+      .setDesc(zh ? "仅保存在插件数据中，通过 X-Capture-Token 发送，不写入 URL 或导出。" : "Stored only in plugin data and sent as X-Capture-Token, never in URLs or exports.")
+      .addText((text) => {
+        text.setValue(backend.token).onChange(async (value) => {
+          backend.token = value.trim();
+          await this.plugin.savePluginData();
+        });
+        text.inputEl.type = "password";
+      });
+    new Setting(containerEl)
+      .setName(zh ? "用于目标重排" : "Use for target reranking")
+      .setDesc(zh ? "只发送经过本地过滤的候选；Backend 不能新增任意路径。" : "Only locally filtered candidates are sent; Backend cannot introduce arbitrary paths.")
+      .addToggle((toggle) => toggle.setValue(backend.useForRecommendations).onChange(async (value) => {
+        backend.useForRecommendations = value;
+        await this.plugin.savePluginData();
+      }));
+    new Setting(containerEl)
+      .setName(zh ? "用于习惯候选说明" : "Use for habit suggestion wording")
+      .setDesc(zh ? "只发送聚合证据，默认关闭。" : "Sends aggregate evidence only and is off by default.")
+      .addToggle((toggle) => toggle.setValue(backend.useForHabitSuggestions).onChange(async (value) => {
+        backend.useForHabitSuggestions = value;
+        await this.plugin.savePluginData();
+      }));
+    new Setting(containerEl)
+      .setName(zh ? "发送范围预览" : "Data-sharing preview")
+      .setDesc(zh
+        ? `Provider：${backend.baseUrl || "未配置"}。目标重排最多发送 20 个候选的 id、类型、动作、分数、置信度与理由，以及草稿标题、tags 和粗粒度来源标记；不发送正文、选区、来源路径或候选路径。习惯文案仅发送结构化规则和聚合证据。`
+        : `Provider: ${backend.baseUrl || "not configured"}. Target reranking sends at most 20 candidate ids, kinds, actions, scores, confidence levels, and reasons, plus draft title, tags, and coarse source flags. It does not send body text, selections, source paths, or candidate paths. Habit wording receives only structured rules and aggregate evidence.`);
+    new Setting(containerEl)
+      .setName(zh ? "超时（毫秒）" : "Timeout (ms)")
+      .addText((text) => text.setValue(String(backend.timeoutMs)).onChange(async (value) => {
+        backend.timeoutMs = clampInteger(value, 500, 10000, 2500);
+        await this.plugin.savePluginData();
+      }))
+      .addButton((button) => button.setButtonText(zh ? "测试连接" : "Test connection").onClick(() => {
+        void this.plugin.testBackendConnection();
+      }));
   }
 
   private renderApiDeviceSettings(containerEl: HTMLElement, copy: SettingCopy): void {
@@ -1195,64 +1446,6 @@ export class ToWriteSettingTab extends PluginSettingTab {
     }
 
     this.renderDeviceProfiles(containerEl, copy);
-
-    new Setting(containerEl)
-      .setName(copy.deviceCapture)
-      .setDesc(copy.deviceCaptureDesc)
-      .addToggle((toggle) => {
-        toggle
-          .setValue(this.plugin.settings.deviceCapture.enabled)
-          .onChange(async (value) => {
-            this.plugin.settings.deviceCapture.enabled = value;
-            await this.plugin.savePluginData();
-            this.refreshSettingsUi();
-          });
-      });
-
-    if (this.plugin.settings.deviceCapture.enabled) {
-      new Setting(containerEl)
-        .setName(copy.deviceCaptureInbox)
-        .setDesc(copy.deviceCaptureInboxDesc)
-        .addText((text) => {
-          text
-            .setValue(this.plugin.settings.deviceCapture.inboxFile)
-            .setPlaceholder("00-Raw/Device Inbox.md")
-            .onChange(async (value) => {
-              this.plugin.settings.deviceCapture.inboxFile = normalizeMarkdownPath(value);
-              await this.plugin.savePluginData();
-            });
-        });
-
-      new Setting(containerEl)
-        .setName(copy.deviceCaptureFolders)
-        .setDesc(copy.deviceCaptureFoldersDesc)
-        .addTextArea((text) => {
-          text
-            .setValue(this.plugin.settings.deviceCapture.targetFolders.join("\n"))
-            .setPlaceholder("00-Raw\n01-Sparks\n02-Processing")
-            .onChange(async (value) => {
-              this.plugin.settings.deviceCapture.targetFolders = splitWorkflowList(value);
-              await this.plugin.savePluginData();
-            });
-          text.inputEl.rows = 3;
-        });
-
-      new Setting(containerEl)
-        .setName(copy.deviceCaptureTags)
-        .setDesc(copy.deviceCaptureTagsDesc)
-        .addTextArea((text) => {
-          text
-            .setValue(this.plugin.settings.deviceCapture.defaultTags.map((tag) => `#${tag}`).join("\n"))
-            .setPlaceholder("#capture\n#device")
-            .onChange(async (value) => {
-              this.plugin.settings.deviceCapture.defaultTags = normalizeTagList(value);
-              await this.plugin.savePluginData();
-            });
-          text.inputEl.rows = 3;
-        });
-    }
-
-
   }
 
   private renderQuote0Settings(containerEl: HTMLElement, copy: SettingCopy): void {
@@ -1887,30 +2080,10 @@ export class ToWriteSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
-      .setName(copy.pushHabitText)
-      .setDesc(copy.pushHabitTextDesc)
-      .addTextArea((text) => {
-        text
-          .setValue(push.habitText)
-          .setPlaceholder("Morning: sparks at desk. Evening: processing write cards. Phone: quick capture.")
-          .onChange(async (value) => {
-            push.habitText = value.trim().slice(0, 4000);
-            await this.savePushSettings();
-          });
-        text.inputEl.rows = 4;
-      });
-
-    new Setting(containerEl)
       .setName(copy.pushTargets)
       .setDesc(copy.pushTargetsDesc)
       .setHeading();
     this.renderPushTargetEditor(containerEl, copy);
-
-    new Setting(containerEl)
-      .setName(copy.pushHabits)
-      .setDesc(copy.pushHabitsDesc)
-      .setHeading();
-    this.renderPushHabitEditor(containerEl, copy);
   }
 
   private renderPushTargetEditor(containerEl: HTMLElement, copy: SettingCopy): void {
