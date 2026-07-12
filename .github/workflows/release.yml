@@ -96,10 +96,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          RELEASE_FLAGS=()
+          if [[ "$VERSION" == *-* ]]; then
+            RELEASE_FLAGS+=(--prerelease)
+          fi
           gh release create "$RELEASE_TAG" \
             release-assets/main.js \
             release-assets/manifest.json \
             release-assets/styles.css \
             --title "ToWrite Open Questions ${VERSION}" \
             --notes-file RELEASE_NOTES.md \
-            --target "$GITHUB_SHA"
+            --target "$GITHUB_SHA" \
+            "${RELEASE_FLAGS[@]}"
