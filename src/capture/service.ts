@@ -162,7 +162,7 @@ export class CaptureService {
         if (captureContentRevision(content) !== payload.guard) {
           throw new CaptureConflictError("undo-conflict", "The created note changed after capture and cannot be safely removed.");
         }
-        await this.app.vault.delete(file);
+        await this.app.fileManager.trashFile(file);
         await this.notifyVaultChanged(payload.path, "undo");
         return undoResult(payload, true);
       }

@@ -25,6 +25,8 @@ External API token、受限设备 token、Backend token、AI key 和设备服务
 - 完整 External API、受限手机/Quote0 输入和 Obsidian AI Backend 应使用不同的随机 token。
 - 手机、NFC 或小屏客户端应使用受限 token，不要复用完整 API token。
 - Backend token 通过 `X-Capture-Token` 发送；不要把它放进 URL、截图、日志、示例文件或 issue。
+- 配置的 AI Base URL 会接收到 AI API Key。只使用你信任的服务商或代理，优先使用 HTTPS，并在获取模型或测试连接前核对 URL。
+- 第三方 Skill、Agent 卡片、笔记正文和模型输出都应视为不可信指令。当前交互选择卡片有数量和长度限制，并且只负责展示；未来任何写入、删除或联网工具都必须使用独立的显式审批契约。
 - 查询参数 token 可能出现在浏览器历史、反向代理日志、referrer 和截图中。除非客户端确实需要，否则保持“允许 GET 查询参数 token”关闭；意外暴露后立即轮换。
 - 不要提交或公开 `.obsidian/plugins/towrite-open-questions/data.json`、`.obsidian-open-questions/`、`.env`、诊断导出或包含真实凭据的设备 URL。
 

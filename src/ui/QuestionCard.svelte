@@ -7,6 +7,7 @@
     Bell,
     BellOff,
     Brain,
+    CalendarClock,
     Check,
     CheckCircle2,
     ChevronDown,
@@ -79,7 +80,6 @@
   let titleDraft = "";
   let noteDraft = "";
   let reminderDraft = "";
-  let reminderPresetValue = "";
   let titleQuestionId = "";
   let noteQuestionId = "";
   let reminderQuestionId = "";
@@ -257,20 +257,23 @@
 
   async function setReminderPreset(rule: string) {
     const date = resolveReminderPreset(rule);
-    reminderPresetValue = "";
     if (!date) {
       return;
     }
     await updateReminder(dateToLocalInput(date));
   }
 
-  function handleReminderPreset(event: Event) {
-    const select = event.currentTarget as HTMLSelectElement;
-    const rule = select.value;
-    if (!rule) {
-      return;
+  function showReminderPresetMenu(event: MouseEvent) {
+    event.preventDefault();
+    const menu = new Menu();
+    for (const preset of reminderPresets) {
+      menu.addItem((item) => {
+        item.setTitle(preset.label).onClick(() => {
+          void setReminderPreset(preset.value);
+        });
+      });
     }
-    void setReminderPreset(rule);
+    menu.showAtMouseEvent(event);
   }
 
   async function clearReminder() {
@@ -864,15 +867,15 @@
           <ChevronDown size={13} />
         {/if}
       </button>
-      <button type="button" class={`towrite-chip-button towrite-lane towrite-lane-${question.lane}`} title={copy.changeLane} on:click={showLaneMenu} on:contextmenu={showLaneMenu}>
+      <button type="button" class={`towrite-chip-button towrite-lane towrite-lane-${question.lane}`} title={copy.changeLane} aria-haspopup="menu" aria-label={`${copy.changeLane}: ${laneLabel(question.lane)}`} on:click={showLaneMenu} on:contextmenu={showLaneMenu}>
         <svelte:component this={laneIcon(question.lane)} size={12} />
         <span>{laneLabel(question.lane)}</span>
       </button>
-      <button type="button" class={`towrite-chip-button towrite-status towrite-status-${statusClass}`} title={copy.changeStatus} on:click={showStatusMenu} on:contextmenu={showStatusMenu}>
+      <button type="button" class={`towrite-chip-button towrite-status towrite-status-${statusClass}`} title={copy.changeStatus} aria-haspopup="menu" aria-label={`${copy.changeStatus}: ${statusLabel(question.status)}`} on:click={showStatusMenu} on:contextmenu={showStatusMenu}>
         <svelte:component this={statusIcon(question.status)} size={12} />
         <span>{statusLabel(question.status)}</span>
       </button>
-      <button type="button" class="towrite-chip-button towrite-kind" title={copy.changeKind} on:click={showKindMenu} on:contextmenu={showKindMenu}>
+      <button type="button" class="towrite-chip-button towrite-kind" title={copy.changeKind} aria-haspopup="menu" aria-label={`${copy.changeKind}: ${kindLabel(question.kind)}`} on:click={showKindMenu} on:contextmenu={showKindMenu}>
         <svelte:component this={kindIcon(question.kind)} size={12} />
         <span>{kindLabel(question.kind)}</span>
       </button>
@@ -1030,17 +1033,16 @@
             on:blur={handleReminderInput}
           />
         </label>
-        <select
-          class="towrite-reminder-preset"
-          bind:value={reminderPresetValue}
+        <button
+          type="button"
+          class="towrite-reminder-preset-trigger"
+          title={copy.reminderPreset}
           aria-label={copy.reminderPreset}
-          on:change={handleReminderPreset}
+          aria-haspopup="menu"
+          on:click={showReminderPresetMenu}
         >
-          <option value="">{copy.reminderPreset}</option>
-          {#each reminderPresets as preset}
-            <option value={preset.value}>{preset.label}</option>
-          {/each}
-        </select>
+          <CalendarClock size={15} />
+        </button>
       </div>
       {#if question.reminderAt}
         <span class="towrite-reminder-status">{reminderDue ? copy.reminderDue : copy.reminderScheduled}: {formatReminder(question.reminderAt)}</span>

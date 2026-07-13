@@ -1,3 +1,4 @@
+import type { App } from "obsidian";
 import { describe, expect, it } from "vitest";
 import type { ArticleTypesSettings, WorkflowStagesSettings } from "../core/settings";
 import type { OpenQuestion } from "../core/types";
@@ -7,6 +8,7 @@ import {
   matchWorkflowStage,
   nextActionForWorkflowDocument,
   titleForWorkflowDocument,
+  WorkflowIndex,
   type WorkflowSourceDocument
 } from "./index";
 
@@ -122,6 +124,36 @@ const questions: OpenQuestion[] = [
 ];
 
 describe("workflow stages", () => {
+  it("applies stage setting changes without recreating the index", async () => {
+    let currentSettings: WorkflowStagesSettings = { enabled: false, stages: settings.stages };
+    const disabledArticleTypes: ArticleTypesSettings = {
+      enabled: false,
+      parseHierarchicalTags: true,
+      types: []
+    };
+    const app = {
+      vault: {
+        getName: () => "Capture",
+        getMarkdownFiles: () => []
+      }
+    } as unknown as App;
+    const index = new WorkflowIndex(
+      app,
+      () => currentSettings,
+      () => disabledArticleTypes,
+      () => ".obsidian-open-questions",
+      () => []
+    );
+
+    await index.rebuild();
+    expect(index.getPayload().stages).toHaveLength(0);
+
+    currentSettings = { ...currentSettings, enabled: true };
+    await index.rebuild();
+
+    expect(index.getPayload().stages.map((stage) => stage.id)).toEqual(["sparks", "processing"]);
+  });
+
   it("matches folder prefixes and tags", () => {
     expect(matchWorkflowStage(documents[0], settings.stages[0])).toBe(true);
     expect(matchWorkflowStage({ filePath: "Other/file.md", tags: ["spark"] }, settings.stages[0])).toBe(true);

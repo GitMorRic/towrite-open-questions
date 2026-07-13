@@ -223,6 +223,12 @@ ToWrite 不会修改 PDF 文件本体。
 
 AI 默认关闭。启用并配置 `baseUrl`、`apiKey`、`model` 后，ToWrite 会调用 OpenAI-compatible `/chat/completions` 接口，为已保存卡片生成摘要、下一步建议和相关本地笔记推荐。
 
+填写 Base URL 和 API Key 后，可以点击“获取模型”调用服务端的 `/models` 接口，再从返回列表中选择模型；不支持模型发现的兼容服务仍可手工填写模型 id。“测试连接”会使用当前模型发起一次很小的真实对话请求，并显示延迟和返回内容。
+
+通过命令面板的“打开 AI 助手”、左侧 Ribbon 机器人图标或侧栏机器人按钮，可以打开原生 Obsidian 对话界面。AI 回复使用 Obsidian Markdown 渲染，每条回复都可以切回“原文”。`Ctrl/Cmd+Enter` 发送，`Shift+Enter` 换行。Backend 模式下可以输入 `/` 搜索本地 Skill 仓库，输入 `@` 添加一个或多个 Agent；所选模型、Skill 和 Agent 会持续显示在输入框上方。
+
+助手支持切换模型、本地持久化历史、上下文检查器和安全的交互式选择卡片。当模型确实需要用户决策时，直连模式可以调用 `ask_user_choice` function tool；Backend 回复使用有边界、只负责展示的选择标记。选择卡片本身不会自动写入 Vault。直连模式使用配置的 OpenAI-compatible 接口；Backend 模式复用 Backend 已有的模型目录、LiteLLM 路由、Agent roster、Skills 和上下文对话接口。用户发送前可以展开上下文检查器，确认本次会发送哪些字段。历史也会写入用户可读的 `.obsidian-open-questions/ai/conversations.json`，并可在助手中清空。
+
 ToWrite 不做联网搜索。它会基于 Obsidian `Vault` 和 `MetadataCache` 构建轻量本地索引，从文件名、路径、frontmatter、标签、标题和正文片段中召回候选笔记。
 
 ## 安装

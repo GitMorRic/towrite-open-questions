@@ -349,7 +349,7 @@ export function buildDevicePageHtml(): string {
       footer[hidden],
       .tabs[hidden],
       .device-keybar[hidden] {
-        display: none !important;
+        display: none;
       }
       .tabs { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
       .device-keybar {

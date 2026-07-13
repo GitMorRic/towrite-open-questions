@@ -2,7 +2,7 @@
 
 [简体中文](PRIVACY.zh-CN.md)
 
-Last updated: 2026-07-12
+Last updated: 2026-07-13
 
 This document describes the ToWrite Open Questions Obsidian plugin. The optional Obsidian AI Backend, OpenAI-compatible providers, Quote0/Dot services, tunnels, and sync providers are separate systems with their own privacy terms.
 
@@ -22,6 +22,12 @@ When habit learning is enabled, ToWrite also maintains:
 ```text
 .obsidian-open-questions/learning/events.jsonl
 .obsidian-open-questions/learning/habits.json
+```
+
+When the AI assistant is used, its current local conversation is also mirrored in a user-readable file:
+
+```text
+.obsidian-open-questions/ai/conversations.json
 ```
 
 The plugin's local data may contain the same learning state. These files are user-readable and can be exported or cleared from settings. Treat the plugin data file and `.obsidian-open-questions/` as private Vault data; Vault sync or backup software may copy them according to that software's configuration.
@@ -69,7 +75,11 @@ The Backend access token is stored in Obsidian plugin data and sent in the `X-Ca
 
 ## Other Optional Network Features
 
-- OpenAI-compatible AI is disabled by default. When enabled, card content needed for the requested summary or recommendation is sent to the endpoint configured by the user.
+- OpenAI-compatible AI is disabled by default. Loading models sends an authenticated `GET /models` request to the configured Base URL. Testing connectivity sends a small real chat-completion request with the selected model and may consume provider quota.
+- Direct AI assistant requests are sent only after the user submits a message. The context inspector discloses the fields first. A direct request can include the user's message, recent local conversation history, the active Vault-relative note path and body (bounded to 12,000 characters), selected text (bounded to 4,000 characters), and bounded unresolved-question summaries.
+- In Backend assistant mode, a request can include the active Vault-relative note path, selected text, unresolved-question summaries, recent history, and the selected Backend model, Skill path, or Agent ids. Loading the Skill library and Agent picker requests their user-visible catalogs from the configured Backend. The Backend may read the named note and may retain its own run logs or outputs according to its configuration and privacy terms.
+- The direct assistant may expose the `ask_user_choice` function schema to a compatible model. The returned options are normalized and shown locally; selecting one adds the choice to local chat history and sends it in the next explicit assistant request. A choice card does not execute a Vault write or arbitrary tool.
+- The capture-target reranking privacy boundary described above is unchanged: it does not receive note bodies or selected text. AI assistant chat is a separate, explicit user action with a separately disclosed payload.
 - External API is disabled by default and normally binds to `127.0.0.1`. Enabling LAN/tunnel access makes the selected API data reachable according to the user's token and network controls.
 - Quote0, Push targets, and remote input send data only after the user configures those services and destinations.
 - ToWrite does not perform web search on its own.
@@ -89,5 +99,6 @@ Users can:
 - constrain capture indexing with include/exclude folders, tags, and frontmatter;
 - export learning events and habits in user-readable formats;
 - clear all learning events, candidates, and accepted learned habits.
+- inspect the AI assistant payload fields before sending and clear its local conversation history.
 
 For deployment and token guidance, see [SECURITY.md](SECURITY.md).

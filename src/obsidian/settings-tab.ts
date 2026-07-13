@@ -23,6 +23,7 @@ import { OPEN_QUESTION_COLORS, type OpenQuestionColor, type OpenQuestionLane, ty
 import type { PushDisplayCard, PushHabitRule, PushTargetSettings } from "../push/types";
 import { DEFAULT_DEVICE_BUTTON_MAPPINGS, normalizeDeviceButtonMappings } from "../device-interactions";
 import type ToWritePlugin from "../main";
+import type { AiModelInfo } from "../ai/types";
 import type { Quote0CanvasPayload, Quote0Device, Quote0ImagePayload, Quote0TextPayload } from "../quote0/client";
 import type { Quote0SyncPreview } from "../quote0/sync-service";
 
@@ -244,6 +245,13 @@ type SettingCopy = {
   aiApiKeyDesc: string;
   aiModel: string;
   aiModelDesc: string;
+  aiDiagnostics: string;
+  aiDiagnosticsDesc: string;
+  aiFetchModels: string;
+  aiTestConnection: string;
+  aiAssistant: string;
+  aiAssistantDesc: string;
+  aiOpenAssistant: string;
   aiAutoRun: string;
   aiAutoRunDesc: string;
   aiAutoLimit: string;
@@ -478,6 +486,13 @@ const COPY: Record<ToWriteLanguage, SettingCopy> = {
     "aiApiKeyDesc": "保存在本地插件数据中。未启用 AI 时不会发送请求。",
     "aiModel": "AI 模型",
     "aiModelDesc": "用于摘要和本地笔记重排序的模型名。",
+    "aiDiagnostics": "模型发现与连接测试",
+    "aiDiagnosticsDesc": "主动读取 OpenAI-compatible 模型列表，并用当前模型发送一次短请求验证真实可用性。推理模型需要留出生成最终回复的 token，测试会消耗少量额度。",
+    "aiFetchModels": "获取模型",
+    "aiTestConnection": "测试连接",
+    "aiAssistant": "AI 助手",
+    "aiAssistantDesc": "打开原生对话入口，可切换模型、查看发送上下文和本地历史；连接 Backend 后还可选择 Skill。",
+    "aiOpenAssistant": "打开助手",
     "aiAutoRun": "自动后台生成",
     "aiAutoRunDesc": "开启后自动处理缺失或过期的正式问题，不处理触发词建议。",
     "aiAutoLimit": "每次会话自动上限",
@@ -710,6 +725,13 @@ const COPY: Record<ToWriteLanguage, SettingCopy> = {
     "aiApiKeyDesc": "Stored in local plugin data. No requests are sent while AI is disabled.",
     "aiModel": "AI model",
     "aiModelDesc": "Model used for summaries and local note reranking.",
+    "aiDiagnostics": "Model discovery and connection test",
+    "aiDiagnosticsDesc": "Load the OpenAI-compatible model list, then send a short request with the selected model. Reasoning models need enough tokens to produce their final answer; the test uses a small amount of quota.",
+    "aiFetchModels": "Load models",
+    "aiTestConnection": "Test connection",
+    "aiAssistant": "AI assistant",
+    "aiAssistantDesc": "Open native chat with model switching, a payload inspector, and local history. Backend Skills appear when connected.",
+    "aiOpenAssistant": "Open assistant",
     "aiAutoRun": "Automatic background generation",
     "aiAutoRunDesc": "Automatically process saved questions with missing or stale AI output; trigger word suggestions are ignored.",
     "aiAutoLimit": "Auto-run limit per session",
@@ -773,6 +795,12 @@ export class ToWriteSettingTab extends PluginSettingTab {
   private readonly openWorkflowStageIds = new Set<string>();
   private readonly openDeviceProfileIds = new Set<string>();
   private quote0Devices: Quote0Device[] = [];
+  private aiModels: AiModelInfo[] = [];
+  private aiDiagnosticsStatus = "";
+  private aiModelsLoading = false;
+  private aiConnectionTesting = false;
+  private aiDiagnosticsGeneration = 0;
+  private aiApiKeyVisible = false;
   private activeSettingsTab: SettingsTabId = "general";
 
   constructor(app: App, private readonly plugin: ToWritePlugin) {
@@ -2530,9 +2558,10 @@ export class ToWriteSettingTab extends PluginSettingTab {
             if (this.plugin.settings.articleTypes.types.length === 0) {
               this.plugin.settings.articleTypes.types = DEFAULT_ARTICLE_TYPES.map((type) => ({ ...type }));
             }
-            await this.plugin.savePluginData();
-            await this.plugin.refreshIndex();
+            this.plugin.notifyUi();
             this.refreshSettingsUi();
+            await this.plugin.savePluginData();
+            await this.plugin.refreshWorkflowIndex();
           });
       });
 
@@ -2546,7 +2575,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
             .onChange(async (value) => {
               this.plugin.settings.articleTypes.parseHierarchicalTags = value;
               await this.plugin.savePluginData();
-              await this.plugin.refreshIndex();
+              await this.plugin.refreshWorkflowIndex();
               this.refreshSettingsUi();
             });
         });
@@ -2564,9 +2593,11 @@ export class ToWriteSettingTab extends PluginSettingTab {
             if (this.plugin.settings.workflowStages.stages.length === 0) {
               this.plugin.settings.workflowStages.stages = DEFAULT_WORKFLOW_STAGES.map((stage) => ({ ...stage }));
             }
-            await this.plugin.savePluginData();
-            await this.plugin.refreshIndex();
+            // Update the sidebar from configured stages immediately; counts follow after the focused rebuild.
+            this.plugin.notifyUi();
             this.refreshSettingsUi();
+            await this.plugin.savePluginData();
+            await this.plugin.refreshWorkflowIndex();
           });
       });
 
@@ -2622,6 +2653,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
             .setPlaceholder("https://api.openai.com/v1")
             .onChange(async (value) => {
               this.plugin.settings.ai.baseUrl = value.trim();
+              this.resetAiDiagnostics();
               await this.plugin.savePluginData();
             });
         })
@@ -2634,21 +2666,52 @@ export class ToWriteSettingTab extends PluginSettingTab {
             });
         });
 
+      let aiApiKeyInput: HTMLInputElement | undefined;
       new Setting(containerEl)
         .setName(copy.aiApiKey)
         .setDesc(copy.aiApiKeyDesc)
         .addText((text) => {
+          aiApiKeyInput = text.inputEl;
           text
             .setValue(this.plugin.settings.ai.apiKey)
             .setPlaceholder("sk-...")
             .onChange(async (value) => {
               this.plugin.settings.ai.apiKey = value.trim();
+              this.resetAiDiagnostics();
               await this.plugin.savePluginData();
             });
-          text.inputEl.type = "password";
+          text.inputEl.type = this.aiApiKeyVisible ? "text" : "password";
+        })
+        .addButton((button) => {
+          const updateButton = () => {
+            const label = this.plugin.settings.language === "zh"
+              ? (this.aiApiKeyVisible ? "隐藏 API Key" : "显示 API Key")
+              : (this.aiApiKeyVisible ? "Hide API key" : "Show API key");
+            button
+              .setIcon(this.aiApiKeyVisible ? "eye-off" : "eye")
+              .setTooltip(label);
+            button.buttonEl.setAttribute("aria-label", label);
+          };
+          updateButton();
+          button.onClick(() => {
+            this.aiApiKeyVisible = !this.aiApiKeyVisible;
+            if (aiApiKeyInput) {
+              aiApiKeyInput.type = this.aiApiKeyVisible ? "text" : "password";
+              aiApiKeyInput.focus();
+            }
+            updateButton();
+          });
+        })
+        .addButton((button) => {
+          button
+            .setIcon("copy")
+            .setTooltip(copy.copy)
+            .onClick(() => {
+              void copyToClipboard(this.plugin.settings.ai.apiKey, copy.copied);
+            });
         });
 
-      new Setting(containerEl)
+      const modelSetting = new Setting(containerEl)
         .setName(copy.aiModel)
         .setDesc(copy.aiModelDesc)
         .addText((text) => {
@@ -2658,6 +2721,48 @@ export class ToWriteSettingTab extends PluginSettingTab {
             .onChange(async (value) => {
               this.plugin.settings.ai.model = value.trim() || "gpt-4o-mini";
               await this.plugin.savePluginData();
+            });
+        });
+      const modelListId = "towrite-ai-model-options";
+      const modelInput = modelSetting.controlEl.querySelector("input");
+      if (modelInput) {
+        modelInput.setAttribute("list", modelListId);
+      }
+      const modelList = containerEl.createEl("datalist", { attr: { id: modelListId } });
+      for (const model of this.aiModels) {
+        modelList.createEl("option", { value: model.id, text: model.ownedBy ? `${model.id} — ${model.ownedBy}` : model.id });
+      }
+
+      new Setting(containerEl)
+        .setName(copy.aiDiagnostics)
+        .setDesc(this.aiDiagnosticsStatus || copy.aiDiagnosticsDesc)
+        .addButton((button) => {
+          button
+            .setButtonText(this.aiModelsLoading ? "…" : copy.aiFetchModels)
+            .setDisabled(this.aiModelsLoading || this.aiConnectionTesting)
+            .onClick(() => {
+              void this.refreshAiModels();
+            });
+        })
+        .addButton((button) => {
+          button
+            .setButtonText(this.aiConnectionTesting ? "…" : copy.aiTestConnection)
+            .setCta()
+            .setDisabled(this.aiModelsLoading || this.aiConnectionTesting)
+            .onClick(() => {
+              void this.runAiConnectionTest();
+            });
+        });
+
+      new Setting(containerEl)
+        .setName(copy.aiAssistant)
+        .setDesc(copy.aiAssistantDesc)
+        .addButton((button) => {
+          button
+            .setButtonText(copy.aiOpenAssistant)
+            .setIcon("bot")
+            .onClick(() => {
+              this.plugin.openAiAssistant();
             });
         });
 
@@ -2704,6 +2809,78 @@ export class ToWriteSettingTab extends PluginSettingTab {
 
   private refreshSettingsUi(): void {
     this.renderSettings(this.containerEl);
+  }
+
+  private resetAiDiagnostics(): void {
+    this.aiDiagnosticsGeneration += 1;
+    this.aiModels = [];
+    this.aiDiagnosticsStatus = "";
+  }
+
+  private async refreshAiModels(): Promise<void> {
+    if (this.aiModelsLoading || this.aiConnectionTesting) {
+      return;
+    }
+    const generation = ++this.aiDiagnosticsGeneration;
+    const signature = `${this.plugin.settings.ai.baseUrl}\u0000${this.plugin.settings.ai.apiKey}`;
+    this.aiModelsLoading = true;
+    this.aiDiagnosticsStatus = this.plugin.settings.language === "zh" ? "正在获取模型…" : "Loading models…";
+    this.refreshSettingsUi();
+    try {
+      const models = await this.plugin.listAiModels();
+      const currentSignature = `${this.plugin.settings.ai.baseUrl}\u0000${this.plugin.settings.ai.apiKey}`;
+      if (generation !== this.aiDiagnosticsGeneration || signature !== currentSignature) {
+        return;
+      }
+      this.aiModels = models;
+      this.aiDiagnosticsStatus = this.plugin.settings.language === "zh"
+        ? `已加载 ${models.length} 个模型，可在上方输入框中搜索选择。`
+        : `Loaded ${models.length} models. Search and select one in the field above.`;
+    } catch (error) {
+      if (generation !== this.aiDiagnosticsGeneration) {
+        return;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      this.aiModels = [];
+      this.aiDiagnosticsStatus = this.plugin.settings.language === "zh"
+        ? `模型列表不可用：${message}；仍可手动填写模型名。`
+        : `Model list unavailable: ${message} You can still enter a model id manually.`;
+    } finally {
+      if (generation === this.aiDiagnosticsGeneration) {
+        this.aiModelsLoading = false;
+        this.refreshSettingsUi();
+      }
+    }
+  }
+
+  private async runAiConnectionTest(): Promise<void> {
+    if (this.aiModelsLoading || this.aiConnectionTesting) {
+      return;
+    }
+    const generation = ++this.aiDiagnosticsGeneration;
+    this.aiConnectionTesting = true;
+    this.aiDiagnosticsStatus = this.plugin.settings.language === "zh" ? "正在测试当前模型…" : "Testing the selected model…";
+    this.refreshSettingsUi();
+    try {
+      const result = await this.plugin.testAiConnection();
+      if (generation !== this.aiDiagnosticsGeneration) {
+        return;
+      }
+      this.aiDiagnosticsStatus = this.plugin.settings.language === "zh"
+        ? `连接成功：${result.model}，${result.latencyMs} ms，回复：${result.reply}`
+        : `Connected: ${result.model}, ${result.latencyMs} ms. Reply: ${result.reply}`;
+    } catch (error) {
+      if (generation !== this.aiDiagnosticsGeneration) {
+        return;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      this.aiDiagnosticsStatus = this.plugin.settings.language === "zh" ? `连接失败：${message}` : `Connection failed: ${message}`;
+    } finally {
+      if (generation === this.aiDiagnosticsGeneration) {
+        this.aiConnectionTesting = false;
+        this.refreshSettingsUi();
+      }
+    }
   }
 
   private renderTriggerWordEditor(containerEl: HTMLElement, copy: SettingCopy): void {
@@ -3277,7 +3454,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
       types
     });
     await this.plugin.savePluginData();
-    await this.plugin.refreshIndex();
+    await this.plugin.refreshWorkflowIndex();
     if (redisplay) {
       this.refreshSettingsUi();
     }
@@ -3285,8 +3462,9 @@ export class ToWriteSettingTab extends PluginSettingTab {
 
   private async saveWorkflowStages(stages: WorkflowStageSettings[], redisplay = false): Promise<void> {
     this.plugin.settings.workflowStages.stages = normalizeWorkflowStages(stages);
+    this.plugin.notifyUi();
     await this.plugin.savePluginData();
-    await this.plugin.refreshIndex();
+    await this.plugin.refreshWorkflowIndex();
     if (redisplay) {
       this.refreshSettingsUi();
     }

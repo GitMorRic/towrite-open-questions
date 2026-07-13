@@ -1,6 +1,7 @@
 <script lang="ts">
   import {
     Bell,
+    Bot,
     Brain,
     Check,
     ChevronDown,
@@ -9,15 +10,20 @@
     Download,
     Eye,
     EyeOff,
+    ExternalLink,
     FolderTree,
     FilePenLine,
     List,
+    ListChecks,
+    Pencil,
     Plus,
     RefreshCw,
-    Search
+    Search,
+    TimerReset,
+    X
   } from "lucide-svelte";
   import { onDestroy } from "svelte";
-  import type { ArticleTypeSettings } from "../core/settings";
+  import type { ArticleTypeSettings, WorkflowStageSettings } from "../core/settings";
   import { mergeArticleSummariesWithWorkflow } from "../core/articles";
   import type { ArticleSummary, OpenQuestion, OpenQuestionLane } from "../core/types";
   import type { WorkflowIndexPayload } from "../workflow";
@@ -55,6 +61,7 @@
   let currentQuestions: OpenQuestion[] = [];
   let otherArticles: ArticleSummary[] = [];
   let articleTypes: ArticleTypeSettings[] = api.getArticleTypes();
+  let workflowStages: WorkflowStageSettings[] = api.getWorkflowStages();
   let workflowPayload: WorkflowIndexPayload = api.getWorkflowPayload();
   let suggestions: ProactiveSuggestion[] = [];
   let busySuggestionId = "";
@@ -76,7 +83,7 @@
   $: groupCurrentByHeading = api.getGroupCurrentByHeading();
   $: typeTabs = buildTypeTabs(otherArticles, articleTypes, language);
   $: typeFilteredOtherArticles = otherArticles.filter(matchesArticleTypeFilter);
-  $: stageTabs = buildStageTabs(typeFilteredOtherArticles, workflowPayload.stages, language);
+  $: stageTabs = buildStageTabs(typeFilteredOtherArticles, workflowStages, language);
   $: if (typeFilter && !typeTabs.some((tab) => tab.id === typeFilter)) typeFilter = "";
   $: if (stageFilter && !stageTabs.some((tab) => tab.id === stageFilter)) stageFilter = "";
   $: visibleOtherArticles = typeFilteredOtherArticles.filter(matchesArticleStageFilter).filter(matchesArticleLaneFilter);
@@ -90,6 +97,7 @@
     activeLineRange = api.getActiveLineRange();
     compactEditorDecorations = api.getCompactEditorDecorations();
     articleTypes = api.getArticleTypes();
+    workflowStages = api.getWorkflowStages();
     workflowPayload = api.getWorkflowPayload();
     suggestions = api.getProactiveSuggestions();
     currentQuestions = activeFile
@@ -233,7 +241,7 @@
 
   function buildStageTabs(
     items: ArticleSummary[],
-    stages: WorkflowIndexPayload["stages"],
+    stages: WorkflowStageSettings[],
     currentLanguage: "zh" | "en"
   ): ArticleFilterTab[] {
     const counts = countBy(items, (article) => article.stageId);
@@ -409,19 +417,29 @@
     >
       <FilePenLine size={15} />
     </button>
-    <button type="button" title={copy.createThink} on:click={() => api.createQuestionFromSelection("think")}>
+    <button
+      type="button"
+      title={language === "zh" ? "打开 AI 助手" : "Open AI assistant"}
+      aria-label={language === "zh" ? "打开 AI 助手" : "Open AI assistant"}
+      aria-haspopup="dialog"
+      on:click={() => api.openAiAssistant()}
+    >
+      <Bot size={15} />
+    </button>
+    <button type="button" title={copy.createThink} aria-label={copy.createThink} on:click={() => api.createQuestionFromSelection("think")}>
       <Plus size={15} />
     </button>
-    <button type="button" title={copy.refresh} on:click={() => api.refreshIndex()}>
+    <button type="button" title={copy.refresh} aria-label={copy.refresh} on:click={() => api.refreshIndex()}>
       <RefreshCw size={15} />
     </button>
-    <button type="button" title={copy.exportJson} on:click={() => api.exportNow()}>
+    <button type="button" title={copy.exportJson} aria-label={copy.exportJson} on:click={() => api.exportNow()}>
       <Download size={15} />
     </button>
     <button
       type="button"
       class:towrite-action-active={compactEditorDecorations}
       title={compactEditorDecorations ? copy.fullHighlights : copy.compactHighlights}
+      aria-label={compactEditorDecorations ? copy.fullHighlights : copy.compactHighlights}
       on:click={toggleCompactEditorDecorations}
     >
       {#if compactEditorDecorations}
@@ -534,24 +552,24 @@
                 {#if suggestion.detail && suggestion.detail !== suggestion.title}
                   <p class="towrite-suggestion-detail">{suggestion.detail}</p>
                 {/if}
-                <div class="towrite-suggestion-actions">
+                <div class="towrite-now-actions">
                   {#if suggestion.allowedActions.includes("accept")}
-                    <button type="button" disabled={Boolean(busySuggestionId)} aria-label={`${language === "zh" ? "接受" : "Accept"}: ${suggestion.title}`} on:click={() => actOnSuggestion(suggestion, "accept")}><Check size={12} />{language === "zh" ? "接受" : "Accept"}</button>
+                    <button type="button" title={language === "zh" ? "接受" : "Accept"} disabled={Boolean(busySuggestionId)} aria-label={`${language === "zh" ? "接受" : "Accept"}: ${suggestion.title}`} on:click={() => actOnSuggestion(suggestion, "accept")}><Check size={14} /></button>
                   {/if}
                   {#if suggestion.allowedActions.includes("open-source")}
-                    <button type="button" disabled={Boolean(busySuggestionId)} aria-label={`${language === "zh" ? "打开" : "Open"}: ${suggestion.title}`} on:click={() => actOnSuggestion(suggestion, "open-source")}>{language === "zh" ? "打开" : "Open"}</button>
+                    <button type="button" title={language === "zh" ? "打开来源" : "Open source"} disabled={Boolean(busySuggestionId)} aria-label={`${language === "zh" ? "打开" : "Open"}: ${suggestion.title}`} on:click={() => actOnSuggestion(suggestion, "open-source")}><ExternalLink size={14} /></button>
                   {/if}
                   {#if suggestion.allowedActions.includes("view-evidence")}
-                    <button type="button" disabled={Boolean(busySuggestionId)} aria-label={`${language === "zh" ? "证据" : "Evidence"}: ${suggestion.title}`} on:click={() => actOnSuggestion(suggestion, "view-evidence")}>{language === "zh" ? "证据" : "Evidence"}</button>
+                    <button type="button" title={language === "zh" ? "查看证据" : "View evidence"} disabled={Boolean(busySuggestionId)} aria-label={`${language === "zh" ? "证据" : "Evidence"}: ${suggestion.title}`} on:click={() => actOnSuggestion(suggestion, "view-evidence")}><ListChecks size={14} /></button>
                   {/if}
                   {#if suggestion.allowedActions.includes("edit")}
-                    <button type="button" disabled={Boolean(busySuggestionId)} aria-label={`${language === "zh" ? "编辑" : "Edit"}: ${suggestion.title}`} on:click={() => actOnSuggestion(suggestion, "edit")}>{language === "zh" ? "编辑" : "Edit"}</button>
+                    <button type="button" title={language === "zh" ? "编辑" : "Edit"} disabled={Boolean(busySuggestionId)} aria-label={`${language === "zh" ? "编辑" : "Edit"}: ${suggestion.title}`} on:click={() => actOnSuggestion(suggestion, "edit")}><Pencil size={14} /></button>
                   {/if}
                   {#if suggestion.allowedActions.includes("later") || suggestion.allowedActions.includes("snooze")}
-                    <button type="button" disabled={Boolean(busySuggestionId)} aria-label={`${language === "zh" ? "稍后" : "Later"}: ${suggestion.title}`} on:click={() => actOnSuggestion(suggestion, suggestion.allowedActions.includes("snooze") ? "snooze" : "later")}>{language === "zh" ? "稍后" : "Later"}</button>
+                    <button type="button" title={language === "zh" ? "稍后" : "Later"} disabled={Boolean(busySuggestionId)} aria-label={`${language === "zh" ? "稍后" : "Later"}: ${suggestion.title}`} on:click={() => actOnSuggestion(suggestion, suggestion.allowedActions.includes("snooze") ? "snooze" : "later")}><TimerReset size={14} /></button>
                   {/if}
                   {#if suggestion.allowedActions.includes("dismiss")}
-                    <button type="button" disabled={Boolean(busySuggestionId)} aria-label={`${language === "zh" ? "忽略" : "Dismiss"}: ${suggestion.title}`} on:click={() => actOnSuggestion(suggestion, "dismiss")}>{language === "zh" ? "忽略" : "Dismiss"}</button>
+                    <button type="button" title={language === "zh" ? "忽略" : "Dismiss"} disabled={Boolean(busySuggestionId)} aria-label={`${language === "zh" ? "忽略" : "Dismiss"}: ${suggestion.title}`} on:click={() => actOnSuggestion(suggestion, "dismiss")}><X size={14} /></button>
                   {/if}
                 </div>
               </div>

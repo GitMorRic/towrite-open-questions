@@ -9,7 +9,7 @@ import type {
   QuestionStatusOption,
   StoredQuestionState
 } from "../core/types";
-import type { ArticleTypeSettings, ToWriteLanguage, ToWriteReminderPreset } from "../core/settings";
+import type { ArticleTypeSettings, ToWriteLanguage, ToWriteReminderPreset, WorkflowStageSettings } from "../core/settings";
 import type { WorkflowIndexPayload } from "../workflow";
 import type { ProactiveSuggestion, ProactiveSuggestionAction } from "../suggestions";
 
@@ -31,6 +31,7 @@ export interface ToWriteUiApi {
   getQuestions(query?: OpenQuestionQuery): OpenQuestion[];
   getArticleSummaries(): ArticleSummary[];
   getArticleTypes(): ArticleTypeSettings[];
+  getWorkflowStages(): WorkflowStageSettings[];
   getWorkflowPayload(): WorkflowIndexPayload;
   getStatusOptions(): QuestionStatusOption[];
   getLanguage(): ToWriteLanguage;
@@ -47,6 +48,7 @@ export interface ToWriteUiApi {
   updateQuestion(id: string, patch: Omit<Partial<StoredQuestionState>, "id">): Promise<void>;
   createQuestionFromSelection(lane: OpenQuestionLane, color?: OpenQuestionColor): Promise<void>;
   openCapture(): void;
+  openAiAssistant(): void;
   openCaptureForQuestion(id: string): void;
   actOnSuggestion(id: string, action: ProactiveSuggestionAction): Promise<void>;
   acceptSuggestion(id: string): Promise<void>;

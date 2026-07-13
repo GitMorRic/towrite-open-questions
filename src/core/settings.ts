@@ -3,6 +3,7 @@ import type { PushHabitRule, PushRuntimeState, PushTargetSettings, ToWritePushSe
 import type { HabitLearningState } from "../learning/types";
 import type { SuggestionNotificationEvent } from "../suggestions/types";
 import { DEFAULT_DEVICE_BUTTON_MAPPINGS, normalizeDeviceButtonMappings } from "../device-interactions";
+import type { AiAssistantState } from "../ai/chat";
 
 export type ToWriteLanguage = "zh" | "en";
 
@@ -170,6 +171,7 @@ export interface ToWriteSavedData {
   suggestionNotifications?: SuggestionNotificationEvent[];
   snoozedSuggestions?: Record<string, string>;
   securityMigrationVersion?: number;
+  aiAssistantState?: AiAssistantState;
 }
 
 export const DEFAULT_STATUS_OPTIONS: QuestionStatusOption[] = [

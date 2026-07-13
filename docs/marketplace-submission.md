@@ -13,8 +13,8 @@ Official references:
 
 - Plugin id: `towrite-open-questions`
 - Plugin name: `ToWrite Open Questions`
-- Release tag: `0.2.0`
-- Minimum app version: `1.5.0`
+- Development version: `0.3.0-beta.1` (not suitable for marketplace submission)
+- Minimum app version: `1.7.2`
 - Desktop only: `true`
 
 Why desktop-only: the optional External API uses Node.js `http` to run a local server. Obsidian community review expects plugins that use Node.js or Electron APIs to set `isDesktopOnly` to `true`.
@@ -50,14 +50,14 @@ Do not ask users to install the generated GitHub source ZIP. That ZIP contains s
 2. Confirm the default branch contains root `manifest.json`, `versions.json`, `README.md`, and `LICENSE`.
 3. Run `npm.cmd run test`.
 4. Run `npm.cmd run build`.
-5. Create a Git tag matching `manifest.json` version, for example `0.2.0`.
-6. Create a GitHub release using that exact tag.
-7. Upload `dist/main.js`, `dist/manifest.json`, and `dist/styles.css` as release assets.
-8. Test a clean vault install from those three assets.
-9. Submit the plugin through the Obsidian community site: <https://community.obsidian.md/c/plugins/plugin-requests/7>
-10. Use the "New plugin" flow and provide the public GitHub repository URL.
+5. Set a stable `x.y.z` version in `manifest.json`, `package.json`, and `versions.json`.
+6. Create a Git tag that exactly matches that version, for example `0.3.0` (no `v` prefix).
+7. Create a non-prerelease GitHub release using that exact tag.
+8. Upload `dist/main.js`, `dist/manifest.json`, and `dist/styles.css` as release assets.
+9. Test a clean vault install from those three assets.
+10. Sign in at <https://community.obsidian.md>, connect GitHub, open **Plugins**, choose **New plugin**, and provide the public repository URL.
 
-Older guides mention opening a pull request against `obsidianmd/obsidian-releases`. Current official docs point new submissions to the Obsidian forum/community plugin request flow instead.
+Older guides mention opening a pull request against `obsidianmd/obsidian-releases`. Current official docs use the Obsidian community submission portal instead.
 
 ## Suggested Submission Text
 
@@ -71,7 +71,7 @@ Longer description:
 
 Privacy note for reviewers:
 
-> Core indexing is local-first. Selection cards and Workflow exports are stored inside the user's vault. The plugin only modifies Markdown when the user explicitly pins a source anchor. External API, Workflow Stages, and AI are opt-in; tokens and API keys are stored in local Obsidian plugin data and are not exported.
+> Core indexing and capture recommendations are local-first. Cards, capture targets, and learning exports are stored inside the user's vault. Markdown is only created, appended, or changed after an explicit user action such as pinning an anchor, committing a capture, or undoing it. External API, Backend integration, AI, habit learning, and notifications are opt-in; tokens and API keys are stored in local Obsidian plugin data and are not included in exports.
 
 ## Screenshots And GIFs To Prepare
 
@@ -110,12 +110,15 @@ Already addressed:
 - `isDesktopOnly` is now `true` because the plugin uses Node.js `http`.
 - AI is opt-in and documented.
 - External API is opt-in, token-protected, and documented.
-- Markdown is only modified when the user explicitly pins a source anchor.
+- Markdown writes require an explicit user action and capture writes provide a preview and guarded undo.
 - Release assets are limited to `main.js`, `manifest.json`, and `styles.css`.
+- `authorUrl` points to the maintainer's public GitHub profile.
 
 Remaining things to verify before submission:
 
-- `authorUrl` is blank. This is allowed, but adding a stable GitHub profile or website is recommended.
+- Merge the final code into the GitHub default branch; the current `main` branch still contains the older `0.2.7` implementation.
+- Replace the prerelease version/tag with a stable `x.y.z` version and an exact, no-prefix GitHub tag.
+- Run the Obsidian plugin checker and address any startup-performance findings on a large vault.
 - The public repository URL should match the final plugin id/name.
 - Do a clean vault smoke test after switching from the old manual folder id `obsidian-towrite` to `towrite-open-questions`.
 - Keep screenshots free of private note text and credentials.

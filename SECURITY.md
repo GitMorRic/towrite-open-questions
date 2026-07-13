@@ -25,6 +25,8 @@ External API tokens, restricted device tokens, Backend tokens, AI keys, and devi
 - Use different random tokens for the full External API, restricted phone/Quote0 input, and the Obsidian AI Backend.
 - Give phone, NFC, or small-screen clients a restricted token instead of the full API token.
 - The Backend token is sent as `X-Capture-Token`; do not put it in URLs, screenshots, logs, example files, or issue reports.
+- The configured AI Base URL receives the AI API key. Use only a provider or proxy you trust, prefer HTTPS, and verify the URL before loading models or testing the connection.
+- Treat third-party Skills, Agent cards, note content, and model output as untrusted instructions. Interactive choice cards are bounded and display-only; any future write/delete/network tool must use a separate explicit approval contract.
 - Query-string tokens can appear in browser history, reverse-proxy logs, referrer data, and screenshots. Keep “allow query token for reads” disabled unless a client requires it; rotate the token after accidental exposure.
 - Do not commit or publish `.obsidian/plugins/towrite-open-questions/data.json`, `.obsidian-open-questions/`, `.env` files, exported diagnostics, or real device URLs containing credentials.
 

@@ -223,6 +223,12 @@ See [docs/api.zh-CN.md](docs/api.zh-CN.md) for detailed API examples.
 
 AI is disabled by default. When enabled, ToWrite calls an OpenAI-compatible `/chat/completions` endpoint configured by the user. It can summarize saved cards, suggest next actions, and rerank related local notes recalled from filenames, paths, tags, headings, frontmatter, and snippets.
 
+After entering a Base URL and API key, use **Load models** to query the provider's `/models` endpoint, then choose a returned model or keep a manually entered compatible model id. **Test connection** makes a small real chat-completion request with the selected model and reports latency and the returned text.
+
+The **Open AI assistant** command, ribbon button, and sidebar bot button open a native Obsidian chat surface. Assistant replies render with Obsidian's Markdown renderer and each reply can be switched back to its source text. Use `Ctrl/Cmd+Enter` to send and `Shift+Enter` for a new line. In Backend mode, type `/` to search the local Skill library and `@` to add one or more Agents; the selected model, Skill, and Agents remain visible above the composer.
+
+The assistant supports model switching, persistent local history, a context inspector, and safe interactive choice cards. When a model genuinely needs a decision, the direct OpenAI-compatible path can call the `ask_user_choice` function tool; Backend replies use a bounded display-only choice marker. A choice never writes to the Vault by itself. Direct mode uses the configured OpenAI-compatible endpoint; Backend mode reuses the Backend model catalog, LiteLLM routing, Agent roster, Skills, and context-chat endpoints. The assistant shows the fields that will be sent before the user sends a message. History is also mirrored to the user-readable `.obsidian-open-questions/ai/conversations.json` file and can be cleared from the assistant.
+
 ToWrite does not perform web search.
 
 ## Installation
@@ -270,6 +276,7 @@ npm.cmd run deploy:capture
 - `Open questions sidebar`
 - `Open question dashboard`
 - `Open smart capture`
+- `Open AI assistant`
 - `Capture selection to a note or folder`
 - `Refresh open question index`
 - `Export open question JSON`

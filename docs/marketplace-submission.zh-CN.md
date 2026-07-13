@@ -11,8 +11,8 @@
 
 - 插件 id：`towrite-open-questions`
 - 插件名称：`ToWrite Open Questions`
-- Release tag：`0.2.0`
-- 最低 Obsidian 版本：`1.5.0`
+- 当前开发版本：`0.3.0-beta.1`（不能直接用于社区市场提交）
+- 最低 Obsidian 版本：`1.7.2`
 - Desktop only：`true`
 
 为什么是桌面端：当前 External API 使用 Node.js `http` 在 Obsidian Desktop 里启动本地服务器。Obsidian 社区审核要求使用 Node.js 或 Electron API 的插件把 `isDesktopOnly` 设置为 `true`。
@@ -49,14 +49,14 @@
 2. 确认默认分支根目录有 `manifest.json`、`versions.json`、`README.md`、`LICENSE`。
 3. 运行 `npm.cmd run test`。
 4. 运行 `npm.cmd run build`。
-5. 创建与 `manifest.json` 版本一致的 tag，例如 `0.2.0`。
-6. 用这个 tag 创建 GitHub release。
-7. 上传 `dist/main.js`、`dist/manifest.json`、`dist/styles.css`。
-8. 在干净 vault 中只用这三个文件测试安装。
-9. 到 Obsidian 社区插件请求区提交：<https://community.obsidian.md/c/plugins/plugin-requests/7>
-10. 使用 “New plugin” 流程，填写公开 GitHub 仓库 URL。
+5. 在 `manifest.json`、`package.json` 和 `versions.json` 中设置稳定的 `x.y.z` 版本。
+6. 创建与版本完全一致的 tag，例如 `0.3.0`，不要添加 `v` 前缀。
+7. 用这个 tag 创建非 prerelease 的 GitHub release。
+8. 上传 `dist/main.js`、`dist/manifest.json`、`dist/styles.css`。
+9. 在干净 vault 中只用这三个文件测试安装。
+10. 登录 <https://community.obsidian.md>，连接 GitHub，在 **Plugins** 中选择 **New plugin**，填写公开仓库 URL。
 
-旧教程里常见的 `obsidianmd/obsidian-releases` PR 流程已经不是当前官方文档推荐的新插件提交流程。现在应以 Obsidian forum/community 的 New plugin 流程为准。
+旧教程里常见的 `obsidianmd/obsidian-releases` PR 流程已经不是当前官方文档推荐的新插件提交流程。现在应使用 Obsidian community 的插件提交入口。
 
 ## 可直接用于提交的英文说明
 
@@ -70,7 +70,7 @@ Longer description：
 
 给审核者看的隐私说明：
 
-> Core indexing is local-first. Selection cards are stored in sidecar JSON inside the user's vault. The plugin only modifies Markdown when the user explicitly pins a source anchor. External API and AI are opt-in; tokens and API keys are stored in local Obsidian plugin data and are not exported.
+> Core indexing and capture recommendations are local-first. Cards, capture targets, and learning exports are stored inside the user's vault. Markdown is only created, appended, or changed after an explicit user action such as pinning an anchor, committing a capture, or undoing it. External API, Backend integration, AI, habit learning, and notifications are opt-in; tokens and API keys are stored in local Obsidian plugin data and are not included in exports.
 
 ## 需要准备哪些图片和动图
 
@@ -109,12 +109,15 @@ Longer description：
 - 因为使用 Node.js `http`，`isDesktopOnly` 已改为 `true`。
 - AI 默认关闭，并且文档已说明。
 - External API 默认关闭、token 保护，并且文档已说明。
-- 只有用户显式点击“固定原文锚点”时才会修改 Markdown。
+- Markdown 写入都需要用户显式操作；记录写入提供预览、冲突检查和受保护的撤销。
 - Release 资产限定为 `main.js`、`manifest.json`、`styles.css`。
+- `authorUrl` 已指向维护者公开的 GitHub 主页。
 
 提交前还要确认：
 
-- `authorUrl` 当前为空。允许为空，但建议填一个稳定 GitHub 主页或个人网站。
+- 把最终代码合入 GitHub 默认分支；当前 `main` 仍是旧的 `0.2.7` 实现。
+- 把 prerelease 版本/tag 换成稳定 `x.y.z`，并使用完全一致、无前缀的 GitHub tag。
+- 运行 Obsidian plugin checker，并在大 Vault 上处理启动性能问题。
 - 公开仓库 URL 最好与最终插件 id/name 一致。
 - 从旧手动目录 `obsidian-towrite` 切换到新市场 id `towrite-open-questions` 前，先在干净 vault 测试。
 - 截图不能出现私人内容和凭据。

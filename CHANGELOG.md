@@ -1,5 +1,23 @@
 # Changelog / 更新日志
 
+## 0.3.0-beta.2 - 2026-07-13
+
+- Added a native AI assistant with Obsidian Markdown rendering, source view, persistent local history, context inspection, model switching, and keyboard-first composition.
+- Added OpenAI-compatible model discovery, editable model selection, API-key reveal/copy controls, and real generation connectivity tests with reasoning-model headroom.
+- Added optional Backend model, Skill-library, and Agent-roster integration, including `/` Skill loading, `@` multi-Agent context, structured Backend client contracts, and stream event support.
+- Added safe `ask_user_choice` interactions that render model-requested decisions as bounded local choice cards without automatically writing to the Vault.
+- Restored live Article Type and Workflow-stage updates, refined sidebar/ribbon discovery, and kept current-note, open-question, Quote0, Push, and External API behavior compatible.
+- Refined question-card controls with theme-aware quiet pills, visible menu affordances, keyboard focus states, and a right-aligned dropdown triangle.
+- Updated bilingual privacy, security, architecture, and Community Plugin submission documentation for the new capture, learning, Backend, and AI data flows.
+
+中文摘要：
+
+- 新增原生 AI 助手，支持 Obsidian Markdown 渲染、原文查看、本地对话历史、上下文检查、模型切换和键盘快捷输入。
+- 新增模型发现、模型选择、API Key 显示/复制、真实连通性测试，以及 Backend Skill 仓库、Agent roster、`/` 与 `@` 交互。
+- 新增安全的 AI 选择卡片；模型可以请求用户决策，但卡片本身不会自动写入 Vault。
+- 修复 Article Type 与 Workflow Stage 的即时刷新，并优化侧栏入口、卡片属性控件和明暗主题表现。
+- 补齐中英文隐私、安全、架构和社区插件提交说明。
+
 ## 0.3.0-beta.1 - 2026-07-12
 
 - Added the native Smart Capture modal for new notes, selections, and question-card answers.

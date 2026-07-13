@@ -43,6 +43,22 @@ import type {
 } from "./core/types";
 import { LocalKnowledgeIndex } from "./ai/local-index";
 import { OpenAiCompatibleProvider } from "./ai/openai-provider";
+import type { AiConnectionResult, AiModelInfo } from "./ai/types";
+import {
+  EMPTY_AI_ASSISTANT_STATE,
+  createAiAssistantMessage,
+  normalizeAiAssistantState,
+  type AiAssistantChoiceInteraction,
+  type AiAssistantMode,
+  type AiAssistantState
+} from "./ai/chat";
+import {
+  ASK_USER_CHOICE_TOOL,
+  BACKEND_CHOICE_INSTRUCTION,
+  choiceFollowUpText,
+  parseBackendInteraction,
+  parseDirectInteraction
+} from "./ai/interaction";
 import { AiQuestionService } from "./ai/service";
 import { BackendEnhancementClient } from "./backend/client";
 import {
@@ -83,10 +99,12 @@ import { OpenQuestionIndexer } from "./obsidian/indexer";
 import { jumpToQuestion as jumpToQuestionInWorkspace } from "./obsidian/jump";
 import { AddQuestionModal } from "./obsidian/modal";
 import { CaptureModal } from "./obsidian/capture-modal";
+import { AiAssistantModal } from "./obsidian/ai-assistant-modal";
 import { PdfQuestionLayer, pdfAnchorFromCurrentSelection } from "./obsidian/pdf-layer";
 import { SelectionQuestionToolbar } from "./obsidian/selection-toolbar";
 import { ToWriteSettingTab } from "./obsidian/settings-tab";
 import { QuestionSidecarRepository } from "./obsidian/sidecar";
+import { writeVaultDataText } from "./obsidian/vault-data";
 import {
   TOWRITE_DASHBOARD_VIEW,
   TOWRITE_SIDEBAR_VIEW,
@@ -95,6 +113,11 @@ import {
 } from "./obsidian/views";
 import type { ActiveLineRange, LinkSuggestion, ToWriteUiApi } from "./ui/api";
 import type { CaptureModalSubmitRequest, CaptureModalSubmitResult } from "./ui/capture-modal-types";
+import type {
+  AiAssistantCatalog,
+  AiAssistantContextPreview,
+  AiAssistantSendRequest
+} from "./ui/ai-assistant-types";
 
 interface CaptureLaunchOptions {
   intent?: CaptureIntent;
@@ -115,6 +138,9 @@ export default class ToWritePlugin extends Plugin {
   private workflowIndex!: WorkflowIndex;
   private localKnowledgeIndex!: LocalKnowledgeIndex;
   private aiService!: AiQuestionService;
+  private aiProvider!: OpenAiCompatibleProvider;
+  private aiAssistantState: AiAssistantState = { ...EMPTY_AI_ASSISTANT_STATE };
+  private aiAssistantMode: AiAssistantMode = "direct";
   private backendClient!: BackendEnhancementClient;
   private captureService!: CaptureService;
   private captureRecommender!: CaptureTargetRecommender;
@@ -169,11 +195,12 @@ export default class ToWritePlugin extends Plugin {
         onVaultChanged: (path, operation) => this.onCaptureVaultChanged(path, operation)
       })
     );
+    this.aiProvider = new OpenAiCompatibleProvider(() => this.settings.ai);
     this.aiService = new AiQuestionService({
       app: this.app,
       store: this.store,
       localIndex: this.localKnowledgeIndex,
-      provider: new OpenAiCompatibleProvider(() => this.settings.ai),
+      provider: this.aiProvider,
       getSettings: () => this.settings,
       onQuestionUpdated: async () => {
         await this.savePluginData();
@@ -267,6 +294,9 @@ export default class ToWritePlugin extends Plugin {
     this.addRibbonIcon("square-pen", "Open smart capture", () => {
       this.openCaptureModal({ entryPoint: "ribbon" });
     });
+    this.addRibbonIcon("bot", "Open ToWrite AI assistant", () => {
+      this.openAiAssistant();
+    });
 
     this.addCommand({
       id: "open-towrite-sidebar",
@@ -289,6 +319,14 @@ export default class ToWritePlugin extends Plugin {
       name: "Open smart capture",
       callback: () => {
         this.openCaptureModal({ entryPoint: "command" });
+      }
+    });
+
+    this.addCommand({
+      id: "open-ai-assistant",
+      name: "Open AI assistant",
+      callback: () => {
+        this.openAiAssistant();
       }
     });
 
@@ -790,6 +828,32 @@ export default class ToWritePlugin extends Plugin {
     this.store.notify();
   }
 
+  async refreshWorkflowIndex(): Promise<void> {
+    try {
+      await this.workflowIndex.rebuild();
+    } catch (error) {
+      // Configured stage tabs are still useful even if one vault file cannot be indexed.
+      this.store.notify();
+      const message = error instanceof Error ? error.message : String(error);
+      new Notice(`ToWrite Workflow counts could not be refreshed: ${message}`);
+      return;
+    }
+    // Let open views consume the new stage payload before optional export work.
+    this.store.notify();
+    if (this.settings.autoExport) {
+      try {
+        await this.exportNow(false, { rebuildWorkflow: false });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        new Notice(`ToWrite Workflow updated, but export failed: ${message}`);
+      }
+    }
+  }
+
+  notifyUi(): void {
+    this.store.notify();
+  }
+
   async exportNow(showNotice = true, options: { rebuildWorkflow?: boolean } = {}): Promise<void> {
     if (options.rebuildWorkflow !== false) {
       await this.workflowIndex.rebuild();
@@ -860,7 +924,8 @@ export default class ToWritePlugin extends Plugin {
       learningState: this.learningService?.getState() ?? this.savedLearningState,
       suggestionNotifications: this.suggestionNotifications,
       snoozedSuggestions: this.snoozedSuggestions,
-      securityMigrationVersion: this.securityMigrationVersion
+      securityMigrationVersion: this.securityMigrationVersion,
+      aiAssistantState: this.aiAssistantState
     };
     await this.saveData(data);
     await this.exportCaptureTargetCatalog();
@@ -879,6 +944,265 @@ export default class ToWritePlugin extends Plugin {
       const message = error instanceof Error ? error.message : String(error);
       new Notice(`Obsidian AI Backend unavailable: ${message}`);
     }
+  }
+
+  async listAiModels(): Promise<AiModelInfo[]> {
+    return this.aiProvider.listModels();
+  }
+
+  async testAiConnection(): Promise<AiConnectionResult> {
+    return this.aiProvider.testConnection();
+  }
+
+  openAiAssistant(): void {
+    new AiAssistantModal(this.app, {
+      language: this.settings.language,
+      initialMessages: [...this.aiAssistantState.messages],
+      callbacks: {
+        loadCatalog: () => this.loadAiAssistantCatalog(),
+        send: (request) => this.sendAiAssistantMessage(request),
+        choose: (request) => this.chooseAiAssistantInteraction(request),
+        clearHistory: () => this.clearAiAssistantHistory(),
+        renderMarkdown: (markdown, element, sourcePath) => this.renderMarkdown(markdown, element, sourcePath)
+      }
+    }).open();
+  }
+
+  private async loadAiAssistantCatalog(): Promise<AiAssistantCatalog> {
+    let warning = "";
+
+    if (this.settings.backend.enabled) {
+      try {
+        const [models, skills, agents] = await Promise.all([
+          this.backendClient.listModels(),
+          this.backendClient.listSkills(),
+          this.backendClient.listAgents()
+        ]);
+        if (models.length > 0) {
+          this.aiAssistantMode = "backend";
+          const context = this.getAiAssistantContextPreview();
+          const selectedModelId = models.some((model) => model.id === this.aiAssistantState.selectedModelId)
+            ? this.aiAssistantState.selectedModelId
+            : models[0].id;
+          return {
+            mode: "backend",
+            models,
+            skills,
+            agents,
+            selectedModelId,
+            selectedSkillPath: skills.some((skill) => skill.skillPath === this.aiAssistantState.selectedSkillPath)
+              ? this.aiAssistantState.selectedSkillPath
+              : "",
+            selectedAgentIds: this.aiAssistantState.selectedAgentIds.filter((id) => agents.some((agent) => agent.agentId === id)),
+            context
+          };
+        }
+        warning = this.settings.language === "zh"
+          ? "Backend 没有返回聊天模型，已回退插件直连。"
+          : "Backend returned no chat models; using the direct provider.";
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        warning = this.settings.language === "zh"
+          ? `Backend 助手不可用，已回退插件直连：${message}`
+          : `Backend assistant unavailable; using the direct provider: ${message}`;
+      }
+    }
+
+    this.aiAssistantMode = "direct";
+    let models: AiModelInfo[] = [];
+    try {
+      models = await this.aiProvider.listModels();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      warning = warning || (this.settings.language === "zh"
+        ? `模型发现不可用，使用手动模型：${message}`
+        : `Model discovery unavailable; using the configured model: ${message}`);
+    }
+    const configuredModel = this.settings.ai.model.trim();
+    if (configuredModel && !models.some((model) => model.id === configuredModel)) {
+      models.unshift({ id: configuredModel });
+    }
+    if (models.length === 0) {
+      throw new Error(this.settings.language === "zh"
+        ? "请先在 AI 设置中填写 Base URL、API Key 和模型。"
+        : "Configure an AI Base URL, API key, and model first.");
+    }
+    const selectedModelId = models.some((model) => model.id === this.aiAssistantState.selectedModelId)
+      ? this.aiAssistantState.selectedModelId
+      : configuredModel || models[0].id;
+    return {
+      mode: "direct",
+      models: models.map((model) => ({ id: model.id, label: model.id, provider: model.ownedBy })),
+      skills: [],
+      agents: [],
+      selectedModelId,
+      selectedSkillPath: "",
+      selectedAgentIds: [],
+      context: this.getAiAssistantContextPreview(),
+      warning: warning || undefined
+    };
+  }
+
+  private async sendAiAssistantMessage(request: AiAssistantSendRequest) {
+    const message = request.message.trim();
+    if (!message) {
+      return [...this.aiAssistantState.messages];
+    }
+    const previousMessages = [...this.aiAssistantState.messages];
+    const userMessage = createAiAssistantMessage("user", message, {
+      modelId: request.modelId,
+      skillPath: request.skillPath || undefined,
+      agentIds: request.agentIds
+    });
+    this.aiAssistantState = {
+      messages: [...previousMessages, userMessage].slice(-80),
+      selectedModelId: request.modelId,
+      selectedSkillPath: request.skillPath,
+      selectedAgentIds: request.agentIds
+    };
+    await this.saveAiAssistantState();
+
+    try {
+      const context = this.getAiAssistantContextPreview();
+      const history = previousMessages.slice(-30).map(({ role, content }) => ({ role, content }));
+      let reply = "";
+      let interaction: AiAssistantChoiceInteraction | undefined;
+      if (this.aiAssistantMode === "backend") {
+        if (request.skillPath) {
+          const skillReply = await this.backendClient.runSkill({
+            skillPath: request.skillPath,
+            modelId: request.modelId,
+            userInput: buildSkillInput(message, history, context, request.agentIds)
+          });
+          ({ content: reply, interaction } = parseBackendInteraction(skillReply));
+        } else {
+          const backendReply = await this.backendClient.chatOnContext({
+            message,
+            modelId: request.modelId,
+            notePaths: context.activeFile ? [context.activeFile] : [],
+            contextSnippets: buildBackendContextSnippets(context),
+            chatHistory: history,
+            agentIds: request.agentIds
+          });
+          ({ content: reply, interaction } = parseBackendInteraction(backendReply));
+        }
+      } else {
+        const systemContext = await this.buildDirectAiAssistantSystemContext(context);
+        const messages = [
+          { role: "system", content: systemContext },
+          ...history,
+          { role: "user", content: message }
+        ] as const;
+        try {
+          const completion = await this.aiProvider.complete([...messages], request.modelId, {
+            tools: [ASK_USER_CHOICE_TOOL]
+          });
+          ({ content: reply, interaction } = parseDirectInteraction(completion.content, completion.toolCalls));
+        } catch {
+          reply = await this.aiProvider.chat([...messages], request.modelId);
+        }
+      }
+      const assistantMessage = createAiAssistantMessage("assistant", reply, {
+        modelId: request.modelId,
+        skillPath: request.skillPath || undefined,
+        agentIds: request.agentIds,
+        interaction
+      });
+      this.aiAssistantState.messages = [...this.aiAssistantState.messages, assistantMessage].slice(-80);
+      await this.saveAiAssistantState();
+      return [...this.aiAssistantState.messages];
+    } catch (error) {
+      this.aiAssistantState = { ...this.aiAssistantState, messages: previousMessages };
+      await this.saveAiAssistantState();
+      throw error;
+    }
+  }
+
+  private async chooseAiAssistantInteraction(request: {
+    messageId: string;
+    optionId: string;
+    modelId: string;
+    skillPath: string;
+    agentIds: string[];
+  }) {
+    const index = this.aiAssistantState.messages.findIndex((message) => message.id === request.messageId);
+    const message = this.aiAssistantState.messages[index];
+    const interaction = message?.interaction;
+    if (!interaction || interaction.status !== "pending") {
+      return [...this.aiAssistantState.messages];
+    }
+    const followUp = choiceFollowUpText(interaction, request.optionId);
+    if (!followUp) {
+      return [...this.aiAssistantState.messages];
+    }
+    const updated = {
+      ...message,
+      interaction: { ...interaction, status: "answered" as const, selectedOptionId: request.optionId }
+    };
+    this.aiAssistantState.messages = this.aiAssistantState.messages.map((item, itemIndex) => itemIndex === index ? updated : item);
+    await this.saveAiAssistantState();
+    return this.sendAiAssistantMessage({
+      message: followUp,
+      modelId: request.modelId,
+      skillPath: request.skillPath,
+      agentIds: request.agentIds
+    });
+  }
+
+  private async clearAiAssistantHistory() {
+    this.aiAssistantState = { ...this.aiAssistantState, messages: [] };
+    await this.saveAiAssistantState();
+    return [];
+  }
+
+  private getAiAssistantContextPreview(): AiAssistantContextPreview {
+    const activeFile = this.getActiveFile() ?? undefined;
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const selection = view?.editor.getSelection().trim().slice(0, 4000) || undefined;
+    const questionSummaries = activeFile
+      ? this.store.query({ filePath: activeFile })
+        .filter((question) => question.status !== "resolved" && question.status !== "ignored")
+        .slice(0, 20)
+        .map((question) => `${question.lane}: ${question.title || question.question}`.slice(0, 500))
+      : [];
+    const sentFields = [
+      activeFile && this.aiAssistantMode === "backend" ? "active note path (Backend may read the note)" : "",
+      activeFile && this.aiAssistantMode === "direct" ? "active note path and content (up to 12,000 characters)" : "",
+      selection ? "selected text" : "",
+      questionSummaries.length ? "unresolved question summaries" : "",
+      "local chat history",
+      this.aiAssistantMode === "backend" ? "selected Backend model, Skill, and Agents" : "selected direct model"
+    ].filter(Boolean);
+    return { activeFile, selection, questionSummaries, sentFields };
+  }
+
+  private async buildDirectAiAssistantSystemContext(context: AiAssistantContextPreview): Promise<string> {
+    let noteContent = "";
+    if (context.activeFile) {
+      const file = this.app.vault.getFileByPath(context.activeFile);
+      if (file?.extension === "md") {
+        noteContent = (await this.app.vault.cachedRead(file)).slice(0, 12000);
+      }
+    }
+    return [
+      "You are the ToWrite AI assistant inside Obsidian.",
+      "Use only the explicitly supplied local context. Do not claim web access.",
+      "When a user decision is genuinely required before continuing, use the ask_user_choice tool. Otherwise answer directly.",
+      context.activeFile ? `Active note: ${context.activeFile}` : "",
+      context.selection ? `Selected text:\n${context.selection}` : "",
+      context.questionSummaries.length ? `Unresolved questions:\n${context.questionSummaries.join("\n")}` : "",
+      noteContent ? `Active note content:\n${noteContent}` : ""
+    ].filter(Boolean).join("\n\n");
+  }
+
+  private async saveAiAssistantState(): Promise<void> {
+    await this.savePluginData();
+    const root = normalizeVaultPath(this.settings.exportDirectory);
+    await this.writeVaultText(`${root}/ai/conversations.json`, `${JSON.stringify({
+      schemaVersion: 1,
+      updatedAt: new Date().toISOString(),
+      conversation: this.aiAssistantState
+    }, null, 2)}\n`);
   }
 
   async exportLearningData(showNotice = true): Promise<void> {
@@ -1137,17 +1461,7 @@ export default class ToWritePlugin extends Plugin {
   }
 
   private async writeVaultText(path: string, content: string): Promise<void> {
-    const normalized = normalizeVaultPath(path);
-    await this.ensureParentFolder(normalized);
-    const file = this.app.vault.getAbstractFileByPath(normalized);
-    if (file instanceof TFile) {
-      await this.app.vault.modify(file, content);
-      return;
-    }
-    if (file) {
-      throw new Error(`${normalized} exists and is not a file.`);
-    }
-    await this.app.vault.create(normalized, content);
+    await writeVaultDataText(this.app, normalizeVaultPath(path), content);
   }
 
   async setCompactEditorDecorations(value: boolean): Promise<void> {
@@ -1615,6 +1929,7 @@ export default class ToWritePlugin extends Plugin {
     this.snoozedSuggestions = data?.snoozedSuggestions && typeof data.snoozedSuggestions === "object"
       ? { ...data.snoozedSuggestions }
       : {};
+    this.aiAssistantState = normalizeAiAssistantState(data?.aiAssistantState);
   }
 
   private createUiApi(): ToWriteUiApi {
@@ -1630,6 +1945,13 @@ export default class ToWritePlugin extends Plugin {
       getArticleSummaries: () => this.store.getArticleSummaries(),
       getArticleTypes: () => this.settings.articleTypes.enabled
         ? this.settings.articleTypes.types.map((type) => ({ ...type }))
+        : [],
+      getWorkflowStages: () => this.settings.workflowStages.enabled
+        ? this.settings.workflowStages.stages.map((stage) => ({
+            ...stage,
+            folderPrefixes: [...stage.folderPrefixes],
+            tags: [...stage.tags]
+          }))
         : [],
       getWorkflowPayload: () => this.workflowIndex.getPayload({ limit: 200, compact: true }),
       getStatusOptions: () => this.settings.statusOptions,
@@ -1649,6 +1971,7 @@ export default class ToWritePlugin extends Plugin {
       },
       createQuestionFromSelection: (lane, color) => this.createQuestionFromSelection(lane, color),
       openCapture: () => this.openCaptureModal({ entryPoint: "sidebar" }),
+      openAiAssistant: () => this.openAiAssistant(),
       openCaptureForQuestion: (id) => this.openCaptureForQuestion(id),
       actOnSuggestion: (id, action) => this.actOnSuggestion(id, action),
       acceptSuggestion: (id) => this.acceptSuggestion(id),
@@ -1664,20 +1987,13 @@ export default class ToWritePlugin extends Plugin {
   }
 
   refreshEditorDecorations(): void {
-    this.app.workspace.iterateAllLeaves((leaf) => {
-      const view = leaf.view;
-      if (!(view instanceof MarkdownView)) {
-        return;
-      }
-      const cm = (view.editor as unknown as { cm?: { dispatch: (transaction?: object) => void } }).cm;
-      cm?.dispatch?.({});
-    });
+    this.app.workspace.updateOptions();
   }
 
   private async activateSidebar(): Promise<void> {
     const existing = this.app.workspace.getLeavesOfType(TOWRITE_SIDEBAR_VIEW)[0];
     if (existing) {
-      this.app.workspace.setActiveLeaf(existing, { focus: true });
+      await this.app.workspace.revealLeaf(existing);
       return;
     }
 
@@ -1687,7 +2003,7 @@ export default class ToWritePlugin extends Plugin {
     }
 
     await leaf.setViewState({ type: TOWRITE_SIDEBAR_VIEW, active: true });
-    this.app.workspace.setActiveLeaf(leaf, { focus: true });
+    await this.app.workspace.revealLeaf(leaf);
   }
 
   private async activateDashboard(): Promise<void> {
@@ -2211,6 +2527,42 @@ export default class ToWritePlugin extends Plugin {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+function buildBackendContextSnippets(context: AiAssistantContextPreview) {
+  const snippets: Array<{ kind: string; title: string; text: string }> = [{
+    kind: "assistant_tool_contract",
+    title: "ToWrite interactive choice tool",
+    text: BACKEND_CHOICE_INSTRUCTION
+  }];
+  if (context.selection) {
+    snippets.push({ kind: "selection", title: "Obsidian selection", text: context.selection });
+  }
+  if (context.questionSummaries.length > 0) {
+    snippets.push({
+      kind: "open_questions",
+      title: "ToWrite unresolved questions",
+      text: context.questionSummaries.join("\n")
+    });
+  }
+  return snippets;
+}
+
+function buildSkillInput(
+  message: string,
+  history: Array<{ role: "user" | "assistant"; content: string }>,
+  context: AiAssistantContextPreview,
+  agentIds: string[] = []
+): string {
+  return [
+    BACKEND_CHOICE_INSTRUCTION,
+    context.activeFile ? `Active note: ${context.activeFile}` : "",
+    agentIds.length ? `Requested agents: ${agentIds.map((id) => `@${id}`).join(", ")}` : "",
+    context.selection ? `Selected text:\n${context.selection}` : "",
+    context.questionSummaries.length ? `Unresolved questions:\n${context.questionSummaries.join("\n")}` : "",
+    history.length ? `Recent conversation:\n${history.map((item) => `${item.role}: ${item.content}`).join("\n")}` : "",
+    `User request:\n${message}`
+  ].filter(Boolean).join("\n\n").slice(0, 30000);
 }
 
 function normalizeSettings(settings?: Partial<ToWriteSettings>): ToWriteSettings {

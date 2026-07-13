@@ -214,7 +214,12 @@ class FakeVault {
 }
 
 function fakeApp(vault: FakeVault): App {
-  return { vault } as unknown as App;
+  return {
+    vault,
+    fileManager: {
+      trashFile: (file: TAbstractFile) => vault.delete(file)
+    }
+  } as unknown as App;
 }
 
 function draft(patch: Partial<CaptureDraft> = {}): CaptureDraft {
