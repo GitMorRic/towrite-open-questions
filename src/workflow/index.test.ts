@@ -1,5 +1,5 @@
-import type { App } from "obsidian";
-import { describe, expect, it } from "vitest";
+import type { App, TFile } from "obsidian";
+import { describe, expect, it, vi } from "vitest";
 import type { ArticleTypesSettings, WorkflowStagesSettings } from "../core/settings";
 import type { OpenQuestion } from "../core/types";
 import {
@@ -154,6 +154,103 @@ describe("workflow stages", () => {
     expect(index.getPayload().stages.map((stage) => stage.id)).toEqual(["sparks", "processing"]);
   });
 
+  it("upserts one file without rereading the rest of the Vault", async () => {
+    const first = fakeWorkflowFile("MindFlow/01-Sparks/first.md", 1_000);
+    const second = fakeWorkflowFile("MindFlow/01-Sparks/second.md", 2_000);
+    const contents = new Map([
+      [first.path, "# First\n\nInitial first note."],
+      [second.path, "# Second\n\nSecond note must stay cached."]
+    ]);
+    const { app, cachedRead } = fakeWorkflowApp([first, second], contents);
+    const index = new WorkflowIndex(
+      app,
+      () => settings,
+      () => ({ enabled: false, parseHierarchicalTags: true, types: [] }),
+      () => ".obsidian-open-questions",
+      () => []
+    );
+
+    await index.rebuild();
+    expect(cachedRead).toHaveBeenCalledTimes(2);
+
+    cachedRead.mockClear();
+    contents.set(first.path, "# First\n\nUpdated first note only.");
+    first.stat.mtime = 3_000;
+    await index.upsert(first);
+
+    expect(cachedRead).toHaveBeenCalledTimes(1);
+    expect(cachedRead).toHaveBeenCalledWith(first);
+    expect(cachedRead).not.toHaveBeenCalledWith(second);
+    expect(index.getPayload().files?.find((file) => file.filePath === first.path)?.description)
+      .toBe("Updated first note only.");
+    expect(index.getPayload().files?.find((file) => file.filePath === second.path)?.description)
+      .toBe("Second note must stay cached.");
+  });
+
+  it("removes one cached file without rereading Vault documents", async () => {
+    const first = fakeWorkflowFile("MindFlow/01-Sparks/first.md", 1_000);
+    const second = fakeWorkflowFile("MindFlow/01-Sparks/second.md", 2_000);
+    const { app, cachedRead } = fakeWorkflowApp([first, second], new Map([
+      [first.path, "# First\n\nFirst note."],
+      [second.path, "# Second\n\nSecond note."]
+    ]));
+    const index = new WorkflowIndex(
+      app,
+      () => settings,
+      () => ({ enabled: false, parseHierarchicalTags: true, types: [] }),
+      () => ".obsidian-open-questions",
+      () => []
+    );
+
+    await index.rebuild();
+    cachedRead.mockClear();
+    index.removeFile(first.path);
+
+    expect(cachedRead).not.toHaveBeenCalled();
+    expect(index.getPayload().counts.uniqueFiles).toBe(1);
+    expect(index.getPayload().files?.map((file) => file.filePath)).toEqual([second.path]);
+  });
+
+  it("preserves a newer upsert that finishes during a full rebuild", async () => {
+    const file = fakeWorkflowFile("MindFlow/01-Sparks/race.md", 1_000);
+    let readCount = 0;
+    let resolveOlderRead!: (content: string) => void;
+    const app = {
+      vault: {
+        getName: () => "Vault",
+        getMarkdownFiles: () => [file],
+        cachedRead: async () => {
+          readCount += 1;
+          if (readCount === 1) {
+            return new Promise<string>((resolve) => {
+              resolveOlderRead = resolve;
+            });
+          }
+          return "# Race\n\nNewer workflow description.";
+        }
+      },
+      metadataCache: {
+        getFileCache: () => ({ headings: [], tags: [] })
+      }
+    } as unknown as App;
+    const index = new WorkflowIndex(
+      app,
+      () => settings,
+      () => ({ enabled: false, parseHierarchicalTags: true, types: [] }),
+      () => ".obsidian-open-questions",
+      () => []
+    );
+
+    const rebuild = index.rebuild();
+    await Promise.resolve();
+    await index.upsert(file);
+    resolveOlderRead("# Race\n\nOlder workflow description.");
+    await rebuild;
+
+    expect(index.getPayload().files?.[0]?.description).toBe("Newer workflow description.");
+    expect(readCount).toBe(2);
+  });
+
   it("matches folder prefixes and tags", () => {
     expect(matchWorkflowStage(documents[0], settings.stages[0])).toBe(true);
     expect(matchWorkflowStage({ filePath: "Other/file.md", tags: ["spark"] }, settings.stages[0])).toBe(true);
@@ -250,3 +347,32 @@ describe("workflow stages", () => {
     expect(payload.stages[0].files[0].frontmatter).toBeUndefined();
   });
 });
+
+function fakeWorkflowFile(path: string, mtime: number): TFile {
+  const name = path.split("/").pop() ?? path;
+  return {
+    path,
+    name,
+    basename: name.replace(/\.md$/u, ""),
+    extension: "md",
+    stat: { ctime: mtime, mtime, size: 0 }
+  } as TFile;
+}
+
+function fakeWorkflowApp(files: TFile[], contents: Map<string, string>): {
+  app: App;
+  cachedRead: ReturnType<typeof vi.fn>;
+} {
+  const cachedRead = vi.fn(async (file: TFile) => contents.get(file.path) ?? "");
+  const app = {
+    vault: {
+      getName: () => "Capture",
+      getMarkdownFiles: () => files,
+      cachedRead
+    },
+    metadataCache: {
+      getFileCache: () => ({ headings: [], tags: [], frontmatter: {} })
+    }
+  } as unknown as App;
+  return { app, cachedRead };
+}

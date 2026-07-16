@@ -60,6 +60,10 @@ export class QuestionSidecarRepository {
     return questions;
   }
 
+  async resolveQuestions(questions: OpenQuestion[]): Promise<OpenQuestion[]> {
+    return Promise.all(questions.map((question) => this.resolveQuestion(question)));
+  }
+
   private async resolveQuestion(question: OpenQuestion): Promise<OpenQuestion> {
     if (!question.anchor) {
       return question;

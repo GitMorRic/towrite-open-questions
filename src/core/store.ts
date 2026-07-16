@@ -12,16 +12,25 @@ import type {
 
 type Listener = () => void;
 
+export interface OpenQuestionFileSnapshot {
+  filePath: string;
+  questions: OpenQuestion[];
+  suggestions: OpenQuestionSuggestion[];
+}
+
 export class OpenQuestionStore {
   private readonly parsedByFile = new Map<string, OpenQuestion[]>();
   private readonly sidecarByFile = new Map<string, OpenQuestion[]>();
   private readonly suggestionsByFile = new Map<string, OpenQuestionSuggestion[]>();
   private readonly stateById = new Map<string, StoredQuestionState>();
+  private readonly stateIdsByFile = new Map<string, Set<string>>();
+  private readonly legacyStateIdsBySlug = new Map<string, Set<string>>();
   private readonly listeners = new Set<Listener>();
 
   constructor(initialStates: Record<string, StoredQuestionState> = {}) {
     for (const state of Object.values(initialStates)) {
       this.stateById.set(state.id, state);
+      this.indexState(state);
     }
   }
 
@@ -46,26 +55,83 @@ export class OpenQuestionStore {
     this.notify();
   }
 
-  replaceSidecarQuestions(filePath: string, questions: OpenQuestion[]): void {
-    this.sidecarByFile.set(filePath, questions);
-    this.notify();
+  replaceFileSnapshot(
+    filePath: string,
+    questions: OpenQuestion[],
+    suggestions: OpenQuestionSuggestion[],
+    notify = true
+  ): void {
+    this.parsedByFile.set(filePath, questions);
+    this.suggestionsByFile.set(filePath, suggestions);
+    if (notify) {
+      this.notify();
+    }
   }
 
-  replaceAllSidecarQuestions(questions: OpenQuestion[]): void {
+  replaceVaultSnapshot(snapshots: Iterable<OpenQuestionFileSnapshot>, notify = true): void {
+    const parsedByFile = new Map<string, OpenQuestion[]>();
+    const suggestionsByFile = new Map<string, OpenQuestionSuggestion[]>();
+
+    for (const snapshot of snapshots) {
+      parsedByFile.set(snapshot.filePath, snapshot.questions);
+      suggestionsByFile.set(snapshot.filePath, snapshot.suggestions);
+    }
+
+    this.parsedByFile.clear();
+    this.suggestionsByFile.clear();
+    for (const [filePath, questions] of parsedByFile) {
+      this.parsedByFile.set(filePath, questions);
+    }
+    for (const [filePath, suggestions] of suggestionsByFile) {
+      this.suggestionsByFile.set(filePath, suggestions);
+    }
+    if (notify) {
+      this.notify();
+    }
+  }
+
+  replaceSidecarQuestions(filePath: string, questions: OpenQuestion[], notify = true): void {
+    this.sidecarByFile.set(filePath, questions);
+    if (notify) {
+      this.notify();
+    }
+  }
+
+  replaceAllSidecarQuestions(questions: OpenQuestion[], notify = true): void {
     this.sidecarByFile.clear();
     for (const question of questions) {
       const existing = this.sidecarByFile.get(question.source.file) ?? [];
       existing.push(question);
       this.sidecarByFile.set(question.source.file, existing);
     }
-    this.notify();
+    if (notify) {
+      this.notify();
+    }
   }
 
-  removeFile(filePath: string): void {
+  hasSidecarQuestionsForFile(filePath: string): boolean {
+    return (this.sidecarByFile.get(filePath)?.length ?? 0) > 0;
+  }
+
+  getSidecarQuestionsForFile(filePath: string): OpenQuestion[] {
+    return [...(this.sidecarByFile.get(filePath) ?? [])];
+  }
+
+  removeFile(filePath: string, notify = true): void {
     this.parsedByFile.delete(filePath);
     this.sidecarByFile.delete(filePath);
     this.suggestionsByFile.delete(filePath);
-    this.notify();
+    if (notify) {
+      this.notify();
+    }
+  }
+
+  removeParsedFile(filePath: string, notify = true): void {
+    this.parsedByFile.delete(filePath);
+    this.suggestionsByFile.delete(filePath);
+    if (notify) {
+      this.notify();
+    }
   }
 
   getAllQuestions(): OpenQuestion[] {
@@ -81,6 +147,19 @@ export class OpenQuestionStore {
 
     return Array.from(merged.values())
       .map((question) => this.applyState(question));
+  }
+
+  getQuestionsForFile(filePath: string): OpenQuestion[] {
+    const merged = new Map<string, OpenQuestion>();
+
+    for (const question of this.parsedByFile.get(filePath) ?? []) {
+      merged.set(question.id, question);
+    }
+    for (const question of this.sidecarByFile.get(filePath) ?? []) {
+      merged.set(question.id, question);
+    }
+
+    return Array.from(merged.values(), (question) => this.applyState(question));
   }
 
   query(query: OpenQuestionQuery = {}): OpenQuestion[] {
@@ -114,8 +193,30 @@ export class OpenQuestionStore {
   }
 
   getSuggestions(filePath?: string): OpenQuestionSuggestion[] {
-    const suggestions = this.getAllSuggestions();
-    return filePath ? suggestions.filter((suggestion) => suggestion.source.file === filePath) : suggestions;
+    return filePath ? this.getSuggestionsForFile(filePath) : this.getAllSuggestions();
+  }
+
+  getSuggestionsForFile(filePath: string): OpenQuestionSuggestion[] {
+    const questions = this.getQuestionsForFile(filePath);
+    const questionIds = new Set(questions.map((question) => question.id));
+    const relevantStates = this.getStatesForFile(filePath);
+    const questionSignatures = new Set(
+      questions
+        .filter((question) => question.status !== "ignored")
+        .map((question) => candidateSignature(question.lane, question.question || question.anchorText))
+    );
+    const ignoredStateSignatures = new Set(
+      relevantStates
+        .filter((state) => state.status === "ignored" && state.lane)
+        .map((state) => candidateSignature(state.lane!, state.question || state.anchorText))
+        .filter((signature) => signature.endsWith(":") === false)
+    );
+
+    return (this.suggestionsByFile.get(filePath) ?? [])
+      .filter((suggestion) => !questionIds.has(suggestion.id))
+      .filter((suggestion) => !this.stateById.has(suggestion.id))
+      .filter((suggestion) => !questionSignatures.has(candidateSignature(suggestion.lane, suggestion.question || suggestion.anchorText)))
+      .filter((suggestion) => !ignoredStateSignatures.has(candidateSignature(suggestion.lane, suggestion.question || suggestion.anchorText)));
   }
 
   getSuggestion(id: string): OpenQuestionSuggestion | undefined {
@@ -128,7 +229,7 @@ export class OpenQuestionStore {
       .some((question) => question.id === id);
   }
 
-  patchQuestion(id: string, patch: Omit<Partial<StoredQuestionState>, "id">): StoredQuestionState {
+  patchQuestion(id: string, patch: Omit<Partial<StoredQuestionState>, "id">, notify = true): StoredQuestionState {
     const existing = this.stateById.get(id);
     const now = new Date().toISOString();
     const next: StoredQuestionState = {
@@ -139,8 +240,14 @@ export class OpenQuestionStore {
       updatedAt: now
     };
 
+    if (existing) {
+      this.unindexState(existing);
+    }
     this.stateById.set(id, next);
-    this.notify();
+    this.indexState(next);
+    if (notify) {
+      this.notify();
+    }
     return next;
   }
 
@@ -179,6 +286,62 @@ export class OpenQuestionStore {
       updatedAt: state.updatedAt ?? question.updatedAt
     });
   }
+
+  private getStatesForFile(filePath: string): StoredQuestionState[] {
+    const slug = slugify(filePath.split(/[\\/]/u).pop() ?? filePath);
+    const ids = new Set([
+      ...(this.stateIdsByFile.get(filePath) ?? []),
+      ...(this.legacyStateIdsBySlug.get(slug) ?? [])
+    ]);
+
+    return Array.from(ids, (id) => this.stateById.get(id))
+      .filter((state): state is StoredQuestionState => state !== undefined);
+  }
+
+  private indexState(state: StoredQuestionState): void {
+    if (state.source?.file) {
+      addToSetMap(this.stateIdsByFile, state.source.file, state.id);
+      return;
+    }
+
+    const slug = legacyStateSlug(state.id);
+    if (slug) {
+      addToSetMap(this.legacyStateIdsBySlug, slug, state.id);
+    }
+  }
+
+  private unindexState(state: StoredQuestionState): void {
+    if (state.source?.file) {
+      removeFromSetMap(this.stateIdsByFile, state.source.file, state.id);
+      return;
+    }
+
+    const slug = legacyStateSlug(state.id);
+    if (slug) {
+      removeFromSetMap(this.legacyStateIdsBySlug, slug, state.id);
+    }
+  }
+}
+
+function addToSetMap(map: Map<string, Set<string>>, key: string, value: string): void {
+  const values = map.get(key) ?? new Set<string>();
+  values.add(value);
+  map.set(key, values);
+}
+
+function removeFromSetMap(map: Map<string, Set<string>>, key: string, value: string): void {
+  const values = map.get(key);
+  if (!values) {
+    return;
+  }
+  values.delete(value);
+  if (values.size === 0) {
+    map.delete(key);
+  }
+}
+
+function legacyStateSlug(id: string): string | undefined {
+  return /^oq_(.+)_[a-z0-9]{7}$/u.exec(id)?.[1];
 }
 
 function matchesSuggestionSignature(suggestion: OpenQuestionSuggestion, question: OpenQuestion): boolean {
@@ -212,6 +375,10 @@ function normalizedCandidateText(text?: string): string {
   return stripQuestionRuleSyntax(text ?? "")
     .replace(/\s+/gu, " ")
     .trim();
+}
+
+function candidateSignature(lane: OpenQuestion["lane"], text?: string): string {
+  return `${lane}:${normalizedCandidateText(text)}`;
 }
 
 function cleanQuestionDisplayText(question: OpenQuestion): OpenQuestion {

@@ -15,6 +15,7 @@ const PDF_VIEWER_SELECTOR = ".pdf-container, .pdf-viewer, .pdf-embed, .workspace
 export class PdfQuestionLayer {
   private root?: HTMLElement;
   private observer?: MutationObserver;
+  private observedViewer?: HTMLElement;
   private frame: number | null = null;
 
   constructor(private readonly options: PdfQuestionLayerOptions) {}
@@ -27,9 +28,6 @@ export class PdfQuestionLayer {
     this.options.component.registerDomEvent(doc, "scroll", () => this.scheduleRender(), true);
     this.options.component.registerDomEvent(win, "resize", () => this.scheduleRender());
     this.options.component.register(this.options.subscribe(() => this.scheduleRender()));
-    const observer = new MutationObserver(() => this.scheduleRender());
-    observer.observe(doc.body, { childList: true, subtree: true });
-    this.observer = observer;
     this.options.component.register(() => this.destroy());
     this.scheduleRender();
   }
@@ -40,6 +38,8 @@ export class PdfQuestionLayer {
       this.frame = null;
     }
     this.observer?.disconnect();
+    this.observer = undefined;
+    this.observedViewer = undefined;
     this.root?.remove();
     this.root = undefined;
   }
@@ -58,10 +58,13 @@ export class PdfQuestionLayer {
     const file = activePdfFile(this.options.app);
     const viewer = activePdfViewer(this.options.app);
     if (!file || !viewer) {
+      this.disconnectObserver();
       this.root?.remove();
       this.root = undefined;
       return;
     }
+
+    this.observeViewer(viewer);
 
     const host = viewer.closest<HTMLElement>(".workspace-leaf-content") ?? viewer;
     host.addClass("towrite-pdf-host");
@@ -73,6 +76,10 @@ export class PdfQuestionLayer {
 
     const hostRect = host.getBoundingClientRect();
     this.root.querySelectorAll(".towrite-pdf-highlight").forEach((element) => element.remove());
+    const pagesByNumber = new Map(
+      Array.from(viewer.querySelectorAll<HTMLElement>(PDF_PAGE_SELECTOR))
+        .map((page) => [pageNumber(page), page] as const)
+    );
 
     for (const question of this.options.getQuestions(file.path)) {
       const anchor = question.source.pdfAnchor;
@@ -81,7 +88,7 @@ export class PdfQuestionLayer {
       }
 
       for (const rect of anchor.rects) {
-        const page = pageElementByNumber(this.options.app, rect.pageNumber);
+        const page = pagesByNumber.get(rect.pageNumber);
         if (!page) {
           continue;
         }
@@ -100,6 +107,39 @@ export class PdfQuestionLayer {
       }
     }
   }
+
+  private observeViewer(viewer: HTMLElement): void {
+    if (this.observedViewer === viewer && this.observer) {
+      return;
+    }
+    this.disconnectObserver();
+    this.observedViewer = viewer;
+    this.observer = new MutationObserver((mutations) => {
+      if (pdfMutationsRequireRender(mutations, this.root)) {
+        this.scheduleRender();
+      }
+    });
+    this.observer.observe(viewer, { childList: true, subtree: true });
+  }
+
+  private disconnectObserver(): void {
+    this.observer?.disconnect();
+    this.observer = undefined;
+    this.observedViewer = undefined;
+  }
+}
+
+export function pdfMutationsRequireRender(
+  mutations: ArrayLike<Pick<MutationRecord, "target" | "addedNodes" | "removedNodes">>,
+  root?: HTMLElement
+): boolean {
+  return Array.from(mutations).some((mutation) => {
+    if (root && (mutation.target === root || root.contains(mutation.target))) {
+      return false;
+    }
+    const changedNodes = [...Array.from(mutation.addedNodes), ...Array.from(mutation.removedNodes)];
+    return changedNodes.some((node) => node !== root && !root?.contains(node));
+  });
 }
 
 export function pdfAnchorFromCurrentSelection(): PdfAnchor | undefined {

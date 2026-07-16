@@ -1,4 +1,4 @@
-import { RangeSetBuilder, type Extension } from "@codemirror/state";
+import { RangeSetBuilder, StateEffect, type Extension } from "@codemirror/state";
 import {
   Decoration,
   type DecorationSet,
@@ -18,6 +18,39 @@ interface QuestionDecorationOptions {
   onIgnoreSuggestion: (id: string) => void | Promise<void>;
 }
 
+export type QuestionDecorationUpdateStrategy = "keep" | "map" | "rebuild";
+
+export interface QuestionDecorationUpdateSignals {
+  docChanged: boolean;
+  selectionSet: boolean;
+  viewportChanged: boolean;
+  reconfigured: boolean;
+  refreshRequested?: boolean;
+}
+
+export const refreshQuestionDecorations = StateEffect.define<void>();
+
+/**
+ * Keep editor input updates off the synchronous question-query path.
+ *
+ * CodeMirror can map an existing DecorationSet through document changes, so
+ * typing must never trigger a full rebuild. Selection and viewport-only
+ * updates do not change the underlying ranges at all. A new plugin instance
+ * builds during construction; an explicit editor reconfiguration is the only
+ * update that rebuilds the set.
+ */
+export function getQuestionDecorationUpdateStrategy(
+  signals: QuestionDecorationUpdateSignals
+): QuestionDecorationUpdateStrategy {
+  if (signals.reconfigured || signals.refreshRequested) {
+    return "rebuild";
+  }
+  if (signals.docChanged) {
+    return "map";
+  }
+  return "keep";
+}
+
 export function createQuestionDecorations(options: QuestionDecorationOptions): Extension {
   return ViewPlugin.fromClass(
     class {
@@ -28,8 +61,20 @@ export function createQuestionDecorations(options: QuestionDecorationOptions): E
       }
 
       update(update: ViewUpdate): void {
-        if (update.docChanged || update.viewportChanged || update.selectionSet) {
+        const strategy = getQuestionDecorationUpdateStrategy({
+          docChanged: update.docChanged,
+          selectionSet: update.selectionSet,
+          viewportChanged: update.viewportChanged,
+          reconfigured: update.transactions.some((transaction) => transaction.reconfigured),
+          refreshRequested: update.transactions.some((transaction) =>
+            transaction.effects.some((effect) => effect.is(refreshQuestionDecorations))
+          )
+        });
+
+        if (strategy === "rebuild") {
           this.decorations = buildDecorations(update.view, options);
+        } else if (strategy === "map") {
+          this.decorations = this.decorations.map(update.changes);
         }
       }
     },
@@ -153,7 +198,6 @@ class QuestionRemoveWidget extends WidgetType {
 
   toDOM(view: EditorView): HTMLElement {
     const doc = view.dom.ownerDocument;
-    const win = doc.defaultView ?? window;
     const wrapper = doc.createElement("span");
     wrapper.className = "towrite-mark-remove-anchor";
 
@@ -173,9 +217,9 @@ class QuestionRemoveWidget extends WidgetType {
       event.stopPropagation();
       button.disabled = true;
       void Promise.resolve(this.onDeleteQuestion(this.question.id))
-        .catch((error) => console.error("Failed to remove ToWrite marker", error))
-        .finally(() => {
-          win.setTimeout(() => view.dispatch({}), 0);
+        .catch((error) => {
+          console.error("Failed to remove ToWrite marker", error);
+          button.disabled = false;
         });
     });
 
@@ -203,7 +247,6 @@ class SuggestionActionsWidget extends WidgetType {
 
   toDOM(view: EditorView): HTMLElement {
     const doc = view.dom.ownerDocument;
-    const win = doc.defaultView ?? window;
     const wrapper = doc.createElement("span");
     wrapper.className = "towrite-suggestion-actions";
 
@@ -222,9 +265,10 @@ class SuggestionActionsWidget extends WidgetType {
       button.disabled = true;
       button.textContent = "Added";
       void Promise.resolve(this.onAcceptSuggestion(this.suggestion.id))
-        .catch((error) => console.error("Failed to accept ToWrite suggestion", error))
-        .finally(() => {
-          win.setTimeout(() => view.dispatch({}), 0);
+        .catch((error) => {
+          console.error("Failed to accept ToWrite suggestion", error);
+          button.disabled = false;
+          button.textContent = this.suggestion.lane === "write" ? "+ ToWrite" : "+ ToThink";
         });
     });
 
@@ -244,9 +288,10 @@ class SuggestionActionsWidget extends WidgetType {
       ignoreButton.disabled = true;
       button.disabled = true;
       void Promise.resolve(this.onIgnoreSuggestion(this.suggestion.id))
-        .catch((error) => console.error("Failed to ignore ToWrite suggestion", error))
-        .finally(() => {
-          win.setTimeout(() => view.dispatch({}), 0);
+        .catch((error) => {
+          console.error("Failed to ignore ToWrite suggestion", error);
+          ignoreButton.disabled = false;
+          button.disabled = false;
         });
     });
 

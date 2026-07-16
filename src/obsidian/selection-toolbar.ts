@@ -16,9 +16,16 @@ export class SelectionQuestionToolbar {
   private selectedColor: OpenQuestionColor | null = null;
   private paletteOpen = false;
   private currentSelectedText = "";
+  private positionFrame: number | null = null;
   private readonly swatches = new Map<OpenQuestionColor, HTMLButtonElement>();
-  private readonly handleMouseUp = () => {
-    this.win.setTimeout(() => this.positionNearSelection(), 0);
+  private readonly schedulePosition = () => {
+    if (this.positionFrame !== null) {
+      return;
+    }
+    this.positionFrame = this.win.requestAnimationFrame(() => {
+      this.positionFrame = null;
+      this.positionNearSelection();
+    });
   };
   private readonly handleScroll = () => this.hide();
 
@@ -30,19 +37,26 @@ export class SelectionQuestionToolbar {
     this.colorButton = rendered.colorButton;
     this.palette = rendered.palette;
     this.hide();
-    this.doc.addEventListener("mouseup", this.handleMouseUp);
-    this.doc.addEventListener("keyup", this.handleMouseUp);
+    this.doc.addEventListener("mouseup", this.schedulePosition);
+    this.doc.addEventListener("selectionchange", this.schedulePosition);
     this.doc.addEventListener("scroll", this.handleScroll, true);
   }
 
   destroy(): void {
-    this.doc.removeEventListener("mouseup", this.handleMouseUp);
-    this.doc.removeEventListener("keyup", this.handleMouseUp);
+    this.doc.removeEventListener("mouseup", this.schedulePosition);
+    this.doc.removeEventListener("selectionchange", this.schedulePosition);
     this.doc.removeEventListener("scroll", this.handleScroll, true);
+    if (this.positionFrame !== null) {
+      this.win.cancelAnimationFrame(this.positionFrame);
+      this.positionFrame = null;
+    }
     this.element.remove();
   }
 
   hide(): void {
+    if (!this.element.hasClass("is-visible") && !this.paletteOpen && !this.currentSelectedText) {
+      return;
+    }
     this.paletteOpen = false;
     this.currentSelectedText = "";
     this.resetColor();

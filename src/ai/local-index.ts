@@ -1,4 +1,5 @@
 import { TFile, type App } from "obsidian";
+import { mapInBatches } from "../core/async-batch";
 import type { OpenQuestion } from "../core/types";
 import type { LocalKnowledgeCandidate } from "./types";
 
@@ -25,7 +26,11 @@ export interface LocalKnowledgeTextQuery {
 
 interface IndexedDocument extends LocalKnowledgeDocument {
   tokens: Map<string, number>;
-  searchText: string;
+}
+
+export interface LocalKnowledgeIndexObserver {
+  /** Called after a document's searchable text has been tokenized. */
+  onDocumentIndexed?: (filePath: string) => void;
 }
 
 const STOPWORDS = new Set([
@@ -48,15 +53,41 @@ const STOPWORDS = new Set([
 ]);
 
 export class LocalKnowledgeIndex {
-  private documents: IndexedDocument[] = [];
+  private documents = new Map<string, IndexedDocument>();
+  private activeRebuild?: { changes: Map<string, IndexedDocument | null> };
+
+  constructor(private readonly observer: LocalKnowledgeIndexObserver = {}) {}
 
   async rebuild(app: App, exportDirectory: string, scope: LocalKnowledgeScope = {}): Promise<void> {
+    const rebuild = { changes: new Map<string, IndexedDocument | null>() };
+    this.activeRebuild = rebuild;
     const ignoredPrefix = normalizePath(exportDirectory);
     const files = app.vault.getMarkdownFiles()
       .filter((file) => !normalizePath(file.path).startsWith(`${ignoredPrefix}/`))
       .filter((file) => pathAllowed(file.path, scope));
-    const documents = await Promise.all(files.map((file) => readDocument(app, file)));
-    this.replaceDocuments(documents.filter((document) => documentAllowed(document, scope)));
+    try {
+      const documents = await mapInBatches(files, (file) => readDocument(app, file));
+      const indexed = await mapInBatches(
+        documents.filter((document) => documentAllowed(document, scope)),
+        (document) => this.indexDocument(document)
+      );
+      if (this.activeRebuild !== rebuild) {
+        return;
+      }
+      const next = new Map(indexed.map((document) => [document.file, document]));
+      for (const [filePath, document] of rebuild.changes) {
+        if (document) {
+          next.set(filePath, document);
+        } else {
+          next.delete(filePath);
+        }
+      }
+      this.documents = next;
+    } finally {
+      if (this.activeRebuild === rebuild) {
+        this.activeRebuild = undefined;
+      }
+    }
   }
 
   async upsert(app: App, file: TFile, exportDirectory: string, scope: LocalKnowledgeScope = {}): Promise<void> {
@@ -71,31 +102,21 @@ export class LocalKnowledgeIndex {
       this.remove(file.path);
       return;
     }
-    const remaining = this.documents.filter((item) => item.file !== file.path).map(stripIndexedFields);
-    this.replaceDocuments([...remaining, document]);
+    // Delete first so an updated document keeps the previous array implementation's
+    // insertion-order behavior without rebuilding any of the other documents.
+    const indexed = this.indexDocument(document);
+    this.documents.delete(file.path);
+    this.documents.set(file.path, indexed);
+    this.activeRebuild?.changes.set(file.path, indexed);
   }
 
   remove(filePath: string): void {
-    this.documents = this.documents.filter((item) => item.file !== filePath);
+    this.documents.delete(filePath);
+    this.activeRebuild?.changes.set(filePath, null);
   }
 
   replaceDocuments(documents: LocalKnowledgeDocument[]): void {
-    this.documents = documents.map((document) => {
-      const searchText = [
-        document.file,
-        document.title,
-        document.headings.join(" "),
-        document.tags.join(" "),
-        stringifyFrontmatter(document.frontmatter),
-        document.content
-      ].join("\n");
-
-      return {
-        ...document,
-        searchText,
-        tokens: countTokens(searchText)
-      };
-    });
+    this.documents = new Map(documents.map((document) => [document.file, this.indexDocument(document)]));
   }
 
   query(question: OpenQuestion, limit = 20): LocalKnowledgeCandidate[] {
@@ -117,7 +138,7 @@ export class LocalKnowledgeIndex {
     const input = typeof query === "string" ? { text: query } : query;
     const queryTokens = Array.from(countTokens(input.text).entries());
 
-    return this.documents
+    return Array.from(this.documents.values())
       .filter((document) => document.file !== input.excludeFile)
       .map((document) => ({
         document,
@@ -137,24 +158,30 @@ export class LocalKnowledgeIndex {
   }
 
   getSnippet(filePath: string): string | undefined {
-    const document = this.documents.find((item) => item.file === filePath);
+    const document = this.documents.get(filePath);
     return document ? bestSnippet(document.content, []) : undefined;
   }
 
   size(): number {
-    return this.documents.length;
+    return this.documents.size;
   }
-}
 
-function stripIndexedFields(document: IndexedDocument): LocalKnowledgeDocument {
-  return {
-    file: document.file,
-    title: document.title,
-    headings: [...document.headings],
-    tags: [...document.tags],
-    frontmatter: document.frontmatter,
-    content: document.content
-  };
+  private indexDocument(document: LocalKnowledgeDocument): IndexedDocument {
+    const searchText = [
+      document.file,
+      document.title,
+      document.headings.join(" "),
+      document.tags.join(" "),
+      stringifyFrontmatter(document.frontmatter),
+      document.content
+    ].join("\n");
+    const indexed = {
+      ...document,
+      tokens: countTokens(searchText)
+    };
+    this.observer.onDocumentIndexed?.(document.file);
+    return indexed;
+  }
 }
 
 async function readDocument(app: App, file: TFile): Promise<LocalKnowledgeDocument> {

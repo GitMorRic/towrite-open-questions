@@ -14,6 +14,7 @@ import {
 } from "obsidian";
 import { createQuestionAnchor, lineRangeForOffsets } from "./core/anchor";
 import { makeQuestionId } from "./core/hash";
+import { queryQuestions as filterQuestions } from "./core/query";
 import {
   DEFAULT_SETTINGS,
   DEFAULT_STATUS_OPTIONS,
@@ -94,7 +95,8 @@ import {
 import { Quote0SyncService, type Quote0SyncPreview, type Quote0SyncResult } from "./quote0/sync-service";
 import type { Quote0Device, Quote0DeviceStatus } from "./quote0/client";
 import { WorkflowIndex } from "./workflow";
-import { createQuestionDecorations } from "./obsidian/decorations";
+import { yieldToEventLoop } from "./core/async-batch";
+import { createQuestionDecorations, refreshQuestionDecorations } from "./obsidian/decorations";
 import { OpenQuestionIndexer } from "./obsidian/indexer";
 import { jumpToQuestion as jumpToQuestionInWorkspace } from "./obsidian/jump";
 import { AddQuestionModal } from "./obsidian/modal";
@@ -155,6 +157,9 @@ export default class ToWritePlugin extends Plugin {
   private backgroundRefreshTimer = 0;
   private backgroundRefreshRunning = false;
   private backgroundRefreshQueued = false;
+  private readonly pendingWorkflowPaths = new Set<string>();
+  private readonly activeContextListeners = new Set<() => void>();
+  private lastEditorActivityAt = 0;
   private readonly lastLearningEditPresence = new Map<string, number>();
   private readonly captureSuggestedTargets = new Map<string, string>();
   private readonly captureCommittedCandidates = new Map<string, CaptureTargetCandidate>();
@@ -274,7 +279,7 @@ export default class ToWritePlugin extends Plugin {
     this.pdfQuestionLayer = new PdfQuestionLayer({
       app: this.app,
       component: this,
-      getQuestions: (filePath) => this.store.query({ filePath }),
+      getQuestions: (filePath) => this.store.getQuestionsForFile(filePath),
       subscribe: (listener) => this.subscribe(listener)
     });
     this.pdfQuestionLayer.register();
@@ -405,11 +410,11 @@ export default class ToWritePlugin extends Plugin {
             if (!activePath) {
               return [];
             }
-            return this.store.query({ filePath: activePath }).filter((question) => question.status !== "ignored");
+            return this.store.getQuestionsForFile(activePath).filter((question) => question.status !== "ignored");
           },
           getActiveFileSuggestions: () => {
             const activePath = this.getActiveFile();
-            return activePath ? this.store.getSuggestions(activePath) : [];
+            return activePath ? this.store.getSuggestionsForFile(activePath) : [];
           },
           getCompactEditorDecorations: () => this.settings.compactEditorDecorations,
           onDeleteQuestion: (id) => this.deleteQuestion(id),
@@ -725,18 +730,20 @@ export default class ToWritePlugin extends Plugin {
   private async onCaptureVaultChanged(path: string, _operation: "commit" | "undo"): Promise<void> {
     const file = this.app.vault.getFileByPath(path);
     if (file) {
-      await this.indexer.indexFile(file);
+      await this.indexer.indexFile(file, false);
       if (this.shouldBuildLocalKnowledgeIndex()) {
         await this.localKnowledgeIndex.upsert(this.app, file, this.settings.exportDirectory, this.getLocalKnowledgeScope());
       }
+      await this.workflowIndex.upsert(file);
     } else {
-      this.indexer.removeFile(path);
+      await this.indexer.removeFile(path, false);
       this.localKnowledgeIndex.remove(path);
+      this.workflowIndex.removeFile(path);
     }
-    await this.workflowIndex.rebuild();
     if (this.settings.autoExport) {
       await this.exportNow(false, { rebuildWorkflow: false });
     }
+    this.refreshEditorDecorations();
     this.store.notify();
   }
 
@@ -815,8 +822,13 @@ export default class ToWritePlugin extends Plugin {
   }
 
   async refreshIndex(): Promise<void> {
-    await this.indexer.rebuildVault();
-    await this.refreshSidecars({ rebuildWorkflow: false });
+    await this.indexer.rebuildVault(false);
+    await this.refreshSidecars({ rebuildWorkflow: false, notify: false });
+    // Publish the core question index before optional knowledge/workflow scans.
+    // The scans below are batched, and this yield lets Obsidian paint/respond.
+    this.refreshEditorDecorations();
+    this.store.notify();
+    await yieldToEventLoop();
     if (this.shouldBuildLocalKnowledgeIndex()) {
       await this.localKnowledgeIndex.rebuild(this.app, this.settings.exportDirectory, this.getLocalKnowledgeScope());
     }
@@ -825,6 +837,7 @@ export default class ToWritePlugin extends Plugin {
       await this.exportNow(false, { rebuildWorkflow: false });
     }
     this.aiService.refreshMissingForActiveNote(this.getActiveFile());
+    this.refreshEditorDecorations();
     this.store.notify();
   }
 
@@ -866,7 +879,10 @@ export default class ToWritePlugin extends Plugin {
     }
   }
 
-  private scheduleBackgroundRefresh(delayMs = 3500): void {
+  private scheduleBackgroundRefresh(filePath?: string, delayMs = 3500): void {
+    if (filePath) {
+      this.pendingWorkflowPaths.add(filePath);
+    }
     if (this.backgroundRefreshTimer) {
       window.clearTimeout(this.backgroundRefreshTimer);
     }
@@ -881,20 +897,35 @@ export default class ToWritePlugin extends Plugin {
       this.backgroundRefreshQueued = true;
       return;
     }
+    if (Date.now() - this.lastEditorActivityAt < 1200) {
+      this.scheduleBackgroundRefresh(undefined, 1200);
+      return;
+    }
 
     this.backgroundRefreshRunning = true;
+    let paths: string[] = [];
     try {
-      await this.workflowIndex.rebuild();
+      paths = Array.from(this.pendingWorkflowPaths);
+      this.pendingWorkflowPaths.clear();
+      const files = paths
+        .map((path) => this.app.vault.getFileByPath(path))
+        .filter((file): file is TFile => Boolean(file));
+      if (files.length > 0) {
+        await this.workflowIndex.upsertFiles(files);
+      }
       if (this.settings.autoExport) {
         await this.exportNow(false, { rebuildWorkflow: false });
       }
       this.aiService.refreshMissingForActiveNote(this.getActiveFile());
       this.store.notify();
+    } catch (error) {
+      paths.forEach((path) => this.pendingWorkflowPaths.add(path));
+      console.error("ToWrite background refresh failed", error);
     } finally {
       this.backgroundRefreshRunning = false;
       if (this.backgroundRefreshQueued) {
         this.backgroundRefreshQueued = false;
-        this.scheduleBackgroundRefresh(1200);
+        this.scheduleBackgroundRefresh(undefined, 1200);
       }
     }
   }
@@ -914,6 +945,17 @@ export default class ToWritePlugin extends Plugin {
 
   subscribe(listener: () => void): () => void {
     return this.store.subscribe(listener);
+  }
+
+  subscribeActiveContext(listener: () => void): () => void {
+    this.activeContextListeners.add(listener);
+    return () => this.activeContextListeners.delete(listener);
+  }
+
+  private notifyActiveContext(): void {
+    for (const listener of this.activeContextListeners) {
+      listener();
+    }
   }
 
   async savePluginData(): Promise<void> {
@@ -1160,7 +1202,7 @@ export default class ToWritePlugin extends Plugin {
     const view = this.app.workspace.getActiveViewOfType(MarkdownView);
     const selection = view?.editor.getSelection().trim().slice(0, 4000) || undefined;
     const questionSummaries = activeFile
-      ? this.store.query({ filePath: activeFile })
+      ? this.store.getQuestionsForFile(activeFile)
         .filter((question) => question.status !== "resolved" && question.status !== "ignored")
         .slice(0, 20)
         .map((question) => `${question.lane}: ${question.title || question.question}`.slice(0, 500))
@@ -1606,7 +1648,7 @@ export default class ToWritePlugin extends Plugin {
       patch.notes = [...(question.notes ?? []), appendedNote];
     }
 
-    this.store.patchQuestion(id, patch);
+    this.patchQuestionState(id, patch);
     await this.savePluginData();
     if (this.settings.autoExport) {
       await this.exportNow(false);
@@ -1624,7 +1666,7 @@ export default class ToWritePlugin extends Plugin {
       return question;
     }
 
-    this.store.patchQuestion(id, {
+    this.patchQuestionState(id, {
       notes: [...(question.notes ?? []), note]
     });
     await this.savePluginData();
@@ -1683,7 +1725,7 @@ export default class ToWritePlugin extends Plugin {
       if (hasReminderDismissedAt) {
         statePatch.reminderDismissedAt = updated.reminderDismissedAt;
       }
-      this.store.patchQuestion(id, statePatch);
+      this.patchQuestionState(id, statePatch);
     }
 
     await this.savePluginData();
@@ -1940,6 +1982,9 @@ export default class ToWritePlugin extends Plugin {
         if (query.scope === "active-file" && !query.filePath) {
           return [];
         }
+        if (query.filePath) {
+          return filterQuestions(this.store.getQuestionsForFile(query.filePath), query);
+        }
         return this.store.query(query);
       },
       getArticleSummaries: () => this.store.getArticleSummaries(),
@@ -1982,12 +2027,28 @@ export default class ToWritePlugin extends Plugin {
       refreshIndex: () => this.refreshIndex(),
       exportNow: () => this.exportNow(true),
       toggleCompactEditorDecorations: () => this.setCompactEditorDecorations(!this.settings.compactEditorDecorations),
-      subscribe: (listener) => this.subscribe(listener)
+      subscribe: (listener) => this.subscribe(listener),
+      subscribeActiveContext: (listener) => this.subscribeActiveContext(listener)
     };
   }
 
   refreshEditorDecorations(): void {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const codeMirror = (view?.editor as unknown as {
+      cm?: { dispatch: (spec: { effects: ReturnType<typeof refreshQuestionDecorations.of> }) => void };
+    } | undefined)?.cm;
+    if (codeMirror) {
+      codeMirror.dispatch({ effects: refreshQuestionDecorations.of(undefined) });
+      return;
+    }
     this.app.workspace.updateOptions();
+  }
+
+  private patchQuestionState(id: string, patch: Omit<Partial<StoredQuestionState>, "id">): void {
+    this.store.patchQuestion(id, patch, false);
+    this.workflowIndex.refreshQuestions();
+    this.refreshEditorDecorations();
+    this.store.notify();
   }
 
   private async activateSidebar(): Promise<void> {
@@ -2014,18 +2075,23 @@ export default class ToWritePlugin extends Plugin {
 
   private registerEvents(): void {
     const reindexFile = debounce((file: TFile) => {
-      void this.indexer.indexFile(file).then(async () => {
+      void (async () => {
+        await this.indexer.indexFile(file, false);
         if (this.shouldBuildLocalKnowledgeIndex()) {
           await this.localKnowledgeIndex.upsert(this.app, file, this.settings.exportDirectory, this.getLocalKnowledgeScope());
         }
-        await this.refreshSidecars({ rebuildWorkflow: false });
+        if (this.store.hasSidecarQuestionsForFile(file.path)) {
+          await this.refreshSidecarsForFile(file.path, false);
+        }
+        this.refreshEditorDecorations();
         this.store.notify();
-        this.scheduleBackgroundRefresh();
-        return undefined;
+        this.scheduleBackgroundRefresh(file.path);
+      })().catch((error: unknown) => {
+        console.error("ToWrite could not refresh the edited file", error);
       });
     }, 900, true);
-    const notifyActiveLineChange = debounce(() => {
-      this.store.notify();
+    const notifyActiveContext = debounce(() => {
+      this.notifyActiveContext();
     }, 120, true);
 
     this.registerEvent(
@@ -2053,11 +2119,31 @@ export default class ToWritePlugin extends Plugin {
 
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
-        this.indexer.removeFile(oldPath);
-        this.localKnowledgeIndex.remove(oldPath);
-        if (file instanceof TFile && file.extension === "md") {
-          reindexFile(file);
-        }
+        void (async () => {
+          const sidecarQuestions = this.store.getSidecarQuestionsForFile(oldPath);
+          await this.indexer.removeFile(oldPath, false);
+          this.localKnowledgeIndex.remove(oldPath);
+          this.workflowIndex.removeFile(oldPath);
+          if (sidecarQuestions.length > 0 && file instanceof TFile) {
+            const movedQuestions = sidecarQuestions.map((question) => ({
+              ...question,
+              source: { ...question.source, file: file.path },
+              updatedAt: new Date().toISOString()
+            }));
+            for (let index = 0; index < sidecarQuestions.length; index += 1) {
+              await this.sidecars.upsert(movedQuestions[index]);
+              await this.sidecars.remove(sidecarQuestions[index]);
+            }
+            const resolved = await this.sidecars.resolveQuestions(movedQuestions);
+            this.store.replaceSidecarQuestions(oldPath, [], false);
+            this.store.replaceSidecarQuestions(file.path, resolved, false);
+          }
+          if (file instanceof TFile && file.extension === "md") {
+            reindexFile(file);
+          } else {
+            this.store.notify();
+          }
+        })().catch((error: unknown) => console.error("ToWrite could not index a renamed file", error));
       })
     );
 
@@ -2065,29 +2151,45 @@ export default class ToWritePlugin extends Plugin {
       this.app.workspace.on("active-leaf-change", () => {
         this.aiService.refreshMissingForActiveNote(this.getActiveFile());
         this.recordFileSwitchLearning();
-        this.store.notify();
+        this.refreshEditorDecorations();
+        this.notifyActiveContext();
       })
     );
 
-    this.registerDomEvent(activeDocument, "keyup", () => {
-      notifyActiveLineChange();
+    this.registerEvent(
+      this.app.workspace.on("editor-change", () => {
+        this.lastEditorActivityAt = Date.now();
+        notifyActiveContext();
+      })
+    );
+
+    this.registerDomEvent(activeDocument, "keyup", (event) => {
+      if (isEditorNavigationKey(event.key) && eventTargetsMarkdownEditor(event)) {
+        notifyActiveContext();
+      }
     });
-    this.registerDomEvent(activeDocument, "mouseup", () => {
-      notifyActiveLineChange();
+    this.registerDomEvent(activeDocument, "mouseup", (event) => {
+      if (eventTargetsMarkdownEditor(event)) {
+        notifyActiveContext();
+      }
     });
   }
 
   private handleDeletedFile(file: TAbstractFile): void {
     if (file instanceof TFile && file.extension === "md") {
-      this.indexer.removeFile(file.path);
-      this.localKnowledgeIndex.remove(file.path);
-      void Promise.resolve().then(async () => {
-        await this.workflowIndex.rebuild();
-        if (this.settings.autoExport) {
-          await this.exportNow(false);
+      void (async () => {
+        await this.indexer.removeFile(file.path, false);
+        this.localKnowledgeIndex.remove(file.path);
+        this.workflowIndex.removeFile(file.path);
+        if (this.store.hasSidecarQuestionsForFile(file.path)) {
+          await this.refreshSidecarsForFile(file.path, false);
         }
+        this.refreshEditorDecorations();
         this.store.notify();
-      });
+        if (this.settings.autoExport) {
+          this.scheduleBackgroundRefresh();
+        }
+      })().catch((error: unknown) => console.error("ToWrite could not remove a deleted file", error));
     }
   }
 
@@ -2314,7 +2416,7 @@ export default class ToWritePlugin extends Plugin {
       return;
     }
 
-    this.store.patchQuestion(id, {
+    this.patchQuestionState(id, {
       status: "ignored",
       lane: suggestion.lane,
       kind: suggestion.kind,
@@ -2387,7 +2489,7 @@ export default class ToWritePlugin extends Plugin {
       await this.sidecars.upsert(updated);
       await this.refreshSidecars();
     } else {
-      this.store.patchQuestion(question.id, {
+      this.patchQuestionState(question.id, {
         title: updated.title,
         lane: updated.lane,
         question: updated.question,
@@ -2420,7 +2522,7 @@ export default class ToWritePlugin extends Plugin {
       });
       await this.refreshSidecars();
     } else {
-      this.store.patchQuestion(id, patch);
+      this.patchQuestionState(id, patch);
     }
 
     await this.savePluginData();
@@ -2440,10 +2542,10 @@ export default class ToWritePlugin extends Plugin {
       await this.sidecars.remove(question);
       await this.refreshSidecars();
       if (question.source.rule === "candidate") {
-        this.store.patchQuestion(id, { status: "ignored" });
+        this.patchQuestionState(id, { status: "ignored" });
       }
     } else {
-      this.store.patchQuestion(id, { status: "ignored" });
+      this.patchQuestionState(id, { status: "ignored" });
     }
 
     await this.savePluginData();
@@ -2495,11 +2597,25 @@ export default class ToWritePlugin extends Plugin {
     new Notice("ToWrite source anchor pinned.");
   }
 
-  private async refreshSidecars(options: { rebuildWorkflow?: boolean } = {}): Promise<void> {
+  private async refreshSidecars(options: { rebuildWorkflow?: boolean; notify?: boolean } = {}): Promise<void> {
     const questions = await this.sidecars.refreshResolvedQuestions();
-    this.store.replaceAllSidecarQuestions(questions);
+    this.store.replaceAllSidecarQuestions(questions, false);
     if (options.rebuildWorkflow !== false) {
-      await this.workflowIndex?.rebuild();
+      this.workflowIndex?.refreshQuestions();
+    }
+    if (options.notify !== false) {
+      this.refreshEditorDecorations();
+      this.store.notify();
+    }
+  }
+
+  private async refreshSidecarsForFile(filePath: string, notify = true): Promise<void> {
+    const current = this.store.getSidecarQuestionsForFile(filePath);
+    const resolved = await this.sidecars.resolveQuestions(current);
+    this.store.replaceSidecarQuestions(filePath, resolved, false);
+    if (notify) {
+      this.refreshEditorDecorations();
+      this.store.notify();
     }
   }
 
@@ -2925,6 +3041,22 @@ function isQuestionColor(value: unknown): value is OpenQuestionColor {
     || value === "rose"
     || value === "violet"
     || value === "slate";
+}
+
+function isEditorNavigationKey(key: string): boolean {
+  return key === "ArrowUp"
+    || key === "ArrowDown"
+    || key === "ArrowLeft"
+    || key === "ArrowRight"
+    || key === "PageUp"
+    || key === "PageDown"
+    || key === "Home"
+    || key === "End";
+}
+
+function eventTargetsMarkdownEditor(event: Event): boolean {
+  const target = event.target as { closest?: (selector: string) => Element | null } | null;
+  return typeof target?.closest === "function" && Boolean(target.closest(".cm-editor"));
 }
 
 function mergeStatusOptions(options: ToWriteSettings["statusOptions"]): ToWriteSettings["statusOptions"] {

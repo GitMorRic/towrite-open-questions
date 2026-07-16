@@ -25,6 +25,7 @@
   import { onDestroy } from "svelte";
   import type { ArticleTypeSettings, WorkflowStageSettings } from "../core/settings";
   import { mergeArticleSummariesWithWorkflow } from "../core/articles";
+  import { buildArticleSummaries, queryQuestions } from "../core/query";
   import type { ArticleSummary, OpenQuestion, OpenQuestionLane } from "../core/types";
   import type { WorkflowIndexPayload } from "../workflow";
   import type { ProactiveSuggestion, ProactiveSuggestionAction } from "../suggestions";
@@ -59,7 +60,9 @@
     write: false
   };
   let currentQuestions: OpenQuestion[] = [];
+  let currentQuestionSnapshot: OpenQuestion[] = [];
   let otherArticles: ArticleSummary[] = [];
+  let questionsByFile = new Map<string, OpenQuestion[]>();
   let articleTypes: ArticleTypeSettings[] = api.getArticleTypes();
   let workflowStages: WorkflowStageSettings[] = api.getWorkflowStages();
   let workflowPayload: WorkflowIndexPayload = api.getWorkflowPayload();
@@ -68,7 +71,11 @@
   let suggestionError = "";
 
   const unsubscribe = api.subscribe(reload);
-  onDestroy(unsubscribe);
+  const unsubscribeActiveContext = api.subscribeActiveContext(refreshActiveContext);
+  onDestroy(() => {
+    unsubscribe();
+    unsubscribeActiveContext();
+  });
 
   reload();
 
@@ -100,20 +107,16 @@
     workflowStages = api.getWorkflowStages();
     workflowPayload = api.getWorkflowPayload();
     suggestions = api.getProactiveSuggestions();
-    currentQuestions = activeFile
-      ? sortCurrentQuestions(
-          api
-            .getQuestions({
-              filePath: activeFile,
-              search
-            })
-            .filter((question) => question.status !== "ignored"),
-          activeLineRange
-        )
+    const allQuestions = api.getQuestions();
+    questionsByFile = groupQuestionsByFile(allQuestions);
+    currentQuestionSnapshot = activeFile
+      ? queryQuestions(allQuestions, { filePath: activeFile, search })
+        .filter((question) => question.status !== "ignored")
       : [];
+    currentQuestions = sortCurrentQuestions(currentQuestionSnapshot, activeLineRange);
 
     const needle = search.trim().toLowerCase();
-    otherArticles = mergeArticleSummariesWithWorkflow(api.getArticleSummaries(), workflowPayload, workflowPayload.generatedAt)
+    otherArticles = mergeArticleSummariesWithWorkflow(buildArticleSummaries(allQuestions), workflowPayload, workflowPayload.generatedAt)
       .filter((summary) => summary.filePath !== activeFile)
       .filter((summary) => summary.needsWork || summary.candidate > 0 || Boolean(summary.typeId || summary.stageId))
       .filter((summary) => {
@@ -127,6 +130,30 @@
           summary.tags?.join(" ")
         ].filter(Boolean).join(" ").toLowerCase().includes(needle);
       });
+  }
+
+  function refreshActiveContext() {
+    const nextActiveFile = api.getActiveFile();
+    const nextActiveLineRange = api.getActiveLineRange();
+    if (nextActiveFile !== activeFile) {
+      reload();
+      return;
+    }
+    activeLineRange = nextActiveLineRange;
+    currentQuestions = sortCurrentQuestions(currentQuestionSnapshot, activeLineRange);
+  }
+
+  function groupQuestionsByFile(items: OpenQuestion[]): Map<string, OpenQuestion[]> {
+    const grouped = new Map<string, OpenQuestion[]>();
+    for (const question of items) {
+      const existing = grouped.get(question.source.file);
+      if (existing) {
+        existing.push(question);
+      } else {
+        grouped.set(question.source.file, [question]);
+      }
+    }
+    return grouped;
   }
 
   async function actOnSuggestion(suggestion: ProactiveSuggestion, action: ProactiveSuggestionAction) {
@@ -657,7 +684,7 @@
       {:else if otherMode === "list"}
         <div class="towrite-article-list">
           {#each visibleOtherArticles as article (article.filePath)}
-            <ArticleSummaryCard {article} {api} {laneFilter} />
+            <ArticleSummaryCard {article} {api} {laneFilter} questions={questionsByFile.get(article.filePath) ?? []} />
           {/each}
         </div>
       {:else}
@@ -665,7 +692,7 @@
           <section class="towrite-folder-group">
             <h3>{folder}</h3>
             {#each articles as article (article.filePath)}
-              <ArticleSummaryCard {article} {api} {laneFilter} />
+              <ArticleSummaryCard {article} {api} {laneFilter} questions={questionsByFile.get(article.filePath) ?? []} />
             {/each}
           </section>
         {/each}

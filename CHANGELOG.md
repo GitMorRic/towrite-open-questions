@@ -1,5 +1,22 @@
 # Changelog / 更新日志
 
+## 0.3.0-beta.3 - 2026-07-16
+
+- Removed synchronous full decoration and sidebar refreshes from the editor keystroke path; CodeMirror now maps existing ranges while typing and uses a targeted effect for data changes.
+- Batched startup Vault reads with bounded concurrency and event-loop yields, while publishing the core question index before optional knowledge and Workflow scans finish.
+- Made question, local-knowledge, Workflow, and sidecar updates incremental, race-safe, and coalesced so autosave no longer repeatedly scans the full Vault.
+- Fixed a PDF highlight MutationObserver feedback loop and limited PDF observation to the active viewer.
+- Reduced retained Workflow memory, delayed background work until typing is quiet, and eliminated per-article Store scans in the sidebar.
+- Added regression coverage for editor updates, bounded startup batches, atomic index commits, concurrent rebuilds, incremental Workflow indexing, and PDF mutation filtering.
+
+中文摘要：
+
+- 移除打字热路径中的全量装饰与侧栏刷新；输入时只映射现有 CodeMirror 标记，数据变化时才定向重建。
+- 启动索引改为限制并发、分批处理并主动让出事件循环，核心问题列表会优先显示。
+- 问题索引、本地知识索引、Workflow 与 sidecar 改为增量和竞态安全更新，自动保存不再反复扫描整个 Vault。
+- 修复 PDF 高亮观察器的自循环，降低 Workflow 常驻内存，并让后台任务避开持续输入时段。
+- 新增性能与竞态回归测试，覆盖启动、输入、增量索引和 PDF 观察器路径。
+
 ## 0.3.0-beta.2 - 2026-07-13
 
 - Added a native AI assistant with Obsidian Markdown rendering, source view, persistent local history, context inspection, model switching, and keyboard-first composition.

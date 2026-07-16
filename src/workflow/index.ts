@@ -1,4 +1,5 @@
 import { TFile, type App } from "obsidian";
+import { mapInBatches } from "../core/async-batch";
 import type { ArticleTypeSettings, ArticleTypesSettings, WorkflowStageSettings, WorkflowStagesSettings } from "../core/settings";
 import type { OpenQuestion, OpenQuestionColor } from "../core/types";
 
@@ -6,6 +7,8 @@ export interface WorkflowSourceDocument {
   filePath: string;
   basename: string;
   content: string;
+  /** Precomputed during Vault reads so the incremental cache does not retain full note bodies. */
+  description?: string;
   tags: string[];
   headings: Array<{
     heading: string;
@@ -83,6 +86,8 @@ export interface WorkflowSummaryPayload {
 
 export class WorkflowIndex {
   private payload: WorkflowIndexPayload = emptyWorkflowPayload("Obsidian", false);
+  private readonly documentsByPath = new Map<string, WorkflowSourceDocument>();
+  private activeRebuild?: { changes: Map<string, WorkflowSourceDocument | null> };
 
   constructor(
     private readonly app: App,
@@ -99,15 +104,97 @@ export class WorkflowIndex {
     const generatedAt = new Date().toISOString();
 
     if (!settings.enabled && !articleTypes.enabled) {
+      this.documentsByPath.clear();
       this.payload = emptyWorkflowPayload(vaultName, false, generatedAt);
       return;
     }
 
-    const documents = await readWorkflowDocuments(this.app, this.getExportDirectory());
+    const rebuild = { changes: new Map<string, WorkflowSourceDocument | null>() };
+    this.activeRebuild = rebuild;
+    try {
+      const documents = await readWorkflowDocuments(this.app, this.getExportDirectory());
+      if (this.activeRebuild !== rebuild) {
+        return;
+      }
+      const next = new Map(documents.map((document) => [document.filePath, document]));
+      for (const [filePath, document] of rebuild.changes) {
+        if (document) {
+          next.set(filePath, document);
+        } else {
+          next.delete(filePath);
+        }
+      }
+      this.documentsByPath.clear();
+      for (const [filePath, document] of next) {
+        this.documentsByPath.set(filePath, document);
+      }
+      this.rebuildPayload(generatedAt);
+    } finally {
+      if (this.activeRebuild === rebuild) {
+        this.activeRebuild = undefined;
+      }
+    }
+  }
+
+  async upsert(file: TFile): Promise<void> {
+    await this.upsertFiles([file]);
+  }
+
+  async upsertFiles(files: TFile[]): Promise<void> {
+    const settings = this.getWorkflowSettings();
+    const articleTypes = this.getArticleTypesSettings();
+    if (!settings.enabled && !articleTypes.enabled) {
+      this.documentsByPath.clear();
+      this.payload = emptyWorkflowPayload(this.app.vault.getName(), false);
+      return;
+    }
+
+    const ignoredPrefix = normalizePath(this.getExportDirectory());
+    const readable: TFile[] = [];
+    let changed = false;
+    for (const file of files) {
+      if (file.extension !== "md" || pathStartsWith(normalizePath(file.path), ignoredPrefix)) {
+        changed = this.documentsByPath.delete(file.path) || changed;
+        this.activeRebuild?.changes.set(file.path, null);
+      } else {
+        readable.push(file);
+      }
+    }
+
+    const documents = await Promise.all(readable.map((file) => readWorkflowDocument(this.app, file)));
+    for (const document of documents) {
+      this.documentsByPath.set(document.filePath, document);
+      this.activeRebuild?.changes.set(document.filePath, document);
+      changed = true;
+    }
+    if (changed) {
+      this.rebuildPayload();
+    }
+  }
+
+  removeFile(filePath: string): void {
+    this.activeRebuild?.changes.set(filePath, null);
+    if (this.documentsByPath.delete(filePath)) {
+      this.rebuildPayload();
+    }
+  }
+
+  refreshQuestions(): void {
+    this.rebuildPayload();
+  }
+
+  private rebuildPayload(generatedAt = new Date().toISOString()): void {
+    const settings = this.getWorkflowSettings();
+    const articleTypes = this.getArticleTypesSettings();
+    const vaultName = this.app.vault.getName();
+    if (!settings.enabled && !articleTypes.enabled) {
+      this.payload = emptyWorkflowPayload(vaultName, false, generatedAt);
+      return;
+    }
     this.payload = buildWorkflowPayload({
       settings,
       articleTypes,
-      documents,
+      documents: Array.from(this.documentsByPath.values()),
       questions: this.getQuestions(),
       vaultName,
       generatedAt
@@ -252,6 +339,7 @@ export function descriptionForWorkflowDocument(document: WorkflowSourceDocument)
   return truncateText(
     readFrontmatterString(document.frontmatter, "description")
       || readFrontmatterString(document.frontmatter, "summary")
+      || document.description
       || firstBodyParagraph(document.content),
     180
   );
@@ -346,7 +434,7 @@ async function readWorkflowDocuments(app: App, exportDirectory: string): Promise
   const files = app.vault.getMarkdownFiles()
     .filter((file) => !pathStartsWith(normalizePath(file.path), ignoredPrefix));
 
-  return Promise.all(files.map((file) => readWorkflowDocument(app, file)));
+  return mapInBatches(files, (file) => readWorkflowDocument(app, file));
 }
 
 async function readWorkflowDocument(app: App, file: TFile): Promise<WorkflowSourceDocument> {
@@ -360,7 +448,8 @@ async function readWorkflowDocument(app: App, file: TFile): Promise<WorkflowSour
   return {
     filePath: file.path,
     basename: file.basename || file.path.split("/").pop()?.replace(/\.md$/iu, "") || file.path,
-    content,
+    content: "",
+    description: firstBodyParagraph(content),
     tags: unique([...frontmatterTags, ...cacheTags, ...inlineTags].map(normalizeTag).filter(Boolean)),
     headings: cache?.headings?.map((heading) => ({
       heading: heading.heading,

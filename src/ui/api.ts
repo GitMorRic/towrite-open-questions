@@ -60,6 +60,7 @@ export interface ToWriteUiApi {
   exportNow(): Promise<void>;
   toggleCompactEditorDecorations(): Promise<void>;
   subscribe(listener: () => void): () => void;
+  subscribeActiveContext(listener: () => void): () => void;
 }
 
 export const ACTIVE_STATUSES: OpenQuestionStatus[] = ["open", "candidate"];

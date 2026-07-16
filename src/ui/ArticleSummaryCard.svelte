@@ -8,22 +8,19 @@
   export let article: ArticleSummary;
   export let api: ToWriteUiApi;
   export let laneFilter: "all" | OpenQuestionLane = "all";
+  export let questions: OpenQuestion[] = [];
 
   let expanded = false;
 
-  $: questions = getArticleQuestions(article);
-  $: unresolved = questions.filter((question) => laneFilter === "all" || question.lane === laneFilter);
+  $: unresolved = questions
+    .filter((question) => question.status !== "resolved" && question.status !== "ignored")
+    .filter((question) => laneFilter === "all" || question.lane === laneFilter);
   $: visibleOpen = unresolved.length;
   $: language = api.getLanguage();
   $: copy = language === "zh"
     ? { open: "未完成", think: "ToThink", write: "ToWrite", candidate: "候选", empty: "没有未完成问题。" }
     : { open: "open", think: "ToThink", write: "ToWrite", candidate: "candidate", empty: "No active questions." };
 
-  function getArticleQuestions(summary: ArticleSummary): OpenQuestion[] {
-    return api
-      .getQuestions({ filePath: summary.filePath })
-      .filter((question) => question.status !== "resolved" && question.status !== "ignored");
-  }
 </script>
 
 <article class:expanded class="towrite-article-card">
