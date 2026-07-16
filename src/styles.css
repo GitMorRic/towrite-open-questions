@@ -1414,7 +1414,7 @@
   border: 0;
   box-shadow: none;
   cursor: pointer;
-  font: inherit;
+  font-family: inherit;
 }
 
 .towrite-chip-button svg {
@@ -1470,10 +1470,17 @@
 }
 
 .towrite-card-head > button.towrite-chip-button {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
   appearance: none;
   border: 1px solid color-mix(in srgb, currentColor 24%, transparent);
   background: color-mix(in srgb, currentColor 7%, transparent);
   box-shadow: none;
+  line-height: 1.2;
+  white-space: nowrap;
   transition: background-color 120ms ease, border-color 120ms ease, transform 80ms ease;
 }
 
@@ -1497,7 +1504,7 @@
   align-self: center;
   width: 0;
   height: 0;
-  margin: 1px 1px 0 3px;
+  margin: 1px 1px 0 0;
   border-right: 3px solid transparent;
   border-left: 3px solid transparent;
   border-top: 4px solid currentColor;
