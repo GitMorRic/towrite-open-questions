@@ -116,6 +116,32 @@ export interface ToWriteBackendSettings {
   timeoutMs: number;
 }
 
+/** Public Device Hub connection. Secrets stay in plugin data and are never put in URLs. */
+export interface ToWriteHubSettings {
+  enabled: boolean;
+  baseUrl: string;
+  receiverId: string;
+  receiverToken: string;
+  /** Public P-256 JWK copied to the Receiver registration. */
+  receiverPublicKeyJwk: string;
+  /** Private P-256 JWK stays only in local plugin data and is never rendered or uploaded. */
+  receiverPrivateKeyJwk: string;
+  /** Connector-local HMAC key for opaque refs; never uploaded or placed in a URL. */
+  referenceSecret: string;
+  deviceId: string;
+  syncIntervalSeconds: number;
+  shareDisplayBody: boolean;
+  autoSelect: boolean;
+  manualPlace: string;
+  manualMode: string;
+  tapUrl: string;
+  lastSyncedAt: string;
+  lastError: string;
+  lastStateVersion: number;
+  lastSelectedContentId: string;
+  lastDisplayedContentId: string;
+}
+
 export type ToWriteDeviceProfileKind = "mobile-eink" | "eink-bw" | "desktop-card";
 export type ToWriteDeviceProfilePage = "home" | "cards" | "workflow" | "articles";
 
@@ -153,6 +179,7 @@ export interface ToWriteSettings {
   deviceCapture: ToWriteDeviceCaptureSettings;
   learning: ToWriteLearningSettings;
   backend: ToWriteBackendSettings;
+  hub: ToWriteHubSettings;
   deviceProfiles: ToWriteDeviceProfileSettings[];
   articleTypes: ArticleTypesSettings;
   workflowStages: WorkflowStagesSettings;
@@ -436,8 +463,8 @@ export const DEFAULT_SETTINGS: ToWriteSettings = {
     localRecommendations: true,
     includeFolders: [],
     excludeFolders: [".obsidian-open-questions", "99-System", "Templates", ".trash"],
-    excludeTags: ["private", "no-ai"],
-    excludeFrontmatter: ["private", "no_ai", "ai_private"]
+    excludeTags: ["private", "no-ai", "no-cloud"],
+    excludeFrontmatter: ["private", "no_ai", "ai_private", "no_cloud"]
   },
   learning: {
     enabled: false,
@@ -455,6 +482,27 @@ export const DEFAULT_SETTINGS: ToWriteSettings = {
     useForRecommendations: true,
     useForHabitSuggestions: false,
     timeoutMs: 2500
+  },
+  hub: {
+    enabled: false,
+    baseUrl: "http://127.0.0.1:8080",
+    receiverId: "",
+    receiverToken: "",
+    receiverPublicKeyJwk: "",
+    receiverPrivateKeyJwk: "",
+    referenceSecret: "",
+    deviceId: "",
+    syncIntervalSeconds: 60,
+    shareDisplayBody: false,
+    autoSelect: true,
+    manualPlace: "",
+    manualMode: "",
+    tapUrl: "",
+    lastSyncedAt: "",
+    lastError: "",
+    lastStateVersion: 0,
+    lastSelectedContentId: "",
+    lastDisplayedContentId: ""
   },
   deviceProfiles: DEFAULT_DEVICE_PROFILES,
   articleTypes: {

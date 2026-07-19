@@ -29,6 +29,7 @@
   import type { ArticleSummary, OpenQuestion, OpenQuestionLane } from "../core/types";
   import type { WorkflowIndexPayload } from "../workflow";
   import type { ProactiveSuggestion, ProactiveSuggestionAction } from "../suggestions";
+  import type { HubDeviceState, HubFeedbackAction } from "../hub";
   import type { ActiveLineRange, ToWriteUiApi } from "./api";
   import ArticleSummaryCard from "./ArticleSummaryCard.svelte";
   import QuestionCard from "./QuestionCard.svelte";
@@ -69,6 +70,9 @@
   let suggestions: ProactiveSuggestion[] = [];
   let busySuggestionId = "";
   let suggestionError = "";
+  let hubState: HubDeviceState | undefined;
+  let hubBusy = false;
+  let hubError = "";
 
   const unsubscribe = api.subscribe(reload);
   const unsubscribeActiveContext = api.subscribeActiveContext(refreshActiveContext);
@@ -107,6 +111,7 @@
     workflowStages = api.getWorkflowStages();
     workflowPayload = api.getWorkflowPayload();
     suggestions = api.getProactiveSuggestions();
+    hubState = api.getDeviceHubState();
     const allQuestions = api.getQuestions();
     questionsByFile = groupQuestionsByFile(allQuestions);
     currentQuestionSnapshot = activeFile
@@ -169,6 +174,27 @@
       suggestionError = error instanceof Error ? error.message : String(error);
     } finally {
       busySuggestionId = "";
+    }
+  }
+
+  async function actOnHub(action: "sync" | "next" | HubFeedbackAction) {
+    if (hubBusy) return;
+    hubBusy = true;
+    hubError = "";
+    try {
+      if (action === "sync") {
+        hubState = await api.syncDeviceHub();
+      } else if (action === "next") {
+        await api.sendDeviceHubFeedback("skipped");
+        hubState = await api.syncDeviceHub();
+      } else {
+        await api.sendDeviceHubFeedback(action);
+        hubState = api.getDeviceHubState();
+      }
+    } catch (error) {
+      hubError = error instanceof Error ? error.message : String(error);
+    } finally {
+      hubBusy = false;
     }
   }
 
@@ -553,6 +579,35 @@
         <span id="towrite-now-heading">{language === "zh" ? "现在" : "Now"}</span>
         <small>{suggestions.length}</small>
       </div>
+      {#if hubState}
+        <article class="towrite-hub-card" aria-busy={hubBusy}>
+          <div class="towrite-hub-card-head">
+            <div>
+              <small>{language === "zh" ? "墨水屏推荐" : "E-ink recommendation"}</small>
+              <strong>{hubState.selected?.card?.title || hubState.selected?.selectedContentId || (language === "zh" ? "尚未选择内容" : "No content selected")}</strong>
+            </div>
+            <span class:online={hubState.online}>{hubState.online ? (language === "zh" ? "在线" : "Online") : (language === "zh" ? "离线" : "Offline")}</span>
+          </div>
+          {#if hubState.selected?.card?.prompt || hubState.selected?.card?.body}
+            <p>{hubState.selected.card.prompt || hubState.selected.card.body}</p>
+          {/if}
+          {#if hubState.selected}
+            <p class="towrite-hub-reason">{hubState.selected.reason || hubState.selected.card?.reason || (language === "zh" ? "本地规则推荐" : "Local rules")}</p>
+          {/if}
+          <div class="towrite-hub-state">
+            <span>selected · {hubState.selected?.selectedContentId || "—"}</span>
+            <span class:pending={!hubState.inSync}>displayed · {hubState.displayed?.contentId || "—"}</span>
+          </div>
+          {#if hubError}<p class="towrite-suggestion-error" role="alert">{hubError}</p>{/if}
+          <div class="towrite-now-actions">
+            <button type="button" disabled={hubBusy} title={language === "zh" ? "发送到屏幕" : "Send to screen"} on:click={() => actOnHub("sync")}><RefreshCw size={14} /></button>
+            <button type="button" disabled={hubBusy || !hubState.selected} title={language === "zh" ? "下一条" : "Next"} on:click={() => actOnHub("next")}><ChevronRight size={14} /></button>
+            <button type="button" disabled={hubBusy || !hubState.selected} title={language === "zh" ? "稍后" : "Later"} on:click={() => actOnHub("later")}><TimerReset size={14} /></button>
+            <button type="button" disabled={hubBusy || !hubState.selected} title={language === "zh" ? "跳过" : "Skip"} on:click={() => actOnHub("skipped")}><X size={14} /></button>
+            <button type="button" disabled={!hubState.tapUrl} title={language === "zh" ? "模拟碰一碰" : "Simulate tap"} on:click={() => api.openDeviceHubTap()}><ExternalLink size={14} /></button>
+          </div>
+        </article>
+      {/if}
       {#if suggestionError}<p class="towrite-suggestion-error" role="alert">{suggestionError}</p>{/if}
       {#if suggestions.length === 0}
         <div class="towrite-empty">{language === "zh" ? "当前没有需要提醒或确认的建议。" : "Nothing needs attention right now."}</div>

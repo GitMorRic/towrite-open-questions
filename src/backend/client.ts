@@ -1,5 +1,6 @@
 import type { ToWriteBackendSettings } from "../core/settings";
 import type { BackendCapabilities, CaptureDraft, CaptureTargetCandidate } from "../capture/types";
+import type { HubCandidate, HubContextState } from "../hub/types";
 
 interface BackendRecommendationItem {
   id?: unknown;
@@ -11,6 +12,13 @@ interface BackendRecommendationItem {
 interface BackendRecommendationResponse {
   protocolVersion?: unknown;
   candidates?: BackendRecommendationItem[];
+}
+
+interface BackendDeviceRecommendationItem {
+  candidate_id?: unknown;
+  id?: unknown;
+  reason?: unknown;
+  score?: unknown;
 }
 
 export interface BackendHabitSuggestionResponse<T = unknown> {
@@ -143,6 +151,67 @@ export class BackendEnhancementClient {
       return safeCandidates;
     }
     return applyBackendRerank(safeCandidates, response);
+  }
+
+  async rerankDeviceHubCandidates(
+    candidates: HubCandidate[],
+    context: { state?: HubContextState; semanticPlace?: string; mode?: string } = {},
+    acceptedHabits: Array<Record<string, unknown>> = []
+  ): Promise<HubCandidate[]> {
+    const settings = this.requireEnabledSettings();
+    if (!settings.useForRecommendations || candidates.length === 0) {
+      return candidates;
+    }
+    const safeCandidates = candidates.slice(0, 20);
+    const payload = await this.requestJson("/capture/integrations/towrite/v1/recommend-device-content", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        protocol_version: "1",
+        use_ai: true,
+        context: {
+          state: context.state,
+          semantic_place: context.semanticPlace?.slice(0, 80),
+          mode: context.mode?.slice(0, 80)
+        },
+        candidates: safeCandidates.map((candidate) => ({
+          candidate_id: candidate.candidateRef,
+          type: candidate.type,
+          // Body and write target are deliberately excluded from the AI payload.
+          title: candidate.display.title?.slice(0, 160) ?? "",
+          reason: candidate.reasonCode.slice(0, 240),
+          score: candidate.score,
+          context: {}
+        })),
+        accepted_habits: acceptedHabits
+          .filter((habit) => habit.status === "accepted")
+          .slice(0, 20)
+      })
+    }, settings) as Record<string, unknown>;
+    const ranked = Array.isArray(payload.ranked) ? payload.ranked as BackendDeviceRecommendationItem[] : [];
+    const byRef = new Map(safeCandidates.map((candidate) => [candidate.candidateRef, candidate]));
+    const seen = new Set<string>();
+    const output: HubCandidate[] = [];
+    for (const item of ranked) {
+      const id = typeof item.candidate_id === "string"
+        ? item.candidate_id
+        : typeof item.id === "string" ? item.id : "";
+      const local = byRef.get(id);
+      if (!local || seen.has(id)) {
+        continue;
+      }
+      seen.add(id);
+      output.push({
+        ...local,
+        reasonCode: typeof item.reason === "string" && item.reason.trim()
+          ? item.reason.trim().slice(0, 240)
+          : local.reasonCode,
+        score: typeof item.score === "number" && Number.isFinite(item.score)
+          ? item.score
+          : local.score
+      });
+    }
+    return [...output, ...safeCandidates.filter((candidate) => !seen.has(candidate.candidateRef))];
   }
 
   async suggestHabits<TInput extends object, TOutput = unknown>(aggregateEvidence: TInput): Promise<BackendHabitSuggestionResponse<TOutput>> {

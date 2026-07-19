@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_ARTICLE_TYPES, DEFAULT_DEVICE_PROFILES, DEFAULT_REMINDER_PRESETS, normalizeArticleTypesSettings, normalizeDeviceProfiles, normalizeExternalApiBindHost, normalizeExternalApiPublicBaseUrl, normalizePushSettings, normalizeQuote0Settings, normalizeReminderPresets } from "./settings";
+import { DEFAULT_ARTICLE_TYPES, DEFAULT_DEVICE_PROFILES, DEFAULT_REMINDER_PRESETS, DEFAULT_SETTINGS, normalizeArticleTypesSettings, normalizeDeviceProfiles, normalizeExternalApiBindHost, normalizeExternalApiPublicBaseUrl, normalizePushSettings, normalizeQuote0Settings, normalizeReminderPresets } from "./settings";
 
 describe("settings normalization", () => {
+  it("keeps private, no-ai, and no-cloud content outside default remote scope", () => {
+    expect(DEFAULT_SETTINGS.deviceCapture.excludeTags).toEqual(expect.arrayContaining(["private", "no-ai", "no-cloud"]));
+    expect(DEFAULT_SETTINGS.deviceCapture.excludeFrontmatter).toEqual(expect.arrayContaining(["private", "no_ai", "no_cloud"]));
+  });
+
   it("normalizes common External API bind host values", () => {
     expect(normalizeExternalApiBindHost("0.0.0.0")).toBe("0.0.0.0");
     expect(normalizeExternalApiBindHost("0.0.0.")).toBe("0.0.0.0");

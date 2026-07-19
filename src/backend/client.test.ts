@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { applyBackendRerank, BackendEnhancementClient, buildRecommendationPayload } from "./client";
 import type { CaptureDraft, CaptureTargetCandidate } from "../capture/types";
+import type { HubCandidate } from "../hub/types";
 
 const draft: CaptureDraft = {
   schemaVersion: 1,
@@ -67,6 +68,57 @@ describe("Backend enhancement contract", () => {
     }));
 
     await expect(client.rerankTargets(draft, candidates)).resolves.toEqual(candidates);
+  });
+
+  it("reranks only the privacy-approved Hub whitelist without sending body or write target", async () => {
+    vi.stubGlobal("window", globalThis);
+    const hubCandidates: HubCandidate[] = [
+      {
+        candidateRef: "src_note_alpha",
+        type: "note_continue",
+        display: { title: "Continue", body: "private display snapshot" },
+        writeTargetRef: "target_private_opaque",
+        allowedActions: ["respond"],
+        sensitivity: "normal",
+        reasonCode: "recent work",
+        score: 5
+      },
+      {
+        candidateRef: "src_quote_beta",
+        type: "quote",
+        display: { title: "A line" },
+        allowedActions: ["open"],
+        sensitivity: "normal",
+        reasonCode: "place match",
+        score: 4
+      }
+    ];
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      expect(JSON.stringify(body)).not.toContain("private display snapshot");
+      expect(JSON.stringify(body)).not.toContain("target_private_opaque");
+      expect(body.accepted_habits).toEqual([{ status: "accepted", candidate_id: "src_quote_beta" }]);
+      return {
+        ok: true,
+        json: async () => ({
+          ranked: [
+            { candidate_id: "invented_outside_whitelist", score: 999 },
+            { candidate_id: "src_quote_beta", reason: "AI whitelist explanation", score: 12 }
+          ]
+        })
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new BackendEnhancementClient(() => backendSettings());
+
+    const result = await client.rerankDeviceHubCandidates(hubCandidates, { state: "desk_idle" }, [
+      { status: "pending", candidate_id: "src_note_alpha" },
+      { status: "accepted", candidate_id: "src_quote_beta" }
+    ]);
+
+    expect(result.map((candidate) => candidate.candidateRef)).toEqual(["src_quote_beta", "src_note_alpha"]);
+    expect(result.some((candidate) => candidate.candidateRef === "invented_outside_whitelist")).toBe(false);
+    expect(result[0]?.reasonCode).toBe("AI whitelist explanation");
   });
 
   it("loads chat models and Skills from the existing Backend catalog", async () => {

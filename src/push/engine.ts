@@ -29,6 +29,19 @@ export class PushEngine {
 
   constructor(private readonly options: PushEngineOptions) {}
 
+  /** Local candidate catalog for privacy-filtered connectors. No API token or public URL is embedded. */
+  getCandidates(now = new Date()): PushCandidate[] {
+    return this.source.build({
+      vaultName: this.options.getVaultName(),
+      questions: this.options.getQuestions(),
+      articles: this.options.getArticleSummaries(),
+      workflowPayload: this.options.getWorkflowPayload(),
+      publicBaseUrl: "",
+      token: "",
+      now: now.toISOString()
+    });
+  }
+
   getFeed(targetId?: string): PushFeedPayload {
     const settings = this.options.getSettings();
     const target = resolveTarget(settings, targetId);

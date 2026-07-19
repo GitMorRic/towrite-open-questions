@@ -13,6 +13,7 @@ import {
   type Editor
 } from "obsidian";
 import { createQuestionAnchor, lineRangeForOffsets } from "./core/anchor";
+import { DeferredKeyedQueue } from "./core/deferred-keyed-queue";
 import { makeQuestionId } from "./core/hash";
 import { queryQuestions as filterQuestions } from "./core/query";
 import {
@@ -67,6 +68,7 @@ import {
   CaptureConflictError,
   CaptureService,
   CaptureTargetRecommender,
+  MISSING_TARGET_REVISION,
   captureRecommendationSettingsFromPluginSettings,
   captureServiceOptionsFromPluginSettings,
   type CaptureCommitResult,
@@ -78,9 +80,10 @@ import { QuestionExporter } from "./export/exporter";
 import { ToWriteExternalApiServer, type DeviceCaptureRequest, type DeviceCaptureResult, type DeviceWritebackMetadata } from "./external/server";
 import { PushEngine } from "./push/engine";
 import { normalizePushRuntimeState, type PushAnchorInput, type PushFeedbackInput } from "./push/state";
-import type { PushFeedPayload, PushRuntimeState } from "./push/types";
+import type { PushCandidate, PushFeedPayload, PushRuntimeState } from "./push/types";
 import {
   HabitLearningService,
+  isInTimeWindow,
   migrateManualPushHabits,
   type HabitCandidate,
   type HabitLearningState,
@@ -92,6 +95,25 @@ import {
   type ProactiveSuggestionAction,
   type SuggestionNotificationEvent
 } from "./suggestions";
+import {
+  DeviceHubConnector,
+  HubAdminClient,
+  HubClient,
+  HubCaptureWritebackService,
+  createOpaqueHubRef,
+  generateHubCaptureKeyPair,
+  validateNtag213Uri,
+  type HubCapabilities,
+  type HubContextState,
+  type HubDeviceState,
+  type HubDeviceSecretRotation,
+  type HubEmailChallenge,
+  type HubFeedbackAction,
+  type HubPersonalProvisionResult,
+  type HubTapRotation,
+  type LocalHubCandidate,
+  type Ntag213UriValidation
+} from "./hub";
 import { Quote0SyncService, type Quote0SyncPreview, type Quote0SyncResult } from "./quote0/sync-service";
 import type { Quote0Device, Quote0DeviceStatus } from "./quote0/client";
 import { WorkflowIndex } from "./workflow";
@@ -148,6 +170,9 @@ export default class ToWritePlugin extends Plugin {
   private captureRecommender!: CaptureTargetRecommender;
   private externalApiServer!: ToWriteExternalApiServer;
   private pushEngine!: PushEngine;
+  private hubClient!: HubClient;
+  private deviceHub!: DeviceHubConnector;
+  private hubWriteback!: HubCaptureWritebackService;
   private quote0SyncService!: Quote0SyncService;
   private learningService!: HabitLearningService;
   private suggestionService!: SuggestionService;
@@ -155,12 +180,16 @@ export default class ToWritePlugin extends Plugin {
   private selectionToolbar?: SelectionQuestionToolbar;
   private pdfQuestionLayer?: PdfQuestionLayer;
   private backgroundRefreshTimer = 0;
+  private hubSyncTimer = 0;
+  private hubContextTimer = 0;
+  private hubCandidateSyncTimer = 0;
   private backgroundRefreshRunning = false;
   private backgroundRefreshQueued = false;
   private readonly pendingWorkflowPaths = new Set<string>();
   private readonly activeContextListeners = new Set<() => void>();
   private lastEditorActivityAt = 0;
   private readonly lastLearningEditPresence = new Map<string, number>();
+  private learningEditQueue!: DeferredKeyedQueue<NewActivityEvent>;
   private readonly captureSuggestedTargets = new Map<string, string>();
   private readonly captureCommittedCandidates = new Map<string, CaptureTargetCandidate>();
   private readonly habitBackendRequests = new Set<string>();
@@ -176,6 +205,14 @@ export default class ToWritePlugin extends Plugin {
     this.store = new OpenQuestionStore(this.savedQuestionStates);
     this.learningService = new HabitLearningService(this.savedLearningState);
     this.learningService.setCollectionPaused(!this.settings.learning.enabled);
+    this.learningEditQueue = new DeferredKeyedQueue(async (events) => {
+      for (const event of events) {
+        await this.recordLearningEvent(event);
+      }
+    }, {
+      delayMs: 1_000,
+      onError: (error) => console.error("ToWrite could not persist deferred edit presence", error)
+    });
     this.suggestionService = new SuggestionService();
     this.indexer = new OpenQuestionIndexer(this.app, this.store, () => this.settings);
     this.sidecars = new QuestionSidecarRepository(this.app, () => this.settings);
@@ -250,6 +287,57 @@ export default class ToWritePlugin extends Plugin {
       getActiveFile: () => this.getActiveFile(),
       getState: () => this.pushState,
       saveState: () => this.savePluginData()
+    });
+    this.hubClient = new HubClient(() => ({
+      baseUrl: this.settings.hub.baseUrl,
+      token: this.settings.hub.receiverToken,
+      timeoutMs: 8_000
+    }));
+    this.deviceHub = new DeviceHubConnector({
+      client: this.hubClient,
+      getSettings: () => this.settings.hub,
+      getCandidates: () => this.buildHubCandidates(),
+      enhanceCandidates: async (candidates) => {
+        if (!this.settings.backend.enabled || !this.settings.backend.useForRecommendations) {
+          return candidates;
+        }
+        const acceptedHabits = this.learningService.getCandidates().flatMap((habit) => {
+          if (habit.status !== "accepted" || habit.rule.kind !== "time-stage") {
+            return [];
+          }
+          const rule = habit.rule;
+          return [{
+            habit_id: habit.id,
+            status: "accepted",
+            context: {
+              workflow_stage: rule.workflowStageId,
+              article_type: rule.articleTypeId
+            },
+            boost: 8
+          }];
+        }).slice(0, 20);
+        return this.backendClient.rerankDeviceHubCandidates([...candidates], {
+          state: normalizeHubContextState(this.settings.hub.manualMode),
+          semanticPlace: this.settings.hub.manualPlace,
+          mode: this.settings.hub.manualMode
+        }, acceptedHabits);
+      },
+      onState: (state) => {
+        void this.rememberHubState(state);
+      },
+      onError: (error) => {
+        this.settings.hub.lastError = messageForError(error).slice(0, 500);
+      }
+    });
+    this.hubWriteback = new HubCaptureWritebackService({
+      client: this.hubClient,
+      captureService: this.captureService,
+      getReceiverId: () => this.settings.hub.receiverId,
+      getPrivateKey: () => this.hubReceiverPrivateKey(),
+      resolveTarget: (writeTargetRef) => this.resolveHubWriteTarget(writeTargetRef),
+      onError: (error) => {
+        this.settings.hub.lastError = messageForError(error).slice(0, 500);
+      }
     });
     this.quote0SyncService = new Quote0SyncService({
       getSettings: () => this.settings,
@@ -435,6 +523,7 @@ export default class ToWritePlugin extends Plugin {
     }, 15 * 60 * 1000));
     void this.configureExternalApiServer(false);
     this.configureQuote0Sync();
+    this.configureDeviceHub();
 
     this.app.workspace.onLayoutReady(() => {
       void this.refreshIndex();
@@ -444,6 +533,7 @@ export default class ToWritePlugin extends Plugin {
         }, 250);
       }
       void this.runSuggestionNotifications();
+      void this.syncDeviceHub(false);
     });
     if (this.securityMigrationVersion < 1) {
       this.securityMigrationVersion = 1;
@@ -459,7 +549,21 @@ export default class ToWritePlugin extends Plugin {
       window.clearTimeout(this.backgroundRefreshTimer);
       this.backgroundRefreshTimer = 0;
     }
+    if (this.hubSyncTimer) {
+      window.clearInterval(this.hubSyncTimer);
+      this.hubSyncTimer = 0;
+    }
+    if (this.hubContextTimer) {
+      window.clearTimeout(this.hubContextTimer);
+      this.hubContextTimer = 0;
+    }
+    if (this.hubCandidateSyncTimer) {
+      window.clearTimeout(this.hubCandidateSyncTimer);
+      this.hubCandidateSyncTimer = 0;
+    }
+    this.learningEditQueue?.dispose();
     void this.externalApiServer?.stop();
+    this.deviceHub?.dispose();
     this.quote0SyncService?.stop();
     this.selectionToolbar?.destroy();
   }
@@ -1462,14 +1566,24 @@ export default class ToWritePlugin extends Plugin {
     try {
       const response = await this.backendClient.suggestHabits<{
         schemaVersion: 1;
-        candidates: Array<Pick<HabitCandidate, "id" | "label" | "description" | "rule" | "evidence">>;
+        candidates: Array<{
+          id: string;
+          label: string;
+          description: string;
+          rule: object;
+          evidence: HabitCandidate["evidence"];
+        }>;
       }, { candidateId?: unknown; id?: unknown; label?: unknown; description?: unknown }>({
         schemaVersion: 1,
         candidates: pending.map(({ id, label, description, rule, evidence }) => ({
           id,
           label,
           description,
-          rule,
+          // Routing target IDs may encode a local catalog entry. Backend only
+          // receives the content-free rule shape needed to rewrite copy.
+          rule: rule.kind === "routing"
+            ? { kind: rule.kind, context: rule.context, targetKind: rule.targetKind }
+            : rule,
           evidence
         }))
       });
@@ -1567,6 +1681,232 @@ export default class ToWritePlugin extends Plugin {
 
   configureQuote0Sync(): void {
     this.quote0SyncService?.restart();
+  }
+
+  configureDeviceHub(): void {
+    if (this.hubSyncTimer) {
+      window.clearInterval(this.hubSyncTimer);
+      this.hubSyncTimer = 0;
+    }
+    if (!this.deviceHub || !this.settings.hub.enabled) {
+      return;
+    }
+    this.hubSyncTimer = window.setInterval(() => {
+      void this.syncDeviceHub(false);
+    }, Math.max(15, this.settings.hub.syncIntervalSeconds) * 1_000);
+  }
+
+  async testHubConnection(): Promise<HubCapabilities | undefined> {
+    try {
+      const capabilities = await this.deviceHub.testConnection();
+      this.settings.hub.lastError = "";
+      if (this.settings.hub.deviceId) {
+        await this.refreshDeviceHubState(false);
+      }
+      await this.savePluginData();
+      new Notice(`Device Hub V1 connected · max ${capabilities.maxCandidates} candidates.`);
+      return capabilities;
+    } catch (error) {
+      const message = messageForError(error);
+      this.settings.hub.lastError = message.slice(0, 500);
+      await this.savePluginData();
+      new Notice(`Device Hub connection failed: ${message}`);
+      return undefined;
+    }
+  }
+
+  async syncDeviceHub(showNotice = false): Promise<HubDeviceState | undefined> {
+    if (!this.settings.hub.enabled) {
+      if (showNotice) {
+        new Notice("Enable Device Hub first.");
+      }
+      return undefined;
+    }
+    try {
+      const state = await this.deviceHub.sync();
+      const writeback = await this.hubWriteback.processPending();
+      this.settings.hub.lastSyncedAt = new Date().toISOString();
+      this.settings.hub.lastError = writeback.conflicts > 0 || writeback.failed > 0
+        ? `Device Hub writeback kept ${writeback.conflicts} conflict(s) and ${writeback.failed} failed capture(s) queued.`
+        : "";
+      await this.savePluginData();
+      if (showNotice) {
+        new Notice(state ? `Device Hub synced · state v${state.selected?.stateVersion ?? 0}.` : "Device Hub is not fully configured.");
+      }
+      return state;
+    } catch (error) {
+      const message = messageForError(error);
+      this.settings.hub.lastError = message.slice(0, 500);
+      await this.savePluginData();
+      if (showNotice) {
+        new Notice(`Device Hub sync failed: ${message}`);
+      }
+      return undefined;
+    }
+  }
+
+  async refreshDeviceHubState(showNotice = true): Promise<HubDeviceState | undefined> {
+    try {
+      const state = await this.deviceHub.refreshState();
+      if (state) {
+        this.settings.hub.lastError = "";
+        await this.savePluginData();
+      }
+      if (showNotice && state) {
+        new Notice(`Device Hub state v${state.selected?.stateVersion ?? 0} refreshed.`);
+      }
+      return state;
+    } catch (error) {
+      const message = messageForError(error);
+      this.settings.hub.lastError = message.slice(0, 500);
+      await this.savePluginData();
+      if (showNotice) {
+        new Notice(`Device Hub state failed: ${message}`);
+      }
+      return undefined;
+    }
+  }
+
+  queueDeviceHubContext(): void {
+    if (this.hubContextTimer) {
+      window.clearTimeout(this.hubContextTimer);
+    }
+    this.hubContextTimer = window.setTimeout(() => {
+      this.hubContextTimer = 0;
+      const state = normalizeHubContextState(this.settings.hub.manualMode);
+      void this.deviceHub.setManualContext(state, this.settings.hub.manualPlace).catch(async (error: unknown) => {
+        this.settings.hub.lastError = messageForError(error).slice(0, 500);
+        await this.savePluginData();
+      });
+    }, 600);
+  }
+
+  private queueDeviceHubSync(): void {
+    if (!this.settings.hub.enabled) {
+      return;
+    }
+    if (this.hubCandidateSyncTimer) {
+      window.clearTimeout(this.hubCandidateSyncTimer);
+    }
+    this.hubCandidateSyncTimer = window.setTimeout(() => {
+      this.hubCandidateSyncTimer = 0;
+      void this.syncDeviceHub(false);
+    }, 1_500);
+  }
+
+  getDeviceHubState(): HubDeviceState | undefined {
+    return this.deviceHub?.getState() ?? (this.settings.hub.enabled ? {
+      protocolVersion: "1",
+      deviceId: this.settings.hub.deviceId,
+      online: false,
+      tapUrl: this.settings.hub.tapUrl || undefined
+    } : undefined);
+  }
+
+  async sendDeviceHubFeedback(action: HubFeedbackAction): Promise<void> {
+    try {
+      await this.deviceHub.sendFeedback(action);
+      this.settings.hub.lastError = "";
+      await this.savePluginData();
+    } catch (error) {
+      this.settings.hub.lastError = messageForError(error).slice(0, 500);
+      await this.savePluginData();
+      throw error;
+    }
+  }
+
+  getHubNdefStatus(): { bytes: number; fits: boolean; valid: boolean; errors: string[] } {
+    if (!this.settings.hub.tapUrl) {
+      return { bytes: 0, fits: false, valid: false, errors: ["Tap URL is not available yet."] };
+    }
+    const validation: Ntag213UriValidation = validateNtag213Uri(this.settings.hub.tapUrl);
+    return {
+      bytes: validation.estimate.totalBytes,
+      fits: validation.estimate.fits,
+      valid: validation.valid,
+      errors: [...validation.errors]
+    };
+  }
+
+  openDeviceHubTap(): void {
+    const url = this.settings.hub.tapUrl;
+    if (!url || !this.getHubNdefStatus().valid) {
+      new Notice("Device Hub tap URL is unavailable or unsafe.");
+      return;
+    }
+    activeWindow.open(url, "_blank", "noopener,noreferrer");
+  }
+
+  async generateHubReceiverKeyPair(): Promise<string> {
+    const pair = await generateHubCaptureKeyPair();
+    const publicKey = JSON.stringify(pair.publicKey);
+    this.settings.hub.receiverPublicKeyJwk = publicKey;
+    this.settings.hub.receiverPrivateKeyJwk = JSON.stringify(pair.privateKey);
+    await this.savePluginData();
+    return publicKey;
+  }
+
+  startHubEmailAuth(email: string): Promise<HubEmailChallenge> {
+    return new HubAdminClient(this.settings.hub.baseUrl).startEmailAuth(email);
+  }
+
+  async verifyHubEmailAuth(email: string, challengeId: string, code: string): Promise<string> {
+    const access = await new HubAdminClient(this.settings.hub.baseUrl).verifyEmailAuth(email, challengeId, code);
+    return access.accessToken;
+  }
+
+  async provisionPersonalDeviceHub(accountAccessToken: string): Promise<HubPersonalProvisionResult> {
+    const publicKeyText = this.settings.hub.receiverPublicKeyJwk;
+    if (!publicKeyText) {
+      throw new Error("Generate the local P-256 receiver key before provisioning Device Hub.");
+    }
+    let receiverPublicKey: JsonWebKey;
+    try {
+      receiverPublicKey = JSON.parse(publicKeyText) as JsonWebKey;
+    } catch {
+      throw new Error("The local Device Hub receiver public key is invalid.");
+    }
+    const result = await new HubAdminClient(this.settings.hub.baseUrl).provisionPersonalHub(accountAccessToken, {
+      receiverPublicKey,
+      receiverName: `${this.app.vault.getName()} · ToWrite Connector`,
+      deviceName: "ToWrite E-ink Display"
+    });
+    this.settings.hub.receiverId = result.receiverId;
+    this.settings.hub.receiverToken = result.pullToken;
+    this.settings.hub.deviceId = result.deviceId;
+    this.settings.hub.tapUrl = result.tapUrl;
+    this.settings.hub.enabled = true;
+    this.settings.hub.lastError = "";
+    await this.savePluginData();
+    this.configureDeviceHub();
+    void this.syncDeviceHub(false);
+    return result;
+  }
+
+  rotateHubDeviceSecret(accountAccessToken: string): Promise<HubDeviceSecretRotation> {
+    if (!this.settings.hub.deviceId) {
+      throw new Error("Configure a Device Hub device before rotating its secret.");
+    }
+    return new HubAdminClient(this.settings.hub.baseUrl)
+      .rotateDeviceSecret(accountAccessToken, this.settings.hub.deviceId);
+  }
+
+  async rotateHubTapId(accountAccessToken: string): Promise<HubTapRotation> {
+    if (!this.settings.hub.deviceId) {
+      throw new Error("Configure a Device Hub device before rotating its NFC address.");
+    }
+    const result = await new HubAdminClient(this.settings.hub.baseUrl)
+      .rotateTapId(accountAccessToken, this.settings.hub.deviceId);
+    this.settings.hub.tapUrl = result.tapUrl;
+    await this.savePluginData();
+    return result;
+  }
+
+  getHubReceiverKeyStatus(): { configured: boolean; publicKeyJwk: string } {
+    return {
+      configured: Boolean(this.hubReceiverPrivateKey() && this.settings.hub.receiverPublicKeyJwk),
+      publicKeyJwk: this.settings.hub.receiverPublicKeyJwk
+    };
   }
 
   async listQuote0Devices(): Promise<Quote0Device[]> {
@@ -1974,6 +2314,208 @@ export default class ToWritePlugin extends Plugin {
     this.aiAssistantState = normalizeAiAssistantState(data?.aiAssistantState);
   }
 
+  private hubReceiverPrivateKey(): JsonWebKey | undefined {
+    const value = this.settings.hub.receiverPrivateKeyJwk;
+    if (!value) {
+      return undefined;
+    }
+    try {
+      const key = JSON.parse(value) as JsonWebKey;
+      return key.kty === "EC" && key.crv === "P-256" && key.x && key.y && key.d
+        ? key
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async resolveHubWriteTarget(writeTargetRef: string): Promise<CaptureTargetCandidate | undefined> {
+    const normalizedRef = writeTargetRef.trim();
+    let localPath = "";
+    if (!normalizedRef) {
+      localPath = this.settings.deviceCapture.inboxFile;
+    } else {
+      const eligible = this.buildHubCandidates().filter((candidate) => (
+        Boolean(candidate.writeTargetLocalId)
+        && !candidate.privacy?.private
+        && !candidate.privacy?.noAi
+        && !candidate.privacy?.excluded
+      ));
+      const uniqueLocalTargets = [...new Set(eligible.map((candidate) => candidate.writeTargetLocalId!).filter(Boolean))];
+      for (const candidatePath of uniqueLocalTargets) {
+        const opaqueRef = await createOpaqueHubRef("target", candidatePath, this.settings.hub.referenceSecret);
+        if (opaqueRef === normalizedRef) {
+          localPath = candidatePath;
+          break;
+        }
+      }
+      // A tap session can outlive the current top-20 recommendation batch (or
+      // an Obsidian restart). Resolve the opaque ref against current local files
+      // only as a background fallback; the Hub still never supplies a path.
+      if (!localPath) {
+        for (const file of this.app.vault.getMarkdownFiles()) {
+          const privacy = this.hubPrivacyForPath(file.path);
+          if (privacy?.private || privacy?.noAi || privacy?.excluded) {
+            continue;
+          }
+          const opaqueRef = await createOpaqueHubRef("target", file.path, this.settings.hub.referenceSecret);
+          if (opaqueRef === normalizedRef) {
+            localPath = file.path;
+            break;
+          }
+        }
+      }
+      if (!localPath) {
+        return undefined;
+      }
+    }
+
+    const inbox = localPath === this.settings.deviceCapture.inboxFile;
+    if (!inbox && !this.app.vault.getFileByPath(localPath)) {
+      // Do not silently recreate a note that disappeared after it was shown.
+      return undefined;
+    }
+    return {
+      schemaVersion: CAPTURE_SCHEMA_VERSION,
+      id: `hub-write:${normalizedRef || "inbox"}`,
+      kind: inbox ? "inbox" : "existingNote",
+      action: "append",
+      path: localPath,
+      reason: "Device Hub frozen opaque write target",
+      confidence: "strong",
+      score: 1,
+      targetRevision: MISSING_TARGET_REVISION,
+      heading: this.settings.deviceCapture.appendHeading
+    };
+  }
+
+  private buildHubCandidates(): LocalHubCandidate[] {
+    const now = new Date();
+    const acceptedHabits = this.learningService.getAcceptedHabits().filter((habit) => (
+      habit.rule.kind === "time-stage"
+      && isInTimeWindow(now, habit.rule.timeWindow, -now.getTimezoneOffset())
+    ));
+    const articleByPath = new Map(this.store.getArticleSummaries().map((article) => [article.filePath, article]));
+    const candidates = this.pushEngine.getCandidates(now)
+      .filter((candidate) => candidate.type !== "home-summary")
+      .map((candidate): LocalHubCandidate => {
+        const article = candidate.sourceFile ? articleByPath.get(candidate.sourceFile) : undefined;
+        const habitMatch = acceptedHabits.some((habit) => {
+          if (habit.rule.kind !== "time-stage") return false;
+          if (habit.rule.workflowStageId && habit.rule.workflowStageId !== (candidate.workflowStageId || article?.stageId)) return false;
+          if (habit.rule.articleTypeId && habit.rule.articleTypeId !== article?.typeId) return false;
+          return true;
+        });
+        const type = hubContentTypeForCandidate(candidate);
+        const genericPrompt = type === "question_prompt"
+          ? "Continue this unresolved question"
+          : type === "stale_note_nudge"
+            ? "Add one small step to this note"
+            : "Continue writing this note";
+        return {
+          localId: candidate.id,
+          type,
+          display: {
+            title: candidate.title || candidate.sourceTitle || "Untitled",
+            body: this.settings.hub.shareDisplayBody ? candidate.body.slice(0, 1_200) : undefined,
+            prompt: this.settings.hub.shareDisplayBody
+              ? (candidate.nextAction || candidate.note || genericPrompt).slice(0, 400)
+              : genericPrompt
+          },
+          sourceLocalId: candidate.sourceFile ? `${candidate.sourceFile}:${candidate.questionId || candidate.id}` : candidate.id,
+          writeTargetLocalId: candidate.sourceFile,
+          allowedActions: candidate.type === "question"
+            ? ["open", "respond", "later", "skip"]
+            : ["open", "capture", "later", "skip"],
+          reasonCode: candidate.reminderDue
+            ? "due_reminder"
+            : habitMatch
+              ? "accepted_habit"
+              : candidate.stale
+                ? "stale_note"
+                : candidate.type === "question"
+                  ? "unresolved_question"
+                  : "local_recommendation",
+          score: Math.min(1, hubScoreForCandidate(candidate) + (habitMatch ? 0.1 : 0)),
+          expiresAt: candidate.reminderAt,
+          privacy: this.hubPrivacyForCandidate(candidate)
+        };
+      });
+
+    candidates.push({
+      localId: "towrite:blank-capture",
+      type: "blank_capture",
+      display: {
+        title: this.settings.language === "zh" ? "快速记录" : "Quick capture",
+        prompt: this.settings.language === "zh" ? "记下此刻的一句话" : "Capture one thought from this moment"
+      },
+      writeTargetLocalId: this.settings.deviceCapture.inboxFile,
+      allowedActions: ["capture", "later", "skip"],
+      reasonCode: "blank_capture_fallback",
+      score: 0.25
+    });
+    return candidates.sort((left, right) => right.score - left.score).slice(0, 20);
+  }
+
+  private hubPrivacyForCandidate(candidate: PushCandidate): LocalHubCandidate["privacy"] {
+    return this.hubPrivacyForPath(candidate.sourceFile || "", candidate.tags);
+  }
+
+  private hubPrivacyForPath(path: string, candidateTags: readonly string[] = []): LocalHubCandidate["privacy"] {
+    if (!path) {
+      return { excluded: true };
+    }
+    const normalizedPath = path.replace(/\\/gu, "/").replace(/^\/+|\/+$/gu, "");
+    const lowerPath = normalizedPath.toLowerCase();
+    const scope = this.settings.deviceCapture;
+    const includes = scope.includeFolders.map((folder) => normalizeFolderPath(folder).toLowerCase()).filter(Boolean);
+    const excludes = scope.excludeFolders.map((folder) => normalizeFolderPath(folder).toLowerCase()).filter(Boolean);
+    const excludedByPath = (includes.length > 0 && !includes.some((folder) => lowerPath === folder || lowerPath.startsWith(`${folder}/`)))
+      || excludes.some((folder) => lowerPath === folder || lowerPath.startsWith(`${folder}/`));
+
+    const file = this.app.vault.getAbstractFileByPath(normalizedPath);
+    const excludedAttachment = file instanceof TFile && file.extension.toLowerCase() !== "md";
+    const cache = file instanceof TFile ? this.app.metadataCache.getFileCache(file) : null;
+    const frontmatter = cache?.frontmatter && typeof cache.frontmatter === "object"
+      ? cache.frontmatter as Record<string, unknown>
+      : {};
+    const tags = new Set([
+      ...candidateTags,
+      ...(cache?.tags ?? []).map((tag) => tag.tag),
+      ...frontmatterTags(frontmatter)
+    ].map((tag) => tag.toLowerCase().replace(/^#/u, "")));
+    const deniedTags = new Set(scope.excludeTags.map((tag) => tag.toLowerCase().replace(/^#/u, "")));
+    const excludedByTag = [...tags].some((tag) => deniedTags.has(tag));
+    const deniedFrontmatter = new Set(scope.excludeFrontmatter.map((key) => key.toLowerCase()));
+    const excludedByFrontmatter = Object.entries(frontmatter).some(([key, value]) => (
+      deniedFrontmatter.has(key.toLowerCase()) && privacyFlagEnabled(value)
+    ));
+    const noCloud = tags.has("no-cloud")
+      || tags.has("no_cloud")
+      || privacyFlagEnabled(frontmatter.no_cloud)
+      || privacyFlagEnabled(frontmatter["no-cloud"]);
+    return {
+      private: tags.has("private") || privacyFlagEnabled(frontmatter.private),
+      noAi: tags.has("no-ai") || tags.has("no_ai") || privacyFlagEnabled(frontmatter.no_ai),
+      excluded: excludedAttachment || excludedByPath || excludedByTag || excludedByFrontmatter || noCloud
+    };
+  }
+
+  private async rememberHubState(state: HubDeviceState): Promise<void> {
+    const hub = this.settings.hub;
+    hub.lastStateVersion = state.selected?.stateVersion ?? state.displayed?.stateVersion ?? 0;
+    hub.lastSelectedContentId = state.selected?.selectedContentId ?? "";
+    hub.lastDisplayedContentId = state.displayed?.contentId ?? "";
+    if (state.tapUrl) {
+      const validation = validateNtag213Uri(state.tapUrl);
+      if (validation.valid) {
+        hub.tapUrl = state.tapUrl;
+      }
+    }
+    await this.savePluginData();
+    this.store.notify();
+  }
+
   private createUiApi(): ToWriteUiApi {
     return {
       getActiveFile: () => this.getActiveFile(),
@@ -2005,6 +2547,7 @@ export default class ToWritePlugin extends Plugin {
       getCompactEditorDecorations: () => this.settings.compactEditorDecorations,
       getReminderPresets: () => this.settings.reminderPresets,
       getProactiveSuggestions: () => this.getProactiveSuggestions(),
+      getDeviceHubState: () => this.getDeviceHubState(),
       getDefaultColor: (lane) => this.defaultColorForLane(lane),
       renderMarkdown: (markdown, element, sourcePath) => this.renderMarkdown(markdown, element, sourcePath),
       getLinkSuggestions: (query, sourcePath) => this.getLinkSuggestions(query, sourcePath),
@@ -2019,6 +2562,9 @@ export default class ToWritePlugin extends Plugin {
       openAiAssistant: () => this.openAiAssistant(),
       openCaptureForQuestion: (id) => this.openCaptureForQuestion(id),
       actOnSuggestion: (id, action) => this.actOnSuggestion(id, action),
+      syncDeviceHub: () => this.syncDeviceHub(false),
+      sendDeviceHubFeedback: (action) => this.sendDeviceHubFeedback(action),
+      openDeviceHubTap: () => this.openDeviceHubTap(),
       acceptSuggestion: (id) => this.acceptSuggestion(id),
       editQuestion: (id) => this.editQuestion(id),
       deleteQuestion: (id) => this.deleteQuestion(id),
@@ -2086,6 +2632,7 @@ export default class ToWritePlugin extends Plugin {
         this.refreshEditorDecorations();
         this.store.notify();
         this.scheduleBackgroundRefresh(file.path);
+        this.queueDeviceHubSync();
       })().catch((error: unknown) => {
         console.error("ToWrite could not refresh the edited file", error);
       });
@@ -2098,6 +2645,7 @@ export default class ToWritePlugin extends Plugin {
       this.app.vault.on("modify", (file) => {
         if (file instanceof TFile && file.extension === "md") {
           this.recordEditPresenceLearning(file);
+          this.deviceHub?.recordEditPresence();
           reindexFile(file);
         }
       })
@@ -2186,6 +2734,7 @@ export default class ToWritePlugin extends Plugin {
         }
         this.refreshEditorDecorations();
         this.store.notify();
+        this.queueDeviceHubSync();
         if (this.settings.autoExport) {
           this.scheduleBackgroundRefresh();
         }
@@ -2219,7 +2768,7 @@ export default class ToWritePlugin extends Plugin {
     }
     this.lastLearningEditPresence.set(file.path, now);
     const context = this.learningContextForFile(file.path);
-    void this.recordLearningEvent({
+    this.learningEditQueue.enqueue(file.path, {
       kind: "edit-presence",
       at: new Date(now).toISOString(),
       timezoneOffsetMinutes: -new Date(now).getTimezoneOffset(),
@@ -2703,6 +3252,7 @@ function normalizeSettings(settings?: Partial<ToWriteSettings>): ToWriteSettings
     deviceCapture: normalizeDeviceCaptureSettings(settings?.deviceCapture),
     learning: normalizeLearningSettings(settings?.learning),
     backend: normalizeBackendSettings(settings?.backend),
+    hub: normalizeHubSettings(settings?.hub),
     deviceProfiles: normalizeDeviceProfiles(settings?.deviceProfiles),
     articleTypes: normalizeArticleTypesSettings(settings?.articleTypes),
     workflowStages: normalizeWorkflowStages(settings?.workflowStages),
@@ -2763,6 +3313,53 @@ function normalizeBackendSettings(settings?: Partial<ToWriteSettings["backend"]>
     useForHabitSuggestions: settings?.useForHabitSuggestions === true,
     timeoutMs: clampNumber(settings?.timeoutMs ?? DEFAULT_SETTINGS.backend.timeoutMs, 500, 10000, 2500)
   };
+}
+
+function normalizeHubSettings(settings?: Partial<ToWriteSettings["hub"]>): ToWriteSettings["hub"] {
+  const defaults = DEFAULT_SETTINGS.hub;
+  const rawBaseUrl = String(settings?.baseUrl ?? defaults.baseUrl).trim().replace(/\/+$/u, "");
+  const tapUrl = String(settings?.tapUrl ?? "").trim().slice(0, 512);
+  return {
+    enabled: settings?.enabled === true,
+    baseUrl: /^https?:\/\//iu.test(rawBaseUrl) ? rawBaseUrl : defaults.baseUrl,
+    receiverId: String(settings?.receiverId ?? "").trim().slice(0, 120),
+    receiverToken: String(settings?.receiverToken ?? "").trim().slice(0, 500),
+    receiverPublicKeyJwk: normalizeHubJwkSetting(settings?.receiverPublicKeyJwk, false),
+    receiverPrivateKeyJwk: normalizeHubJwkSetting(settings?.receiverPrivateKeyJwk, true),
+    referenceSecret: String(settings?.referenceSecret ?? "").trim().slice(0, 200) || `href_${randomTokenFragment()}_${randomTokenFragment()}`,
+    deviceId: String(settings?.deviceId ?? "").trim().slice(0, 120),
+    syncIntervalSeconds: clampNumber(settings?.syncIntervalSeconds ?? defaults.syncIntervalSeconds, 15, 86400, 60),
+    shareDisplayBody: settings?.shareDisplayBody === true,
+    autoSelect: settings?.autoSelect !== false,
+    manualPlace: String(settings?.manualPlace ?? "").trim().slice(0, 120),
+    manualMode: String(settings?.manualMode ?? "").trim().slice(0, 120),
+    tapUrl: /^https?:\/\//iu.test(tapUrl) ? tapUrl : "",
+    lastSyncedAt: String(settings?.lastSyncedAt ?? "").trim().slice(0, 64),
+    lastError: String(settings?.lastError ?? "").trim().slice(0, 500),
+    lastStateVersion: clampNumber(settings?.lastStateVersion ?? 0, 0, Number.MAX_SAFE_INTEGER, 0),
+    lastSelectedContentId: String(settings?.lastSelectedContentId ?? "").trim().slice(0, 120),
+    lastDisplayedContentId: String(settings?.lastDisplayedContentId ?? "").trim().slice(0, 120)
+  };
+}
+
+function normalizeHubJwkSetting(value: unknown, requirePrivate: boolean): string {
+  const text = String(value ?? "").trim().slice(0, 4_000);
+  if (!text) {
+    return "";
+  }
+  try {
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+    if (parsed.kty !== "EC"
+      || parsed.crv !== "P-256"
+      || typeof parsed.x !== "string"
+      || typeof parsed.y !== "string"
+      || (requirePrivate && typeof parsed.d !== "string")) {
+      return "";
+    }
+    return JSON.stringify(parsed);
+  } catch {
+    return "";
+  }
 }
 
 function normalizeClock(value: unknown, fallback: string): string {
@@ -2890,6 +3487,78 @@ function ensureQuote0NfcToken(settings: ToWriteSettings["quote0"]): ToWriteSetti
 
 function randomTokenFragment(): string {
   return activeWindow.crypto?.randomUUID?.().replace(/-/gu, "") ?? `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+}
+
+function messageForError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function normalizeHubContextState(value: string): HubContextState {
+  const normalized = value.trim().toLowerCase().replace(/[\s-]+/gu, "_");
+  const aliases: Record<string, HubContextState> = {
+    desk: "desk_focus",
+    focus: "desk_focus",
+    idle: "desk_idle",
+    walk: "walking",
+    outdoor: "outdoors",
+    commute: "commuting",
+    exercise: "exercising",
+    rest: "resting",
+    dnd: "do_not_disturb",
+    quiet: "do_not_disturb"
+  };
+  const supported = new Set<HubContextState>([
+    "unknown",
+    "desk_focus",
+    "desk_idle",
+    "walking",
+    "outdoors",
+    "commuting",
+    "exercising",
+    "resting",
+    "do_not_disturb"
+  ]);
+  return supported.has(normalized as HubContextState)
+    ? normalized as HubContextState
+    : aliases[normalized] ?? "unknown";
+}
+
+function hubContentTypeForCandidate(candidate: PushCandidate): LocalHubCandidate["type"] {
+  if (candidate.type === "question") {
+    return "question_prompt";
+  }
+  if (!candidate.body.trim()) {
+    return "title_only";
+  }
+  if (candidate.stale) {
+    return "stale_note_nudge";
+  }
+  return "note_continue";
+}
+
+function hubScoreForCandidate(candidate: PushCandidate): number {
+  if (candidate.reminderDue) return 0.98;
+  if (candidate.pinned) return 0.9;
+  if (candidate.type === "question") return 0.72;
+  if (candidate.stale) return 0.68;
+  return 0.5;
+}
+
+function frontmatterTags(frontmatter: Record<string, unknown>): string[] {
+  const value = frontmatter.tags ?? frontmatter.tag;
+  if (Array.isArray(value)) {
+    return value.filter((tag): tag is string => typeof tag === "string");
+  }
+  if (typeof value === "string") {
+    return value.split(/[\s,，、]+/gu).map((tag) => tag.trim()).filter(Boolean);
+  }
+  return [];
+}
+
+function privacyFlagEnabled(value: unknown): boolean {
+  if (value === true || value === 1) return true;
+  if (typeof value !== "string") return false;
+  return ["true", "yes", "1", "private", "exclude"].includes(value.trim().toLowerCase());
 }
 
 function defaultTitleFromBody(body: string): string {

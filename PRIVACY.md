@@ -2,14 +2,14 @@
 
 [简体中文](PRIVACY.zh-CN.md)
 
-Last updated: 2026-07-13
+Last updated: 2026-07-19
 
-This document describes the ToWrite Open Questions Obsidian plugin. The optional Obsidian AI Backend, OpenAI-compatible providers, Quote0/Dot services, tunnels, and sync providers are separate systems with their own privacy terms.
+This document describes the ToWrite Open Questions Obsidian plugin. The optional Device Hub, Obsidian AI Backend, OpenAI-compatible providers, Quote0/Dot services, tunnels, and sync providers are separate systems with their own privacy terms and operator policies.
 
 ## Local-First Defaults
 
 - ToThink/ToWrite indexing, three-candidate capture recommendation, capture preview, and habit inference run inside Obsidian Desktop.
-- Habit learning, proactive notifications, External API, AI, and Obsidian AI Backend integration are opt-in. The Backend integration and notifications are disabled by default.
+- Habit learning, proactive notifications, External API, AI, Device Hub, and Obsidian AI Backend integration are opt-in. Device Hub, Backend integration, and notifications are disabled by default.
 - ToWrite does not include vendor analytics, advertising identifiers, or a ToWrite-operated telemetry service.
 - Saving a capture writes only to the destination you confirm: an eligible existing note, a new note in a recommended folder or Workflow stage, or the configured Inbox.
 
@@ -31,6 +31,10 @@ When the AI assistant is used, its current local conversation is also mirrored i
 ```
 
 The plugin's local data may contain the same learning state. These files are user-readable and can be exported or cleared from settings. Treat the plugin data file and `.obsidian-open-questions/` as private Vault data; Vault sync or backup software may copy them according to that software's configuration.
+
+When Device Hub is configured, Obsidian plugin data can additionally contain the Hub base URL, Receiver ID and pull token, Receiver P-256 public/private JWK, opaque-reference HMAC secret, device ID, Tap URL, sync timestamps, and cached selected/displayed identifiers. These values are not written to the user-readable ToWrite export files, but Obsidian plugin data is ordinary local data rather than an encrypted operating-system keystore and may be copied by Vault sync or backup software.
+
+The Hub onboarding access token is kept only in the in-memory setup form and is not added to persisted plugin settings. A newly provisioned or rotated `device_secret` is shown once for transfer to the ESP32 and is not persisted by ToWrite. Closing or clearing the setup form loses that one-time value.
 
 ## Learning Data Boundary
 
@@ -73,6 +77,42 @@ Backend habit-suggestion wording is a separate switch and is disabled by default
 
 The Backend access token is stored in Obsidian plugin data and sent in the `X-Capture-Token` header. It is not placed in Backend URLs or learning exports. Obsidian plugin data is not an encrypted secret store, so protect the Vault and any synced plugin data.
 
+For Device Hub recommendation reranking, the plugin sends at most 20 already-filtered candidate IDs, content types, bounded titles, reason codes, scores, coarse state/place/mode labels, and accepted-habit rule data. It deliberately omits display body, `write_target_ref`, Vault path, selection text, and pending habits. Unknown returned IDs are discarded and the local candidate objects remain authoritative.
+
+## Optional Device Hub
+
+Device Hub is disabled by default. Enabling it sends a separately deployed Hub only the data needed for an eink card and its delivery state. Before upload, the Connector applies the configured include/exclude folders, tags, and frontmatter rules and converts local source/write targets into keyed opaque references.
+
+Depending on the selected settings and candidate, the Hub can receive:
+
+- user, Receiver, device, binding, Tap, and mailbox identifiers;
+- content type, bounded title, optional display body, prompt, allowed actions, reason code, score, expiry, and opaque source/write-target references;
+- coarse context state, confidence, timestamps, TTL, manually entered semantic place/mode labels, and accepted-habit evidence;
+- selected and displayed identifiers, state version, selection reason, display ACK status, render hash, firmware version, battery percentage, last-seen time, and explicit feedback;
+- guest mailbox messages and their moderation/trust state when that feature is configured;
+- PWA answer ciphertext, P-256/AES-GCM envelope metadata, an opaque frozen selection/content/write-target association, byte size, and expiry.
+
+Display-card fields are plaintext at the Hub because the Hub and device must deliver and render them. Display body sharing is off by default; title, prompt, reason, and other approved card fields can still leave the Vault when sync is enabled. Inspect the send preview before enabling a public Hub.
+
+PWA answer text is encrypted in the browser for the Receiver using ephemeral P-256 ECDH, HKDF-SHA256, and AES-256-GCM. The Hub stores ciphertext and routing/envelope metadata, not the answer plaintext or Receiver private key. This encryption does not hide the display card from the Hub, does not protect a compromised browser or Connector, and does not replace account login, CSRF checks, or idempotency.
+
+The Tap URL contains only a revocable random `tap_id`. It contains no account token, Receiver token, device secret, content ID, or Vault path. Anyone who reads or copies the tag may view the approved frozen card, so the tag is not proof of physical presence. Writing an answer still requires an authenticated account session and the Tap-session CSRF value.
+
+### Reference Hub retention and deletion
+
+The current reference implementation has these V1 behaviors; another Hub operator may choose a stricter policy and must disclose it separately:
+
+| Data | Current V1 behavior |
+| --- | --- |
+| Context observations, snapshots, and candidate batches | The reference cleanup worker physically removes rows beyond the 30-day cutoff. |
+| Encrypted PWA Captures | Created with a 30-day expiry and omitted from pending delivery after expiry. The hourly cleanup worker physically removes expired pending/failed Captures and ACKed Captures after the configured shorter ACKed-retention interval. |
+| Tap sessions | Stop authorizing writes after about five minutes or after successful consumption. Unlinked sessions are physically removed one day after expiry; a session linked to a Capture remains until that Capture/link is purged. |
+| Content revisions, selections, ACKs, feedback, and mailbox records | Non-current delivery/audit rows use a 90-day hard-deletion cutoff. Rows still referenced by current selected/displayed state or a pending encrypted writeback are retained until the reference is released. |
+| Device deletion/revocation | Immediately denies device authentication and revokes active bindings, Tap entries, device mailboxes, and sender keys. Historical delivery/audit rows may remain. |
+| Account deletion | Revokes sessions/devices/Receivers, marks queued Captures deleted, and physically removes all Hub-domain rows for that account. Backups remain subject to the deployment operator's separately disclosed backup-expiry policy. |
+
+The cleanup worker is a required service in the reference deployment; disabling it suspends physical retention cleanup. “30 days” applies to raw context/candidate data, not every Hub table. Operators must separately configure backup expiry, proxy/CDN logs, and deletion verification.
+
 ## Other Optional Network Features
 
 - OpenAI-compatible AI is disabled by default. Loading models sends an authenticated `GET /models` request to the configured Base URL. Testing connectivity sends a small real chat-completion request with the selected model and may consume provider quota.
@@ -93,6 +133,8 @@ Proactive notifications are disabled by default. New habit candidates stay silen
 Users can:
 
 - leave learning, notifications, Backend, AI, and External API disabled;
+- leave Device Hub disabled, pause its background sync, or remove its local Receiver/device configuration;
+- preview Device Hub candidate fields, keep display body sharing off, rotate the Receiver/device/Tap credentials, and revoke a copied Tap URL;
 - pause learning collection;
 - inspect evidence before accepting a habit;
 - edit, dismiss, or postpone a habit candidate;

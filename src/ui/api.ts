@@ -12,6 +12,7 @@ import type {
 import type { ArticleTypeSettings, ToWriteLanguage, ToWriteReminderPreset, WorkflowStageSettings } from "../core/settings";
 import type { WorkflowIndexPayload } from "../workflow";
 import type { ProactiveSuggestion, ProactiveSuggestionAction } from "../suggestions";
+import type { HubDeviceState, HubFeedbackAction } from "../hub";
 
 export interface ActiveLineRange {
   filePath: string;
@@ -39,6 +40,7 @@ export interface ToWriteUiApi {
   getCompactEditorDecorations(): boolean;
   getReminderPresets(): ToWriteReminderPreset[];
   getProactiveSuggestions(): ProactiveSuggestion[];
+  getDeviceHubState(): HubDeviceState | undefined;
   getDefaultColor(lane: OpenQuestionLane): OpenQuestionColor;
   renderMarkdown(markdown: string, element: HTMLElement, sourcePath: string): Promise<void>;
   getLinkSuggestions(query: string, sourcePath: string): LinkSuggestion[];
@@ -51,6 +53,9 @@ export interface ToWriteUiApi {
   openAiAssistant(): void;
   openCaptureForQuestion(id: string): void;
   actOnSuggestion(id: string, action: ProactiveSuggestionAction): Promise<void>;
+  syncDeviceHub(): Promise<HubDeviceState | undefined>;
+  sendDeviceHubFeedback(action: HubFeedbackAction): Promise<void>;
+  openDeviceHubTap(): void;
   acceptSuggestion(id: string): Promise<void>;
   editQuestion(id: string): Promise<void>;
   deleteQuestion(id: string): Promise<void>;

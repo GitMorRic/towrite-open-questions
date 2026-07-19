@@ -27,7 +27,7 @@ import type { AiModelInfo } from "../ai/types";
 import type { Quote0CanvasPayload, Quote0Device, Quote0ImagePayload, Quote0TextPayload } from "../quote0/client";
 import type { Quote0SyncPreview } from "../quote0/sync-service";
 
-type SettingsTabId = "general" | "cards" | "capture" | "learning" | "workflow" | "api" | "push" | "quote0" | "ai" | "backend";
+type SettingsTabId = "general" | "cards" | "capture" | "learning" | "workflow" | "api" | "push" | "quote0" | "ai" | "backend" | "hub";
 
 type Quote0PreviewAction = {
   label: string;
@@ -277,7 +277,8 @@ const COPY: Record<ToWriteLanguage, SettingCopy> = {
       "push": "推流",
       "quote0": "Quote0",
       "ai": "AI",
-      "backend": "Backend"
+      "backend": "Backend",
+      "hub": "Device Hub"
     },
     "language": "语言",
     "languageDesc": "设置插件界面的显示语言。默认使用中文。",
@@ -516,7 +517,8 @@ const COPY: Record<ToWriteLanguage, SettingCopy> = {
       "push": "Push",
       "quote0": "Quote0",
       "ai": "AI",
-      "backend": "Backend"
+      "backend": "Backend",
+      "hub": "Device Hub"
     },
     "language": "Language",
     "languageDesc": "Choose the plugin display language. Chinese is the default.",
@@ -801,6 +803,14 @@ export class ToWriteSettingTab extends PluginSettingTab {
   private aiConnectionTesting = false;
   private aiDiagnosticsGeneration = 0;
   private aiApiKeyVisible = false;
+  private hubLoginEmail = "";
+  private hubLoginChallengeId = "";
+  private hubLoginCode = "";
+  /** Short-lived and memory-only; never written into plugin settings. */
+  private hubAccountAccessToken = "";
+  /** Shown only after provisioning/rotation so it can be copied to the ESP32. */
+  private hubOneTimeDeviceSecret = "";
+  private hubDeviceSecretVisible = false;
   private activeSettingsTab: SettingsTabId = "general";
 
   constructor(app: App, private readonly plugin: ToWritePlugin) {
@@ -837,6 +847,8 @@ export class ToWriteSettingTab extends PluginSettingTab {
       this.renderQuote0Settings(panel, copy);
     } else if (this.activeSettingsTab === "backend") {
       this.renderBackendSettings(panel);
+    } else if (this.activeSettingsTab === "hub") {
+      this.renderHubSettings(panel);
     } else {
       this.renderAiSettings(panel, copy);
     }
@@ -853,7 +865,8 @@ export class ToWriteSettingTab extends PluginSettingTab {
       { id: "push", label: copy.tabs.push },
       { id: "quote0", label: copy.tabs.quote0 },
       { id: "ai", label: copy.tabs.ai },
-      { id: "backend", label: copy.tabs.backend }
+      { id: "backend", label: copy.tabs.backend },
+      { id: "hub", label: copy.tabs.hub }
     ];
     const tabBar = containerEl.createDiv({ cls: "towrite-settings-tabs" });
     tabBar.setAttribute("role", "tablist");
@@ -1278,6 +1291,302 @@ export class ToWriteSettingTab extends PluginSettingTab {
       .addButton((button) => button.setButtonText(zh ? "测试连接" : "Test connection").onClick(() => {
         void this.plugin.testBackendConnection();
       }));
+  }
+
+  private renderHubSettings(containerEl: HTMLElement): void {
+    const zh = this.plugin.settings.language !== "en";
+    const hub = this.plugin.settings.hub;
+
+    new Setting(containerEl)
+      .setName(zh ? "连接 ToWrite Device Hub" : "Connect ToWrite Device Hub")
+      .setDesc(zh
+        ? "可选公网控制面。插件只上传经过本地隐私过滤的设备显示候选；Hub 离线不会阻塞本地记录和编辑。"
+        : "Optional public control plane. Only locally privacy-filtered display candidates are uploaded; an offline Hub never blocks local capture or editing.")
+      .addToggle((toggle) => toggle.setValue(hub.enabled).onChange(async (value) => {
+        hub.enabled = value;
+        await this.plugin.savePluginData();
+        this.plugin.configureDeviceHub();
+        this.refreshSettingsUi();
+      }));
+
+    new Setting(containerEl)
+      .setName("Hub URL")
+      .setDesc(zh ? "必须是固定的 HTTP(S) origin；正式 NFC 使用 HTTPS。" : "A fixed HTTP(S) origin; production NFC requires HTTPS.")
+      .addText((text) => text.setValue(hub.baseUrl).setPlaceholder("https://hub.example.com").onChange(async (value) => {
+        hub.baseUrl = value.trim().replace(/\/+$/u, "");
+        await this.plugin.savePluginData();
+        this.plugin.configureDeviceHub();
+      }));
+
+    const login = new Setting(containerEl)
+      .setName(zh ? "账号登录与一键配对" : "Account sign-in and one-click pairing")
+      .setDesc(this.hubAccountAccessToken
+        ? (zh
+          ? "本次设置会话已登录。账号令牌只保存在内存中，不写入插件设置。"
+          : "Signed in for this settings session. The account token stays in memory and is never persisted.")
+        : this.hubLoginChallengeId
+          ? (zh ? "验证码已发送；验证后即可自动创建 Receiver、设备绑定与 NFC 地址。" : "Code sent. Verify it to provision the Receiver, device binding, and NFC address.")
+          : (zh ? "使用邮箱验证码登录 Hub；长期凭据不会进入 URL。" : "Sign in with an email code; long-lived credentials never enter a URL."));
+    login.addText((text) => text
+      .setPlaceholder("you@example.com")
+      .setValue(this.hubLoginEmail)
+      .onChange((value) => {
+        this.hubLoginEmail = value.trim();
+      }));
+    login.addButton((button) => button
+      .setButtonText(zh ? "发送验证码" : "Send code")
+      .onClick(() => {
+        void this.plugin.startHubEmailAuth(this.hubLoginEmail).then((challenge) => {
+          this.hubLoginChallengeId = challenge.challengeId;
+          if (challenge.developmentCode) {
+            this.hubLoginCode = challenge.developmentCode;
+          }
+          new Notice(zh ? "Device Hub 验证码已发送。" : "Device Hub verification code sent.");
+          this.refreshSettingsUi();
+        }).catch((error: unknown) => {
+          new Notice(`${zh ? "发送失败" : "Could not send code"}: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      }));
+
+    if (this.hubLoginChallengeId && !this.hubAccountAccessToken) {
+      new Setting(containerEl)
+        .setName(zh ? "邮箱验证码" : "Email verification code")
+        .addText((text) => text
+          .setPlaceholder("123456")
+          .setValue(this.hubLoginCode)
+          .onChange((value) => {
+            this.hubLoginCode = value.trim();
+          }))
+        .addButton((button) => button
+          .setCta()
+          .setButtonText(zh ? "验证登录" : "Verify")
+          .onClick(() => {
+            void this.plugin.verifyHubEmailAuth(
+              this.hubLoginEmail,
+              this.hubLoginChallengeId,
+              this.hubLoginCode
+            ).then((token) => {
+              this.hubAccountAccessToken = token;
+              this.hubLoginCode = "";
+              new Notice(zh ? "Device Hub 登录成功；令牌仅保存在本次设置会话。" : "Signed in; the token is memory-only for this settings session.");
+              this.refreshSettingsUi();
+            }).catch((error: unknown) => {
+              new Notice(`${zh ? "验证失败" : "Verification failed"}: ${error instanceof Error ? error.message : String(error)}`);
+            });
+          }));
+    }
+
+    if (this.hubAccountAccessToken) {
+      const provisioning = new Setting(containerEl)
+        .setName(zh ? "个人设备闭环" : "Personal device setup")
+        .setDesc(hub.receiverId && hub.deviceId
+          ? (zh ? "Receiver 与墨水屏设备已配置。可轮换设备密钥或 NFC 地址。" : "Receiver and e-ink device are configured. You can rotate the device secret or NFC address.")
+          : (zh ? "自动创建 Receiver、墨水屏设备、配对绑定和静态 Tap 地址。" : "Creates the Receiver, e-ink device, binding, and static tap address."));
+      if (!hub.receiverId || !hub.deviceId) {
+        provisioning.addButton((button) => button
+          .setCta()
+          .setButtonText(zh ? "一键创建并配对" : "Provision and pair")
+          .onClick(() => {
+            void (async () => {
+              if (!this.plugin.getHubReceiverKeyStatus().configured) {
+                await this.plugin.generateHubReceiverKeyPair();
+              }
+              const result = await this.plugin.provisionPersonalDeviceHub(this.hubAccountAccessToken);
+              this.hubOneTimeDeviceSecret = result.deviceSecret;
+              this.hubDeviceSecretVisible = false;
+              await copyToClipboard(result.deviceSecret, zh ? "一次性设备密钥已复制" : "One-time device secret copied");
+              this.refreshSettingsUi();
+            })().catch((error: unknown) => {
+              new Notice(`${zh ? "创建失败" : "Provisioning failed"}: ${error instanceof Error ? error.message : String(error)}`);
+            });
+          }));
+      } else {
+        provisioning
+          .addButton((button) => button
+            .setButtonText(zh ? "轮换设备密钥" : "Rotate device secret")
+            .onClick(() => {
+              void this.plugin.rotateHubDeviceSecret(this.hubAccountAccessToken).then(async (result) => {
+                this.hubOneTimeDeviceSecret = result.deviceSecret;
+                this.hubDeviceSecretVisible = false;
+                await copyToClipboard(result.deviceSecret, zh ? "新设备密钥已复制" : "New device secret copied");
+                this.refreshSettingsUi();
+              }).catch((error: unknown) => {
+                new Notice(`${zh ? "轮换失败" : "Rotation failed"}: ${error instanceof Error ? error.message : String(error)}`);
+              });
+            }))
+          .addButton((button) => button
+            .setButtonText(zh ? "轮换 NFC 地址" : "Rotate NFC address")
+            .onClick(() => {
+              void this.plugin.rotateHubTapId(this.hubAccountAccessToken).then(() => {
+                new Notice(zh ? "NFC 地址已轮换；旧标签立即失效。" : "NFC address rotated; the old tag is now invalid.");
+                this.refreshSettingsUi();
+              }).catch((error: unknown) => {
+                new Notice(`${zh ? "轮换失败" : "Rotation failed"}: ${error instanceof Error ? error.message : String(error)}`);
+              });
+            }));
+      }
+    }
+
+    if (this.hubOneTimeDeviceSecret) {
+      new Setting(containerEl)
+        .setName(zh ? "一次性 ESP32 设备密钥" : "One-time ESP32 device secret")
+        .setDesc(zh ? "只在本次设置会话显示。把它写入设备安全存储；不要写入 NFC 标签。" : "Visible only in this settings session. Put it in device secure storage, never on the NFC tag.")
+        .addText((text) => {
+          text.setValue(this.hubOneTimeDeviceSecret);
+          text.inputEl.readOnly = true;
+          text.inputEl.type = this.hubDeviceSecretVisible ? "text" : "password";
+        })
+        .addButton((button) => button
+          .setButtonText(this.hubDeviceSecretVisible ? (zh ? "隐藏" : "Hide") : (zh ? "预览" : "Reveal"))
+          .onClick(() => {
+            this.hubDeviceSecretVisible = !this.hubDeviceSecretVisible;
+            this.refreshSettingsUi();
+          }))
+        .addButton((button) => button
+          .setButtonText(zh ? "复制" : "Copy")
+          .onClick(() => {
+            void copyToClipboard(this.hubOneTimeDeviceSecret, zh ? "设备密钥已复制" : "Device secret copied");
+          }))
+        .addButton((button) => button
+          .setButtonText(zh ? "清除显示" : "Clear")
+          .onClick(() => {
+            this.hubOneTimeDeviceSecret = "";
+            this.hubDeviceSecretVisible = false;
+            this.refreshSettingsUi();
+          }));
+    }
+
+    new Setting(containerEl)
+      .setName("Receiver ID")
+      .setDesc(zh ? "Obsidian Connector 在 cloud-relay 注册得到的 recv_… 标识。" : "The recv_… identifier registered by the Obsidian Connector.")
+      .addText((text) => text.setValue(hub.receiverId).setPlaceholder("recv_…").onChange(async (value) => {
+        hub.receiverId = value.trim();
+        await this.plugin.savePluginData();
+      }));
+
+    new Setting(containerEl)
+      .setName(zh ? "Connector 访问 token" : "Connector access token")
+      .setDesc(zh ? "仅通过 Authorization: Bearer 请求头发送，不进入 URL、候选或日志。" : "Sent only in the Authorization: Bearer header, never in URLs, candidates, or logs.")
+      .addText((text) => {
+        text.setValue(hub.receiverToken).onChange(async (value) => {
+          hub.receiverToken = value.trim();
+          await this.plugin.savePluginData();
+        });
+        text.inputEl.type = "password";
+      });
+
+    const receiverKey = this.plugin.getHubReceiverKeyStatus();
+    const receiverKeySetting = new Setting(containerEl)
+      .setName(zh ? "PWA 回写 E2EE 接收密钥" : "PWA writeback E2EE receiver key")
+      .setDesc(receiverKey.configured
+        ? (zh
+          ? "已配置 P-256 接收密钥。私钥只保存在本地插件数据中，不显示、不复制、不上传。轮换前请先处理已排队的回答。"
+          : "A P-256 receiver key is configured. The private key stays in local plugin data and is never displayed, copied, or uploaded. Drain queued answers before rotating it.")
+        : (zh
+          ? "生成本地 P-256 密钥对，并将公钥 JWK 复制到 Receiver 注册。私钥不会出现在 UI 中。"
+          : "Generate a local P-256 key pair, then copy the public JWK into Receiver registration. The private JWK is never rendered in the UI."));
+    receiverKeySetting.addButton((button) => button
+      .setButtonText(receiverKey.configured ? (zh ? "轮换密钥" : "Rotate key") : (zh ? "生成密钥" : "Generate key"))
+      .onClick(() => {
+        void this.plugin.generateHubReceiverKeyPair().then(async (publicKey) => {
+          await copyToClipboard(publicKey, zh ? "已生成并复制公钥 JWK" : "Receiver public JWK generated and copied");
+          this.refreshSettingsUi();
+        }).catch((error: unknown) => {
+          new Notice(`${zh ? "密钥生成失败" : "Key generation failed"}: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      }));
+    if (receiverKey.publicKeyJwk) {
+      receiverKeySetting.addButton((button) => button
+        .setButtonText(zh ? "复制公钥" : "Copy public JWK")
+        .onClick(() => {
+          void copyToClipboard(receiverKey.publicKeyJwk, zh ? "已复制公钥 JWK" : "Receiver public JWK copied");
+        }));
+    }
+
+    new Setting(containerEl)
+      .setName(zh ? "墨水屏设备 ID" : "E-ink device ID")
+      .setDesc(zh ? "使用 dev_… 长随机 ID。设备 secret 只配置在 ESP32/模拟器，不填入插件或 NFC。" : "Use the long random dev_… ID. The device secret belongs only on the ESP32/simulator, never in the plugin or NFC tag.")
+      .addText((text) => text.setValue(hub.deviceId).setPlaceholder("dev_…").onChange(async (value) => {
+        hub.deviceId = value.trim();
+        await this.plugin.savePluginData();
+      }));
+
+    new Setting(containerEl)
+      .setName(zh ? "同步间隔（秒）" : "Sync interval (seconds)")
+      .setDesc(zh ? "Vault 变更会 debounce；这个间隔只用于后台校验，不会在按键链发请求。" : "Vault changes are debounced; this interval is only a background safety sync and never runs in the keystroke path.")
+      .addText((text) => text.setValue(String(hub.syncIntervalSeconds)).onChange(async (value) => {
+        hub.syncIntervalSeconds = clampInteger(value, 15, 86400, 60);
+        await this.plugin.savePluginData();
+        this.plugin.configureDeviceHub();
+      }));
+
+    new Setting(containerEl)
+      .setName(zh ? "发送获准显示的正文片段" : "Share approved display snippets")
+      .setDesc(zh ? "默认关闭。关闭时只发送标题、类型、动作、分数与可读理由；路径和完整正文始终不发送。" : "Off by default. When off, only title, kind, actions, score, and reason are sent; paths and full note text are never sent.")
+      .addToggle((toggle) => toggle.setValue(hub.shareDisplayBody).onChange(async (value) => {
+        hub.shareDisplayBody = value;
+        await this.plugin.savePluginData();
+      }));
+
+    new Setting(containerEl)
+      .setName(zh ? "自动选择最高分候选" : "Automatically select the top candidate")
+      .setDesc(zh ? "Hub 仍会执行勿扰、最低停留时间和冷却策略。" : "The Hub still enforces DND, minimum dwell time, and cooldowns.")
+      .addToggle((toggle) => toggle.setValue(hub.autoSelect).onChange(async (value) => {
+        hub.autoSelect = value;
+        await this.plugin.savePluginData();
+      }));
+
+    new Setting(containerEl)
+      .setName(zh ? "当前语义地点 / 状态" : "Current semantic place / mode")
+      .setDesc(zh ? "V1 由用户确认，不采集 GPS、SSID 或精确位置。勿扰状态填写 do_not_disturb。" : "V1 is user-confirmed and does not collect GPS, SSID, or precise location. Use do_not_disturb for DND.")
+      .addText((text) => text.setValue(hub.manualPlace).setPlaceholder(zh ? "书桌 / 森林公园" : "desk / forest park").onChange(async (value) => {
+        hub.manualPlace = value.trim().slice(0, 120);
+        await this.plugin.savePluginData();
+        this.plugin.queueDeviceHubContext();
+      }))
+      .addText((text) => text.setValue(hub.manualMode).setPlaceholder("desk_focus / walking / do_not_disturb").onChange(async (value) => {
+        hub.manualMode = value.trim().slice(0, 120);
+        await this.plugin.savePluginData();
+        this.plugin.queueDeviceHubContext();
+      }));
+
+    const controls = new Setting(containerEl)
+      .setName(zh ? "连接与同步" : "Connection and sync")
+      .setDesc(hub.lastError
+        ? `${zh ? "最近错误" : "Last error"}: ${hub.lastError}`
+        : `${zh ? "最近同步" : "Last sync"}: ${hub.lastSyncedAt || "—"}`);
+    controls
+      .addButton((button) => button.setButtonText(zh ? "测试连接" : "Test").onClick(() => void this.plugin.testHubConnection()))
+      .addButton((button) => button.setCta().setButtonText(zh ? "立即同步" : "Sync now").onClick(() => void this.plugin.syncDeviceHub(true)))
+      .addButton((button) => button.setButtonText(zh ? "刷新状态" : "Refresh state").onClick(() => void this.plugin.refreshDeviceHubState()));
+
+    new Setting(containerEl)
+      .setName(zh ? "设备期望 / 实际显示" : "Desired / displayed")
+      .setDesc(`state v${hub.lastStateVersion} · selected ${hub.lastSelectedContentId || "—"} · displayed ${hub.lastDisplayedContentId || "—"}`);
+
+    const ndef = this.plugin.getHubNdefStatus();
+    const nfc = new Setting(containerEl)
+      .setName(zh ? "NTAG213 HTTPS 入口" : "NTAG213 HTTPS entry")
+      .setDesc(hub.tapUrl
+        ? `${ndef.bytes}/144 bytes · ${ndef.fits ? (zh ? "可写入" : "fits") : (zh ? "超出容量" : "too large")}`
+        : (zh ? "首次成功同步或服务器创建设备 tap binding 后显示。" : "Shown after the first successful sync or after the server creates a tap binding."));
+    nfc.addText((text) => {
+      text.setValue(hub.tapUrl).setPlaceholder("https://hub.example.com/t/v1/tap_…");
+      text.inputEl.readOnly = true;
+    });
+    if (hub.tapUrl) {
+      nfc
+        .addButton((button) => button.setButtonText(zh ? "复制" : "Copy").setDisabled(!ndef.fits).onClick(() => {
+          void copyToClipboard(hub.tapUrl, zh ? "已复制 NFC URL" : "NFC URL copied");
+        }))
+        .addButton((button) => button.setButtonText(zh ? "模拟碰一碰" : "Simulate tap").onClick(() => this.plugin.openDeviceHubTap()));
+    }
+
+    new Setting(containerEl)
+      .setName(zh ? "发送范围预览" : "Data-sharing preview")
+      .setDesc(zh
+        ? "每批最多 20 个 opaque 候选；发送类型、显示标题、可选显示片段、动作、分数、置信度、理由、粗粒度 stage/lane/status。绝不发送 Vault 路径、完整正文、选区、剪贴板、精确位置或长期 token。"
+        : "At most 20 opaque candidates per batch: kind, display title, optional approved snippet, actions, score, confidence, reason, and coarse stage/lane/status. Vault paths, full text, selections, clipboard data, precise location, and long-lived tokens are never sent.");
   }
 
   private renderApiDeviceSettings(containerEl: HTMLElement, copy: SettingCopy): void {

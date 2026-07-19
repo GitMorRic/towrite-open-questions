@@ -20,6 +20,7 @@ It is not a general TODO list. It gives your vault a ToThink / ToWrite annotatio
 - Export JSON for dashboards, desktop widgets, scripts, and eink devices.
 - Run an optional local desktop HTTP API for JSON, RSS, SSE events, dashboard views, mobile device previews, companion phone input, and note/status/capture writeback.
 - Run an optional Push Engine and Quote0 integration for eink overview dashboards, rotating ToThink/ToWrite cards, and NFC phone writeback.
+- Optionally connect to Device Hub V1 for privacy-filtered recommendations, server-authoritative `selected` state, ESP32 long polling/display ACKs, and a credential-free NFC/PWA answer flow.
 - Run optional OpenAI-compatible summaries and local-note recommendations after you configure your own endpoint.
 - Open a native Smart Capture modal for a new idea, a Markdown selection, or an answer to a ToThink/ToWrite card, with local destination recommendations and a conflict-safe preview.
 - Optionally learn coarse work-session and routing patterns. Detected patterns remain pending until you explicitly confirm them.
@@ -138,11 +139,38 @@ Quote0 output has two common modes:
 - Text cards: send the next ToThink/ToWrite card with title, question, next action, recent note, stage, and status.
 - Home overview: send a dashboard through Text / Image / Canvas API with ToThink, ToWrite, unresolved articles, reminders, Workflow files, and stage status.
 
-The NFC link points to `External API publicBaseUrl + /device/input?token=<quote0-nfc-token>&questionId=<id>` by default. The Quote0 NFC token is restricted to phone input, input context, appending notes, and capture creation. It is not the full External API token.
+The legacy Quote0 NFC link points to `External API publicBaseUrl + /device/input?token=<quote0-nfc-token>&questionId=<id>` by default. The Quote0 NFC token is restricted to phone input, input context, appending notes, and capture creation. It is not the full External API token. This query-token route is retained only for the local/Quote0 compatibility workflow; do not use it for a new Device Hub NFC tag.
 
 For NFC writeback to work, Obsidian Desktop must be running, External API must be enabled, `bindHost` should be `0.0.0.0` for LAN/Tailscale access, and `publicBaseUrl` must be reachable from the phone, for example `http://100.x.y.z:48321` or `http://192.168.1.20:48321`. In Dot App/Content Studio, add the Text / Image / Canvas API content to the Quote0 Loop content list; otherwise Dot API may accept updates while the screen keeps showing another Loop item.
 
 By default, the plugin also calls Dot's device switch/refresh endpoint (`/next`) after a successful send to reduce visible delay. This still depends on Dot cloud queueing, the active Loop item, and physical eink refresh time. Turn off "Force refresh after send" if your Loop advances to the wrong item.
+
+## Device Hub V1
+
+Device Hub is an optional, separately deployed path for an ESP32/eink device and an HTTPS phone PWA:
+
+```text
+Obsidian privacy-filtered candidates
+  -> Hub selected state
+  -> ESP32 HTTPS long poll
+  -> display ACK
+  -> static NFC Tap URL
+  -> encrypted PWA answer
+  -> Receiver queue
+  -> local CaptureService writeback
+```
+
+The plugin sends at most 20 locally filtered candidates with opaque source/write-target references. Display body sharing is off by default. An optional trusted Backend may rerank only those candidate IDs and cannot inject a Vault path, switch the screen, or request vibration. The Hub's `selected` state says what the server wants; `displayed` changes only after an exact successful device ACK. NFC therefore opens the most recently acknowledged displayed content, falling back to selected only before the first successful ACK.
+
+New Device Hub tags contain exactly one URI record:
+
+```text
+https://<PUBLIC_BASE_URL>/t/v1/<tap_id>
+```
+
+They contain no API token, device secret, content ID, or Vault path. The old `/device/go`, `/device/input?token=...`, and query-token preview routes remain local/Quote0 compatibility features and are not the Device Hub NFC contract.
+
+See the bilingual [Device Hub V1 protocol](docs/device-hub-protocol.md), the [Chinese protocol](docs/device-hub-protocol.zh-CN.md), and the [NTAG213/NFC Tools guide](docs/ntag213-nfc-tools.md) ([中文](docs/ntag213-nfc-tools.zh-CN.md)).
 
 ## Data Files
 
@@ -201,7 +229,7 @@ Use `127.0.0.1` for local widgets. Use `0.0.0.0` only when you intentionally wan
 
 ### Phone And Small-Screen Preview
 
-If your phone and desktop are connected through Tailscale, set the External API bind host to `0.0.0.0`, enable query-token reads, then open:
+For the legacy local External API preview only, if your phone and desktop are connected through Tailscale, set the External API bind host to `0.0.0.0`, enable query-token reads, then open:
 
 ```text
 http://<desktop-tailscale-ip>:48321/device?token=<your-token>
@@ -209,7 +237,9 @@ http://<desktop-tailscale-ip>:48321/device?token=<your-token>
 
 `/device` simulates an eink or small-screen device. It calls `GET /api/v1/device-feed`, which returns a server-prepared view model for home, cards, next-card previews, workflow files, and source-note status pages. Supported profiles are `mobile-eink` for the phone/PWA preview, `eink-bw` for compact black-and-white eink devices, and `desktop-card` for denser desktop widgets. Clients can pass `width`, `height`, and `inches`; landscape screens receive a compact layout automatically.
 
-Real eink hardware can stay simple: display the card, a QR/short link, or a hardware-button action. The companion `/device/input` page handles text input, mobile Web Speech dictation, tags, target folders, answering a card via `POST /api/v1/questions/<id>/notes`, or saving a standalone idea through `POST /api/v1/captures`. Static NFC tags can point at `/device/go?targetId=...`, where the desktop hub resolves the latest card into an input page, source note, or quick capture. Hardware buttons can POST to `/api/v1/device/events` and use the same action layer. The phone preview also shows a direct `Voice` action so you can dictate a new idea without leaving the `/device` page.
+Query-token URLs can leak through browser history, screenshots, proxy logs, and Referrer headers. Keep query-token reads disabled unless this legacy client requires them, never write such a URL to a new Device Hub NFC tag, and rotate the token after exposure.
+
+Real eink hardware can stay simple: display the card, a QR/short link, or a hardware-button action. In this legacy local workflow, the companion `/device/input` page handles text input, mobile Web Speech dictation, tags, target folders, answering a card via `POST /api/v1/questions/<id>/notes`, or saving a standalone idea through `POST /api/v1/captures`. A compatibility NFC tag can point at `/device/go?targetId=...`, where the desktop plugin resolves the latest card into an input page, source note, or quick capture. Hardware buttons can POST to `/api/v1/device/events` and use the same action layer. New Device Hub tags instead use `/t/v1/<tap_id>` and never carry a query token. The phone preview also shows a direct `Voice` action so you can dictate a new idea without leaving the `/device` page.
 
 The phone preview shows a five-key hint bar inside the simulated screen: `New Idea / Previous / Home + Voice / Next / Phone Input or current action`. Tap the center key to return home; long-press it to dictate a new idea and save it through Device Capture. On source-note pages, the right key becomes `Cards` and opens that note's filtered card queue. Real hardware can map the same labels to physical buttons around the display.
 
@@ -285,7 +315,7 @@ npm.cmd run deploy:capture
 
 ## Privacy
 
-Core indexing, the three-candidate capture recommender, and habit inference run locally inside Obsidian. Learning, External API, notifications, AI, and the Obsidian AI Backend integration are opt-in. API tokens and AI API keys are stored in local Obsidian plugin data and are not written to exported JSON. The Backend token is sent in the `X-Capture-Token` header, not in a URL.
+Core indexing, the three-candidate capture recommender, and habit inference run locally inside Obsidian. Learning, External API, notifications, AI, Device Hub, and the Obsidian AI Backend integration are opt-in. API tokens, AI API keys, the Device Hub Receiver token, Receiver private key, and opaque-reference secret are stored in local Obsidian plugin data and are not written to exported JSON. Obsidian plugin data is not an encrypted secret store. The Backend token is sent in the `X-Capture-Token` header; Device Hub credentials are sent in authorization headers, never in the Tap URL.
 
 Because ToWrite stores selected source text, source paths, and optional learning events in sidecar JSON and export files, treat those files as part of your private vault data. Read [PRIVACY.md](PRIVACY.md) and [SECURITY.md](SECURITY.md) before enabling remote access or optional network services.
 
@@ -295,4 +325,4 @@ The ToWrite Open Questions plugin is MIT licensed. See [LICENSE](LICENSE).
 
 The optional Obsidian AI Backend is a separate project with its own license terms. The plugin's MIT license does not grant rights to Backend code or hosted services; consult the Backend distribution's `LICENSE` and commercial-license documents.
 
-For ESP32/e-ink integrations, see the Chinese device protocol guide: [docs/device-feed-protocol.zh-CN.md](docs/device-feed-protocol.zh-CN.md).
+For the new ESP32/eink integration, see [Device Hub V1](docs/device-hub-protocol.md). The older local feed remains documented in the Chinese [device-feed compatibility guide](docs/device-feed-protocol.zh-CN.md).
