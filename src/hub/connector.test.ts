@@ -125,6 +125,61 @@ describe("DeviceHubConnector", () => {
     expect(uploaded[0].writeTargetRef).toBeUndefined();
     expect(uploaded.some((candidate) => candidate.candidateRef === "hc_invented_outside_whitelist")).toBe(false);
   });
+
+  it("uploads and manually selects an explicit local card without AI or batch auto-selection", async () => {
+    const client = fakeClient();
+    const enhanceCandidates = vi.fn();
+    const connector = new DeviceHubConnector({
+      client,
+      getSettings: configuredSettings,
+      getCandidates: () => [{
+        localId: "question-selection",
+        type: "question_prompt",
+        display: { title: "Selection card" },
+        sourceLocalId: "note.md:question-selection",
+        writeTargetLocalId: "note.md",
+        allowedActions: ["open", "respond"],
+        reasonCode: "unresolved_question",
+        score: 0.82
+      }],
+      enhanceCandidates
+    });
+
+    const state = await connector.selectLocalCandidate("question-selection");
+
+    expect(enhanceCandidates).not.toHaveBeenCalled();
+    expect(client.batches).toHaveLength(1);
+    expect(client.batches[0].autoSelect).toBe(false);
+    expect(client.selections).toHaveLength(1);
+    expect(client.selections[0]).toMatchObject({
+      candidateRef: client.batches[0].candidates[0].candidateRef,
+      reason: "manual",
+      score: 0.82
+    });
+    expect(state.selected?.selectedContentId).toBe("cnt_manual");
+  });
+
+  it("refuses direct selection when local privacy filtering removes the card", async () => {
+    const client = fakeClient();
+    const connector = new DeviceHubConnector({
+      client,
+      getSettings: configuredSettings,
+      getCandidates: () => [{
+        localId: "private-question",
+        type: "question_prompt",
+        display: { title: "Private" },
+        allowedActions: ["respond"],
+        reasonCode: "private",
+        score: 1,
+        privacy: { private: true }
+      }]
+    });
+
+    await expect(connector.selectLocalCandidate("private-question"))
+      .rejects.toThrow("removed by the local Device Hub privacy policy");
+    expect(client.batches).toHaveLength(0);
+    expect(client.selections).toHaveLength(0);
+  });
 });
 
 function configuredSettings() {
@@ -140,6 +195,7 @@ function configuredSettings() {
 function fakeClient(): HubClientLike & {
   batches: HubCandidateBatch[];
   observations: HubContextObservation[][];
+  selections: HubSelectionRequest[];
 } {
   const state: HubDeviceState = {
     protocolVersion: "1",
@@ -148,9 +204,11 @@ function fakeClient(): HubClientLike & {
   };
   const batches: HubCandidateBatch[] = [];
   const observations: HubContextObservation[][] = [];
+  const selections: HubSelectionRequest[] = [];
   return {
     batches,
     observations,
+    selections,
     async getCapabilities() {
       return {
         protocolVersion: "1",
@@ -169,8 +227,22 @@ function fakeClient(): HubClientLike & {
     async submitContextObservations(items: readonly HubContextObservation[]) {
       observations.push(items.map((item) => ({ ...item })));
     },
-    async selectDeviceContent(_deviceId: string, _request: HubSelectionRequest): Promise<HubContentSelection> {
-      throw new Error("not used");
+    async selectDeviceContent(deviceId: string, request: HubSelectionRequest): Promise<HubContentSelection> {
+      selections.push({ ...request });
+      const selection: HubContentSelection = {
+        protocolVersion: "1",
+        selectionId: "sel_manual",
+        deliveryId: "dlv_manual",
+        deviceId,
+        selectedContentId: "cnt_manual",
+        selectedRevisionId: "rev_manual",
+        stateVersion: 1,
+        selectedAt: "2026-07-20T00:00:00.000Z",
+        reason: request.reason,
+        score: request.score
+      };
+      state.selected = selection;
+      return selection;
     },
     async getDeviceState() {
       return state;

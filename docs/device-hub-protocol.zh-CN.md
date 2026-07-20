@@ -639,7 +639,7 @@ python scripts/eink_device_simulator.py `
 NTAG213 V1 只写一条 URI Record：
 
 ```text
-https://<PUBLIC_BASE_URL>/t/v1/<tap_id>
+<PUBLIC_BASE_URL>/t/v1/<tap_id>
 ```
 
 不得写 device secret、API key、access token、selected/content ID 或 Vault 路径。V1 是 HTTPS PWA，不写 Android Application Record。Hub 的设备状态接口会返回该 URL 的实际 NDEF 占用字节数；超过 NTAG213 的 144 字节用户区时必须拒绝生成/写入。

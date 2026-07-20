@@ -1,5 +1,5 @@
 import type { DeviceFeedPage, DeviceProfile } from "../external/device-feed";
-import type { OpenQuestionLane, OpenQuestionStatus } from "../core/types";
+import type { OpenQuestionLane, OpenQuestionRule, OpenQuestionStatus } from "../core/types";
 import type { DeviceButtonMapping, DeviceInteractionAction, DeviceSourceRef } from "../device-interactions";
 
 export type PushTargetType = "quote0" | "mobile-app" | "local-web" | "webhook";
@@ -137,6 +137,7 @@ export interface PushCandidate {
   openUri?: string;
   answerUrl?: string;
   questionId?: string;
+  sourceRule?: OpenQuestionRule;
 }
 
 export interface PushDisplayMetric {

@@ -136,7 +136,8 @@ function questionToCandidate(
     updatedAt: question.updatedAt ?? question.createdAt,
     openUri: buildObsidianUri(vaultName, question.source.file, question.source.blockId),
     answerUrl: buildInputUrl(publicBaseUrl, token, question.id),
-    questionId: question.id
+    questionId: question.id,
+    sourceRule: question.source.rule
   };
 }
 

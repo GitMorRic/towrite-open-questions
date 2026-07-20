@@ -1,6 +1,6 @@
 import { DebouncedActivityReporter, type HubActivityContext } from "./activity";
 import type { HubClientLike } from "./client";
-import { buildPrivateCandidateBatch, type LocalHubCandidate } from "./privacy";
+import { buildPrivateCandidateBatch, createOpaqueHubRef, type LocalHubCandidate } from "./privacy";
 import type {
   HubCandidate,
   HubCapabilities,
@@ -91,6 +91,43 @@ export class DeviceHubConnector {
       return undefined;
     }
     const state = await this.options.client.getDeviceState(this.options.getSettings().deviceId.trim());
+    this.setState(state);
+    return state;
+  }
+
+  async selectLocalCandidate(localId: string, candidates?: readonly LocalHubCandidate[]): Promise<HubDeviceState> {
+    if (!this.isConfigured()) {
+      throw new Error("Device Hub is not fully configured.");
+    }
+    const settings = this.options.getSettings();
+    const localCandidates = candidates ?? await this.options.getCandidates();
+    const localCandidate = localCandidates.find((candidate) => candidate.localId === localId);
+    if (!localCandidate) {
+      throw new Error("This card is not currently eligible for the Device Hub candidate batch.");
+    }
+
+    // A direct user action bypasses AI reranking and disables batch auto-select.
+    // The explicit manual selection below is therefore always the final choice.
+    const batch = await buildPrivateCandidateBatch(localCandidates, {
+      referenceSecret: settings.referenceSecret,
+      deviceId: settings.deviceId.trim(),
+      autoSelect: false,
+      policyVersion: "towrite-manual-v1",
+      modelVersion: "manual"
+    });
+    const candidateRef = await createOpaqueHubRef("candidate", localCandidate.localId, settings.referenceSecret);
+    if (!batch.candidates.some((candidate) => candidate.candidateRef === candidateRef)) {
+      throw new Error("This card was removed by the local Device Hub privacy policy.");
+    }
+
+    await this.options.client.submitCandidateBatch(settings.receiverId.trim(), batch);
+    await this.options.client.selectDeviceContent(settings.deviceId.trim(), {
+      candidateRef,
+      reason: "manual",
+      score: localCandidate.score,
+      idempotencyKey: opaqueEventId("evt")
+    });
+    const state = await this.options.client.getDeviceState(settings.deviceId.trim());
     this.setState(state);
     return state;
   }

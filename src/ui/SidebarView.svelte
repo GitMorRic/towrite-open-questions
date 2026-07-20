@@ -594,6 +594,15 @@
           {#if hubState.selected}
             <p class="towrite-hub-reason">{hubState.selected.reason || hubState.selected.card?.reason || (language === "zh" ? "本地规则推荐" : "Local rules")}</p>
           {/if}
+          {#if hubState.displayed && !hubState.inSync}
+            <div class="towrite-hub-displayed-preview">
+              <small>{language === "zh" ? "屏幕当前仍在显示" : "Still displayed on screen"}</small>
+              <strong>{hubState.displayed.card?.title || hubState.displayed.contentId}</strong>
+              {#if hubState.displayed.card?.prompt || hubState.displayed.card?.body}
+                <p>{hubState.displayed.card.prompt || hubState.displayed.card.body}</p>
+              {/if}
+            </div>
+          {/if}
           <div class="towrite-hub-state">
             <span>selected · {hubState.selected?.selectedContentId || "—"}</span>
             <span class:pending={!hubState.inSync}>displayed · {hubState.displayed?.contentId || "—"}</span>

@@ -54,6 +54,7 @@ export interface ToWriteUiApi {
   openCaptureForQuestion(id: string): void;
   actOnSuggestion(id: string, action: ProactiveSuggestionAction): Promise<void>;
   syncDeviceHub(): Promise<HubDeviceState | undefined>;
+  sendQuestionToDeviceHub(id: string): Promise<HubDeviceState | undefined>;
   sendDeviceHubFeedback(action: HubFeedbackAction): Promise<void>;
   openDeviceHubTap(): void;
   acceptSuggestion(id: string): Promise<void>;

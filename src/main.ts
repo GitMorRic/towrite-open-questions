@@ -1745,6 +1745,26 @@ export default class ToWritePlugin extends Plugin {
     }
   }
 
+  async sendQuestionToDeviceHub(questionId: string): Promise<HubDeviceState | undefined> {
+    if (!this.settings.hub.enabled) {
+      new Notice(this.settings.language === "zh" ? "请先在设置中启用并配对 Device Hub。" : "Enable and pair Device Hub in settings first.");
+      return undefined;
+    }
+    if (this.hubCandidateSyncTimer) {
+      window.clearTimeout(this.hubCandidateSyncTimer);
+      this.hubCandidateSyncTimer = 0;
+    }
+    try {
+      const state = await this.deviceHub.selectLocalCandidate(questionId, this.buildHubCandidates(questionId));
+      new Notice(this.settings.language === "zh" ? "已将这张卡设为墨水屏期望内容。" : "This card is now the desired e-ink content.");
+      return state;
+    } catch (error) {
+      const message = messageForError(error);
+      new Notice(`${this.settings.language === "zh" ? "发送到墨水屏失败" : "Could not send to e-ink"}: ${message}`);
+      throw error;
+    }
+  }
+
   async refreshDeviceHubState(showNotice = true): Promise<HubDeviceState | undefined> {
     try {
       const state = await this.deviceHub.refreshState();
@@ -2389,7 +2409,7 @@ export default class ToWritePlugin extends Plugin {
     };
   }
 
-  private buildHubCandidates(): LocalHubCandidate[] {
+  private buildHubCandidates(preferredLocalId?: string): LocalHubCandidate[] {
     const now = new Date();
     const acceptedHabits = this.learningService.getAcceptedHabits().filter((habit) => (
       habit.rule.kind === "time-stage"
@@ -2407,16 +2427,22 @@ export default class ToWritePlugin extends Plugin {
           return true;
         });
         const type = hubContentTypeForCandidate(candidate);
+        const zh = this.settings.language === "zh";
         const genericPrompt = type === "question_prompt"
-          ? "Continue this unresolved question"
+          ? (zh ? "继续处理这个未解决问题" : "Continue this unresolved question")
           : type === "stale_note_nudge"
-            ? "Add one small step to this note"
-            : "Continue writing this note";
+            ? (zh ? "给这篇笔记补充一个小步骤" : "Add one small step to this note")
+            : (zh ? "继续写这篇笔记" : "Continue writing this note");
+        const selectionTitle = candidate.lane === "write"
+          ? (zh ? "来自划线的 ToWrite" : "ToWrite from selection")
+          : (zh ? "来自划线的 ToThink" : "ToThink from selection");
         return {
           localId: candidate.id,
           type,
           display: {
-            title: candidate.title || candidate.sourceTitle || "Untitled",
+            title: candidate.sourceRule === "selection" && !this.settings.hub.shareDisplayBody
+              ? selectionTitle
+              : candidate.title || candidate.sourceTitle || "Untitled",
             body: this.settings.hub.shareDisplayBody ? candidate.body.slice(0, 1_200) : undefined,
             prompt: this.settings.hub.shareDisplayBody
               ? (candidate.nextAction || candidate.note || genericPrompt).slice(0, 400)
@@ -2454,7 +2480,11 @@ export default class ToWritePlugin extends Plugin {
       reasonCode: "blank_capture_fallback",
       score: 0.25
     });
-    return candidates.sort((left, right) => right.score - left.score).slice(0, 20);
+    const sorted = candidates.sort((left, right) => right.score - left.score);
+    const preferred = preferredLocalId ? sorted.find((candidate) => candidate.localId === preferredLocalId) : undefined;
+    return preferred
+      ? [preferred, ...sorted.filter((candidate) => candidate.localId !== preferred.localId)].slice(0, 20)
+      : sorted.slice(0, 20);
   }
 
   private hubPrivacyForCandidate(candidate: PushCandidate): LocalHubCandidate["privacy"] {
@@ -2563,6 +2593,7 @@ export default class ToWritePlugin extends Plugin {
       openCaptureForQuestion: (id) => this.openCaptureForQuestion(id),
       actOnSuggestion: (id, action) => this.actOnSuggestion(id, action),
       syncDeviceHub: () => this.syncDeviceHub(false),
+      sendQuestionToDeviceHub: (id) => this.sendQuestionToDeviceHub(id),
       sendDeviceHubFeedback: (action) => this.sendDeviceHubFeedback(action),
       openDeviceHubTap: () => this.openDeviceHubTap(),
       acceptSuggestion: (id) => this.acceptSuggestion(id),
@@ -2865,6 +2896,7 @@ export default class ToWritePlugin extends Plugin {
     await this.sidecars.upsert(question);
     await this.refreshSidecars();
     await this.savePluginData();
+    this.queueDeviceHubSync();
     if (this.settings.autoExport) {
       await this.exportNow(false);
     }

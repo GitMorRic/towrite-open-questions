@@ -2,12 +2,146 @@
 
 本文说明如何把 ToWrite Device Hub V1 的静态碰一碰入口写入 NTAG213。标签只负责让手机打开 HTTPS PWA；当前屏幕显示什么、碰一下后打开什么，都由 Hub 根据同一设备的 selected/displayed 状态动态解析。
 
+## 0. 当前可用能力与限制
+
+当前 V1 已经可以完成以下开发闭环：
+
+```text
+Obsidian 中保存的 ToThink / ToWrite 卡片
+→ 插件生成并发送隐私过滤后的候选
+→ Device Hub 形成 selected 状态
+→ 设备模拟器显示并提交 ACK，推进 displayed 状态
+→ 手机碰 NTAG213 或点击“模拟碰一碰”打开 HTTPS PWA
+→ 手机提交回答
+→ 加密 Capture 队列
+→ 在线的 ToWrite Connector 拉取并写回 Obsidian
+```
+
+右侧栏的 **现在 → 墨水屏推荐** 卡片可以预览当前标题、提示、推荐理由、设备在线状态以及 `selected` / `displayed` 是否一致；设置页的 **模拟碰一碰** 可以在写实体标签之前预览手机页面。
+
+目前尚未交付真实 ESP32 墨水屏驱动。私有 Tailscale Serve 也只允许 tailnet 内的客户端访问：手机和电脑可以使用，运行在电脑或 tailnet 主机上的设备模拟器也可以使用；没有加入 tailnet 的普通 ESP32 不能直接访问这个私有地址。实际墨水屏暂时用模拟器代替。
+
+### 0.1 当前电脑上的 Tailscale Serve 拓扑
+
+当前开发入口是：
+
+```text
+Device Hub http://127.0.0.1:8080
+→ Tailscale Serve HTTPS :10000
+→ https://desktop-lea3h79.taild09a3c.ts.net:10000
+```
+
+这是 **tailnet 私有 HTTPS**，不是公网入口。使用前确认：
+
+- 电脑已登录 Tailscale；
+- 手机安装并开启 Tailscale，并登录同一个 tailnet；
+- tailnet ACL 允许手机访问这台电脑的 10000 端口；
+- Obsidian 和 Device Hub 在这台电脑上运行；
+- 不要执行 `tailscale serve reset`，也不要覆盖已有的 443/8443 Serve 配置。
+
+在 Backend 仓库根目录启动本地 Hub 和清理 Worker：
+
+```powershell
+cd D:\Engineering\Project\ObsidianAI-Backend
+.\cloud-relay\scripts\tailscale_dev_hub.ps1 -Action Setup `
+  -PublicBaseUrl "https://desktop-lea3h79.taild09a3c.ts.net:10000"
+```
+
+然后在管理员 PowerShell 中只为 10000 端口建立 Serve 映射：
+
+```powershell
+tailscale serve --bg --https=10000 http://127.0.0.1:8080
+tailscale serve status
+```
+
+检查本地进程和 HTTPS 健康状态：
+
+```powershell
+.\cloud-relay\scripts\tailscale_dev_hub.ps1 -Action Status
+Invoke-RestMethod https://desktop-lea3h79.taild09a3c.ts.net:10000/health
+```
+
+还应在已连接同一 tailnet 的手机浏览器中打开：
+
+```text
+https://desktop-lea3h79.taild09a3c.ts.net:10000/health
+```
+
+停止或重新启动本地进程可使用 `-Action Stop` / `-Action Start`。如果要单独关闭这条 HTTPS 映射，运行：
+
+```powershell
+tailscale serve --https=10000 off
+```
+
+### 0.2 在 ToWrite 中一键生成随机 ID 和 NFC URL
+
+`device_id`、`tap_id` 和设备密钥都不需要、也不应该由用户手工编造。Hub 使用安全随机数在配对时生成它们：
+
+- `device_id` 形如 `dev_<32 位 UUID4 hex>`，只用于定位设备，不是凭据；
+- `tap_id` 形如 `tap_<22 字符 base64url>`，是可撤销、可轮换的静态碰一碰入口；
+- `device_secret` 是一次性显示的 256-bit 设备鉴权密钥，只给模拟器或未来 ESP32，绝不能写进 NFC 标签。
+
+在 Obsidian 中按以下顺序操作：
+
+1. 打开 **设置 → ToWrite Open Questions → Device Hub**。
+2. 开启 **连接 ToWrite Device Hub**。
+3. 在 **Hub URL** 填完整 origin：
+
+   ```text
+   https://desktop-lea3h79.taild09a3c.ts.net:10000
+   ```
+
+   这里只填协议、主机和端口；不要追加 `/t/v1/`、query 或 fragment。
+4. 在 **账号登录与一键配对** 中填写登录 Tailscale 所用的同一邮箱，点击 **发送验证码**。
+5. 私有开发模式只有在 Tailscale 注入的身份邮箱与所填邮箱相同时，才会把开发验证码返回给插件并自动填入；点击 **验证登录**。账号访问令牌只保留在本次设置会话的内存中。
+6. 点击 **一键创建并配对**。插件会在需要时自动创建本地 P-256 接收密钥，并让 Hub 创建 Receiver、设备、配对绑定和 Tap URL。
+7. 一次性 `device_secret` 只在本次设置会话中显示。如需运行模拟器，明确点击 **复制给 ESP32 / 模拟器** 并妥善保存；**不要粘贴到 NFC Tools**。
+8. 找到 **NFC Tools 写入内容（完整 Tap URL）**。确认显示 `可写入 NTAG213` 且不超过 `144 bytes`，点击 **复制完整 URL**。这段完整 URL 才是应写入 NFC Tools 的内容。
+9. 先点击 **模拟碰一碰**，确认 PWA 能打开，再写实体标签。
+
+点击 **轮换 NFC 地址** 会生成新的 `tap_id` 并立即撤销旧地址；此后旧实体标签会失效，必须把新完整 URL 重新写入标签。这不是普通“刷新”。
+
+需要模拟真实屏幕 ACK 时，在 Backend 仓库根目录运行以下模式的命令；`device_id` 使用插件显示的值，`device_secret` 使用一键配对时保存的一次性值：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\eink_device_simulator.py `
+  --base-url https://desktop-lea3h79.taild09a3c.ts.net:10000 `
+  --device-id dev_<插件显示的32位hex> `
+  --device-secret <一次性设备密钥>
+```
+
+不要把命令中的设备密钥截图、提交到 Git 或复制到 NFC 标签。
+
+### 0.3 划线内容如何联动
+
+临时选区不会在打字或划线时自动上传。正确流程是：
+
+1. 在 Markdown 中选中文字；PDF 划线卡在 V1 默认按附件隐私规则留在本地，不进入 Hub；
+2. 使用选区工具条或命令，把它保存成 **ToThink** 或 **ToWrite** 卡片；
+3. 保存后的卡片进入本地问题库和 Push Engine，才有资格成为 Device Hub 候选；
+4. 在这张问题卡底部点击显示器上箭头图标 **将这条卡片发送到墨水屏**，即可手动指定它；若只点设置页 **立即同步**，则由 Hub 根据规则、已确认习惯和上下文自动选择；
+5. 右侧栏的墨水屏推荐卡会显示 selected 标题、提示和理由；selected 与 displayed 不一致时，还会单独显示屏幕当前仍在显示的卡片；
+6. 设备模拟器 ACK 后，`displayed` 与 `selected` 一致；碰 NFC 会打开眼前这张卡的 PWA；
+7. 在 PWA 回答后，保持 Obsidian Connector 在线并再次同步，回答会通过加密队列交给 CaptureService，按冻结目标安全追加到来源笔记的 Captures 区段。V1 尚未把这次回答同时写入 ToThink/ToWrite 卡片的活动流。
+
+默认的 **发送获准显示的正文片段** 是关闭的，因此 Hub 只收到显示标题、通用提示、动作、分数和理由，不会因为刚刚选中文字就上传完整正文。用户明确开启该选项后，已保存且通过 include/exclude、`private`、`no-ai`、`no-cloud` 等隐私规则的候选，才可以发送截断后的获准显示片段。Vault 绝对路径和长期 token 始终不会发送。
+
+### 0.4 Serve 与 Funnel 的边界
+
+| 模式 | 谁能访问 | 当前用途 | 认证要求 |
+|---|---|---|---|
+| Tailscale Serve | 同一 tailnet 且 ACL 允许的设备 | 当前手机、电脑和模拟器开发测试 | 可使用 Tailscale 身份约束的开发邮箱验证码 |
+| Tailscale Funnel | 公网 | 未来没有 Tailscale 的 ESP32 或外部手机 | 必须配置真实 SMTP，关闭开发验证码，并重新检查限流、日志和公网安全 |
+| 自有域名/反向代理 | 取决于部署 | 正式生产 | 有效 HTTPS、稳定 canonical origin 和完整生产认证 |
+
+当前配置包含 `TAILSCALE_SERVE_DEV_LOGIN=true`，它依赖 Serve 提供的 `Tailscale-User-Login` 身份头。Funnel 不提供这个私有身份保证，因此**不要直接把当前 10000 端口切成 Funnel**。将来公开前应先配置 SMTP、把开发登录关闭，并完成公网威胁模型和双平台测试。Funnel 支持的 HTTPS 端口受 Tailscale 限制，当前常用选择是 443、8443 或 10000。
+
 ## 1. 标签里只写什么
 
 V1 的 NTAG213 **只写一条 NDEF URI Record**：
 
 ```text
-https://<PUBLIC_BASE_URL>/t/v1/<tap_id>
+<PUBLIC_BASE_URL>/t/v1/<tap_id>
 ```
 
 示例：
@@ -16,9 +150,15 @@ https://<PUBLIC_BASE_URL>/t/v1/<tap_id>
 https://hub.example.com/t/v1/tap_GQn5qrmjSRmV8dO5CjgnhA
 ```
 
+当前私有 Serve 环境中，插件实际复制出的地址会是以下形式，其中最后一段必须使用插件生成的真实值：
+
+```text
+https://desktop-lea3h79.taild09a3c.ts.net:10000/t/v1/tap_<22字符随机ID>
+```
+
 其中：
 
-- `PUBLIC_BASE_URL` 是固定、公开、使用有效 HTTPS 证书的 canonical origin。
+- `PUBLIC_BASE_URL` 已经包含 `https://`，是固定、使用有效证书的 canonical origin；它可以是公网可达地址，也可以像当前 Serve 一样只在 tailnet 内可达。
 - `tap_id` 是 Hub 生成的、至少 128-bit、可撤销和可轮换的随机入口 ID。
 - 相同标签不需要随着推荐内容变化而重写。Hub 会优先打开最近一次成功 ACK 的 displayed 内容；设备还没有 ACK 时才回退 selected。
 
@@ -27,13 +167,14 @@ https://hub.example.com/t/v1/tap_GQn5qrmjSRmV8dO5CjgnhA
 不得把以下内容写到 NDEF、URL query、URL fragment、附加 Text Record 或备注 Record 中：
 
 - `device_secret`；
+- `device_id`；
 - Hub/Connector/Receiver 的 API key 或 Bearer token；
 - `selected_content_id`、`displayed_content_id`、`selection_id`；
 - Obsidian Vault 路径、笔记路径或文件名映射；
 - 用户 ID、邮箱、精确位置；
 - PWA 登录 cookie、CSRF token 或 Tap session ID。
 
-正确的标签内容只相当于一个可撤销的公开入口。即使有人读取或复制标签，也不能只凭这个 URL 写 Vault、读取设备状态或控制屏幕。
+正确的标签内容只相当于一个可撤销的入口。即使有人读取或复制标签，也不能只凭这个 URL 写 Vault、读取设备状态或控制屏幕；在私有 Serve 模式下，访问者还必须能够进入同一 tailnet 并通过 ACL。
 
 ## 3. 为什么 V1 不写 AAR
 
@@ -82,7 +223,7 @@ NTAG213 fits:     yes
 
 写标签前确认：
 
-1. Hub 已部署到最终或可稳定测试的 HTTPS 域名。
+1. Hub 已部署到最终或可稳定测试的 HTTPS origin，例如当前 tailnet 私有的 `*.ts.net:10000` 地址。
 2. `PUBLIC_BASE_URL` 没有用户名、密码、query 或 fragment，反向代理不会把它重定向到含 token 的地址。
 3. Obsidian 的 Device Hub 设置已经绑定正确设备，并能看到 selected/displayed 状态。
 4. 在插件中生成或刷新该设备的 Tap URL。
@@ -135,11 +276,11 @@ Write
 
 建议按以下顺序完成一次真实验收：
 
-1. 在 Obsidian Device Hub 面板选择内容 A，并发送到屏幕。
+1. 在 Obsidian 的问题卡 A 底部点击 **将这条卡片发送到墨水屏**。
 2. 让设备/模拟器长轮询到 A、完成显示并提交成功 ACK。
 3. 查看 Hub 状态：`selected=A`、`displayed=A`、`in_sync=true`。
 4. 手机碰 NTAG213，应打开 A 的回答页面。
-5. 在 Obsidian 选择内容 B，但暂时停止设备/模拟器，使 B 尚未 ACK。
+5. 在问题卡 B 底部执行同一操作，但暂时停止设备/模拟器，使 B 尚未 ACK。
 6. 查看状态：`selected=B`、`displayed=A`、`in_sync=false`。
 7. 再次碰标签，页面仍应打开 A，因为眼前屏幕还是 A。
 8. 恢复设备，让它显示 B 并 ACK。
@@ -204,6 +345,45 @@ Write
 如果业务未来需要更强的抗克隆和每次触碰动态认证，应另行升级到支持加密动态消息的 **NTAG 424 DNA**，并重新设计服务端验证、密钥注入和制造流程。不要把 NTAG213 描述为抗克隆标签。
 
 ## 11. 常见问题排查
+
+### 电脑能打开 HTTPS，但手机打不开
+
+1. 在手机 Tailscale App 中确认状态为已连接，并确认手机与电脑属于同一个 tailnet。
+2. 在电脑运行 `tailscale serve status`，确认 10000 正向代理到 `http://127.0.0.1:8080`。
+3. 运行 `tailscale_dev_hub.ps1 -Action Status`，确认 API、Worker 和本地 health 都正常。
+4. 在手机浏览器先打开 `/health`，不要先用 NFC 排查；确认 URL 包含 `:10000`。
+5. 检查 tailnet ACL、手机使用的 Tailscale 账号和 MagicDNS/FQDN。不要把 `desktop-lea3h79.taild09a3c.ts.net` 换成 `127.0.0.1` 或普通局域网 HTTP 地址。
+
+### 插件提示 Hub URL 无效
+
+- Hub URL 必须是完整 canonical origin，例如 `https://desktop-lea3h79.taild09a3c.ts.net:10000`。
+- 不要填写 `/health`、`/v1`、`/t/v1/...`、用户名、密码、query 或 fragment。
+- 正式手机/NFC 路径必须使用 HTTPS；只有插件所在电脑上的 localhost 开发才允许 HTTP。
+
+### 验证码没有自动出现或一键配对失败
+
+- 私有 Serve 开发登录要求填写的邮箱与 `Tailscale-User-Login` 完全匹配。确认 Obsidian 请求走的是 `https://...ts.net:10000`，而不是绕过 Serve 直接访问 `127.0.0.1:8080`。
+- 账号令牌只在当前设置会话内存中保存；重新打开设置后可能需要再次发送验证码并验证。
+- 先点击 **测试连接**，再检查 Backend 的 `cloud-relay/data/logs/` 与 `tailscale serve status`。
+- 如果 Receiver/设备已存在，界面会显示轮换按钮而不是再次显示 **一键创建并配对**。
+
+### 右侧栏没有“墨水屏推荐”或没有划线内容
+
+- 确认已开启 Device Hub，并完成 Receiver 和设备配对，然后点击 **立即同步** 或 **刷新状态**。
+- 临时划线不会直接成为候选；必须先保存为 ToThink/ToWrite 卡片。
+- 检查 include/exclude 文件夹、tags、frontmatter 以及 `private`、`no-ai`、`no-cloud` 规则。被排除的卡片不会离开本地。
+- 默认不发送正文片段；如果标题出现但没有选区正文，这是预期行为。只有明确开启 **发送获准显示的正文片段** 后才会发送经过过滤和截断的显示内容。
+
+### PWA 能打开，但回答没有回到 Obsidian
+
+- 确认手机已完成 PWA 登录/配对，提交时没有 CSRF、过期 Tap session 或冲突提示。
+- 保持 Obsidian 和 ToWrite Connector 在线，点击 **立即同步** 拉取加密队列。
+- 检查 PWA 回写 E2EE 接收密钥仍与 Receiver 配对；轮换密钥前应先处理旧队列。
+- 如果目标笔记自预览后发生变化，CaptureService 会保留冲突而不是覆盖。回到插件检查冲突并重新预览/提交。
+
+### 模拟器可用，但 ESP32 不可用
+
+这是当前私有 Serve 模式的预期边界。普通 ESP32 没有加入 tailnet 时无法访问 `*.ts.net:10000` 的私有入口。继续使用设备模拟器完成 `desired → ACK → displayed` 验收；等真实硬件和公网认证准备好后，再安全迁移到 Funnel、自有域名或其他受保护的公网入口。
 
 ### NFC Tools 提示容量不足
 

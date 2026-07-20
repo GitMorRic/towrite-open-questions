@@ -636,7 +636,7 @@ The simulator prints the card, ETag, and state version, then posts a display ACK
 NTAG213 V1 contains exactly one URI record:
 
 ```text
-https://<PUBLIC_BASE_URL>/t/v1/<tap_id>
+<PUBLIC_BASE_URL>/t/v1/<tap_id>
 ```
 
 It never contains a device secret, API key, access token, selected/content ID, or Vault path. V1 is an HTTPS PWA and has no Android Application Record. The owner state endpoint reports the actual NDEF byte count and whether it fits NTAG213's 144-byte user area; generation/writing is rejected when it does not fit.

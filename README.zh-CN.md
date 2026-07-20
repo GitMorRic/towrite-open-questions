@@ -157,7 +157,7 @@ Obsidian 本地隐私过滤候选
 新的 Device Hub 标签只包含一条 URI Record：
 
 ```text
-https://<PUBLIC_BASE_URL>/t/v1/<tap_id>
+<PUBLIC_BASE_URL>/t/v1/<tap_id>
 ```
 
 标签不含 API token、device secret、内容 ID 或 Vault 路径。旧 `/device/go`、`/device/input?token=...` 和 query-token 小屏页仍是本地/Quote0 兼容功能，不属于 Device Hub NFC 契约。

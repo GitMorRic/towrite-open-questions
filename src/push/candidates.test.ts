@@ -34,7 +34,8 @@ describe("PushCandidateSource", () => {
       workflowStageId: "sparks",
       workflowStageTitle: "Sparks",
       reminderDue: true,
-      nextAction: "Draft one concrete example"
+      nextAction: "Draft one concrete example",
+      sourceRule: "selection"
     });
     expect(candidates[1].answerUrl).toContain("/device/input?");
     expect(candidates[3]).toMatchObject({

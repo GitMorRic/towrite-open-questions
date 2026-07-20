@@ -25,6 +25,7 @@
     ListTodo,
     MessageCircleQuestion,
     MessageSquarePlus,
+    MonitorUp,
     PauseCircle,
     Pencil,
     PenLine,
@@ -75,6 +76,7 @@
 
   let copied = false;
   let aiLoading = false;
+  let hubSending = false;
   let aiError: string | undefined;
   let pathExpanded = false;
   let titleDraft = "";
@@ -758,6 +760,20 @@
     }
   }
 
+  async function sendToDeviceHub() {
+    if (hubSending) {
+      return;
+    }
+    hubSending = true;
+    try {
+      await api.sendQuestionToDeviceHub(question.id);
+    } catch {
+      // The plugin already presents the actionable Hub error as an Obsidian Notice.
+    } finally {
+      hubSending = false;
+    }
+  }
+
   function cardCopy(currentLanguage: "zh" | "en") {
     if (currentLanguage === "zh") {
       return {
@@ -801,6 +817,8 @@
         refreshAi: "刷新 AI",
         refreshingAi: "正在刷新 AI",
         answerCapture: "回答并可归档为笔记",
+        sendToScreen: "将这条卡片发送到墨水屏",
+        sendingToScreen: "正在发送到墨水屏",
         compactHighlights: "隐藏这条的整行高亮，仅保留左侧竖线",
         fullHighlights: "恢复这条的整行高亮",
         globalCompactActive: "顶部整体隐藏已开启，先用顶部按钮恢复全部",
@@ -849,6 +867,8 @@
       refreshAi: "Refresh AI",
       refreshingAi: "Refreshing AI",
       answerCapture: "Answer and optionally archive as a note",
+      sendToScreen: "Send this card to the e-ink screen",
+      sendingToScreen: "Sending to the e-ink screen",
       compactHighlights: "Hide this card's full-row highlight",
       fullHighlights: "Restore this card's full-row highlight",
       globalCompactActive: "Global compact highlights are active; use the top button to restore all",
@@ -1128,6 +1148,11 @@
     <button type="button" title={copy.answerCapture} aria-label={copy.answerCapture} aria-haspopup="dialog" on:click={() => api.openCaptureForQuestion(question.id)}>
       <MessageSquarePlus size={15} />
     </button>
+    {#if api.getDeviceHubState() && isMarkdownSource && !["candidate", "resolved", "ignored"].includes(question.status)}
+      <button type="button" class:towrite-ai-loading={hubSending} title={hubSending ? copy.sendingToScreen : copy.sendToScreen} on:click={sendToDeviceHub} disabled={hubSending}>
+        <MonitorUp size={15} />
+      </button>
+    {/if}
     <button type="button" class:towrite-action-active={question.pinned} title={question.pinned ? copy.unpin : copy.pin} on:click={togglePinned}>
       {#if question.pinned}
         <PinOff size={15} />

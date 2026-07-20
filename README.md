@@ -165,7 +165,7 @@ The plugin sends at most 20 locally filtered candidates with opaque source/write
 New Device Hub tags contain exactly one URI record:
 
 ```text
-https://<PUBLIC_BASE_URL>/t/v1/<tap_id>
+<PUBLIC_BASE_URL>/t/v1/<tap_id>
 ```
 
 They contain no API token, device secret, content ID, or Vault path. The old `/device/go`, `/device/input?token=...`, and query-token preview routes remain local/Quote0 compatibility features and are not the Device Hub NFC contract.

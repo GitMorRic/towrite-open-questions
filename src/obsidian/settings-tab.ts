@@ -1296,6 +1296,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
   private renderHubSettings(containerEl: HTMLElement): void {
     const zh = this.plugin.settings.language !== "en";
     const hub = this.plugin.settings.hub;
+    const tailscaleServe = /^https:\/\/[^/?#]+\.ts\.net(?::\d+)?$/iu.test(hub.baseUrl);
 
     new Setting(containerEl)
       .setName(zh ? "连接 ToWrite Device Hub" : "Connect ToWrite Device Hub")
@@ -1311,12 +1312,23 @@ export class ToWriteSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Hub URL")
-      .setDesc(zh ? "必须是固定的 HTTP(S) origin；正式 NFC 使用 HTTPS。" : "A fixed HTTP(S) origin; production NFC requires HTTPS.")
+      .setDesc(zh
+        ? "填写固定的 canonical HTTP(S) origin，不要带 /t/v1、query 或 fragment；NFC 使用 HTTPS。"
+        : "Enter the canonical HTTP(S) origin without /t/v1, a query, or a fragment; NFC uses HTTPS.")
       .addText((text) => text.setValue(hub.baseUrl).setPlaceholder("https://hub.example.com").onChange(async (value) => {
         hub.baseUrl = value.trim().replace(/\/+$/u, "");
         await this.plugin.savePluginData();
         this.plugin.configureDeviceHub();
+        this.refreshSettingsUi();
       }));
+
+    if (tailscaleServe) {
+      new Setting(containerEl)
+        .setName(zh ? "Tailscale Serve 私有模式" : "Private Tailscale Serve mode")
+        .setDesc(zh
+          ? "这个地址只对同一 tailnet 开放。手机碰标签前必须安装、登录并开启 Tailscale；登录邮箱必须与当前 Tailscale 身份一致。普通 ESP32 未加入 tailnet 时暂时不能直接访问。"
+          : "This address is reachable only inside the same tailnet. Before tapping, the phone must have Tailscale installed, signed in, and connected; the login email must match the active Tailscale identity. A normal ESP32 cannot connect unless it joins the tailnet or uses a controlled gateway.");
+    }
 
     const login = new Setting(containerEl)
       .setName(zh ? "账号登录与一键配对" : "Account sign-in and one-click pairing")
@@ -1394,7 +1406,9 @@ export class ToWriteSettingTab extends PluginSettingTab {
               const result = await this.plugin.provisionPersonalDeviceHub(this.hubAccountAccessToken);
               this.hubOneTimeDeviceSecret = result.deviceSecret;
               this.hubDeviceSecretVisible = false;
-              await copyToClipboard(result.deviceSecret, zh ? "一次性设备密钥已复制" : "One-time device secret copied");
+              new Notice(zh
+                ? "配对成功。ESP32 密钥显示在下方；写 NFC 时只复制“完整 Tap URL”。"
+                : "Paired. The ESP32 secret is shown below; write only the complete Tap URL to NFC.");
               this.refreshSettingsUi();
             })().catch((error: unknown) => {
               new Notice(`${zh ? "创建失败" : "Provisioning failed"}: ${error instanceof Error ? error.message : String(error)}`);
@@ -1443,7 +1457,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
             this.refreshSettingsUi();
           }))
         .addButton((button) => button
-          .setButtonText(zh ? "复制" : "Copy")
+          .setButtonText(zh ? "复制给 ESP32 / 模拟器" : "Copy for ESP32 / simulator")
           .onClick(() => {
             void copyToClipboard(this.hubOneTimeDeviceSecret, zh ? "设备密钥已复制" : "Device secret copied");
           }))
@@ -1560,24 +1574,29 @@ export class ToWriteSettingTab extends PluginSettingTab {
       .addButton((button) => button.setCta().setButtonText(zh ? "立即同步" : "Sync now").onClick(() => void this.plugin.syncDeviceHub(true)))
       .addButton((button) => button.setButtonText(zh ? "刷新状态" : "Refresh state").onClick(() => void this.plugin.refreshDeviceHubState()));
 
+    const currentHubState = this.plugin.getDeviceHubState();
+    const selectedLabel = currentHubState?.selected?.card?.title || hub.lastSelectedContentId || "—";
+    const displayedLabel = currentHubState?.displayed?.card?.title || hub.lastDisplayedContentId || "—";
     new Setting(containerEl)
       .setName(zh ? "设备期望 / 实际显示" : "Desired / displayed")
-      .setDesc(`state v${hub.lastStateVersion} · selected ${hub.lastSelectedContentId || "—"} · displayed ${hub.lastDisplayedContentId || "—"}`);
+      .setDesc(`state v${hub.lastStateVersion} · selected ${selectedLabel} · displayed ${displayedLabel}`);
 
     const ndef = this.plugin.getHubNdefStatus();
     const nfc = new Setting(containerEl)
-      .setName(zh ? "NTAG213 HTTPS 入口" : "NTAG213 HTTPS entry")
+      .setName(zh ? "NFC Tools 写入内容（完整 Tap URL）" : "NFC Tools payload (complete Tap URL)")
       .setDesc(hub.tapUrl
-        ? `${ndef.bytes}/144 bytes · ${ndef.fits ? (zh ? "可写入" : "fits") : (zh ? "超出容量" : "too large")}`
-        : (zh ? "首次成功同步或服务器创建设备 tap binding 后显示。" : "Shown after the first successful sync or after the server creates a tap binding."));
+        ? `${ndef.bytes}/144 bytes · ${ndef.fits ? (zh ? "可写入 NTAG213；复制整段 URL，不要只复制 tap_…" : "fits NTAG213; copy the entire URL, not only tap_…") : (zh ? "超出 NTAG213 容量" : "too large for NTAG213")}${tailscaleServe ? (zh ? " · 手机需连接同一 tailnet" : " · phone must be on the same tailnet") : ""}`
+        : (zh
+          ? "完成邮箱登录和“一键创建并配对”后由 Hub 安全生成。不要自行编写 tap_…；未注册的随机串会返回 404。"
+          : "Generated securely by the Hub after email sign-in and Provision and pair. Do not invent tap_… values; an unregistered value returns 404."));
     nfc.addText((text) => {
       text.setValue(hub.tapUrl).setPlaceholder("https://hub.example.com/t/v1/tap_…");
       text.inputEl.readOnly = true;
     });
     if (hub.tapUrl) {
       nfc
-        .addButton((button) => button.setButtonText(zh ? "复制" : "Copy").setDisabled(!ndef.fits).onClick(() => {
-          void copyToClipboard(hub.tapUrl, zh ? "已复制 NFC URL" : "NFC URL copied");
+        .addButton((button) => button.setCta().setButtonText(zh ? "复制完整 URL" : "Copy complete URL").setDisabled(!ndef.fits).onClick(() => {
+          void copyToClipboard(hub.tapUrl, zh ? "已复制完整 Tap URL，可粘贴到 NFC Tools 的 URL/URI Record" : "Complete Tap URL copied for the NFC Tools URL/URI record");
         }))
         .addButton((button) => button.setButtonText(zh ? "模拟碰一碰" : "Simulate tap").onClick(() => this.plugin.openDeviceHubTap()));
     }
@@ -1585,8 +1604,8 @@ export class ToWriteSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName(zh ? "发送范围预览" : "Data-sharing preview")
       .setDesc(zh
-        ? "每批最多 20 个 opaque 候选；发送类型、显示标题、可选显示片段、动作、分数、置信度、理由、粗粒度 stage/lane/status。绝不发送 Vault 路径、完整正文、选区、剪贴板、精确位置或长期 token。"
-        : "At most 20 opaque candidates per batch: kind, display title, optional approved snippet, actions, score, confidence, reason, and coarse stage/lane/status. Vault paths, full text, selections, clipboard data, precise location, and long-lived tokens are never sent.");
+        ? "每批最多 20 个 opaque 候选；发送类型、显示标题、可选获准片段、动作、分数、理由和粗粒度工作流信息。临时选区绝不上传；由划线明确保存的卡片只有在开启正文片段开关后才会发送截断内容。Vault 路径、完整正文、剪贴板、精确位置和长期 token 始终不发送。"
+        : "At most 20 opaque candidates per batch: kind, display title, optional approved snippet, actions, score, reason, and coarse workflow metadata. Ephemeral selections are never uploaded; a card explicitly saved from a selection shares truncated content only when display snippets are enabled. Vault paths, full text, clipboard data, precise location, and long-lived tokens are never sent.");
   }
 
   private renderApiDeviceSettings(containerEl: HTMLElement, copy: SettingCopy): void {

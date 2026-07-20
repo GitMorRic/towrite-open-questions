@@ -3501,6 +3501,37 @@
   color: var(--text-muted);
 }
 
+.towrite-hub-displayed-preview {
+  display: grid;
+  gap: 3px;
+  padding: 7px 8px;
+  border: 1px solid color-mix(in srgb, var(--color-orange) 32%, var(--background-modifier-border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-orange) 7%, var(--background-primary));
+}
+
+.towrite-hub-displayed-preview small {
+  color: var(--color-orange);
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.towrite-hub-displayed-preview strong {
+  overflow: hidden;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.towrite-hub-displayed-preview p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
 .towrite-hub-state {
   display: grid;
   gap: 2px;
