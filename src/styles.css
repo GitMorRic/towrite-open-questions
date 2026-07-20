@@ -4377,3 +4377,8 @@
     grid-template-columns: 1fr;
   }
 }
+.towrite-invalid-input,
+.towrite-invalid-input:focus {
+  border-color: var(--text-error) !important;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--text-error) 35%, transparent);
+}

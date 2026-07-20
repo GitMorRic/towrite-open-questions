@@ -50,6 +50,22 @@ describe("Capture bridge settings migration", () => {
       .toBe("https://desktop-lea3h79.taild09a3c.ts.net:8790");
     expect(normalizeCaptureBridgeBaseUrl("https://capture.example.com:8790")).toBe("");
     expect(normalizeCaptureBridgeBaseUrl("https://desktop-lea3h79.taild09a3c.ts.net:443")).toBe("");
+    expect(normalizeCaptureBridgeBaseUrl("https://desktop-lea3h79.taild09a3c.ts.net:10000")).toBe("");
     expect(normalizeCaptureBridgeBaseUrl("https://desktop-lea3h79.taild09a3c.ts.net:8790/capture")).toBe("");
+  });
+
+  it("round-trips a complete valid local Capture configuration", () => {
+    const original = normalizeCaptureBridgeSettings({
+      enabled: true,
+      flow: "local_capture",
+      callbackToken: "a".repeat(43),
+      captureBaseUrl: "https://desktop-lea3h79.taild09a3c.ts.net:8790",
+      tapId: "tap_0123456789abcdefghijkl",
+      ownerLogin: "GitMorRic@github",
+      handoffTtlSeconds: 300
+    });
+    const reloaded = normalizeCaptureBridgeSettings(JSON.parse(JSON.stringify(original)));
+
+    expect(reloaded).toEqual(original);
   });
 });

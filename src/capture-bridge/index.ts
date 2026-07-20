@@ -6,4 +6,5 @@ export * from "./coordinator";
 export * from "./server";
 export * from "./plugin-api";
 export * from "./settings";
+export * from "./discovery";
 export * from "./question-activity";

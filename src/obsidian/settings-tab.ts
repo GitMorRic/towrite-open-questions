@@ -26,6 +26,7 @@ import type ToWritePlugin from "../main";
 import type { AiModelInfo } from "../ai/types";
 import type { Quote0CanvasPayload, Quote0Device, Quote0ImagePayload, Quote0TextPayload } from "../quote0/client";
 import type { Quote0SyncPreview } from "../quote0/sync-service";
+import { normalizeCaptureBridgeBaseUrl } from "../capture-bridge";
 
 type SettingsTabId = "general" | "cards" | "capture" | "learning" | "workflow" | "api" | "push" | "quote0" | "ai" | "backend" | "hub" | "about";
 
@@ -1719,16 +1720,31 @@ export class ToWriteSettingTab extends PluginSettingTab {
         this.refreshSettingsUi();
       }));
 
-    new Setting(containerEl)
+    const captureOriginDescription = zh
+      ? "填写 Tailscale Serve 暴露的 canonical HTTPS origin，例如 https://computer.tailnet.ts.net:8790；不要带路径、query 或 token。"
+      : "Canonical HTTPS origin exposed by Tailscale Serve, such as https://computer.tailnet.ts.net:8790; do not include a path, query, or token.";
+    const captureOriginError = zh
+      ? "地址必须是 https://*.ts.net:8790。旧 Device Hub 的 :10000 不能用作 Capture 地址。"
+      : "The address must be https://*.ts.net:8790. The old Device Hub :10000 origin is not a Capture origin.";
+    const captureOriginSetting = new Setting(containerEl)
       .setName(zh ? "Capture HTTPS 地址" : "Capture HTTPS origin")
-      .setDesc(zh
-        ? "填写 Tailscale Serve 暴露的 canonical HTTPS origin，例如 https://computer.tailnet.ts.net:8790；不要带路径、query 或 token。"
-        : "Canonical HTTPS origin exposed by Tailscale Serve, such as https://computer.tailnet.ts.net:8790; do not include a path, query, or token.")
+      .setDesc(captureOriginDescription)
       .addText((text) => text
         .setPlaceholder("https://computer.tailnet.ts.net:8790")
         .setValue(bridge.captureBaseUrl)
         .onChange(async (value) => {
-          bridge.captureBaseUrl = value.trim().replace(/\/+$/u, "");
+          const raw = value.trim().replace(/\/+$/u, "");
+          const normalized = normalizeCaptureBridgeBaseUrl(raw);
+          const invalid = Boolean(raw && !normalized);
+          text.inputEl.setAttribute("aria-invalid", invalid ? "true" : "false");
+          text.inputEl.classList.toggle("towrite-invalid-input", invalid);
+          captureOriginSetting.setDesc(invalid
+            ? `${captureOriginDescription} ${captureOriginError}`
+            : captureOriginDescription);
+          // Never replace a previously valid persisted origin with a value
+          // that the loader would later discard silently.
+          if (invalid) return;
+          bridge.captureBaseUrl = normalized;
           await this.plugin.savePluginData();
         }));
 

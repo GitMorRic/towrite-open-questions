@@ -93,6 +93,7 @@ import {
   localCaptureNdefStatus,
   buildQuestionCaptureActivity,
   hasValidQuestionCaptureActivityIntegrity,
+  hydrateCaptureBridgeSettings,
   isMatchingQuestionCaptureActivity,
   normalizeCaptureBridgeBaseUrl,
   normalizeCaptureBridgeSettings,
@@ -595,9 +596,7 @@ export default class ToWritePlugin extends Plugin {
     this.configureDeviceHub();
     void this.configureCaptureBridge(false);
     this.registerInterval(window.setInterval(() => {
-      if (this.settings.captureBridge.enabled && this.settings.captureBridge.flow === "local_capture") {
-        void this.registerCapturePluginBridge(false);
-      }
+      void this.registerCapturePluginBridge(false);
     }, 30_000));
 
     this.app.workspace.onLayoutReady(() => {
@@ -1801,19 +1800,7 @@ export default class ToWritePlugin extends Plugin {
   async detectCapturePluginBridge(showNotice = true): Promise<CaptureBridgeRuntimeStatus> {
     const bridge = this.settings.captureBridge;
     const status = await this.capturePluginBridge.detect(this.captureBridgeServer.isRunning());
-    const capabilities = status.capabilities;
-    let changed = false;
-    if (!bridge.captureBaseUrl && capabilities?.captureBaseUrl) {
-      const detectedBaseUrl = normalizeCaptureBridgeBaseUrl(capabilities.captureBaseUrl);
-      if (detectedBaseUrl) {
-        bridge.captureBaseUrl = detectedBaseUrl;
-        changed = true;
-      }
-    }
-    if (!bridge.ownerLogin && capabilities?.ownerLogin) {
-      bridge.ownerLogin = capabilities.ownerLogin.trim().slice(0, 200);
-      changed = true;
-    }
+    const changed = hydrateCaptureBridgeSettings(bridge, status.capabilities);
     if (changed) await this.savePluginData();
     if (showNotice) {
       new Notice(status.compatible
@@ -1825,12 +1812,13 @@ export default class ToWritePlugin extends Plugin {
 
   async registerCapturePluginBridge(showNotice = true): Promise<CaptureBridgeRuntimeStatus> {
     const bridge = this.settings.captureBridge;
-    if (!bridge.enabled || bridge.flow !== "local_capture" || !this.captureBridgeServer.isRunning()) {
-      const status = this.getCaptureBridgeStatus();
-      if (showNotice) new Notice("Enable the local Capture Bridge before linking Capture.");
-      return status;
-    }
+    // Detect even when the listener is disabled. This lets either plugin load
+    // first and persists Capture's trusted origin/owner as soon as it appears.
     const detected = await this.detectCapturePluginBridge(false);
+    if (!bridge.enabled || bridge.flow !== "local_capture" || !this.captureBridgeServer.isRunning()) {
+      if (showNotice) new Notice("Enable the local Capture Bridge before linking Capture.");
+      return detected;
+    }
     if (!detected.compatible) {
       bridge.lastError = detected.error ?? "Compatible Capture plugin is not loaded.";
       if (showNotice) new Notice(bridge.lastError);
