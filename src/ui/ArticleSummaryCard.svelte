@@ -1,6 +1,7 @@
 <script lang="ts">
   import { ChevronDown, ChevronRight, FileText } from "lucide-svelte";
   import type { ArticleSummary, OpenQuestion, OpenQuestionLane } from "../core/types";
+  import type { DeviceLibraryEntry } from "../hub";
   import type { ToWriteUiApi } from "./api";
   import QuestionCard from "./QuestionCard.svelte";
   import { compactPath } from "./path";
@@ -9,6 +10,7 @@
   export let api: ToWriteUiApi;
   export let laneFilter: "all" | OpenQuestionLane = "all";
   export let questions: OpenQuestion[] = [];
+  export let deviceLibraryById: Map<string, DeviceLibraryEntry> = new Map();
 
   let expanded = false;
 
@@ -61,7 +63,7 @@
         <div class="towrite-article-empty">{copy.empty}</div>
       {:else}
         {#each unresolved as question (question.id)}
-          <QuestionCard {question} {api} />
+          <QuestionCard {question} {api} deviceLibraryEntry={deviceLibraryById.get(question.id)} />
         {/each}
       {/if}
     </div>

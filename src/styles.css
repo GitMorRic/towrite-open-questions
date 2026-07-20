@@ -3501,6 +3501,116 @@
   color: var(--text-muted);
 }
 
+.towrite-hub-mode {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 3px;
+  padding: 3px;
+  border-radius: 8px;
+  background: var(--background-modifier-hover);
+}
+
+.towrite-hub-mode button {
+  min-width: 0;
+  min-height: 25px;
+  padding: 2px 5px;
+  border: 0;
+  border-radius: 6px;
+  box-shadow: none;
+  color: var(--text-muted);
+  background: transparent;
+  font-size: 10px;
+}
+
+.towrite-hub-mode button.active {
+  color: var(--text-normal);
+  background: var(--background-primary);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 10%);
+  font-weight: 650;
+}
+
+.towrite-device-library {
+  display: grid;
+  gap: 4px;
+  padding-top: 7px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.towrite-device-library-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.towrite-device-library-head strong {
+  font-size: 11px;
+}
+
+.towrite-device-library-head small,
+.towrite-device-library-note {
+  color: var(--text-muted);
+  font-size: 9px;
+}
+
+.towrite-device-library > p {
+  margin: 2px 0;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.towrite-device-library-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 25px;
+  gap: 4px;
+  align-items: center;
+  padding: 4px 4px 4px 7px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--background-primary) 78%, transparent);
+}
+
+.towrite-device-library-item.excluded {
+  opacity: 0.58;
+}
+
+.towrite-device-library-title {
+  display: grid;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  box-shadow: none;
+  text-align: left;
+  background: transparent;
+}
+
+.towrite-device-library-title span,
+.towrite-device-library-title small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.towrite-device-library-title span {
+  color: var(--text-normal);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.towrite-device-library-title small {
+  color: var(--text-muted);
+  font-size: 9px;
+}
+
+.towrite-device-library-item > button:last-child {
+  display: grid;
+  place-items: center;
+  min-width: 25px;
+  min-height: 24px;
+  padding: 0;
+}
+
 .towrite-hub-displayed-preview {
   display: grid;
   gap: 3px;

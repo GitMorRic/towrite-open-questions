@@ -41,6 +41,7 @@ import type {
   OpenQuestionNote,
   OpenQuestionQuery,
   OpenQuestionStatus,
+  QuestionDeliveryPolicy,
   StoredQuestionState
 } from "./core/types";
 import { LocalKnowledgeIndex } from "./ai/local-index";
@@ -100,15 +101,24 @@ import {
   HubAdminClient,
   HubClient,
   HubCaptureWritebackService,
+  buildDeviceLibrary,
+  canAdvanceRotation,
   createOpaqueHubRef,
   generateHubCaptureKeyPair,
+  isManualHoldActive,
+  nextRotationCursor,
+  normalizeQuestionDeliveryPolicy,
+  rotationChoice,
+  scheduledLibraryChoice,
   validateNtag213Uri,
+  type DeviceLibrarySnapshot,
   type HubCapabilities,
   type HubContextState,
   type HubDeviceState,
   type HubDeviceSecretRotation,
   type HubEmailChallenge,
   type HubFeedbackAction,
+  type HubSelectionMode,
   type HubPersonalProvisionResult,
   type HubTapRotation,
   type LocalHubCandidate,
@@ -295,7 +305,10 @@ export default class ToWritePlugin extends Plugin {
     }));
     this.deviceHub = new DeviceHubConnector({
       client: this.hubClient,
-      getSettings: () => this.settings.hub,
+      getSettings: () => ({
+        ...this.settings.hub,
+        autoSelect: this.shouldHubAgentAutoSelect()
+      }),
       getCandidates: () => this.buildHubCandidates(),
       enhanceCandidates: async (candidates) => {
         if (!this.settings.backend.enabled || !this.settings.backend.useForRecommendations) {
@@ -1723,7 +1736,14 @@ export default class ToWritePlugin extends Plugin {
       return undefined;
     }
     try {
-      const state = await this.deviceHub.sync();
+      // Restore selected/displayed before deciding whether Agent may auto-select.
+      // This prevents a restart from overwriting a manual selection that the
+      // device has not acknowledged yet.
+      if (!this.deviceHub.getState() && this.settings.hub.deviceId.trim()) {
+        await this.deviceHub.refreshState();
+      }
+      let state = await this.deviceHub.sync();
+      state = await this.applyDeviceHubSelectionPolicy(state);
       const writeback = await this.hubWriteback.processPending();
       this.settings.hub.lastSyncedAt = new Date().toISOString();
       this.settings.hub.lastError = writeback.conflicts > 0 || writeback.failed > 0
@@ -1754,15 +1774,121 @@ export default class ToWritePlugin extends Plugin {
       window.clearTimeout(this.hubCandidateSyncTimer);
       this.hubCandidateSyncTimer = 0;
     }
+    const previousHold = {
+      until: this.settings.hub.manualHoldUntil,
+      candidateId: this.settings.hub.manualHoldCandidateId,
+      contentId: this.settings.hub.manualHoldContentId
+    };
     try {
+      const entry = this.getDeviceContentLibrary().entries.find((item) => item.id === questionId);
+      if (!entry?.inLibrary) {
+        await this.updateQuestionDeliveryPolicy(questionId, { membership: "included" });
+      }
+      if (this.hubCandidateSyncTimer) {
+        window.clearTimeout(this.hubCandidateSyncTimer);
+        this.hubCandidateSyncTimer = 0;
+      }
+      const holdMs = Math.max(0, this.settings.hub.manualHoldMinutes) * 60_000;
+      this.settings.hub.manualHoldUntil = holdMs > 0 ? new Date(Date.now() + holdMs).toISOString() : "";
+      this.settings.hub.manualHoldCandidateId = questionId;
+      this.settings.hub.manualHoldContentId = "";
       const state = await this.deviceHub.selectLocalCandidate(questionId, this.buildHubCandidates(questionId));
+      this.settings.hub.manualHoldContentId = state.selected?.selectedContentId ?? "";
+      await this.savePluginData();
       new Notice(this.settings.language === "zh" ? "已将这张卡设为墨水屏期望内容。" : "This card is now the desired e-ink content.");
       return state;
     } catch (error) {
+      this.settings.hub.manualHoldUntil = previousHold.until;
+      this.settings.hub.manualHoldCandidateId = previousHold.candidateId;
+      this.settings.hub.manualHoldContentId = previousHold.contentId;
       const message = messageForError(error);
       new Notice(`${this.settings.language === "zh" ? "发送到墨水屏失败" : "Could not send to e-ink"}: ${message}`);
       throw error;
     }
+  }
+
+  getDeviceContentLibrary(): DeviceLibrarySnapshot {
+    const hub = this.settings.hub;
+    return buildDeviceLibrary(this.store?.query() ?? [], {
+      mode: hub.selectionMode,
+      autoAddSelections: hub.autoAddSelections,
+      rotationIntervalMinutes: hub.rotationIntervalMinutes,
+      manualHoldUntil: hub.manualHoldUntil,
+      isPrivacyAllowed: (question) => this.hubPrivacyForPath(question.source.file, question.tags)?.excluded !== true
+    });
+  }
+
+  async setDeviceHubSelectionMode(mode: HubSelectionMode): Promise<void> {
+    if (!isHubSelectionMode(mode)) return;
+    this.settings.hub.selectionMode = mode;
+    this.settings.hub.autoSelect = mode === "agent";
+    if (mode !== "rotation") {
+      this.settings.hub.lastRotationCandidateId = "";
+      this.settings.hub.lastRotationContentId = "";
+    }
+    await this.savePluginData();
+    this.store.notify();
+    this.queueDeviceHubSync();
+  }
+
+  async updateQuestionDeliveryPolicy(questionId: string, patch: Partial<QuestionDeliveryPolicy>): Promise<void> {
+    const question = this.store.getQuestion(questionId);
+    if (!question) return;
+    const current = normalizeQuestionDeliveryPolicy(question.deliveryPolicy);
+    const next: QuestionDeliveryPolicy = {
+      ...current,
+      ...patch,
+      schedule: Object.prototype.hasOwnProperty.call(patch, "schedule") ? patch.schedule : current.schedule
+    };
+    await this.updateQuestionFromUi(questionId, { deliveryPolicy: next });
+  }
+
+  async toggleQuestionInDeviceLibrary(questionId: string): Promise<void> {
+    const entry = this.getDeviceContentLibrary().entries.find((item) => item.id === questionId);
+    if (!entry) return;
+    await this.updateQuestionDeliveryPolicy(questionId, {
+      membership: entry.inLibrary ? "excluded" : "included"
+    });
+  }
+
+  async setQuestionDeviceSchedule(questionId: string, localTime?: string): Promise<void> {
+    const normalized = String(localTime ?? "").trim();
+    if (normalized && !/^([01]\d|2[0-3]):[0-5]\d$/u.test(normalized)) {
+      throw new Error("Use a 24-hour HH:mm time such as 15:30.");
+    }
+    await this.updateQuestionDeliveryPolicy(questionId, {
+      membership: "included",
+      schedule: normalized ? {
+        enabled: true,
+        weekdays: [0, 1, 2, 3, 4, 5, 6],
+        localTime: normalized,
+        durationMinutes: 30
+      } : undefined
+    });
+  }
+
+  async advanceDeviceHub(): Promise<HubDeviceState | undefined> {
+    const snapshot = this.getDeviceContentLibrary();
+    const pool = snapshot.entries.filter((entry) => entry.inLibrary && entry.eligible && entry.rotationEligible);
+    if (pool.length === 0) {
+      throw new Error(this.settings.language === "zh" ? "设备内容库里没有可循环的卡片。" : "The device library has no rotation-eligible cards.");
+    }
+    const currentId = this.settings.hub.lastRotationCandidateId || this.settings.hub.manualHoldCandidateId;
+    const currentIndex = pool.findIndex((entry) => entry.id === currentId);
+    const next = pool[(currentIndex + 1 + pool.length) % pool.length] ?? pool[0];
+    this.settings.hub.manualHoldUntil = "";
+    this.settings.hub.manualHoldCandidateId = "";
+    this.settings.hub.manualHoldContentId = "";
+    const state = await this.deviceHub.selectLocalCandidate(next.id, this.buildHubCandidates(next.id), {
+      reason: "manual",
+      policyVersion: "towrite-user-next-v1",
+      modelVersion: "user-next"
+    });
+    this.settings.hub.lastRotationCandidateId = next.id;
+    this.settings.hub.lastRotationContentId = state.selected?.selectedContentId ?? "";
+    this.settings.hub.rotationCursor = nextRotationCursor(snapshot.entries, next.id);
+    await this.savePluginData();
+    return state;
   }
 
   async refreshDeviceHubState(showNotice = true): Promise<HubDeviceState | undefined> {
@@ -1799,6 +1925,55 @@ export default class ToWritePlugin extends Plugin {
         await this.savePluginData();
       });
     }, 600);
+  }
+
+  private shouldHubAgentAutoSelect(now = new Date()): boolean {
+    const hub = this.settings.hub;
+    if (hub.selectionMode !== "agent" || normalizeHubContextState(hub.manualMode) === "do_not_disturb") {
+      return false;
+    }
+    if (isManualHoldActive(hub.manualHoldUntil, now)) {
+      return false;
+    }
+    const state = this.deviceHub?.getState();
+    return !state || !hubStateWaitingForDisplay(state);
+  }
+
+  private async applyDeviceHubSelectionPolicy(state: HubDeviceState | undefined): Promise<HubDeviceState | undefined> {
+    if (!state) return state;
+    const hub = this.settings.hub;
+    const now = new Date();
+    if (hub.selectionMode === "manual" || hub.selectionMode === "agent") return state;
+    if (normalizeHubContextState(hub.manualMode) === "do_not_disturb") return state;
+    if (isManualHoldActive(hub.manualHoldUntil, now) || hubStateWaitingForDisplay(state)) return state;
+
+    const library = this.getDeviceContentLibrary();
+    if (hub.selectionMode === "schedule") {
+      const choice = scheduledLibraryChoice(library.entries, now, hub.lastScheduleOccurrenceId);
+      if (!choice) return state;
+      const selected = await this.deviceHub.selectLocalCandidate(choice.entry.id, this.buildHubCandidates(choice.entry.id), {
+        reason: "policy",
+        policyVersion: "towrite-schedule-v1",
+        modelVersion: "deterministic-schedule"
+      });
+      hub.lastScheduleOccurrenceId = choice.occurrenceId;
+      await this.savePluginData();
+      return selected;
+    }
+
+    if (!canAdvanceRotation(state, hub.lastRotationContentId, hub.rotationIntervalMinutes, now)) return state;
+    const choice = rotationChoice(library.entries, hub.rotationCursor);
+    if (!choice) return state;
+    const selected = await this.deviceHub.selectLocalCandidate(choice.id, this.buildHubCandidates(choice.id), {
+      reason: "policy",
+      policyVersion: "towrite-rotation-ack-v1",
+      modelVersion: "deterministic-rotation"
+    });
+    hub.lastRotationCandidateId = choice.id;
+    hub.lastRotationContentId = selected.selected?.selectedContentId ?? "";
+    hub.rotationCursor = nextRotationCursor(library.entries, choice.id);
+    await this.savePluginData();
+    return selected;
   }
 
   private queueDeviceHubSync(): void {
@@ -2010,6 +2185,7 @@ export default class ToWritePlugin extends Plugin {
 
     this.patchQuestionState(id, patch);
     await this.savePluginData();
+    this.queueDeviceHubSync();
     if (this.settings.autoExport) {
       await this.exportNow(false);
     }
@@ -2030,6 +2206,7 @@ export default class ToWritePlugin extends Plugin {
       notes: [...(question.notes ?? []), note]
     });
     await this.savePluginData();
+    this.queueDeviceHubSync();
     if (this.settings.autoExport) {
       await this.exportNow(false);
     }
@@ -2411,6 +2588,10 @@ export default class ToWritePlugin extends Plugin {
 
   private buildHubCandidates(preferredLocalId?: string): LocalHubCandidate[] {
     const now = new Date();
+    const library = this.getDeviceContentLibrary();
+    const libraryById = new Map(library.entries.map((entry) => [entry.id, entry]));
+    const leaseMinutes = Math.max(10, Math.min(120, this.settings.hub.syncIntervalSeconds / 60 * 3));
+    const leaseExpiresAt = new Date(now.getTime() + leaseMinutes * 60_000).toISOString();
     const acceptedHabits = this.learningService.getAcceptedHabits().filter((habit) => (
       habit.rule.kind === "time-stage"
       && isInTimeWindow(now, habit.rule.timeWindow, -now.getTimezoneOffset())
@@ -2418,6 +2599,16 @@ export default class ToWritePlugin extends Plugin {
     const articleByPath = new Map(this.store.getArticleSummaries().map((article) => [article.filePath, article]));
     const candidates = this.pushEngine.getCandidates(now)
       .filter((candidate) => candidate.type !== "home-summary")
+      .filter((candidate) => {
+        const localId = candidate.questionId || candidate.id;
+        const entry = libraryById.get(localId);
+        if (!entry?.inLibrary || !entry.eligible) return false;
+        if (preferredLocalId === localId) return true;
+        if (this.settings.hub.selectionMode === "agent") return entry.agentEligible;
+        if (this.settings.hub.selectionMode === "rotation") return entry.rotationEligible;
+        if (this.settings.hub.selectionMode === "schedule") return Boolean(entry.schedule?.enabled);
+        return true;
+      })
       .map((candidate): LocalHubCandidate => {
         const article = candidate.sourceFile ? articleByPath.get(candidate.sourceFile) : undefined;
         const habitMatch = acceptedHabits.some((habit) => {
@@ -2463,7 +2654,9 @@ export default class ToWritePlugin extends Plugin {
                   ? "unresolved_question"
                   : "local_recommendation",
           score: Math.min(1, hubScoreForCandidate(candidate) + (habitMatch ? 0.1 : 0)),
-          expiresAt: candidate.reminderAt,
+          // Eligibility lease: content missing from future batches naturally
+          // becomes unselectable even before the Hub gains explicit withdraw.
+          expiresAt: leaseExpiresAt,
           privacy: this.hubPrivacyForCandidate(candidate)
         };
       });
@@ -2536,6 +2729,17 @@ export default class ToWritePlugin extends Plugin {
     hub.lastStateVersion = state.selected?.stateVersion ?? state.displayed?.stateVersion ?? 0;
     hub.lastSelectedContentId = state.selected?.selectedContentId ?? "";
     hub.lastDisplayedContentId = state.displayed?.contentId ?? "";
+    if (hub.manualHoldContentId
+      && state.displayed?.contentId === hub.manualHoldContentId
+      && hub.manualHoldMinutes > 0) {
+      const displayedAt = Date.parse(state.displayed.displayedAt);
+      const ackBasedHoldUntil = Number.isFinite(displayedAt)
+        ? new Date(displayedAt + hub.manualHoldMinutes * 60_000).toISOString()
+        : "";
+      if (ackBasedHoldUntil && Date.parse(ackBasedHoldUntil) > Date.parse(hub.manualHoldUntil || "")) {
+        hub.manualHoldUntil = ackBasedHoldUntil;
+      }
+    }
     if (state.tapUrl) {
       const validation = validateNtag213Uri(state.tapUrl);
       if (validation.valid) {
@@ -2578,6 +2782,7 @@ export default class ToWritePlugin extends Plugin {
       getReminderPresets: () => this.settings.reminderPresets,
       getProactiveSuggestions: () => this.getProactiveSuggestions(),
       getDeviceHubState: () => this.getDeviceHubState(),
+      getDeviceContentLibrary: () => this.getDeviceContentLibrary(),
       getDefaultColor: (lane) => this.defaultColorForLane(lane),
       renderMarkdown: (markdown, element, sourcePath) => this.renderMarkdown(markdown, element, sourcePath),
       getLinkSuggestions: (query, sourcePath) => this.getLinkSuggestions(query, sourcePath),
@@ -2594,6 +2799,11 @@ export default class ToWritePlugin extends Plugin {
       actOnSuggestion: (id, action) => this.actOnSuggestion(id, action),
       syncDeviceHub: () => this.syncDeviceHub(false),
       sendQuestionToDeviceHub: (id) => this.sendQuestionToDeviceHub(id),
+      advanceDeviceHub: () => this.advanceDeviceHub(),
+      setDeviceHubSelectionMode: (mode) => this.setDeviceHubSelectionMode(mode),
+      toggleQuestionInDeviceLibrary: (id) => this.toggleQuestionInDeviceLibrary(id),
+      updateQuestionDeliveryPolicy: (id, patch) => this.updateQuestionDeliveryPolicy(id, patch),
+      setQuestionDeviceSchedule: (id, localTime) => this.setQuestionDeviceSchedule(id, localTime),
       sendDeviceHubFeedback: (action) => this.sendDeviceHubFeedback(action),
       openDeviceHubTap: () => this.openDeviceHubTap(),
       acceptSuggestion: (id) => this.acceptSuggestion(id),
@@ -3084,6 +3294,7 @@ export default class ToWritePlugin extends Plugin {
     }
 
     await this.savePluginData();
+    this.queueDeviceHubSync();
     if (this.settings.autoExport) {
       await this.exportNow(false);
     }
@@ -3107,6 +3318,7 @@ export default class ToWritePlugin extends Plugin {
     }
 
     await this.savePluginData();
+    this.queueDeviceHubSync();
     if (this.settings.autoExport) {
       await this.exportNow(false);
     }
@@ -3130,6 +3342,7 @@ export default class ToWritePlugin extends Plugin {
     }
 
     await this.savePluginData();
+    this.queueDeviceHubSync();
     if (this.settings.autoExport) {
       await this.exportNow(false);
     }
@@ -3351,6 +3564,11 @@ function normalizeHubSettings(settings?: Partial<ToWriteSettings["hub"]>): ToWri
   const defaults = DEFAULT_SETTINGS.hub;
   const rawBaseUrl = String(settings?.baseUrl ?? defaults.baseUrl).trim().replace(/\/+$/u, "");
   const tapUrl = String(settings?.tapUrl ?? "").trim().slice(0, 512);
+  const selectionMode = isHubSelectionMode(settings?.selectionMode)
+    ? settings.selectionMode
+    : settings?.autoSelect === false
+      ? "manual"
+      : defaults.selectionMode;
   return {
     enabled: settings?.enabled === true,
     baseUrl: /^https?:\/\//iu.test(rawBaseUrl) ? rawBaseUrl : defaults.baseUrl,
@@ -3362,7 +3580,18 @@ function normalizeHubSettings(settings?: Partial<ToWriteSettings["hub"]>): ToWri
     deviceId: String(settings?.deviceId ?? "").trim().slice(0, 120),
     syncIntervalSeconds: clampNumber(settings?.syncIntervalSeconds ?? defaults.syncIntervalSeconds, 15, 86400, 60),
     shareDisplayBody: settings?.shareDisplayBody === true,
-    autoSelect: settings?.autoSelect !== false,
+    autoSelect: selectionMode === "agent",
+    selectionMode,
+    autoAddSelections: settings?.autoAddSelections !== false,
+    rotationIntervalMinutes: clampNumber(settings?.rotationIntervalMinutes ?? defaults.rotationIntervalMinutes, 1, 1440, 30),
+    rotationCursor: clampNumber(settings?.rotationCursor ?? 0, 0, Number.MAX_SAFE_INTEGER, 0),
+    lastRotationCandidateId: String(settings?.lastRotationCandidateId ?? "").trim().slice(0, 200),
+    lastRotationContentId: String(settings?.lastRotationContentId ?? "").trim().slice(0, 120),
+    manualHoldMinutes: clampNumber(settings?.manualHoldMinutes ?? defaults.manualHoldMinutes, 0, 10080, 30),
+    manualHoldUntil: normalizeOptionalIso(settings?.manualHoldUntil),
+    manualHoldCandidateId: String(settings?.manualHoldCandidateId ?? "").trim().slice(0, 200),
+    manualHoldContentId: String(settings?.manualHoldContentId ?? "").trim().slice(0, 120),
+    lastScheduleOccurrenceId: String(settings?.lastScheduleOccurrenceId ?? "").trim().slice(0, 320),
     manualPlace: String(settings?.manualPlace ?? "").trim().slice(0, 120),
     manualMode: String(settings?.manualMode ?? "").trim().slice(0, 120),
     tapUrl: /^https?:\/\//iu.test(tapUrl) ? tapUrl : "",
@@ -3372,6 +3601,16 @@ function normalizeHubSettings(settings?: Partial<ToWriteSettings["hub"]>): ToWri
     lastSelectedContentId: String(settings?.lastSelectedContentId ?? "").trim().slice(0, 120),
     lastDisplayedContentId: String(settings?.lastDisplayedContentId ?? "").trim().slice(0, 120)
   };
+}
+
+function isHubSelectionMode(value: unknown): value is ToWriteSettings["hub"]["selectionMode"] {
+  return value === "manual" || value === "agent" || value === "rotation" || value === "schedule";
+}
+
+function normalizeOptionalIso(value: unknown): string {
+  const text = String(value ?? "").trim();
+  const timestamp = Date.parse(text);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : "";
 }
 
 function normalizeHubJwkSetting(value: unknown, requirePrivate: boolean): string {
@@ -3568,9 +3807,20 @@ function hubContentTypeForCandidate(candidate: PushCandidate): LocalHubCandidate
   return "note_continue";
 }
 
+function hubStateWaitingForDisplay(state: HubDeviceState): boolean {
+  if (!state.selected) return false;
+  return !state.displayed
+    || state.displayed.selectionId !== state.selected.selectionId
+    || state.displayed.contentId !== state.selected.selectedContentId
+    || state.displayed.stateVersion !== state.selected.stateVersion;
+}
+
 function hubScoreForCandidate(candidate: PushCandidate): number {
   if (candidate.reminderDue) return 0.98;
+  if (candidate.priority === "P1") return 0.94;
   if (candidate.pinned) return 0.9;
+  if (candidate.priority === "P2") return 0.82;
+  if (candidate.priority === "P3") return 0.74;
   if (candidate.type === "question") return 0.72;
   if (candidate.stale) return 0.68;
   return 0.5;

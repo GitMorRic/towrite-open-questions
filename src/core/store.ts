@@ -282,6 +282,7 @@ export class OpenQuestionStore {
       anchorText: state.anchorText ?? question.anchorText,
       anchor: state.anchor ?? question.anchor,
       ai: state.ai ?? question.ai,
+      deliveryPolicy: state.deliveryPolicy ?? question.deliveryPolicy,
       createdAt: state.createdAt ?? question.createdAt,
       updatedAt: state.updatedAt ?? question.updatedAt
     });

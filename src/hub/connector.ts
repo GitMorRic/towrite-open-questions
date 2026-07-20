@@ -29,6 +29,12 @@ export interface DeviceHubConnectorOptions {
   activityDebounceMs?: number;
 }
 
+export interface SelectLocalCandidateOptions {
+  reason?: "manual" | "policy" | "due";
+  policyVersion?: string;
+  modelVersion?: string;
+}
+
 /**
  * Background coordinator for the Obsidian connector. Editor callbacks only
  * call `recordEditPresence`, which mutates memory and arms a debounce timer.
@@ -95,7 +101,16 @@ export class DeviceHubConnector {
     return state;
   }
 
-  async selectLocalCandidate(localId: string, candidates?: readonly LocalHubCandidate[]): Promise<HubDeviceState> {
+  async selectLocalCandidate(
+    localId: string,
+    candidates?: readonly LocalHubCandidate[],
+    options: SelectLocalCandidateOptions = {}
+  ): Promise<HubDeviceState> {
+    // If an AI/rules sync was already in flight, let it settle first so this
+    // explicit selection is guaranteed to be the final write.
+    if (this.syncPromise) {
+      await this.syncPromise.catch(() => undefined);
+    }
     if (!this.isConfigured()) {
       throw new Error("Device Hub is not fully configured.");
     }
@@ -106,14 +121,14 @@ export class DeviceHubConnector {
       throw new Error("This card is not currently eligible for the Device Hub candidate batch.");
     }
 
-    // A direct user action bypasses AI reranking and disables batch auto-select.
-    // The explicit manual selection below is therefore always the final choice.
+    // An explicit policy/manual action bypasses AI reranking and disables batch
+    // auto-select. The selection below is therefore always the final choice.
     const batch = await buildPrivateCandidateBatch(localCandidates, {
       referenceSecret: settings.referenceSecret,
       deviceId: settings.deviceId.trim(),
       autoSelect: false,
-      policyVersion: "towrite-manual-v1",
-      modelVersion: "manual"
+      policyVersion: options.policyVersion ?? "towrite-manual-v1",
+      modelVersion: options.modelVersion ?? (options.reason === "policy" ? "deterministic-policy" : "manual")
     });
     const candidateRef = await createOpaqueHubRef("candidate", localCandidate.localId, settings.referenceSecret);
     if (!batch.candidates.some((candidate) => candidate.candidateRef === candidateRef)) {
@@ -123,7 +138,7 @@ export class DeviceHubConnector {
     await this.options.client.submitCandidateBatch(settings.receiverId.trim(), batch);
     await this.options.client.selectDeviceContent(settings.deviceId.trim(), {
       candidateRef,
-      reason: "manual",
+      reason: options.reason ?? "manual",
       score: localCandidate.score,
       idempotencyKey: opaqueEventId("evt")
     });
@@ -236,11 +251,15 @@ export function applyWhitelistedEnhancement(
       reasonCode: typeof candidate.reasonCode === "string" && candidate.reasonCode.trim()
         ? candidate.reasonCode.trim().slice(0, 240)
         : original.reasonCode,
-      score: Number.isFinite(candidate.score) ? candidate.score : original.score
+      score: Number.isFinite(candidate.score) ? clampScore(candidate.score) : original.score
     });
   }
   output.push(...local.filter((candidate) => !seen.has(candidate.candidateRef)));
   return output;
+}
+
+function clampScore(value: number): number {
+  return Math.max(0, Math.min(1, value));
 }
 
 function cleanSemanticLabel(value: string): string | undefined {

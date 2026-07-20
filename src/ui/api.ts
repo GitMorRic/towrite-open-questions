@@ -6,13 +6,14 @@ import type {
   OpenQuestionLane,
   OpenQuestionQuery,
   OpenQuestionStatus,
+  QuestionDeliveryPolicy,
   QuestionStatusOption,
   StoredQuestionState
 } from "../core/types";
 import type { ArticleTypeSettings, ToWriteLanguage, ToWriteReminderPreset, WorkflowStageSettings } from "../core/settings";
 import type { WorkflowIndexPayload } from "../workflow";
 import type { ProactiveSuggestion, ProactiveSuggestionAction } from "../suggestions";
-import type { HubDeviceState, HubFeedbackAction } from "../hub";
+import type { DeviceLibrarySnapshot, HubDeviceState, HubFeedbackAction, HubSelectionMode } from "../hub";
 
 export interface ActiveLineRange {
   filePath: string;
@@ -41,6 +42,7 @@ export interface ToWriteUiApi {
   getReminderPresets(): ToWriteReminderPreset[];
   getProactiveSuggestions(): ProactiveSuggestion[];
   getDeviceHubState(): HubDeviceState | undefined;
+  getDeviceContentLibrary(): DeviceLibrarySnapshot;
   getDefaultColor(lane: OpenQuestionLane): OpenQuestionColor;
   renderMarkdown(markdown: string, element: HTMLElement, sourcePath: string): Promise<void>;
   getLinkSuggestions(query: string, sourcePath: string): LinkSuggestion[];
@@ -55,6 +57,11 @@ export interface ToWriteUiApi {
   actOnSuggestion(id: string, action: ProactiveSuggestionAction): Promise<void>;
   syncDeviceHub(): Promise<HubDeviceState | undefined>;
   sendQuestionToDeviceHub(id: string): Promise<HubDeviceState | undefined>;
+  advanceDeviceHub(): Promise<HubDeviceState | undefined>;
+  setDeviceHubSelectionMode(mode: HubSelectionMode): Promise<void>;
+  toggleQuestionInDeviceLibrary(id: string): Promise<void>;
+  updateQuestionDeliveryPolicy(id: string, patch: Partial<QuestionDeliveryPolicy>): Promise<void>;
+  setQuestionDeviceSchedule(id: string, localTime?: string): Promise<void>;
   sendDeviceHubFeedback(action: HubFeedbackAction): Promise<void>;
   openDeviceHubTap(): void;
   acceptSuggestion(id: string): Promise<void>;

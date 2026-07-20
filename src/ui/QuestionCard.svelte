@@ -22,6 +22,7 @@
     FlaskConical,
     Hash,
     Lightbulb,
+    Library,
     ListTodo,
     MessageCircleQuestion,
     MessageSquarePlus,
@@ -39,6 +40,7 @@
     Trash2
   } from "lucide-svelte";
   import type { OpenQuestion, OpenQuestionKind, OpenQuestionLane } from "../core/types";
+  import type { DeviceLibraryEntry } from "../hub";
   import { stripQuestionRuleSyntax } from "../core/rule-text";
   import type { LinkSuggestion, ToWriteUiApi } from "./api";
   import MarkdownPreview from "./MarkdownPreview.svelte";
@@ -54,6 +56,7 @@
   export let question: OpenQuestion;
   export let api: ToWriteUiApi;
   export let globalCompactEditorDecorations = false;
+  export let deviceLibraryEntry: DeviceLibraryEntry | undefined = undefined;
 
   const KINDS: OpenQuestionKind[] = ["research", "experiment", "explanation", "citation", "todo", "evidence", "other"];
   const KIND_LABEL_ZH: Record<OpenQuestionKind, string> = {
@@ -774,6 +777,47 @@
     }
   }
 
+  async function toggleDeviceLibrary() {
+    await api.toggleQuestionInDeviceLibrary(question.id);
+  }
+
+  function showDeviceLibraryMenu(event: MouseEvent) {
+    event.preventDefault();
+    const menu = new Menu();
+    if (deviceLibraryEntry?.eligible) {
+      menu.addItem((item) => item.setTitle(copy.sendToScreen).setIcon("monitor-up").onClick(() => void sendToDeviceHub()));
+    }
+    menu.addItem((item) => item
+      .setTitle(deviceLibraryEntry?.inLibrary ? copy.removeFromDeviceLibrary : copy.addToDeviceLibrary)
+      .setIcon("library")
+      .onClick(() => void toggleDeviceLibrary()));
+    if (deviceLibraryEntry?.inLibrary) {
+      menu.addSeparator();
+      menu.addItem((item) => item
+        .setTitle(copy.agentEligible)
+        .setChecked(deviceLibraryEntry.agentEligible)
+        .onClick(() => void api.updateQuestionDeliveryPolicy(question.id, { agentEligible: !deviceLibraryEntry?.agentEligible })));
+      menu.addItem((item) => item
+        .setTitle(copy.rotationEligible)
+        .setChecked(deviceLibraryEntry.rotationEligible)
+        .onClick(() => void api.updateQuestionDeliveryPolicy(question.id, { rotationEligible: !deviceLibraryEntry?.rotationEligible })));
+      menu.addItem((item) => item.setTitle(copy.setDailySchedule).setIcon("calendar-clock").onClick(() => {
+        const value = window.prompt(copy.schedulePrompt, deviceLibraryEntry?.schedule?.localTime || "15:00");
+        if (value !== null) {
+          void api.setQuestionDeviceSchedule(question.id, value.trim()).catch((error: unknown) => {
+            console.error("Could not update Device Hub schedule", error);
+          });
+        }
+      }));
+      if (deviceLibraryEntry.schedule?.enabled) {
+        menu.addItem((item) => item.setTitle(copy.clearDeviceSchedule).setIcon("calendar-x").onClick(() => {
+          void api.setQuestionDeviceSchedule(question.id, undefined);
+        }));
+      }
+    }
+    menu.showAtMouseEvent(event);
+  }
+
   function cardCopy(currentLanguage: "zh" | "en") {
     if (currentLanguage === "zh") {
       return {
@@ -819,6 +863,14 @@
         answerCapture: "回答并可归档为笔记",
         sendToScreen: "将这条卡片发送到墨水屏",
         sendingToScreen: "正在发送到墨水屏",
+        addToDeviceLibrary: "加入设备内容库",
+        removeFromDeviceLibrary: "移出设备内容库",
+        agentEligible: "允许 Agent 推荐",
+        rotationEligible: "加入循环播放",
+        setDailySchedule: "设置每天显示时间…",
+        schedulePrompt: "输入每天显示的时间（24 小时 HH:mm）",
+        clearDeviceSchedule: "清除显示时间",
+        manageDeviceLibrary: "管理设备内容库、Agent、循环和定时",
         compactHighlights: "隐藏这条的整行高亮，仅保留左侧竖线",
         fullHighlights: "恢复这条的整行高亮",
         globalCompactActive: "顶部整体隐藏已开启，先用顶部按钮恢复全部",
@@ -869,6 +921,14 @@
       answerCapture: "Answer and optionally archive as a note",
       sendToScreen: "Send this card to the e-ink screen",
       sendingToScreen: "Sending to the e-ink screen",
+      addToDeviceLibrary: "Add to device library",
+      removeFromDeviceLibrary: "Remove from device library",
+      agentEligible: "Allow Agent recommendation",
+      rotationEligible: "Include in rotation",
+      setDailySchedule: "Set daily display time…",
+      schedulePrompt: "Enter the daily display time (24-hour HH:mm)",
+      clearDeviceSchedule: "Clear display time",
+      manageDeviceLibrary: "Manage device library, Agent, rotation, and schedule",
       compactHighlights: "Hide this card's full-row highlight",
       fullHighlights: "Restore this card's full-row highlight",
       globalCompactActive: "Global compact highlights are active; use the top button to restore all",
@@ -1149,8 +1209,11 @@
       <MessageSquarePlus size={15} />
     </button>
     {#if api.getDeviceHubState() && isMarkdownSource && !["candidate", "resolved", "ignored"].includes(question.status)}
-      <button type="button" class:towrite-ai-loading={hubSending} title={hubSending ? copy.sendingToScreen : copy.sendToScreen} on:click={sendToDeviceHub} disabled={hubSending}>
+      <button type="button" class:towrite-ai-loading={hubSending} title={deviceLibraryEntry?.eligible ? (hubSending ? copy.sendingToScreen : copy.sendToScreen) : (deviceLibraryEntry?.exclusionReason === "privacy" ? "Excluded by Device Hub privacy rules" : copy.sendToScreen)} on:click={sendToDeviceHub} on:contextmenu={showDeviceLibraryMenu} disabled={hubSending || !deviceLibraryEntry?.eligible}>
         <MonitorUp size={15} />
+      </button>
+      <button type="button" class:towrite-action-active={deviceLibraryEntry?.inLibrary} title={copy.manageDeviceLibrary} aria-haspopup="menu" on:click={showDeviceLibraryMenu} on:contextmenu={showDeviceLibraryMenu}>
+        <Library size={15} />
       </button>
     {/if}
     <button type="button" class:towrite-action-active={question.pinned} title={question.pinned ? copy.unpin : copy.pin} on:click={togglePinned}>

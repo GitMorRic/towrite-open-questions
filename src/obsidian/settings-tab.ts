@@ -1542,13 +1542,59 @@ export class ToWriteSettingTab extends PluginSettingTab {
         await this.plugin.savePluginData();
       }));
 
+    const library = this.plugin.getDeviceContentLibrary();
     new Setting(containerEl)
-      .setName(zh ? "自动选择最高分候选" : "Automatically select the top candidate")
-      .setDesc(zh ? "Hub 仍会执行勿扰、最低停留时间和冷却策略。" : "The Hub still enforces DND, minimum dwell time, and cooldowns.")
-      .addToggle((toggle) => toggle.setValue(hub.autoSelect).onChange(async (value) => {
-        hub.autoSelect = value;
+      .setName(zh ? "设备内容选择方式" : "Device content selection")
+      .setDesc(zh
+        ? `设备内容库 ${library.eligibleCount} 条可发送，${library.excludedCount} 条被隐私或来源规则排除。Agent 只会在最多 20 条本地白名单中重排。`
+        : `${library.eligibleCount} library items are eligible and ${library.excludedCount} are excluded by privacy/source rules. Agent can only rerank the local allowlist of up to 20 items.`)
+      .addDropdown((dropdown) => dropdown
+        .addOption("manual", zh ? "手动" : "Manual")
+        .addOption("agent", "Agent")
+        .addOption("rotation", zh ? "循环播放" : "Rotation")
+        .addOption("schedule", zh ? "固定时间" : "Schedule")
+        .setValue(hub.selectionMode)
+        .onChange((value) => {
+          void this.plugin.setDeviceHubSelectionMode(value as typeof hub.selectionMode).then(() => this.refreshSettingsUi());
+        }));
+
+    new Setting(containerEl)
+      .setName(zh ? "划线卡自动加入设备内容库" : "Auto-add selection cards to device library")
+      .setDesc(zh
+        ? "保存为 ToThink / ToWrite 后立即入库，但仍需通过隐私过滤；解决、隐藏或手工移出后不会再发送。"
+        : "Saving a selection as ToThink / ToWrite adds it immediately, subject to privacy rules. Resolved, hidden, or explicitly removed cards are not sent.")
+      .addToggle((toggle) => toggle.setValue(hub.autoAddSelections).onChange(async (value) => {
+        hub.autoAddSelections = value;
+        await this.plugin.savePluginData();
+        void this.plugin.syncDeviceHub(false);
+      }));
+
+    if (hub.selectionMode === "rotation") {
+      new Setting(containerEl)
+        .setName(zh ? "循环间隔（分钟）" : "Rotation interval (minutes)")
+        .setDesc(zh ? "只在设备成功 ACK 当前内容后开始计时；轮询和失败 ACK 都不会跳过卡片。" : "The timer starts only after the device ACKs the current item; polling and failed ACKs never advance the rotation.")
+        .addText((text) => text.setValue(String(hub.rotationIntervalMinutes)).onChange(async (value) => {
+          hub.rotationIntervalMinutes = clampInteger(value, 1, 1440, 30);
+          await this.plugin.savePluginData();
+          this.plugin.configureDeviceHub();
+        }));
+    }
+
+    new Setting(containerEl)
+      .setName(zh ? "手工显示保持（分钟）" : "Manual display hold (minutes)")
+      .setDesc(zh ? "从墨水屏成功 ACK 起算；等待 ACK 时 Agent、循环和时间表都不会覆盖。0 表示不额外保持。" : "Starts at the successful display ACK; Agent, rotation, and schedules cannot overwrite a pending display. Use 0 for no extra hold.")
+      .addText((text) => text.setValue(String(hub.manualHoldMinutes)).onChange(async (value) => {
+        hub.manualHoldMinutes = clampInteger(value, 0, 10080, 30);
         await this.plugin.savePluginData();
       }));
+
+    if (hub.selectionMode === "rotation" || hub.selectionMode === "schedule") {
+      new Setting(containerEl)
+        .setName(zh ? "V1 调度运行位置" : "V1 scheduler location")
+        .setDesc(zh
+          ? "当前循环/定时由 Obsidian Connector 执行：Obsidian 关闭时暂停，但屏幕保持最后一次内容。要实现全天候调度，下一步需把节目单与 ACK 游标同步到 Hub worker。"
+          : "Rotation/scheduling currently runs in the Obsidian connector: it pauses while Obsidian is closed and leaves the last card displayed. Always-on scheduling requires syncing the program and ACK cursor to a Hub worker in the next server revision.");
+    }
 
     new Setting(containerEl)
       .setName(zh ? "当前语义地点 / 状态" : "Current semantic place / mode")

@@ -77,6 +77,30 @@ export interface OpenQuestionNote {
   metadata?: Record<string, string>;
 }
 
+export type QuestionDeviceLibraryMembership = "auto" | "included" | "excluded";
+
+/**
+ * A compact, user-readable delivery rule stored with the question. The note
+ * body remains the source of truth; this metadata never duplicates it.
+ */
+export interface QuestionDeviceSchedule {
+  enabled?: boolean;
+  /** Local weekdays, Sunday = 0 through Saturday = 6. */
+  weekdays?: number[];
+  /** Local wall-clock time in HH:mm form. */
+  localTime?: string;
+  /** The occurrence is eligible only inside this window. */
+  durationMinutes?: number;
+}
+
+export interface QuestionDeliveryPolicy {
+  membership?: QuestionDeviceLibraryMembership;
+  agentEligible?: boolean;
+  rotationEligible?: boolean;
+  schedule?: QuestionDeviceSchedule;
+  allowDuringQuietHours?: boolean;
+}
+
 export interface QuestionStatusOption {
   id: OpenQuestionStatus;
   label: string;
@@ -105,6 +129,7 @@ export interface OpenQuestion {
   source: OpenQuestionSource;
   contextSummary?: string;
   ai?: OpenQuestionAi;
+  deliveryPolicy?: QuestionDeliveryPolicy;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -143,6 +168,7 @@ export interface StoredQuestionState {
   anchor?: QuestionAnchor;
   source?: OpenQuestionSource;
   ai?: OpenQuestionAi;
+  deliveryPolicy?: QuestionDeliveryPolicy;
   createdAt?: string;
   updatedAt?: string;
 }

@@ -127,6 +127,7 @@ function questionToCandidate(
     workflowStageTitle: workflowContext?.stage.title,
     lane: question.lane,
     status: question.status,
+    priority: question.priority,
     tags: question.tags,
     reminderAt: question.reminderAt || undefined,
     reminderNote: question.reminderNote || undefined,

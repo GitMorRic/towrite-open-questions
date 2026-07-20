@@ -207,7 +207,7 @@ export class BackendEnhancementClient {
           ? item.reason.trim().slice(0, 240)
           : local.reasonCode,
         score: typeof item.score === "number" && Number.isFinite(item.score)
-          ? item.score
+          ? Math.max(0, Math.min(1, item.score))
           : local.score
       });
     }

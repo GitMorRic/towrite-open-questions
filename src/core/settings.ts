@@ -116,6 +116,8 @@ export interface ToWriteBackendSettings {
   timeoutMs: number;
 }
 
+export type ToWriteHubSelectionMode = "manual" | "agent" | "rotation" | "schedule";
+
 /** Public Device Hub connection. Secrets stay in plugin data and are never put in URLs. */
 export interface ToWriteHubSettings {
   enabled: boolean;
@@ -131,7 +133,19 @@ export interface ToWriteHubSettings {
   deviceId: string;
   syncIntervalSeconds: number;
   shareDisplayBody: boolean;
+  /** Compatibility mirror for older settings; selectionMode is authoritative. */
   autoSelect: boolean;
+  selectionMode: ToWriteHubSelectionMode;
+  autoAddSelections: boolean;
+  rotationIntervalMinutes: number;
+  rotationCursor: number;
+  lastRotationCandidateId: string;
+  lastRotationContentId: string;
+  manualHoldMinutes: number;
+  manualHoldUntil: string;
+  manualHoldCandidateId: string;
+  manualHoldContentId: string;
+  lastScheduleOccurrenceId: string;
   manualPlace: string;
   manualMode: string;
   tapUrl: string;
@@ -495,6 +509,17 @@ export const DEFAULT_SETTINGS: ToWriteSettings = {
     syncIntervalSeconds: 60,
     shareDisplayBody: false,
     autoSelect: true,
+    selectionMode: "agent",
+    autoAddSelections: true,
+    rotationIntervalMinutes: 30,
+    rotationCursor: 0,
+    lastRotationCandidateId: "",
+    lastRotationContentId: "",
+    manualHoldMinutes: 30,
+    manualHoldUntil: "",
+    manualHoldCandidateId: "",
+    manualHoldContentId: "",
+    lastScheduleOccurrenceId: "",
     manualPlace: "",
     manualMode: "",
     tapUrl: "",

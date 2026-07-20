@@ -118,11 +118,14 @@ A temporary editor selection is not uploaded while typing or highlighting. The r
 
 1. Select text in Markdown. PDF selection cards remain local under the V1 attachment privacy rule and do not enter the Hub by default.
 2. Use the selection toolbar or command to save it as a **ToThink** or **ToWrite** card.
-3. Only that saved card enters the local question store and Push Engine and becomes eligible as a Hub candidate.
-4. On that question card, select the monitor-with-up-arrow action **Send this card to the e-ink screen** to choose it explicitly. If you only use **Sync now** in settings, the Hub chooses using rules, accepted habits, and context.
-5. The sidebar's e-ink card previews the selected title, prompt, and reason. When selected and displayed differ, it also previews the card still visible on the physical screen.
-6. Once the simulator ACKs the card, `displayed` matches `selected`; tapping NFC opens the PWA for the card actually on screen.
-7. After answering in the PWA, keep the Obsidian Connector online and sync again. The encrypted queue delivers the answer to CaptureService, which safely appends it to the source note's Captures section using the frozen target. V1 does not yet also add that answer to the ToThink/ToWrite card activity stream.
+3. The active saved card automatically enters the sidebar's **Device library**. This is not another copy of the note: Markdown/sidecar stays authoritative and the card stores only membership, Agent/rotation eligibility, and an optional daily time window. Resolved, hidden, explicitly removed, or newly private/no-cloud cards leave the eligible set.
+4. Use the monitor-with-up-arrow action to **show now**. Click or right-click the library action to add/remove the card, change Agent/rotation eligibility, or set a daily `HH:mm` display time.
+5. The sidebar offers **Manual**, **Agent**, **Cycle**, and **Schedule**. Agent reranks only the local allowlist of at most 20 items; Cycle uses stable order; Schedule uses each card's daily window. A manual show has priority and holds for 30 minutes by default from the successful display ACK. No automatic mode can overwrite a pending unacknowledged display.
+6. The sidebar's e-ink card previews the selected title, prompt, and reason. When selected and displayed differ, it also previews the card still visible on the physical screen.
+7. Once the simulator ACKs the card, `displayed` matches `selected`; the rotation interval starts from that ACK. Tapping NFC opens the PWA for the card actually on screen.
+8. After answering in the PWA, keep the Obsidian Connector online and sync again. The encrypted queue delivers the answer to CaptureService, which safely appends it to the source note's Captures section using the frozen target. V1 does not yet also add that answer to the ToThink/ToWrite card activity stream.
+
+Cycle and Schedule borrow Quote0's playlist experience but not its "advance after API send" cursor semantics: Device Hub waits for a real `display ACK`. The V1 scheduler runs in the Obsidian connector, so it pauses while Obsidian is closed and keeps the last screen content. Always-on Agent/Cycle/Schedule still requires a later Hub revision with persisted programs, eligibility withdrawal, and a server worker.
 
 **Share approved display snippets** is off by default. In that state, the Hub receives only the display title, generic prompt, actions, score, and reason; highlighting text alone does not upload full note content. When the user explicitly enables this option, a saved candidate that passes include/exclude and `private`, `no-ai`, and `no-cloud` privacy rules may send a truncated, approved display snippet. Absolute Vault paths and long-lived tokens are never sent.
 

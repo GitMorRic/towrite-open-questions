@@ -107,7 +107,7 @@ describe("DeviceHubConnector", () => {
           display: { title: "Backend must not replace display", body: "injected" },
           writeTargetRef: "target_injected",
           reasonCode: "whitelist explanation",
-          score: 0.95
+          score: 12
         },
         {
           ...local[0]!,
@@ -121,6 +121,7 @@ describe("DeviceHubConnector", () => {
     const uploaded = client.batches[0].candidates;
     expect(uploaded.map((candidate) => candidate.display.title)).toEqual(["B", "A"]);
     expect(uploaded[0].reasonCode).toBe("whitelist explanation");
+    expect(uploaded[0].score).toBe(1);
     expect(uploaded[0].display.body).toBeUndefined();
     expect(uploaded[0].writeTargetRef).toBeUndefined();
     expect(uploaded.some((candidate) => candidate.candidateRef === "hc_invented_outside_whitelist")).toBe(false);
@@ -179,6 +180,40 @@ describe("DeviceHubConnector", () => {
       .rejects.toThrow("removed by the local Device Hub privacy policy");
     expect(client.batches).toHaveLength(0);
     expect(client.selections).toHaveLength(0);
+  });
+
+  it("serializes a manual selection after an in-flight Agent rerank", async () => {
+    const client = fakeClient();
+    let release: ((value: readonly import("./types").HubCandidate[]) => void) | undefined;
+    const rerank = new Promise<readonly import("./types").HubCandidate[]>((resolve) => {
+      release = resolve;
+    });
+    const localCandidates = [{
+      localId: "question-selection",
+      type: "question_prompt" as const,
+      display: { title: "Selection card" },
+      allowedActions: ["open" as const],
+      reasonCode: "local",
+      score: 0.8
+    }];
+    const connector = new DeviceHubConnector({
+      client,
+      getSettings: configuredSettings,
+      getCandidates: () => localCandidates,
+      enhanceCandidates: () => rerank
+    });
+
+    const sync = connector.sync();
+    await Promise.resolve();
+    const manual = connector.selectLocalCandidate("question-selection");
+    expect(client.selections).toHaveLength(0);
+    release?.(client.batches[0]?.candidates ?? []);
+    await sync;
+    await manual;
+
+    expect(client.batches).toHaveLength(2);
+    expect(client.batches[1].autoSelect).toBe(false);
+    expect(client.selections.at(-1)?.reason).toBe("manual");
   });
 });
 

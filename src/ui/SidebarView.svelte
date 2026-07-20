@@ -29,7 +29,7 @@
   import type { ArticleSummary, OpenQuestion, OpenQuestionLane } from "../core/types";
   import type { WorkflowIndexPayload } from "../workflow";
   import type { ProactiveSuggestion, ProactiveSuggestionAction } from "../suggestions";
-  import type { HubDeviceState, HubFeedbackAction } from "../hub";
+  import type { DeviceLibraryEntry, DeviceLibrarySnapshot, HubDeviceState, HubFeedbackAction, HubSelectionMode } from "../hub";
   import type { ActiveLineRange, ToWriteUiApi } from "./api";
   import ArticleSummaryCard from "./ArticleSummaryCard.svelte";
   import QuestionCard from "./QuestionCard.svelte";
@@ -71,6 +71,8 @@
   let busySuggestionId = "";
   let suggestionError = "";
   let hubState: HubDeviceState | undefined;
+  let hubLibrary: DeviceLibrarySnapshot = api.getDeviceContentLibrary();
+  let hubLibraryById = new Map<string, DeviceLibraryEntry>();
   let hubBusy = false;
   let hubError = "";
 
@@ -102,6 +104,7 @@
   $: activePathLabel = activeFile ? (activePathExpanded ? activeFile : compactPath(activeFile, 3)) : "";
   $: language = api.getLanguage();
   $: copy = sidebarCopy(language);
+  $: hubLibraryById = new Map<string, DeviceLibraryEntry>(hubLibrary.entries.map((entry) => [entry.id, entry]));
 
   function reload() {
     activeFile = api.getActiveFile();
@@ -112,6 +115,7 @@
     workflowPayload = api.getWorkflowPayload();
     suggestions = api.getProactiveSuggestions();
     hubState = api.getDeviceHubState();
+    hubLibrary = api.getDeviceContentLibrary();
     const allQuestions = api.getQuestions();
     questionsByFile = groupQuestionsByFile(allQuestions);
     currentQuestionSnapshot = activeFile
@@ -185,12 +189,40 @@
       if (action === "sync") {
         hubState = await api.syncDeviceHub();
       } else if (action === "next") {
-        await api.sendDeviceHubFeedback("skipped");
-        hubState = await api.syncDeviceHub();
+        hubState = await api.advanceDeviceHub();
       } else {
         await api.sendDeviceHubFeedback(action);
         hubState = api.getDeviceHubState();
       }
+    } catch (error) {
+      hubError = error instanceof Error ? error.message : String(error);
+    } finally {
+      hubBusy = false;
+      hubLibrary = api.getDeviceContentLibrary();
+    }
+  }
+
+  async function setHubMode(mode: HubSelectionMode) {
+    if (hubBusy || hubLibrary.mode === mode) return;
+    hubBusy = true;
+    hubError = "";
+    try {
+      await api.setDeviceHubSelectionMode(mode);
+      hubLibrary = api.getDeviceContentLibrary();
+    } catch (error) {
+      hubError = error instanceof Error ? error.message : String(error);
+    } finally {
+      hubBusy = false;
+    }
+  }
+
+  async function showLibraryEntry(id: string) {
+    if (hubBusy) return;
+    hubBusy = true;
+    hubError = "";
+    try {
+      hubState = await api.sendQuestionToDeviceHub(id);
+      hubLibrary = api.getDeviceContentLibrary();
     } catch (error) {
       hubError = error instanceof Error ? error.message : String(error);
     } finally {
@@ -591,6 +623,12 @@
           {#if hubState.selected?.card?.prompt || hubState.selected?.card?.body}
             <p>{hubState.selected.card.prompt || hubState.selected.card.body}</p>
           {/if}
+          <div class="towrite-hub-mode" role="group" aria-label={language === "zh" ? "设备内容选择方式" : "Device content selection mode"}>
+            <button type="button" class:active={hubLibrary.mode === "manual"} disabled={hubBusy} on:click={() => setHubMode("manual")}>{language === "zh" ? "手动" : "Manual"}</button>
+            <button type="button" class:active={hubLibrary.mode === "agent"} disabled={hubBusy} on:click={() => setHubMode("agent")}>Agent</button>
+            <button type="button" class:active={hubLibrary.mode === "rotation"} disabled={hubBusy} on:click={() => setHubMode("rotation")}>{language === "zh" ? "循环" : "Cycle"}</button>
+            <button type="button" class:active={hubLibrary.mode === "schedule"} disabled={hubBusy} on:click={() => setHubMode("schedule")}>{language === "zh" ? "定时" : "Schedule"}</button>
+          </div>
           {#if hubState.selected}
             <p class="towrite-hub-reason">{hubState.selected.reason || hubState.selected.card?.reason || (language === "zh" ? "本地规则推荐" : "Local rules")}</p>
           {/if}
@@ -606,6 +644,35 @@
           <div class="towrite-hub-state">
             <span>selected · {hubState.selected?.selectedContentId || "—"}</span>
             <span class:pending={!hubState.inSync}>displayed · {hubState.displayed?.contentId || "—"}</span>
+          </div>
+          <div class="towrite-device-library">
+            <div class="towrite-device-library-head">
+              <strong>{language === "zh" ? "设备内容库" : "Device library"} · {hubLibrary.eligibleCount}</strong>
+              <small>{hubLibrary.mode === "agent"
+                ? `${hubLibrary.uploadedCount}/20 ${language === "zh" ? "发送给 Agent" : "sent to Agent"}`
+                : hubLibrary.mode === "rotation"
+                  ? `${language === "zh" ? "每" : "every "}${hubLibrary.rotationIntervalMinutes}${language === "zh" ? " 分钟" : " min"}`
+                  : hubLibrary.mode === "schedule"
+                    ? (language === "zh" ? "按卡片时间窗" : "per-card windows")
+                    : (language === "zh" ? "只响应手工发送" : "manual sends only")}</small>
+            </div>
+            {#if hubLibrary.entries.filter((entry) => entry.inLibrary).length === 0}
+              <p>{language === "zh" ? "划线加入 ToThink / ToWrite 后会自动出现在这里。" : "Selections saved as ToThink / ToWrite appear here automatically."}</p>
+            {:else}
+              {#each hubLibrary.entries.filter((entry) => entry.inLibrary).slice(0, 8) as entry (entry.id)}
+                <div class:excluded={!entry.eligible} class="towrite-device-library-item">
+                  <button type="button" class="towrite-device-library-title" title={entry.title} on:click={() => api.jumpToQuestion(entry.id)}>
+                    <span>{entry.title}</span>
+                    <small>{entry.lane === "write" ? "ToWrite" : "ToThink"}{entry.schedule?.enabled ? ` · ${entry.schedule.localTime}` : ""}{entry.priority ? ` · ${entry.priority}` : ""}</small>
+                  </button>
+                  <button type="button" disabled={hubBusy || !entry.eligible} title={entry.eligible ? (language === "zh" ? "立即显示并保持" : "Show now and hold") : (language === "zh" ? "该卡片被隐私或来源规则排除" : "Excluded by privacy or source policy")} on:click={() => showLibraryEntry(entry.id)}><ChevronRight size={13} /></button>
+                </div>
+              {/each}
+            {/if}
+            {#if hubLibrary.excludedCount > 0}<small class="towrite-device-library-note">{language === "zh" ? `${hubLibrary.excludedCount} 条因隐私或来源类型未发送` : `${hubLibrary.excludedCount} excluded by privacy or source type`}</small>{/if}
+            {#if hubLibrary.mode === "rotation" || hubLibrary.mode === "schedule"}
+              <small class="towrite-device-library-note">{language === "zh" ? "当前 V1 由 Obsidian 插件调度；关闭 Obsidian 后暂停，已显示内容保持不变。" : "V1 scheduling runs in the Obsidian connector; it pauses while Obsidian is closed and keeps the current display."}</small>
+            {/if}
           </div>
           {#if hubError}<p class="towrite-suggestion-error" role="alert">{hubError}</p>{/if}
           <div class="towrite-now-actions">
@@ -715,13 +782,13 @@
                   <section class="towrite-group">
                     <h4>{heading}</h4>
                     {#each items as question (question.id)}
-                      <QuestionCard {question} {api} globalCompactEditorDecorations={compactEditorDecorations} />
+                      <QuestionCard {question} {api} globalCompactEditorDecorations={compactEditorDecorations} deviceLibraryEntry={hubLibraryById.get(question.id)} />
                     {/each}
                   </section>
                 {/each}
               {:else}
                 {#each section.items as question (question.id)}
-                  <QuestionCard {question} {api} globalCompactEditorDecorations={compactEditorDecorations} />
+                  <QuestionCard {question} {api} globalCompactEditorDecorations={compactEditorDecorations} deviceLibraryEntry={hubLibraryById.get(question.id)} />
                 {/each}
               {/if}
             {/if}
@@ -748,7 +815,7 @@
       {:else if otherMode === "list"}
         <div class="towrite-article-list">
           {#each visibleOtherArticles as article (article.filePath)}
-            <ArticleSummaryCard {article} {api} {laneFilter} questions={questionsByFile.get(article.filePath) ?? []} />
+            <ArticleSummaryCard {article} {api} {laneFilter} questions={questionsByFile.get(article.filePath) ?? []} deviceLibraryById={hubLibraryById} />
           {/each}
         </div>
       {:else}
@@ -756,7 +823,7 @@
           <section class="towrite-folder-group">
             <h3>{folder}</h3>
             {#each articles as article (article.filePath)}
-              <ArticleSummaryCard {article} {api} {laneFilter} questions={questionsByFile.get(article.filePath) ?? []} />
+              <ArticleSummaryCard {article} {api} {laneFilter} questions={questionsByFile.get(article.filePath) ?? []} deviceLibraryById={hubLibraryById} />
             {/each}
           </section>
         {/each}

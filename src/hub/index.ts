@@ -3,6 +3,7 @@ export * from "./admin";
 export * from "./client";
 export * from "./connector";
 export * from "./crypto";
+export * from "./library";
 export * from "./ndef";
 export * from "./privacy";
 export * from "./types";

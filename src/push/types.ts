@@ -1,5 +1,5 @@
 import type { DeviceFeedPage, DeviceProfile } from "../external/device-feed";
-import type { OpenQuestionLane, OpenQuestionRule, OpenQuestionStatus } from "../core/types";
+import type { OpenQuestionLane, OpenQuestionPriority, OpenQuestionRule, OpenQuestionStatus } from "../core/types";
 import type { DeviceButtonMapping, DeviceInteractionAction, DeviceSourceRef } from "../device-interactions";
 
 export type PushTargetType = "quote0" | "mobile-app" | "local-web" | "webhook";
@@ -116,6 +116,7 @@ export interface PushCandidate {
   workflowStageTitle?: string;
   lane?: OpenQuestionLane;
   status?: OpenQuestionStatus;
+  priority?: OpenQuestionPriority;
   tags: string[];
   reminderAt?: string;
   reminderNote?: string;

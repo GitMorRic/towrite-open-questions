@@ -118,11 +118,14 @@ tailscale serve --https=10000 off
 
 1. 在 Markdown 中选中文字；PDF 划线卡在 V1 默认按附件隐私规则留在本地，不进入 Hub；
 2. 使用选区工具条或命令，把它保存成 **ToThink** 或 **ToWrite** 卡片；
-3. 保存后的卡片进入本地问题库和 Push Engine，才有资格成为 Device Hub 候选；
-4. 在这张问题卡底部点击显示器上箭头图标 **将这条卡片发送到墨水屏**，即可手动指定它；若只点设置页 **立即同步**，则由 Hub 根据规则、已确认习惯和上下文自动选择；
-5. 右侧栏的墨水屏推荐卡会显示 selected 标题、提示和理由；selected 与 displayed 不一致时，还会单独显示屏幕当前仍在显示的卡片；
-6. 设备模拟器 ACK 后，`displayed` 与 `selected` 一致；碰 NFC 会打开眼前这张卡的 PWA；
-7. 在 PWA 回答后，保持 Obsidian Connector 在线并再次同步，回答会通过加密队列交给 CaptureService，按冻结目标安全追加到来源笔记的 Captures 区段。V1 尚未把这次回答同时写入 ToThink/ToWrite 卡片的活动流。
+3. 保存后的活动卡片会自动进入右侧栏的 **设备内容库**。这个库不是正文副本：Markdown/sidecar 仍是真源，卡片只额外保存入库、Agent/循环资格与每日时间窗；解决、隐藏、手工移出或后来命中 `private`/`no-cloud` 后会退出可发送集合；
+4. 卡片底部的显示器上箭头用于 **立即显示**；点击或右键书库图标可加入/移出、切换 Agent/循环资格，或设置该卡每天的 `HH:mm` 显示时间；
+5. 右侧栏可切换四种方式：**手动**只接受显式发送；**Agent**在本地最多 20 条白名单内用规则与可选 AI 重排；**循环**按稳定顺序播放；**定时**只在卡片的每日时间窗中选择。手工显示优先，并从设备 ACK 后保持默认 30 分钟；等待 ACK 时任何自动模式都不能覆盖；
+6. 右侧栏的墨水屏推荐卡会显示 selected 标题、提示和理由；selected 与 displayed 不一致时，还会单独显示屏幕当前仍在显示的卡片；
+7. 设备模拟器 ACK 后，`displayed` 与 `selected` 一致；循环间隔只从这次成功 ACK 开始计算。碰 NFC 会打开眼前这张卡的 PWA；
+8. 在 PWA 回答后，保持 Obsidian Connector 在线并再次同步，回答会通过加密队列交给 CaptureService，按冻结目标安全追加到来源笔记的 Captures 区段。V1 尚未把这次回答同时写入 ToThink/ToWrite 卡片的活动流。
+
+循环和定时目前借鉴 Quote0 的节目单体验，但没有复用 Quote0“API 发送成功即推进 cursor”的语义：Device Hub 必须等真实 `display ACK` 才推进。当前 V1 调度器运行在 Obsidian Connector 内，关闭 Obsidian 后暂停并保持屏幕最后内容；要实现全天候 Agent/循环/定时，仍需下一版 Hub 增加持久节目单、eligibility withdraw 和服务端 worker。
 
 默认的 **发送获准显示的正文片段** 是关闭的，因此 Hub 只收到显示标题、通用提示、动作、分数和理由，不会因为刚刚选中文字就上传完整正文。用户明确开启该选项后，已保存且通过 include/exclude、`private`、`no-ai`、`no-cloud` 等隐私规则的候选，才可以发送截断后的获准显示片段。Vault 绝对路径和长期 token 始终不会发送。
 

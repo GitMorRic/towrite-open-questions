@@ -7,6 +7,16 @@ describe("settings normalization", () => {
     expect(DEFAULT_SETTINGS.deviceCapture.excludeFrontmatter).toEqual(expect.arrayContaining(["private", "no_ai", "no_cloud"]));
   });
 
+  it("defaults highlighted cards into an Agent-managed device library", () => {
+    expect(DEFAULT_SETTINGS.hub).toMatchObject({
+      selectionMode: "agent",
+      autoSelect: true,
+      autoAddSelections: true,
+      rotationIntervalMinutes: 30,
+      manualHoldMinutes: 30
+    });
+  });
+
   it("normalizes common External API bind host values", () => {
     expect(normalizeExternalApiBindHost("0.0.0.0")).toBe("0.0.0.0");
     expect(normalizeExternalApiBindHost("0.0.0.")).toBe("0.0.0.0");
