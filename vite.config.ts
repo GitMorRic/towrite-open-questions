@@ -21,6 +21,8 @@ export default defineConfig({
       external: [
         "obsidian",
         "electron",
+        "node:http",
+        "node:https",
         "@codemirror/state",
         "@codemirror/view"
       ],

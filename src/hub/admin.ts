@@ -1,3 +1,5 @@
+import { requestHub } from "./http";
+
 /**
  * Account and first-run provisioning client for Device Hub.
  *
@@ -69,12 +71,12 @@ export class HubAdminError extends Error {
 
 export class HubAdminClient {
   readonly baseUrl: string;
-  private readonly fetcher: typeof fetch;
+  private readonly fetcher?: typeof fetch;
   private readonly timeoutMs: number;
 
   constructor(baseUrl: string, options: HubAdminClientOptions = {}) {
     this.baseUrl = normalizeAdminBaseUrl(baseUrl);
-    this.fetcher = options.fetch ?? fetch;
+    this.fetcher = options.fetch;
     this.timeoutMs = Math.max(250, Math.min(120_000, options.timeoutMs ?? 10_000));
   }
 
@@ -244,7 +246,7 @@ export class HubAdminClient {
       if (accountAccessToken) {
         headers.authorization = `Bearer ${accountAccessToken}`;
       }
-      const response = await this.fetcher(`${this.baseUrl}${path}`, {
+      const response = await requestHub(`${this.baseUrl}${path}`, {
         method: request.method,
         headers,
         body: request.body ? JSON.stringify(request.body) : undefined,
@@ -253,7 +255,7 @@ export class HubAdminClient {
         redirect: "error",
         referrerPolicy: "no-referrer",
         cache: "no-store"
-      });
+      }, this.fetcher);
       if (!response.ok) {
         throw new HubAdminError(operation, response.status);
       }

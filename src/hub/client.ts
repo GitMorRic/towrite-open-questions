@@ -15,6 +15,7 @@ import {
   type HubSelectionFeedback,
   type HubSelectionRequest
 } from "./types";
+import { requestHub } from "./http";
 
 export interface HubClientSettings {
   baseUrl: string;
@@ -49,13 +50,13 @@ export interface HubCaptureClientLike {
 }
 
 export class HubClient implements HubClientLike, HubCaptureClientLike {
-  private readonly fetcher: typeof fetch;
+  private readonly fetcher?: typeof fetch;
 
   constructor(
     private readonly getSettings: () => HubClientSettings,
     options: HubClientOptions = {}
   ) {
-    this.fetcher = options.fetch ?? fetch;
+    this.fetcher = options.fetch;
   }
 
   async getCapabilities(): Promise<HubCapabilities> {
@@ -181,7 +182,7 @@ export class HubClient implements HubClientLike, HubCaptureClientLike {
     const timeoutMs = Math.max(250, Math.min(120_000, settings.timeoutMs ?? 8_000));
     const timer = globalThis.setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const response = await this.fetcher(`${baseUrl}${path}`, {
+      const response = await requestHub(`${baseUrl}${path}`, {
         ...init,
         signal: controller.signal,
         credentials: "omit",
@@ -192,7 +193,7 @@ export class HubClient implements HubClientLike, HubCaptureClientLike {
           ...headersToRecord(init.headers),
           authorization: `Bearer ${token}`
         }
-      });
+      }, this.fetcher);
       if (!response.ok) {
         throw new HubApiError(response.status, await readErrorMessage(response));
       }
