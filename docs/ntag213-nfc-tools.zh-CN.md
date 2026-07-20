@@ -92,7 +92,7 @@ tailscale serve --https=10000 off
    ```
 
    这里只填协议、主机和端口；不要追加 `/t/v1/`、query 或 fragment。
-4. 在 **账号登录与一键配对** 中填写登录 Tailscale 所用的同一邮箱，点击 **发送验证码**。
+4. 在 **账号登录与一键配对** 中填写当前 Tailscale 的精确 LoginName；GitHub 登录形如 `username@github`，不是 GitHub 注册邮箱。点击 **发送验证码**。
 5. 私有开发模式只有在 Tailscale 注入的身份邮箱与所填邮箱相同时，才会把开发验证码返回给插件并自动填入；点击 **验证登录**。账号访问令牌只保留在本次设置会话的内存中。
 6. 点击 **一键创建并配对**。插件会在需要时自动创建本地 P-256 接收密钥，并让 Hub 创建 Receiver、设备、配对绑定和 Tap URL。
 7. 一次性 `device_secret` 只在本次设置会话中显示。如需运行模拟器，明确点击 **复制给 ESP32 / 模拟器** 并妥善保存；**不要粘贴到 NFC Tools**。
@@ -365,7 +365,7 @@ Write
 
 ### 验证码没有自动出现或一键配对失败
 
-- 私有 Serve 开发登录要求填写的邮箱与 `Tailscale-User-Login` 完全匹配。确认 Obsidian 请求走的是 `https://...ts.net:10000`，而不是绕过 Serve 直接访问 `127.0.0.1:8080`。
+- 私有 Serve 开发登录要求填写的 LoginName 与 `Tailscale-User-Login` 完全匹配；GitHub 身份形如 `username@github`。确认 Obsidian 请求走的是 `https://...ts.net:10000`，而不是绕过 Serve 直接访问 `127.0.0.1:8080`。
 - 账号令牌只在当前设置会话内存中保存；重新打开设置后可能需要再次发送验证码并验证。
 - 先点击 **测试连接**，再检查 Backend 的 `cloud-relay/data/logs/` 与 `tailscale serve status`。
 - 如果 Receiver/设备已存在，界面会显示轮换按钮而不是再次显示 **一键创建并配对**。

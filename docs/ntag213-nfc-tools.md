@@ -92,7 +92,7 @@ In Obsidian:
    ```
 
    Enter only the scheme, host, and port. Do not add `/t/v1/`, a query, or a fragment.
-4. Under **Account sign-in and one-click pairing**, enter the same email used by the Tailscale identity and select **Send code**.
+4. Under **Account sign-in and one-click pairing**, enter the exact active Tailscale LoginName; GitHub identities look like `username@github`, not the GitHub account email. Then select **Send code**.
 5. In private development mode, a development code is returned and auto-filled only when the identity injected by Tailscale matches that email. Select **Verify**. The account access token stays in memory for this settings session only.
 6. Select **Provision and pair**. ToWrite creates a local P-256 receiver key when needed, and the Hub creates the Receiver, device, binding, and Tap URL.
 7. The one-time `device_secret` is displayed only during this settings session. If you need the simulator, explicitly select **Copy for ESP32 / simulator** and store it safely; **do not paste it into NFC Tools**.
@@ -276,7 +276,7 @@ If a tag may have been copied, rotate the Tap ID, rewrite the trusted physical t
 
 ### The code is not auto-filled or one-click pairing fails
 
-- Private Serve development login requires the requested email to match `Tailscale-User-Login` exactly. Confirm that Obsidian calls `https://...ts.net:10000`, not `127.0.0.1:8080` directly.
+- Private Serve development login requires the requested LoginName to match `Tailscale-User-Login` exactly; GitHub identities look like `username@github`. Confirm that Obsidian calls `https://...ts.net:10000`, not `127.0.0.1:8080` directly.
 - The account token is memory-only for the current settings session; reopening settings may require another email-code sign-in.
 - Use **Test connection**, then inspect Backend `cloud-relay/data/logs/` and `tailscale serve status`.
 - If a Receiver and device already exist, the UI shows rotation controls instead of **Provision and pair**.

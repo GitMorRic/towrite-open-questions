@@ -1341,8 +1341,8 @@ export class ToWriteSettingTab extends PluginSettingTab {
       new Setting(containerEl)
         .setName(zh ? "Tailscale Serve 私有模式" : "Private Tailscale Serve mode")
         .setDesc(zh
-          ? "这个地址只对同一 tailnet 开放。手机碰标签前必须安装、登录并开启 Tailscale；登录邮箱必须与当前 Tailscale 身份一致。普通 ESP32 未加入 tailnet 时暂时不能直接访问。"
-          : "This address is reachable only inside the same tailnet. Before tapping, the phone must have Tailscale installed, signed in, and connected; the login email must match the active Tailscale identity. A normal ESP32 cannot connect unless it joins the tailnet or uses a controlled gateway.");
+          ? "这个地址只对同一 tailnet 开放。手机碰标签前必须安装、登录并开启 Tailscale；登录名必须与当前 Tailscale LoginName 一致，GitHub 身份形如 username@github。普通 ESP32 未加入 tailnet 时暂时不能直接访问。"
+          : "This address is reachable only inside the same tailnet. Before tapping, the phone must have Tailscale installed, signed in, and connected; the value must match the active Tailscale LoginName, such as username@github for GitHub identities. A normal ESP32 cannot connect unless it joins the tailnet or uses a controlled gateway.");
     }
 
     const login = new Setting(containerEl)
@@ -1353,9 +1353,11 @@ export class ToWriteSettingTab extends PluginSettingTab {
           : "Signed in for this settings session. The account token stays in memory and is never persisted.")
         : this.hubLoginChallengeId
           ? (zh ? "验证码已发送；验证后即可自动创建 Receiver、设备绑定与 NFC 地址。" : "Code sent. Verify it to provision the Receiver, device binding, and NFC address.")
-          : (zh ? "使用邮箱验证码登录 Hub；长期凭据不会进入 URL。" : "Sign in with an email code; long-lived credentials never enter a URL."));
+          : tailscaleServe
+            ? (zh ? "填写当前 Tailscale LoginName（GitHub 登录形如 username@github）；长期凭据不会进入 URL。" : "Enter the active Tailscale LoginName (GitHub identities look like username@github); long-lived credentials never enter a URL.")
+            : (zh ? "使用邮箱验证码登录 Hub；长期凭据不会进入 URL。" : "Sign in with an email code; long-lived credentials never enter a URL."));
     login.addText((text) => text
-      .setPlaceholder("you@example.com")
+      .setPlaceholder(tailscaleServe ? "username@github" : "you@example.com")
       .setValue(this.hubLoginEmail)
       .onChange((value) => {
         this.hubLoginEmail = value.trim();
@@ -1377,7 +1379,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
 
     if (this.hubLoginChallengeId && !this.hubAccountAccessToken) {
       new Setting(containerEl)
-        .setName(zh ? "邮箱验证码" : "Email verification code")
+        .setName(zh ? "登录验证码" : "Sign-in verification code")
         .addText((text) => text
           .setPlaceholder("123456")
           .setValue(this.hubLoginCode)
