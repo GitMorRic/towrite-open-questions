@@ -27,7 +27,17 @@ import type { AiModelInfo } from "../ai/types";
 import type { Quote0CanvasPayload, Quote0Device, Quote0ImagePayload, Quote0TextPayload } from "../quote0/client";
 import type { Quote0SyncPreview } from "../quote0/sync-service";
 
-type SettingsTabId = "general" | "cards" | "capture" | "learning" | "workflow" | "api" | "push" | "quote0" | "ai" | "backend" | "hub";
+type SettingsTabId = "general" | "cards" | "capture" | "learning" | "workflow" | "api" | "push" | "quote0" | "ai" | "backend" | "hub" | "about";
+
+const ABOUT_LINKS = {
+  repository: "https://github.com/GitMorRic/towrite-open-questions",
+  releases: "https://github.com/GitMorRic/towrite-open-questions/releases",
+  issues: "https://github.com/GitMorRic/towrite-open-questions/issues",
+  readmeZh: "https://github.com/GitMorRic/towrite-open-questions/blob/main/README.zh-CN.md",
+  readmeEn: "https://github.com/GitMorRic/towrite-open-questions#readme",
+  // Set this after a real support page has been created; an empty value stays hidden.
+  support: "" as string
+} as const;
 
 type Quote0PreviewAction = {
   label: string;
@@ -278,7 +288,8 @@ const COPY: Record<ToWriteLanguage, SettingCopy> = {
       "quote0": "Quote0",
       "ai": "AI",
       "backend": "Backend",
-      "hub": "Device Hub"
+      "hub": "Device Hub",
+      "about": "关于"
     },
     "language": "语言",
     "languageDesc": "设置插件界面的显示语言。默认使用中文。",
@@ -518,7 +529,8 @@ const COPY: Record<ToWriteLanguage, SettingCopy> = {
       "quote0": "Quote0",
       "ai": "AI",
       "backend": "Backend",
-      "hub": "Device Hub"
+      "hub": "Device Hub",
+      "about": "About"
     },
     "language": "Language",
     "languageDesc": "Choose the plugin display language. Chinese is the default.",
@@ -849,6 +861,8 @@ export class ToWriteSettingTab extends PluginSettingTab {
       this.renderBackendSettings(panel);
     } else if (this.activeSettingsTab === "hub") {
       this.renderHubSettings(panel);
+    } else if (this.activeSettingsTab === "about") {
+      this.renderAboutSettings(panel);
     } else {
       this.renderAiSettings(panel, copy);
     }
@@ -866,7 +880,8 @@ export class ToWriteSettingTab extends PluginSettingTab {
       { id: "quote0", label: copy.tabs.quote0 },
       { id: "ai", label: copy.tabs.ai },
       { id: "backend", label: copy.tabs.backend },
-      { id: "hub", label: copy.tabs.hub }
+      { id: "hub", label: copy.tabs.hub },
+      { id: "about", label: copy.tabs.about }
     ];
     const tabBar = containerEl.createDiv({ cls: "towrite-settings-tabs" });
     tabBar.setAttribute("role", "tablist");
@@ -2980,6 +2995,67 @@ export class ToWriteSettingTab extends PluginSettingTab {
     }
 
 
+  }
+
+  private renderAboutSettings(containerEl: HTMLElement): void {
+    const zh = this.plugin.settings.language !== "en";
+    const version = this.plugin.manifest.version;
+    const isPrerelease = version.includes("-");
+
+    new Setting(containerEl)
+      .setName(zh ? "插件信息" : "Plugin information")
+      .setDesc(zh ? "查看当前安装版本、下载测试版并访问项目资源。" : "Check the installed version, download test builds, and open project resources.")
+      .setHeading();
+
+    const versionSetting = new Setting(containerEl)
+      .setName(zh ? "当前版本" : "Current version")
+      .setDesc(isPrerelease
+        ? (zh ? "Beta 测试通道；适合在备用 Vault 或测试设备中验证。" : "Beta channel; test in a secondary vault or device first.")
+        : (zh ? "稳定发布通道。" : "Stable release channel."));
+    versionSetting.controlEl.createEl("code", { text: `v${version}` });
+
+    const compatibilitySetting = new Setting(containerEl)
+      .setName(zh ? "兼容与许可" : "Compatibility & license")
+      .setDesc(zh ? "社区插件核心采用 MIT 许可。" : "The Community Plugin core is licensed under MIT.");
+    compatibilitySetting.controlEl.createSpan({
+      cls: "towrite-about-meta",
+      text: `${zh ? "最低 Obsidian" : "Minimum Obsidian"} ${this.plugin.manifest.minAppVersion}`
+    });
+
+    const repositorySetting = new Setting(containerEl)
+      .setName(zh ? "GitHub 项目" : "GitHub project")
+      .setDesc(zh ? "查看源代码、README 和开发进度。" : "Browse the source, README, and development history.");
+    this.addAboutLink(repositorySetting, "GitHub", ABOUT_LINKS.repository);
+
+    const releaseSetting = new Setting(containerEl)
+      .setName(zh ? "版本下载" : "Release downloads")
+      .setDesc(zh ? "在另一台电脑安装时，从 Releases 下载 main.js、manifest.json 和 styles.css。" : "For another computer, download main.js, manifest.json, and styles.css from Releases.");
+    this.addAboutLink(releaseSetting, zh ? "打开 Releases" : "Open Releases", ABOUT_LINKS.releases);
+
+    const helpSetting = new Setting(containerEl)
+      .setName(zh ? "文档与反馈" : "Docs & feedback")
+      .setDesc(zh ? "阅读使用说明，或在 GitHub 提交可复现的问题。" : "Read the guide or report a reproducible issue on GitHub.");
+    this.addAboutLink(helpSetting, zh ? "中文文档" : "Documentation", zh ? ABOUT_LINKS.readmeZh : ABOUT_LINKS.readmeEn);
+    this.addAboutLink(helpSetting, zh ? "反馈问题" : "Report issue", ABOUT_LINKS.issues);
+
+    const supportSetting = new Setting(containerEl)
+      .setName(zh ? "支持开发" : "Support development")
+      .setDesc(ABOUT_LINKS.support
+        ? (zh ? "如果这个插件对你有帮助，可以支持后续开发。" : "Support continued development if the plugin is useful to you.")
+        : (zh ? "已预留 Buy Me a Coffee 入口；创建正式支持页面后即可在此启用。" : "A Buy Me a Coffee entry is reserved and will appear after an official support page is configured."));
+    if (ABOUT_LINKS.support) {
+      this.addAboutLink(supportSetting, "Buy Me a Coffee", ABOUT_LINKS.support);
+    }
+  }
+
+  private addAboutLink(setting: Setting, label: string, url: string): void {
+    const link = setting.controlEl.createEl("a", {
+      cls: "towrite-about-action",
+      text: label
+    });
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
   }
 
   private renderAiSettings(containerEl: HTMLElement, copy: SettingCopy): void {

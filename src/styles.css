@@ -2439,6 +2439,36 @@
   gap: 10px;
 }
 
+.towrite-about-meta {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  white-space: nowrap;
+}
+
+.towrite-about-action {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 4px 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+  box-shadow: none;
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  font-weight: 600;
+  line-height: 1;
+  text-decoration: none;
+}
+
+.towrite-about-action:hover,
+.towrite-about-action:focus-visible {
+  border-color: var(--interactive-accent);
+  background: var(--interactive-hover);
+  color: var(--text-normal);
+  text-decoration: none;
+}
+
 .towrite-quote0-preview {
   display: grid;
   gap: 10px;

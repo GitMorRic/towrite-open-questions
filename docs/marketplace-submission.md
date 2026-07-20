@@ -13,7 +13,7 @@ Official references:
 
 - Plugin id: `towrite-open-questions`
 - Plugin name: `ToWrite Open Questions`
-- Development version: `0.3.0-beta.3` (not suitable for marketplace submission)
+- Development version: `0.3.0-beta.4` (not suitable for marketplace submission)
 - Minimum app version: `1.7.2`
 - Desktop only: `true`
 

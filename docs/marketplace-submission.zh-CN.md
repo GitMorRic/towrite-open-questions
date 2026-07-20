@@ -11,7 +11,7 @@
 
 - 插件 id：`towrite-open-questions`
 - 插件名称：`ToWrite Open Questions`
-- 当前开发版本：`0.3.0-beta.3`（不能直接用于社区市场提交）
+- 当前开发版本：`0.3.0-beta.4`（不能直接用于社区市场提交）
 - 最低 Obsidian 版本：`1.7.2`
 - Desktop only：`true`
 

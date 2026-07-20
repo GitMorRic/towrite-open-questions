@@ -1,5 +1,23 @@
 # Changelog / 更新日志
 
+## 0.3.0-beta.4 - 2026-07-20
+
+- Added Device Hub V1 with scoped receiver/device pairing, non-enumerable identifiers, secret-bound device authentication, persistent selected/displayed state, long polling, ACK handling, NFC tap routing, encrypted PWA writeback, and an ESP32 simulator contract.
+- Added the Device Content Library: ToThink and ToWrite annotations automatically become eligible cards, while manual selection, Agent selection, loop rotation, and fixed schedule modes control what the screen should show.
+- Added Tailscale Serve setup and NFC Tools guidance, including an in-plugin tap URL generator, NTAG213 byte validation, current display preview, and selected/displayed consistency checks.
+- Kept editor-side collection off the keystroke path and added privacy, authorization, ordering, and end-to-end regression coverage for Device Hub delivery.
+- Added an About settings tab showing the installed version, minimum Obsidian version, MIT license, GitHub project, release downloads, documentation, issue reporting, and a reserved support-link slot.
+
+中文摘要：
+
+- 新增 Device Hub V1：包含 Receiver/设备配对、不可枚举 ID、设备密钥绑定鉴权、持久化 selected/displayed 状态、长轮询、ACK、NFC 跳转、加密 PWA 写回与 ESP32 模拟协议。
+- 新增“设备内容库”：ToThink/ToWrite 划线会自动进入候选库，并支持手动选择、Agent 选择、循环轮播和固定时间表四种发送模式。
+- 补充 Tailscale Serve 与 NFC Tools 操作流程；插件可生成碰一碰 URL、校验 NTAG213 容量、预览当前显示内容，并检查 selected/displayed 是否一致。
+- 保持编辑器输入热路径无网络和全库扫描，并补充 Device Hub 的隐私、鉴权、乱序与端到端回归测试。
+- 设置页新增“关于”标签，显示当前版本、最低 Obsidian 版本、MIT 许可、GitHub、Release 下载、文档、问题反馈及预留的赞助入口。
+
+Known V1 boundaries: the concrete ESP32/e-paper display driver and an always-on hosted Hub worker are not bundled in this plugin release; loop and schedule progression currently run while the Obsidian Connector is active.
+
 ## 0.3.0-beta.3 - 2026-07-16
 
 - Removed synchronous full decoration and sidebar refreshes from the editor keystroke path; CodeMirror now maps existing ranges while typing and uses a targeted effect for data changes.
