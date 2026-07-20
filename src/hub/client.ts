@@ -312,6 +312,8 @@ function normalizeSelection(value: unknown): HubContentSelection {
     reason: readString(record, "reason"),
     score: readOptionalNumber(record, "score"),
     expiresAt: readOptionalString(record, "expires_at", "expiresAt"),
+    candidateRef: readOptionalString(record, "candidate_ref", "candidateRef"),
+    writeTargetRef: readOptionalString(record, "write_target_ref", "writeTargetRef"),
     card: record.card ? normalizeDeviceCard(record.card) : undefined
   };
 }
@@ -343,6 +345,8 @@ function normalizeDisplayedState(value: unknown): HubDisplayedState {
     stateVersion: readNonNegativeInteger(record, "state_version", "stateVersion"),
     displayedAt: readRequiredString(record, "displayed_at", "displayedAt"),
     renderHash: readOptionalString(record, "render_hash", "renderHash"),
+    candidateRef: readOptionalString(record, "candidate_ref", "candidateRef"),
+    writeTargetRef: readOptionalString(record, "write_target_ref", "writeTargetRef"),
     card: record.card ? normalizeDeviceCard(record.card) : undefined
   };
 }

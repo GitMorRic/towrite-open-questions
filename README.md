@@ -147,6 +147,8 @@ By default, the plugin also calls Dot's device switch/refresh endpoint (`/next`)
 
 ## Device Hub V1
 
+Personal NFC writeback now defaults to the **ToWrite × Capture local integration**: `NTAG213 → Tailscale HTTPS :8790 → Capture mobile page → ToWrite CaptureService → Vault`. The phone only needs to be in the same tailnet under the configured Tailscale identity—there is no email-code form. Obsidian Desktop, ToWrite, Capture, and the local Backend must be online. NFC resolves acknowledged `displayed` content first, then `selected`, then the local current selection when no Hub device exists. See the [NTAG213/NFC Tools guide](docs/ntag213-nfc-tools.md) for Serve, plugin-linking, and tag-writing steps. The Device Hub E2EE path below remains an optional public/offline/standalone-device mode.
+
 Device Hub is an optional, separately deployed path for an ESP32/eink device and an HTTPS phone PWA:
 
 ```text

@@ -128,6 +128,10 @@ export interface HubContentSelection {
   reason: string;
   score?: number;
   expiresAt?: string;
+  /** Authenticated connector state only; never expose this opaque ref on the public tap page. */
+  candidateRef?: string;
+  /** Authenticated connector state only; lets the connector recover its local target after restart. */
+  writeTargetRef?: string;
   card?: HubDeviceCard;
 }
 
@@ -151,6 +155,10 @@ export interface HubDisplayedState {
   stateVersion: number;
   displayedAt: string;
   renderHash?: string;
+  /** Authenticated connector state only; never expose this opaque ref on the public tap page. */
+  candidateRef?: string;
+  /** Authenticated connector state only. */
+  writeTargetRef?: string;
   card?: HubDeviceCard;
 }
 

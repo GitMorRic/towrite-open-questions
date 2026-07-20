@@ -1,4 +1,5 @@
 import { HUB_PROTOCOL_VERSION, type HubCandidate, type HubCandidateBatch, type HubContentAction, type HubContentType } from "./types";
+import type { CaptureTargetAction, CaptureTargetKind } from "../capture";
 
 const MAX_HUB_CANDIDATES = 20;
 const OPAQUE_REF_BYTES = 16;
@@ -17,6 +18,11 @@ export interface LocalHubCandidate {
   };
   sourceLocalId?: string;
   writeTargetLocalId?: string;
+  /** Connector-only write contract; it is never included in the Hub candidate payload. */
+  writeTargetKind?: CaptureTargetKind;
+  writeTargetAction?: CaptureTargetAction;
+  writeTargetHeading?: string;
+  writeTargetStageId?: string;
   allowedActions: HubContentAction[];
   reasonCode: string;
   score: number;

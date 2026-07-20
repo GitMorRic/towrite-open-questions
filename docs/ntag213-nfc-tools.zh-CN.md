@@ -1,6 +1,112 @@
 # NTAG213 与 NFC Tools 操作指南
 
-本文说明如何把 ToWrite Device Hub V1 的静态碰一碰入口写入 NTAG213。标签只负责让手机打开 HTTPS PWA；当前屏幕显示什么、碰一下后打开什么，都由 Hub 根据同一设备的 selected/displayed 状态动态解析。
+ToWrite 现在提供两种 NFC 写回方式：
+
+- **本地 Capture（个人默认）**：手机通过私有 Tailscale HTTPS 打开 Capture 记录页，不需要邮箱验证码，也不需要“登录 Obsidian”。ToWrite 在桌面端冻结当前卡片和写入目标，Capture 只收集正文、标题与 tags，最后仍由 ToWrite `CaptureService` 安全写入 Vault。
+- **Device Hub E2EE（可选）**：适合公网、离线队列或未来独立设备；保留原有 Receiver、登录和加密队列流程。
+
+两种方式都只在 NTAG213 中写一条可轮换的 HTTPS URI。个人使用请先按下面的本地 Capture 流程操作；原 Device Hub 指南完整保留在后半部分。
+
+## A. 默认：ToWrite × Capture 本地 NFC
+
+### A.1 工作方式与前提
+
+```text
+NTAG213
+→ Tailscale Serve HTTPS :8790
+→ Capture 手机记录页
+→ ToWrite 本地 Bridge 127.0.0.1:48322
+→ ToWrite CaptureService
+→ Obsidian Vault
+```
+
+开始前确认：
+
+- 电脑和手机都已安装并开启 Tailscale，且在同一 tailnet；
+- 配置 Tailscale 注入的精确可信身份，本文以 `<tailscale-login>` 表示；这不是要填写到网页中的邮箱，而是访问控制身份；
+- Obsidian Desktop、兼容此协议的最新版 ToWrite 和 Capture 插件都在运行；原始、未升级的 Capture `0.5.81` 不支持该接口；
+- Capture Backend 正在电脑上以 HTTP 监听 `127.0.0.1:8790`；
+- ToWrite 的专用 Bridge 监听 `127.0.0.1:48322`。该端口只供本机 Capture 回调，**不要**用 Tailscale Serve、LAN 或端口转发公开它。
+
+本地模式没有邮箱验证码或 Hub 登录。手机能够打开页面，是因为它已加入 tailnet 并以受信任的 Tailscale 身份访问；Vault 路径、Bridge token 和 Capture token 都不会进入 NFC URL。
+
+Obsidian 或任一插件离线时，手机页面不会绕过 ToWrite 直接写 Vault。页面应保留未提交草稿并提示恢复桌面连接。
+
+### A.2 启用 Capture 的 Tailscale Serve 模式
+
+在 Capture 插件设置中启用 **Tailscale Serve / 本地 ToWrite NFC**，确认：
+
+- 本地监听地址为 `127.0.0.1:8790`；
+- canonical origin 为 `https://<capture-host>.<tailnet>.ts.net:8790`；
+- 允许的 Tailscale owner 为 `<tailscale-login>`（GitHub 登录名通常以 `@github` 结尾）；
+- Capture Backend 状态正常。
+
+然后在 PowerShell 中只增加 8790 这一条映射：
+
+```powershell
+tailscale serve --bg --https=8790 http://127.0.0.1:8790
+tailscale serve status
+```
+
+这条命令不会替换已有的 `10000 → 8080`、`443 → 48321` 或 `8443 → 4310` 映射。不要运行 `tailscale serve reset`。如需只关闭本地 Capture 映射：
+
+```powershell
+tailscale serve --https=8790 off
+```
+
+先在电脑和手机（手机须连接 Tailscale）分别打开：
+
+```text
+https://<capture-host>.<tailnet>.ts.net:8790/health
+```
+
+如果手机打不开，先检查 Tailscale 连接、tailnet/ACL、`tailscale serve status`、Capture Backend 是否监听 `127.0.0.1:8790`，以及主机名和 `:8790` 是否完整。不要改用 `127.0.0.1`、局域网 HTTP 或 Funnel。
+
+### A.3 在 ToWrite 中连接 Capture 并生成地址
+
+1. 打开 ToWrite 设置的 **NFC 与 Capture 本地联动**，在 **碰一碰记录方式** 中选择 **本机 Capture**。
+2. 开启 **启用本地 Capture Bridge**。**Bridge 回调端口** 保持 `48322`；Capture HTTPS 地址填写：
+
+   ```text
+   https://<capture-host>.<tailnet>.ts.net:8790
+   ```
+
+3. **Tailscale 可信身份** 填写你自己的精确 Tailscale LoginName，本文以 `<tailscale-login>` 表示。
+4. 依次点击 **检测 Capture**、**连接 / 重新连接**。**联动状态** 应同时显示：Bridge 正在监听、发现兼容 Capture、连接器已注册。若提示 Capture 版本过旧，请升级 Capture；不需要重启来交换长期密钥，也不要读取另一个插件的 `data.json`。
+5. 在 **NFC Tools 写入内容** 一行点击 **轮换地址**。ToWrite 会生成 `tap_` 加 22 位 base64url 随机字符，并显示完整 URL 与实际 NDEF 字节数。
+6. 先用 **模拟碰一碰** 验证当前内容、目标标签和提交行为，再点击 **复制完整 URL**。
+
+最终写入标签的唯一内容形如：
+
+```text
+https://<capture-host>.<tailnet>.ts.net:8790/capture/t/v1/tap_<22位随机字符>
+```
+
+必须使用 ToWrite 实际生成的完整 URL；不要手工照抄占位符。标签中不写 AAR、query、fragment、邮箱、设备 ID、API token、Bridge token、Vault 路径、笔记标题或内容 ID。轮换 `tap_id` 后旧标签立即失效，需要把新 URL 重写一次；日后切换推荐内容不需要重写标签。
+
+### A.4 当前内容与写入目标
+
+ToWrite 为每次打开冻结一个约 5 分钟的 handoff 快照。解析顺序固定为：
+
+1. 设备最近成功 ACK 的 `displayed` 内容；
+2. 尚无 ACK 时使用 `selected`；
+3. 没有 Hub 设备时使用 ToWrite 的本地当前选择。
+
+因此当 `displayed=A、selected=B` 时，碰一碰仍打开屏幕眼前的 A；B 成功显示并 ACK 后才打开 B。手动、循环、定时和 Agent 选择共用同一状态。手机只能提交正文、标题和 tags，不能改写目标路径或动作；目标在页面打开后发生变化时会返回冲突并保留草稿，不会静默写入另一篇笔记。
+
+页面顶部会预览当前卡片/问题以及“追加到已有笔记 / 新建到文件夹 / Inbox”的冻结目标；成功后显示实际写入位置并提供安全撤销。`Ctrl/Cmd+Enter` 发送，`Shift+Enter` 换行。
+
+### A.5 NFC Tools 固定步骤（本地默认）
+
+```text
+Write → Add a record → URL/URI → 粘贴 ToWrite 生成的完整 :8790 地址 → Write → Read 验证
+```
+
+待写列表中只能有一条 URI Record。Read 后逐字核对路径为 `/capture/t/v1/tap_…`，没有 query、AAR 或额外 Text Record；再分别用已登录同一 tailnet 的 iPhone 和 Android 测试。开发期间不要把标签设为只读。
+
+## B. 可选：Device Hub E2EE / ESP32 流程
+
+以下章节保留原 Device Hub 流程。只有需要公网/离线加密队列、Receiver 或独立 ESP32 协议时才使用它；不要把 Hub 的 `:10000/t/v1/...` 地址与本地 Capture 的 `:8790/capture/t/v1/...` 地址混用。
 
 ## 0. 当前可用能力与限制
 
@@ -28,7 +134,7 @@ Obsidian 中保存的 ToThink / ToWrite 卡片
 ```text
 Device Hub http://127.0.0.1:8080
 → Tailscale Serve HTTPS :10000
-→ https://desktop-lea3h79.taild09a3c.ts.net:10000
+→ https://<capture-host>.<tailnet>.ts.net:10000
 ```
 
 这是 **tailnet 私有 HTTPS**，不是公网入口。使用前确认：
@@ -44,7 +150,7 @@ Device Hub http://127.0.0.1:8080
 ```powershell
 cd D:\Engineering\Project\ObsidianAI-Backend
 .\cloud-relay\scripts\tailscale_dev_hub.ps1 -Action Setup `
-  -PublicBaseUrl "https://desktop-lea3h79.taild09a3c.ts.net:10000"
+  -PublicBaseUrl "https://<capture-host>.<tailnet>.ts.net:10000"
 ```
 
 然后在管理员 PowerShell 中只为 10000 端口建立 Serve 映射：
@@ -58,13 +164,13 @@ tailscale serve status
 
 ```powershell
 .\cloud-relay\scripts\tailscale_dev_hub.ps1 -Action Status
-Invoke-RestMethod https://desktop-lea3h79.taild09a3c.ts.net:10000/health
+Invoke-RestMethod https://<capture-host>.<tailnet>.ts.net:10000/health
 ```
 
 还应在已连接同一 tailnet 的手机浏览器中打开：
 
 ```text
-https://desktop-lea3h79.taild09a3c.ts.net:10000/health
+https://<capture-host>.<tailnet>.ts.net:10000/health
 ```
 
 停止或重新启动本地进程可使用 `-Action Stop` / `-Action Start`。如果要单独关闭这条 HTTPS 映射，运行：
@@ -88,7 +194,7 @@ tailscale serve --https=10000 off
 3. 在 **Hub URL** 填完整 origin：
 
    ```text
-   https://desktop-lea3h79.taild09a3c.ts.net:10000
+   https://<capture-host>.<tailnet>.ts.net:10000
    ```
 
    这里只填协议、主机和端口；不要追加 `/t/v1/`、query 或 fragment。
@@ -105,7 +211,7 @@ tailscale serve --https=10000 off
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\eink_device_simulator.py `
-  --base-url https://desktop-lea3h79.taild09a3c.ts.net:10000 `
+  --base-url https://<capture-host>.<tailnet>.ts.net:10000 `
   --device-id dev_<插件显示的32位hex> `
   --device-secret <一次性设备密钥>
 ```
@@ -156,7 +262,7 @@ https://hub.example.com/t/v1/tap_GQn5qrmjSRmV8dO5CjgnhA
 当前私有 Serve 环境中，插件实际复制出的地址会是以下形式，其中最后一段必须使用插件生成的真实值：
 
 ```text
-https://desktop-lea3h79.taild09a3c.ts.net:10000/t/v1/tap_<22字符随机ID>
+https://<capture-host>.<tailnet>.ts.net:10000/t/v1/tap_<22字符随机ID>
 ```
 
 其中：
@@ -355,11 +461,11 @@ Write
 2. 在电脑运行 `tailscale serve status`，确认 10000 正向代理到 `http://127.0.0.1:8080`。
 3. 运行 `tailscale_dev_hub.ps1 -Action Status`，确认 API、Worker 和本地 health 都正常。
 4. 在手机浏览器先打开 `/health`，不要先用 NFC 排查；确认 URL 包含 `:10000`。
-5. 检查 tailnet ACL、手机使用的 Tailscale 账号和 MagicDNS/FQDN。不要把 `desktop-lea3h79.taild09a3c.ts.net` 换成 `127.0.0.1` 或普通局域网 HTTP 地址。
+5. 检查 tailnet ACL、手机使用的 Tailscale 账号和 MagicDNS/FQDN。不要把 `<capture-host>.<tailnet>.ts.net` 换成 `127.0.0.1` 或普通局域网 HTTP 地址。
 
 ### 插件提示 Hub URL 无效
 
-- Hub URL 必须是完整 canonical origin，例如 `https://desktop-lea3h79.taild09a3c.ts.net:10000`。
+- Hub URL 必须是完整 canonical origin，例如 `https://<capture-host>.<tailnet>.ts.net:10000`。
 - 不要填写 `/health`、`/v1`、`/t/v1/...`、用户名、密码、query 或 fragment。
 - 正式手机/NFC 路径必须使用 HTTPS；只有插件所在电脑上的 localhost 开发才允许 HTTP。
 

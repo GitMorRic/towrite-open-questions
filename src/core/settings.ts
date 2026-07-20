@@ -4,6 +4,9 @@ import type { HabitLearningState } from "../learning/types";
 import type { SuggestionNotificationEvent } from "../suggestions/types";
 import { DEFAULT_DEVICE_BUTTON_MAPPINGS, normalizeDeviceButtonMappings } from "../device-interactions";
 import type { AiAssistantState } from "../ai/chat";
+import { DEFAULT_CAPTURE_BRIDGE_SETTINGS } from "../capture-bridge/settings";
+import type { CaptureBridgeSettings } from "../capture-bridge/types";
+import type { LocalTapSelectionState } from "../capture-bridge/selection";
 
 export type ToWriteLanguage = "zh" | "en";
 
@@ -193,6 +196,7 @@ export interface ToWriteSettings {
   deviceCapture: ToWriteDeviceCaptureSettings;
   learning: ToWriteLearningSettings;
   backend: ToWriteBackendSettings;
+  captureBridge: CaptureBridgeSettings;
   hub: ToWriteHubSettings;
   deviceProfiles: ToWriteDeviceProfileSettings[];
   articleTypes: ArticleTypesSettings;
@@ -213,6 +217,7 @@ export interface ToWriteSavedData {
   snoozedSuggestions?: Record<string, string>;
   securityMigrationVersion?: number;
   aiAssistantState?: AiAssistantState;
+  captureBridgeState?: LocalTapSelectionState;
 }
 
 export const DEFAULT_STATUS_OPTIONS: QuestionStatusOption[] = [
@@ -497,6 +502,7 @@ export const DEFAULT_SETTINGS: ToWriteSettings = {
     useForHabitSuggestions: false,
     timeoutMs: 2500
   },
+  captureBridge: { ...DEFAULT_CAPTURE_BRIDGE_SETTINGS },
   hub: {
     enabled: false,
     baseUrl: "http://127.0.0.1:8080",

@@ -139,6 +139,8 @@ Quote0 接入分成两类内容：
 
 ## Device Hub V1
 
+个人 NFC 写回现在默认使用 **ToWrite × Capture 本地联动**：`NTAG213 → Tailscale HTTPS :8790 → Capture 手机记录页 → ToWrite CaptureService → Vault`。手机只需连接同一 tailnet 并通过配置的 Tailscale 身份，不再填写邮箱验证码；Obsidian Desktop、ToWrite、Capture 和本地 Backend 必须在线。NFC 优先打开已 ACK 的 `displayed` 内容，无 ACK 时回退 `selected`，没有 Hub 设备时使用本地当前选择。完整的 Serve、插件连接和 NFC Tools 步骤见 [NTAG213 与 NFC Tools 指南](docs/ntag213-nfc-tools.zh-CN.md)。下述 Device Hub E2EE 流程仍作为公网、离线队列和独立设备的可选方案保留。
+
 Device Hub 是可选、独立部署的 ESP32/墨水屏与 HTTPS 手机 PWA 通路：
 
 ```text

@@ -1313,6 +1313,8 @@ export class ToWriteSettingTab extends PluginSettingTab {
     const hub = this.plugin.settings.hub;
     const tailscaleServe = /^https:\/\/[^/?#]+\.ts\.net(?::\d+)?$/iu.test(hub.baseUrl);
 
+    this.renderLocalCaptureBridgeSettings(containerEl, zh);
+
     new Setting(containerEl)
       .setName(zh ? "连接 ToWrite Device Hub" : "Connect ToWrite Device Hub")
       .setDesc(zh
@@ -1669,6 +1671,128 @@ export class ToWriteSettingTab extends PluginSettingTab {
       .setDesc(zh
         ? "每批最多 20 个 opaque 候选；发送类型、显示标题、可选获准片段、动作、分数、理由和粗粒度工作流信息。临时选区绝不上传；由划线明确保存的卡片只有在开启正文片段开关后才会发送截断内容。Vault 路径、完整正文、剪贴板、精确位置和长期 token 始终不发送。"
         : "At most 20 opaque candidates per batch: kind, display title, optional approved snippet, actions, score, reason, and coarse workflow metadata. Ephemeral selections are never uploaded; a card explicitly saved from a selection shares truncated content only when display snippets are enabled. Vault paths, full text, clipboard data, precise location, and long-lived tokens are never sent.");
+  }
+
+  private renderLocalCaptureBridgeSettings(containerEl: HTMLElement, zh: boolean): void {
+    const bridge = this.plugin.settings.captureBridge;
+    new Setting(containerEl)
+      .setName(zh ? "NFC 与 Capture 本地联动" : "Local NFC and Capture integration")
+      .setDesc(zh
+        ? "碰一碰后直接打开 Capture 记录页；实际目标、冲突检查和撤销仍由 ToWrite 本地 CaptureService 控制。"
+        : "A tap opens Capture directly while ToWrite remains responsible for the frozen target, conflict checks, and undo.")
+      .setHeading();
+
+    new Setting(containerEl)
+      .setName(zh ? "碰一碰记录方式" : "Tap capture flow")
+      .setDesc(zh
+        ? "本机 Capture 适合同一 tailnet 内的个人设备；Device Hub E2EE 保留为公网或离线队列方案。"
+        : "Local Capture is for personal devices in the same tailnet; Device Hub E2EE remains available for public/offline queues.")
+      .addDropdown((dropdown) => dropdown
+        .addOption("local_capture", zh ? "本机 Capture" : "Local Capture")
+        .addOption("hub_e2ee", "Device Hub E2EE")
+        .setValue(bridge.flow)
+        .onChange(async (value) => {
+          bridge.flow = value === "hub_e2ee" ? "hub_e2ee" : "local_capture";
+          await this.plugin.savePluginData();
+          await this.plugin.configureCaptureBridge(false);
+          this.refreshSettingsUi();
+        }));
+
+    if (bridge.flow !== "local_capture") {
+      new Setting(containerEl)
+        .setName(zh ? "当前使用 Device Hub 登录与加密队列" : "Device Hub sign-in and encrypted queue are active")
+        .setDesc(zh
+          ? "下方继续配置 Receiver、设备和 Hub Tap URL；本地 Bridge 不会监听端口。"
+          : "Continue below with Receiver, device, and Hub Tap URL settings; the local Bridge will not listen.");
+      return;
+    }
+
+    new Setting(containerEl)
+      .setName(zh ? "启用本地 Capture Bridge" : "Enable local Capture Bridge")
+      .setDesc(zh
+        ? "仅监听 127.0.0.1，使用独立随机 Bearer token；不会复用 External API token。"
+        : "Listens only on 127.0.0.1 with an independent random Bearer token; it never reuses the External API credential.")
+      .addToggle((toggle) => toggle.setValue(bridge.enabled).onChange(async (value) => {
+        bridge.enabled = value;
+        await this.plugin.savePluginData();
+        await this.plugin.configureCaptureBridge(true);
+        this.refreshSettingsUi();
+      }));
+
+    new Setting(containerEl)
+      .setName(zh ? "Capture HTTPS 地址" : "Capture HTTPS origin")
+      .setDesc(zh
+        ? "填写 Tailscale Serve 暴露的 canonical HTTPS origin，例如 https://computer.tailnet.ts.net:8790；不要带路径、query 或 token。"
+        : "Canonical HTTPS origin exposed by Tailscale Serve, such as https://computer.tailnet.ts.net:8790; do not include a path, query, or token.")
+      .addText((text) => text
+        .setPlaceholder("https://computer.tailnet.ts.net:8790")
+        .setValue(bridge.captureBaseUrl)
+        .onChange(async (value) => {
+          bridge.captureBaseUrl = value.trim().replace(/\/+$/u, "");
+          await this.plugin.savePluginData();
+        }));
+
+    new Setting(containerEl)
+      .setName(zh ? "Tailscale 可信身份" : "Trusted Tailscale identity")
+      .setDesc(zh
+        ? "必须与手机当前 Tailscale-User-Login 完全一致，例如 GitMorRic@github。"
+        : "Must exactly match the phone's Tailscale-User-Login, for example GitMorRic@github.")
+      .addText((text) => text
+        .setPlaceholder("username@github")
+        .setValue(bridge.ownerLogin)
+        .onChange(async (value) => {
+          bridge.ownerLogin = value.trim().slice(0, 200);
+          await this.plugin.savePluginData();
+        }));
+
+    new Setting(containerEl)
+      .setName(zh ? "Bridge 回调端口" : "Bridge callback port")
+      .setDesc(`127.0.0.1:${bridge.port} · ${zh ? "固定端口，与 External API 48321 独立" : "fixed and independent from External API 48321"}`);
+
+    const status = this.plugin.getCaptureBridgeStatus();
+    const statusText = status.registered
+      ? (zh ? "已连接：ToWrite Bridge、Capture 插件和 Backend 已完成 V1 注册。" : "Connected: ToWrite Bridge, Capture plugin, and Backend completed V1 registration.")
+      : status.error || (zh ? "尚未检测或连接兼容的 Capture 插件。" : "A compatible Capture plugin has not been detected or linked.");
+    new Setting(containerEl)
+      .setName(zh ? "联动状态" : "Integration status")
+      .setDesc(`${status.running ? (zh ? "监听中" : "listening") : (zh ? "未监听" : "stopped")} · ${statusText}`)
+      .addButton((button) => button.setButtonText(zh ? "检测 Capture" : "Detect Capture").onClick(() => {
+        void this.plugin.detectCapturePluginBridge(true).then(() => this.refreshSettingsUi());
+      }))
+      .addButton((button) => button.setCta().setButtonText(zh ? "连接 / 重新连接" : "Link / relink").onClick(() => {
+        void this.plugin.configureCaptureBridge(true).then(() => this.refreshSettingsUi());
+      }));
+
+    const tapUrl = this.plugin.getLocalCaptureTapUrl();
+    const ndef = this.plugin.getLocalCaptureNdefStatus();
+    const nfc = new Setting(containerEl)
+      .setName(zh ? "NFC Tools 写入内容" : "NFC Tools payload")
+      .setDesc(tapUrl
+        ? `${ndef.bytes}/144 bytes · ${ndef.fits ? (zh ? "可写入 NTAG213" : "fits NTAG213") : (ndef.error || (zh ? "超出容量" : "too large"))}`
+        : (ndef.error || (zh ? "先检测 Capture 或填写 HTTPS 地址与可信身份。" : "Detect Capture or configure its HTTPS origin and trusted identity first.")));
+    nfc.addText((text) => {
+      text.setValue(tapUrl).setPlaceholder("https://computer.tailnet.ts.net:8790/capture/t/v1/tap_…");
+      text.inputEl.readOnly = true;
+    });
+    nfc
+      .addButton((button) => button.setButtonText(zh ? "复制完整 URL" : "Copy complete URL").setDisabled(!tapUrl || !ndef.fits).onClick(() => {
+        void copyToClipboard(tapUrl, zh ? "已复制 NFC Tools 的完整 URL" : "Complete NFC Tools URL copied");
+      }))
+      .addButton((button) => button.setButtonText(zh ? "轮换地址" : "Rotate address").onClick(() => {
+        void this.plugin.rotateLocalCaptureTapId().then(() => {
+          new Notice(zh ? "本地 NFC 地址已轮换；旧标签立即失效。" : "Local NFC address rotated; the old tag is now invalid.");
+          this.refreshSettingsUi();
+        });
+      }))
+      .addButton((button) => button.setButtonText(zh ? "模拟碰一碰" : "Simulate tap").setDisabled(!tapUrl || !status.registered).onClick(() => {
+        void this.plugin.openLocalCaptureTap().catch((error: unknown) => {
+          new Notice(`${zh ? "无法打开 Capture" : "Could not open Capture"}: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      }));
+
+    new Setting(containerEl)
+      .setName(zh ? "NFC Tools 操作" : "NFC Tools steps")
+      .setDesc("Write → Add a record → URL/URI → paste complete URL → Write → Read");
   }
 
   private renderApiDeviceSettings(containerEl: HTMLElement, copy: SettingCopy): void {

@@ -70,6 +70,8 @@ import {
   CaptureService,
   CaptureTargetRecommender,
   MISSING_TARGET_REVISION,
+  captureContentRevision,
+  captureFolderRevision,
   captureRecommendationSettingsFromPluginSettings,
   captureServiceOptionsFromPluginSettings,
   type CaptureCommitResult,
@@ -77,6 +79,28 @@ import {
   type CaptureIntent,
   type CaptureTargetCandidate
 } from "./capture";
+import {
+  CAPTURE_BRIDGE_PROTOCOL_VERSION,
+  CaptureBridgeCoordinator,
+  CaptureBridgeRequestError,
+  CaptureBridgeServer,
+  CapturePluginBridgeClient,
+  LocalTapSelectionService,
+  buildLocalCaptureTapUri,
+  captureDraftFromBridgeCommit,
+  generateCaptureTapId,
+  generateSnapshotId,
+  localCaptureNdefStatus,
+  buildQuestionCaptureActivity,
+  hasValidQuestionCaptureActivityIntegrity,
+  isMatchingQuestionCaptureActivity,
+  normalizeCaptureBridgeBaseUrl,
+  normalizeCaptureBridgeSettings,
+  type CaptureBridgeRuntimeStatus,
+  type LocalTapSelectionState,
+  type TapSelectionReference,
+  type TapSelectionSnapshot
+} from "./capture-bridge";
 import { QuestionExporter } from "./export/exporter";
 import { ToWriteExternalApiServer, type DeviceCaptureRequest, type DeviceCaptureResult, type DeviceWritebackMetadata } from "./external/server";
 import { PushEngine } from "./push/engine";
@@ -178,6 +202,10 @@ export default class ToWritePlugin extends Plugin {
   private backendClient!: BackendEnhancementClient;
   private captureService!: CaptureService;
   private captureRecommender!: CaptureTargetRecommender;
+  private localTapSelection!: LocalTapSelectionService;
+  private captureBridgeCoordinator!: CaptureBridgeCoordinator;
+  private captureBridgeServer!: CaptureBridgeServer;
+  private capturePluginBridge!: CapturePluginBridgeClient;
   private externalApiServer!: ToWriteExternalApiServer;
   private pushEngine!: PushEngine;
   private hubClient!: HubClient;
@@ -247,6 +275,33 @@ export default class ToWritePlugin extends Plugin {
         onVaultChanged: (path, operation) => this.onCaptureVaultChanged(path, operation)
       })
     );
+    this.localTapSelection = new LocalTapSelectionService({
+      createSnapshot: (reference) => this.createTapSelectionSnapshot(reference),
+      getFallbackLocalId: () => this.buildHubCandidates()[0]?.localId,
+      validateSnapshot: (snapshot) => this.validatePersistedTapSelectionSnapshot(snapshot),
+      onStateChanged: () => {
+        void this.savePluginData();
+      }
+    });
+    this.localTapSelection.restore(this.savedCaptureBridgeState);
+    this.captureBridgeCoordinator = new CaptureBridgeCoordinator({
+      selection: this.localTapSelection,
+      isTapAllowed: (tapId) => tapId === this.settings.captureBridge.tapId,
+      handoffTtlSeconds: () => this.settings.captureBridge.handoffTtlSeconds,
+      commitAdapter: {
+        commit: async (snapshot, request) => {
+          const draft = captureDraftFromBridgeCommit(snapshot, request);
+          return this.commitTapBridgeCapture(snapshot, draft);
+        },
+        undo: async (captureId, undoToken) => this.undoTapBridgeCapture(captureId, undoToken)
+      }
+    });
+    this.captureBridgeServer = new CaptureBridgeServer({
+      pluginVersion: this.manifest.version,
+      getSettings: () => this.settings.captureBridge,
+      coordinator: this.captureBridgeCoordinator
+    });
+    this.capturePluginBridge = new CapturePluginBridgeClient(this.app);
     this.aiProvider = new OpenAiCompatibleProvider(() => this.settings.ai);
     this.aiService = new AiQuestionService({
       app: this.app,
@@ -336,6 +391,7 @@ export default class ToWritePlugin extends Plugin {
         }, acceptedHabits);
       },
       onState: (state) => {
+        this.localTapSelection.recordHubState(state);
         void this.rememberHubState(state);
       },
       onError: (error) => {
@@ -537,6 +593,12 @@ export default class ToWritePlugin extends Plugin {
     void this.configureExternalApiServer(false);
     this.configureQuote0Sync();
     this.configureDeviceHub();
+    void this.configureCaptureBridge(false);
+    this.registerInterval(window.setInterval(() => {
+      if (this.settings.captureBridge.enabled && this.settings.captureBridge.flow === "local_capture") {
+        void this.registerCapturePluginBridge(false);
+      }
+    }, 30_000));
 
     this.app.workspace.onLayoutReady(() => {
       void this.refreshIndex();
@@ -547,6 +609,7 @@ export default class ToWritePlugin extends Plugin {
       }
       void this.runSuggestionNotifications();
       void this.syncDeviceHub(false);
+      void this.registerCapturePluginBridge(false);
     });
     if (this.securityMigrationVersion < 1) {
       this.securityMigrationVersion = 1;
@@ -576,6 +639,8 @@ export default class ToWritePlugin extends Plugin {
     }
     this.learningEditQueue?.dispose();
     void this.externalApiServer?.stop();
+    void this.capturePluginBridge?.remove("towrite-open-questions");
+    void this.captureBridgeServer?.stop();
     this.deviceHub?.dispose();
     this.quote0SyncService?.stop();
     this.selectionToolbar?.destroy();
@@ -1084,7 +1149,8 @@ export default class ToWritePlugin extends Plugin {
       suggestionNotifications: this.suggestionNotifications,
       snoozedSuggestions: this.snoozedSuggestions,
       securityMigrationVersion: this.securityMigrationVersion,
-      aiAssistantState: this.aiAssistantState
+      aiAssistantState: this.aiAssistantState,
+      captureBridgeState: this.localTapSelection?.serialize() ?? this.savedCaptureBridgeState
     };
     await this.saveData(data);
     await this.exportCaptureTargetCatalog();
@@ -1668,6 +1734,175 @@ export default class ToWritePlugin extends Plugin {
     };
   }
 
+  getCaptureBridgeStatus(): CaptureBridgeRuntimeStatus {
+    const status = this.capturePluginBridge?.getStatus(this.captureBridgeServer?.isRunning() ?? false) ?? {
+      running: false,
+      pluginDetected: false,
+      compatible: false,
+      registered: false
+    };
+    return this.settings.captureBridge.lastError && !status.error
+      ? { ...status, error: this.settings.captureBridge.lastError }
+      : status;
+  }
+
+  getLocalCaptureTapUrl(): string {
+    try {
+      return buildLocalCaptureTapUri(
+        this.settings.captureBridge.captureBaseUrl,
+        this.settings.captureBridge.tapId
+      );
+    } catch {
+      return "";
+    }
+  }
+
+  getLocalCaptureNdefStatus(): { bytes: number; fits: boolean; error?: string } {
+    const estimate = localCaptureNdefStatus(
+      this.settings.captureBridge.captureBaseUrl,
+      this.settings.captureBridge.tapId
+    );
+    if (estimate) return { bytes: estimate.totalBytes, fits: estimate.fits };
+    try {
+      buildLocalCaptureTapUri(this.settings.captureBridge.captureBaseUrl, this.settings.captureBridge.tapId);
+      return { bytes: 0, fits: false };
+    } catch (error) {
+      return { bytes: 0, fits: false, error: messageForError(error) };
+    }
+  }
+
+  async configureCaptureBridge(showNotice = true): Promise<void> {
+    if (!this.captureBridgeServer || !this.capturePluginBridge) return;
+    const bridge = this.settings.captureBridge;
+    if (!Platform.isDesktopApp || !bridge.enabled || bridge.flow !== "local_capture") {
+      await this.capturePluginBridge.remove("towrite-open-questions").catch(() => undefined);
+      await this.captureBridgeServer.stop();
+      if (showNotice && bridge.enabled && !Platform.isDesktopApp) {
+        new Notice("Local Capture bridge is available only in Obsidian desktop.");
+      }
+      return;
+    }
+    try {
+      await this.captureBridgeServer.restart();
+      await this.registerCapturePluginBridge(false);
+      if (showNotice) {
+        const status = this.getCaptureBridgeStatus();
+        new Notice(status.registered
+          ? `Capture bridge connected on 127.0.0.1:${bridge.port}.`
+          : `Capture bridge is listening, but Capture is not linked: ${status.error || "compatible Capture plugin not found"}`);
+      }
+    } catch (error) {
+      bridge.lastError = messageForError(error).slice(0, 500);
+      await this.savePluginData();
+      if (showNotice) new Notice(`Capture bridge failed: ${bridge.lastError}`);
+    }
+  }
+
+  async detectCapturePluginBridge(showNotice = true): Promise<CaptureBridgeRuntimeStatus> {
+    const bridge = this.settings.captureBridge;
+    const status = await this.capturePluginBridge.detect(this.captureBridgeServer.isRunning());
+    const capabilities = status.capabilities;
+    let changed = false;
+    if (!bridge.captureBaseUrl && capabilities?.captureBaseUrl) {
+      const detectedBaseUrl = normalizeCaptureBridgeBaseUrl(capabilities.captureBaseUrl);
+      if (detectedBaseUrl) {
+        bridge.captureBaseUrl = detectedBaseUrl;
+        changed = true;
+      }
+    }
+    if (!bridge.ownerLogin && capabilities?.ownerLogin) {
+      bridge.ownerLogin = capabilities.ownerLogin.trim().slice(0, 200);
+      changed = true;
+    }
+    if (changed) await this.savePluginData();
+    if (showNotice) {
+      new Notice(status.compatible
+        ? "Compatible Capture bridge detected."
+        : `Capture bridge detection failed: ${status.error || "plugin unavailable"}`);
+    }
+    return status;
+  }
+
+  async registerCapturePluginBridge(showNotice = true): Promise<CaptureBridgeRuntimeStatus> {
+    const bridge = this.settings.captureBridge;
+    if (!bridge.enabled || bridge.flow !== "local_capture" || !this.captureBridgeServer.isRunning()) {
+      const status = this.getCaptureBridgeStatus();
+      if (showNotice) new Notice("Enable the local Capture Bridge before linking Capture.");
+      return status;
+    }
+    const detected = await this.detectCapturePluginBridge(false);
+    if (!detected.compatible) {
+      bridge.lastError = detected.error ?? "Compatible Capture plugin is not loaded.";
+      if (showNotice) new Notice(bridge.lastError);
+      return detected;
+    }
+    const normalizedCaptureBaseUrl = normalizeCaptureBridgeBaseUrl(bridge.captureBaseUrl);
+    if (!normalizedCaptureBaseUrl || !bridge.ownerLogin) {
+      bridge.lastError = "Configure a canonical https://*.ts.net:8790 Capture origin and trusted Tailscale owner before linking.";
+      await this.savePluginData();
+      const status = this.getCaptureBridgeStatus();
+      if (showNotice) new Notice(bridge.lastError);
+      return status;
+    }
+    bridge.captureBaseUrl = normalizedCaptureBaseUrl;
+    if (detected.capabilities?.tailscaleServeTrusted !== true) {
+      bridge.lastError = "Capture has not confirmed trusted Tailscale Serve identity headers.";
+      await this.savePluginData();
+      const status = this.getCaptureBridgeStatus();
+      if (showNotice) new Notice(bridge.lastError);
+      return status;
+    }
+    const registeredAt = new Date().toISOString();
+    const status = await this.capturePluginBridge.register({
+      connectorId: "towrite-open-questions",
+      callbackBaseUrl: `http://127.0.0.1:${bridge.port}`,
+      callbackToken: bridge.callbackToken,
+      tapIds: [bridge.tapId],
+      ownerLogin: bridge.ownerLogin,
+      registeredAt
+    });
+    const previousRegisteredAt = bridge.lastRegisteredAt;
+    const previousError = bridge.lastError;
+    if (status.registered) {
+      const previousTimestamp = Date.parse(previousRegisteredAt);
+      if (!Number.isFinite(previousTimestamp) || Date.now() - previousTimestamp >= 60 * 60_000) {
+        bridge.lastRegisteredAt = registeredAt;
+      }
+    }
+    bridge.lastError = status.error?.slice(0, 500) ?? "";
+    if (bridge.lastRegisteredAt !== previousRegisteredAt || bridge.lastError !== previousError) {
+      await this.savePluginData();
+    }
+    if (showNotice) new Notice(status.registered ? "ToWrite and Capture are linked." : `Capture link failed: ${bridge.lastError}`);
+    return status;
+  }
+
+  async rotateLocalCaptureTapId(): Promise<string> {
+    this.settings.captureBridge.tapId = generateCaptureTapId();
+    this.captureBridgeCoordinator.clear();
+    await this.savePluginData();
+    if (this.settings.captureBridge.enabled
+      && this.settings.captureBridge.flow === "local_capture"
+      && this.captureBridgeServer.isRunning()) {
+      await this.registerCapturePluginBridge(false);
+    }
+    return this.getLocalCaptureTapUrl();
+  }
+
+  async openLocalCaptureTap(): Promise<void> {
+    const status = this.getCaptureBridgeStatus();
+    if (!this.settings.captureBridge.enabled || !status.running || !status.registered) {
+      throw new Error("Enable and link the local Capture Bridge before simulating a tap.");
+    }
+    if (status.compatible) {
+      await this.capturePluginBridge.openPrefilledCapture({ tapId: this.settings.captureBridge.tapId });
+      return;
+    }
+    const url = this.getLocalCaptureTapUrl();
+    if (!url) throw new Error("Configure a valid Capture HTTPS origin first.");
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+
   async configureExternalApiServer(showNotice = true): Promise<void> {
     if (!this.externalApiServer) {
       return;
@@ -1766,8 +2001,15 @@ export default class ToWritePlugin extends Plugin {
   }
 
   async sendQuestionToDeviceHub(questionId: string): Promise<HubDeviceState | undefined> {
+    const entry = this.getDeviceContentLibrary().entries.find((item) => item.id === questionId);
+    if (!entry?.inLibrary) {
+      await this.updateQuestionDeliveryPolicy(questionId, { membership: "included" });
+    }
+    await this.localTapSelection.selectLocal(questionId);
     if (!this.settings.hub.enabled) {
-      new Notice(this.settings.language === "zh" ? "请先在设置中启用并配对 Device Hub。" : "Enable and pair Device Hub in settings first.");
+      new Notice(this.settings.captureBridge.flow === "local_capture"
+        ? (this.settings.language === "zh" ? "已设为本地 NFC / Capture 当前内容。" : "Set as the current local NFC / Capture card.")
+        : (this.settings.language === "zh" ? "请先在设置中启用并配对 Device Hub。" : "Enable and pair Device Hub in settings first."));
       return undefined;
     }
     if (this.hubCandidateSyncTimer) {
@@ -1780,10 +2022,6 @@ export default class ToWritePlugin extends Plugin {
       contentId: this.settings.hub.manualHoldContentId
     };
     try {
-      const entry = this.getDeviceContentLibrary().entries.find((item) => item.id === questionId);
-      if (!entry?.inLibrary) {
-        await this.updateQuestionDeliveryPolicy(questionId, { membership: "included" });
-      }
       if (this.hubCandidateSyncTimer) {
         window.clearTimeout(this.hubCandidateSyncTimer);
         this.hubCandidateSyncTimer = 0;
@@ -1793,6 +2031,7 @@ export default class ToWritePlugin extends Plugin {
       this.settings.hub.manualHoldCandidateId = questionId;
       this.settings.hub.manualHoldContentId = "";
       const state = await this.deviceHub.selectLocalCandidate(questionId, this.buildHubCandidates(questionId));
+      await this.localTapSelection.rememberHubSelection(questionId, state);
       this.settings.hub.manualHoldContentId = state.selected?.selectedContentId ?? "";
       await this.savePluginData();
       new Notice(this.settings.language === "zh" ? "已将这张卡设为墨水屏期望内容。" : "This card is now the desired e-ink content.");
@@ -1879,11 +2118,19 @@ export default class ToWritePlugin extends Plugin {
     this.settings.hub.manualHoldUntil = "";
     this.settings.hub.manualHoldCandidateId = "";
     this.settings.hub.manualHoldContentId = "";
+    await this.localTapSelection.selectLocal(next.id);
+    if (!this.settings.hub.enabled) {
+      this.settings.hub.lastRotationCandidateId = next.id;
+      this.settings.hub.rotationCursor = nextRotationCursor(snapshot.entries, next.id);
+      await this.savePluginData();
+      return undefined;
+    }
     const state = await this.deviceHub.selectLocalCandidate(next.id, this.buildHubCandidates(next.id), {
       reason: "manual",
       policyVersion: "towrite-user-next-v1",
       modelVersion: "user-next"
     });
+    await this.localTapSelection.rememberHubSelection(next.id, state);
     this.settings.hub.lastRotationCandidateId = next.id;
     this.settings.hub.lastRotationContentId = state.selected?.selectedContentId ?? "";
     this.settings.hub.rotationCursor = nextRotationCursor(snapshot.entries, next.id);
@@ -1956,6 +2203,7 @@ export default class ToWritePlugin extends Plugin {
         policyVersion: "towrite-schedule-v1",
         modelVersion: "deterministic-schedule"
       });
+      await this.localTapSelection.rememberHubSelection(choice.entry.id, selected);
       hub.lastScheduleOccurrenceId = choice.occurrenceId;
       await this.savePluginData();
       return selected;
@@ -1969,6 +2217,7 @@ export default class ToWritePlugin extends Plugin {
       policyVersion: "towrite-rotation-ack-v1",
       modelVersion: "deterministic-rotation"
     });
+    await this.localTapSelection.rememberHubSelection(choice.id, selected);
     hub.lastRotationCandidateId = choice.id;
     hub.lastRotationContentId = selected.selected?.selectedContentId ?? "";
     hub.rotationCursor = nextRotationCursor(library.entries, choice.id);
@@ -2486,6 +2735,7 @@ export default class ToWritePlugin extends Plugin {
   private savedQuestionStates: Record<string, StoredQuestionState> = {};
   private pushState: PushRuntimeState = normalizePushRuntimeState();
   private savedLearningState?: HabitLearningState;
+  private savedCaptureBridgeState?: LocalTapSelectionState;
 
   private async loadPluginData(): Promise<void> {
     const data = (await this.loadData()) as Partial<ToWriteSavedData> | null;
@@ -2509,6 +2759,7 @@ export default class ToWritePlugin extends Plugin {
       ? { ...data.snoozedSuggestions }
       : {};
     this.aiAssistantState = normalizeAiAssistantState(data?.aiAssistantState);
+    this.savedCaptureBridgeState = data?.captureBridgeState;
   }
 
   private hubReceiverPrivateKey(): JsonWebKey | undefined {
@@ -2526,9 +2777,270 @@ export default class ToWritePlugin extends Plugin {
     }
   }
 
+  private async createTapSelectionSnapshot(reference: TapSelectionReference): Promise<TapSelectionSnapshot> {
+    const localId = reference.localId?.trim();
+    if (!localId) {
+      throw new CaptureBridgeRequestError(
+        409,
+        "The displayed Hub content has no authenticated local target mapping. Refresh Device Hub state before tapping."
+      );
+    }
+    const local = this.buildHubCandidates(localId).find((candidate) => candidate.localId === localId);
+    if (!local || local.privacy?.private || local.privacy?.excluded) {
+      throw new CaptureBridgeRequestError(409, "This local card is no longer authorized for Capture handoff.");
+    }
+    const targetPath = local.writeTargetLocalId?.trim() || this.settings.deviceCapture.inboxFile;
+    const targetAction = local.writeTargetAction ?? "append";
+    const inbox = targetPath === this.settings.deviceCapture.inboxFile && targetAction === "append";
+    const targetFile = this.app.vault.getFileByPath(targetPath);
+    if (targetAction === "append" && !inbox && !targetFile) {
+      throw new CaptureBridgeRequestError(409, "The selected note no longer exists.");
+    }
+    if (targetAction === "append" && !inbox && this.hubPrivacyForPath(targetPath)?.excluded) {
+      throw new CaptureBridgeRequestError(409, "The selected note is now excluded by the local privacy policy.");
+    }
+    const snapshotId = generateSnapshotId();
+    const question = this.store.getQuestion(localId);
+    const intent: CaptureIntent = local.type === "question_prompt" ? "answer" : "new";
+    const recommendationSettings = this.captureRecommendationSettings();
+    const initialRevision = targetAction === "create"
+      ? captureFolderRevision(targetPath, recommendationSettings.settingsRevision, local.writeTargetStageId)
+      : targetFile
+        ? captureContentRevision(await this.app.vault.read(targetFile))
+        : MISSING_TARGET_REVISION;
+    const candidate: CaptureTargetCandidate = {
+      schemaVersion: CAPTURE_SCHEMA_VERSION,
+      id: `bridge-target:${snapshotId}`,
+      kind: targetAction === "create" ? (local.writeTargetKind ?? "folder") : inbox ? "inbox" : "existingNote",
+      action: targetAction,
+      path: targetPath,
+      reason: "Frozen local NFC Capture target",
+      confidence: "strong",
+      score: 1,
+      targetRevision: initialRevision,
+      heading: local.writeTargetHeading ?? this.settings.deviceCapture.appendHeading,
+      stageId: local.writeTargetStageId
+    };
+    const previewDraft: CaptureDraft = {
+      schemaVersion: CAPTURE_SCHEMA_VERSION,
+      id: `preview:${snapshotId}`,
+      intent,
+      body: "Capture bridge revision preview",
+      tags: [],
+      links: [],
+      source: {
+        file: question?.source.file || (targetAction === "append" ? local.writeTargetLocalId : undefined),
+        questionId: question?.id,
+        entryPoint: "capture-bridge-preview"
+      }
+    };
+    const preview = await this.captureService.preview(previewDraft, candidate);
+    candidate.targetRevision = preview.targetRevision;
+    const card = reference.card;
+    return {
+      protocolVersion: CAPTURE_BRIDGE_PROTOCOL_VERSION,
+      snapshotId,
+      source: reference.source,
+      sourceContentId: reference.contentId,
+      localId,
+      createdAt: new Date().toISOString(),
+      contentType: card?.contentType ?? local.type,
+      title: card?.title || local.display.title || "Untitled",
+      prompt: card?.prompt || local.display.prompt || "Continue writing",
+      body: card?.body ?? local.display.body,
+      allowedActions: card?.actions ?? [...local.allowedActions],
+      intent,
+      candidate,
+      sourceContext: {
+        file: question?.source.file || (targetAction === "append" ? local.writeTargetLocalId : undefined),
+        questionId: question?.id
+      }
+    };
+  }
+
+  private async validateTapSelectionSnapshot(snapshot: TapSelectionSnapshot, draft: CaptureDraft): Promise<void> {
+    const candidate = snapshot.candidate;
+    if (candidate.action === "append") {
+      const inbox = candidate.path === this.settings.deviceCapture.inboxFile;
+      if (!inbox && candidate.path !== snapshot.sourceContext?.file) {
+        throw new CaptureBridgeRequestError(409, "The frozen append target is no longer authorized for this card.");
+      }
+      if (!inbox && (!this.app.vault.getFileByPath(candidate.path) || this.hubPrivacyForPath(candidate.path)?.excluded)) {
+        throw new CaptureBridgeRequestError(409, "The frozen append target no longer exists or is excluded.");
+      }
+    } else {
+      const current = this.captureRecommendationSettings();
+      const allowedFolders = new Set([
+        ...current.targetFolders,
+        ...(current.workflowStages ?? []).flatMap((stage) => stage.folderPrefixes)
+      ].map((path) => normalizeFolderPath(path)));
+      if (!allowedFolders.has(normalizeFolderPath(candidate.path))) {
+        throw new CaptureBridgeRequestError(409, "The frozen create folder is no longer in the authorized Capture catalog.");
+      }
+      const expectedFolderRevision = captureFolderRevision(
+        candidate.path,
+        current.settingsRevision,
+        candidate.stageId
+      );
+      if (expectedFolderRevision !== candidate.targetRevision) {
+        throw new CaptureBridgeRequestError(409, "Capture target settings changed after the handoff was created.");
+      }
+    }
+    const currentPreview = await this.captureService.preview(draft, candidate);
+    if (currentPreview.targetRevision !== candidate.targetRevision) {
+      throw new CaptureBridgeRequestError(409, "Capture target changed after preview. Refresh the handoff before saving.");
+    }
+  }
+
+  private async validatePersistedTapSelectionSnapshot(snapshot: TapSelectionSnapshot): Promise<void> {
+    const localId = snapshot.localId?.trim();
+    if (!localId) {
+      throw new CaptureBridgeRequestError(409, "Persisted Capture selection has no authenticated local mapping.");
+    }
+    const current = this.buildHubCandidates(localId).find((candidate) => candidate.localId === localId);
+    if (!current || current.privacy?.private || current.privacy?.excluded) {
+      throw new CaptureBridgeRequestError(409, "Persisted Capture selection is no longer eligible.");
+    }
+    const expectedPath = current.writeTargetLocalId?.trim() || this.settings.deviceCapture.inboxFile;
+    if (snapshot.candidate.path !== expectedPath) {
+      throw new CaptureBridgeRequestError(409, "Persisted Capture target no longer matches the selected card.");
+    }
+    const draft: CaptureDraft = {
+      schemaVersion: CAPTURE_SCHEMA_VERSION,
+      id: `validate:${generateSnapshotId()}`,
+      intent: snapshot.intent,
+      body: "Capture bridge persisted target validation",
+      tags: [],
+      links: [],
+      source: {
+        file: snapshot.sourceContext?.file,
+        questionId: snapshot.sourceContext?.questionId,
+        entryPoint: "capture-bridge-validation"
+      }
+    };
+    await this.validateTapSelectionSnapshot(snapshot, draft);
+  }
+
+  private async commitTapBridgeCapture(
+    snapshot: TapSelectionSnapshot,
+    draft: CaptureDraft
+  ): Promise<CaptureCommitResult> {
+    await this.validateTapSelectionSnapshot(snapshot, draft);
+    const capture = await this.captureService.commit({
+      draft,
+      candidate: snapshot.candidate,
+      targetRevision: snapshot.candidate.targetRevision
+    });
+    if (snapshot.intent !== "answer") return capture;
+
+    const questionId = snapshot.sourceContext?.questionId;
+    const question = questionId ? this.store.getQuestion(questionId) : undefined;
+    if (!questionId || !question) {
+      await this.rollbackBridgeCapture(capture);
+      throw new CaptureBridgeRequestError(409, "The source question no longer exists.");
+    }
+    const activity = buildQuestionCaptureActivity({
+      captureId: draft.id,
+      questionId,
+      body: draft.body,
+      finalPath: capture.finalPath
+    });
+    const existing = (question.notes ?? []).filter((note) => note.metadata?.capture_id === draft.id);
+    if (existing.length > 1) {
+      if (!capture.idempotent) await this.rollbackBridgeCapture(capture);
+      throw new CaptureBridgeRequestError(409, "Multiple question activities use this Capture ID.");
+    }
+    if (existing[0]) {
+      if (!isMatchingQuestionCaptureActivity(existing[0], draft.id, activity)) {
+        if (!capture.idempotent) await this.rollbackBridgeCapture(capture);
+        throw new CaptureBridgeRequestError(409, "Question activity changed after this Capture was committed.");
+      }
+      return capture;
+    }
+
+    try {
+      const updated = await this.appendQuestionNoteFromExternal(
+        questionId,
+        activity.text,
+        "towrite-capture-bridge/v1",
+        {
+          capture_id: draft.id,
+          activity_digest: activity.digest,
+          source_device: "nfc-capture",
+          source_file: snapshot.sourceContext?.file,
+          input_mode: "answer",
+          created_at: capture.createdAt
+        }
+      );
+      if (!updated) throw new Error("The source question disappeared while saving its activity.");
+      return capture;
+    } catch (error) {
+      await this.rollbackBridgeCapture(capture);
+      throw error;
+    }
+  }
+
+  private async rollbackBridgeCapture(capture: CaptureCommitResult): Promise<void> {
+    if (capture.idempotent) {
+      throw new CaptureBridgeRequestError(409, "Question activity failed during an idempotent retry; the existing Capture was preserved.");
+    }
+    if (!capture.undoToken) {
+      throw new CaptureBridgeRequestError(409, "Capture activity failed and the written block is no longer safe to roll back.");
+    }
+    try {
+      await this.captureService.undo(capture.undoToken, capture.captureId);
+    } catch (error) {
+      throw new CaptureBridgeRequestError(409, `Capture activity failed and rollback was unsafe: ${messageForError(error)}`);
+    }
+  }
+
+  private async undoTapBridgeCapture(captureId: string, undoToken: string): Promise<{ undone: boolean }> {
+    const matches: Array<{ question: OpenQuestion; note: OpenQuestionNote }> = [];
+    for (const question of this.store.query()) {
+      for (const note of question.notes ?? []) {
+        if (note.metadata?.capture_id === captureId) matches.push({ question, note });
+      }
+    }
+    if (matches.length > 1) {
+      throw new CaptureBridgeRequestError(409, "Multiple question activities use this Capture ID.");
+    }
+    const activity = matches[0];
+    if (activity) {
+      if (!hasValidQuestionCaptureActivityIntegrity(activity.note, captureId, activity.question.id)) {
+        throw new CaptureBridgeRequestError(409, "Question activity changed and cannot be safely undone.");
+      }
+    }
+    const result = await this.captureService.undo(undoToken, captureId);
+    if (!result.undone || !activity) return { undone: result.undone };
+    this.patchQuestionState(activity.question.id, {
+      notes: (activity.question.notes ?? []).filter((note) => note.id !== activity.note.id)
+    });
+    await this.savePluginData();
+    this.queueDeviceHubSync();
+    if (this.settings.autoExport) await this.exportNow(false);
+    return { undone: true };
+  }
+
+  private async localIdForHubRefs(candidateRef?: string, writeTargetRef?: string): Promise<string | undefined> {
+    if (!candidateRef) return undefined;
+    for (const candidate of this.buildHubCandidates()) {
+      if (candidate.privacy?.private || candidate.privacy?.excluded) continue;
+      const expectedCandidateRef = await createOpaqueHubRef("candidate", candidate.localId, this.settings.hub.referenceSecret);
+      if (candidateRef !== expectedCandidateRef) continue;
+      if (writeTargetRef) {
+        if (!candidate.writeTargetLocalId) continue;
+        const expectedTargetRef = await createOpaqueHubRef("target", candidate.writeTargetLocalId, this.settings.hub.referenceSecret);
+        if (writeTargetRef !== expectedTargetRef) continue;
+      }
+      return candidate.localId;
+    }
+    return undefined;
+  }
+
   private async resolveHubWriteTarget(writeTargetRef: string): Promise<CaptureTargetCandidate | undefined> {
     const normalizedRef = writeTargetRef.trim();
     let localPath = "";
+    let matchedLocalCandidate: LocalHubCandidate | undefined;
     if (!normalizedRef) {
       localPath = this.settings.deviceCapture.inboxFile;
     } else {
@@ -2543,6 +3055,7 @@ export default class ToWritePlugin extends Plugin {
         const opaqueRef = await createOpaqueHubRef("target", candidatePath, this.settings.hub.referenceSecret);
         if (opaqueRef === normalizedRef) {
           localPath = candidatePath;
+          matchedLocalCandidate = eligible.find((candidate) => candidate.writeTargetLocalId === candidatePath);
           break;
         }
       }
@@ -2567,22 +3080,30 @@ export default class ToWritePlugin extends Plugin {
       }
     }
 
-    const inbox = localPath === this.settings.deviceCapture.inboxFile;
-    if (!inbox && !this.app.vault.getFileByPath(localPath)) {
+    const action = matchedLocalCandidate?.writeTargetAction ?? "append";
+    const inbox = localPath === this.settings.deviceCapture.inboxFile && action === "append";
+    if (action === "append" && !inbox && !this.app.vault.getFileByPath(localPath)) {
       // Do not silently recreate a note that disappeared after it was shown.
       return undefined;
     }
     return {
       schemaVersion: CAPTURE_SCHEMA_VERSION,
       id: `hub-write:${normalizedRef || "inbox"}`,
-      kind: inbox ? "inbox" : "existingNote",
-      action: "append",
+      kind: action === "create" ? "folder" : inbox ? "inbox" : "existingNote",
+      action,
       path: localPath,
       reason: "Device Hub frozen opaque write target",
       confidence: "strong",
       score: 1,
-      targetRevision: MISSING_TARGET_REVISION,
-      heading: this.settings.deviceCapture.appendHeading
+      targetRevision: action === "create"
+        ? captureFolderRevision(
+          localPath,
+          this.captureRecommendationSettings().settingsRevision,
+          matchedLocalCandidate?.writeTargetStageId
+        )
+        : MISSING_TARGET_REVISION,
+      heading: matchedLocalCandidate?.writeTargetHeading ?? this.settings.deviceCapture.appendHeading,
+      stageId: matchedLocalCandidate?.writeTargetStageId
     };
   }
 
@@ -2641,6 +3162,9 @@ export default class ToWritePlugin extends Plugin {
           },
           sourceLocalId: candidate.sourceFile ? `${candidate.sourceFile}:${candidate.questionId || candidate.id}` : candidate.id,
           writeTargetLocalId: candidate.sourceFile,
+          writeTargetKind: "existingNote",
+          writeTargetAction: "append",
+          writeTargetHeading: this.settings.deviceCapture.appendHeading,
           allowedActions: candidate.type === "question"
             ? ["open", "respond", "later", "skip"]
             : ["open", "capture", "later", "skip"],
@@ -2661,6 +3185,7 @@ export default class ToWritePlugin extends Plugin {
         };
       });
 
+    const blankCreateFolder = this.settings.deviceCapture.targetFolders[0]?.trim();
     candidates.push({
       localId: "towrite:blank-capture",
       type: "blank_capture",
@@ -2668,7 +3193,10 @@ export default class ToWritePlugin extends Plugin {
         title: this.settings.language === "zh" ? "快速记录" : "Quick capture",
         prompt: this.settings.language === "zh" ? "记下此刻的一句话" : "Capture one thought from this moment"
       },
-      writeTargetLocalId: this.settings.deviceCapture.inboxFile,
+      writeTargetLocalId: blankCreateFolder || this.settings.deviceCapture.inboxFile,
+      writeTargetKind: blankCreateFolder ? "folder" : "inbox",
+      writeTargetAction: blankCreateFolder ? "create" : "append",
+      writeTargetHeading: this.settings.deviceCapture.appendHeading,
       allowedActions: ["capture", "later", "skip"],
       reasonCode: "blank_capture_fallback",
       score: 0.25
@@ -2726,6 +3254,18 @@ export default class ToWritePlugin extends Plugin {
 
   private async rememberHubState(state: HubDeviceState): Promise<void> {
     const hub = this.settings.hub;
+    const selectedLocalId = await this.localIdForHubRefs(
+      state.selected?.candidateRef,
+      state.selected?.writeTargetRef
+    ) || (state.selected?.selectedContentId === hub.manualHoldContentId ? hub.manualHoldCandidateId : undefined);
+    const displayedLocalId = await this.localIdForHubRefs(
+      state.displayed?.candidateRef,
+      state.displayed?.writeTargetRef
+    ) || (state.displayed?.contentId === hub.manualHoldContentId ? hub.manualHoldCandidateId : undefined);
+    await this.localTapSelection.rememberHubStateMappings(state, {
+      selectedLocalId: selectedLocalId || undefined,
+      displayedLocalId: displayedLocalId || undefined
+    });
     hub.lastStateVersion = state.selected?.stateVersion ?? state.displayed?.stateVersion ?? 0;
     hub.lastSelectedContentId = state.selected?.selectedContentId ?? "";
     hub.lastDisplayedContentId = state.displayed?.contentId ?? "";
@@ -3497,6 +4037,7 @@ function normalizeSettings(settings?: Partial<ToWriteSettings>): ToWriteSettings
     deviceCapture: normalizeDeviceCaptureSettings(settings?.deviceCapture),
     learning: normalizeLearningSettings(settings?.learning),
     backend: normalizeBackendSettings(settings?.backend),
+    captureBridge: normalizeCaptureBridgeSettings(settings?.captureBridge),
     hub: normalizeHubSettings(settings?.hub),
     deviceProfiles: normalizeDeviceProfiles(settings?.deviceProfiles),
     articleTypes: normalizeArticleTypesSettings(settings?.articleTypes),

@@ -57,7 +57,9 @@ describe("HubClient", () => {
           revision_id: "rev_test",
           state_version: 4,
           displayed_at: "2026-07-19T00:01:00Z",
-          render_hash: "sha256:test"
+          render_hash: "sha256:test",
+          candidate_ref: "hc_displayed",
+          write_target_ref: "ht_displayed"
         },
         online: true,
         last_seen_at: "2026-07-19T00:01:01Z"
@@ -88,8 +90,8 @@ describe("HubClient", () => {
     });
     await expect(client.getDeviceState("dev_test")).resolves.toMatchObject({
       deviceId: "dev_test",
-      selected: { selectionId: "sel_test" },
-      displayed: { contentId: "cnt_test", stateVersion: 4 },
+      selected: { selectionId: "sel_test", candidateRef: "hc_test", writeTargetRef: "ht_test" },
+      displayed: { contentId: "cnt_test", stateVersion: 4, candidateRef: "hc_displayed", writeTargetRef: "ht_displayed" },
       online: true
     });
     await expect(client.submitFeedback("sel_test", {
@@ -235,7 +237,9 @@ function selectionWire() {
     selected_revision_id: "rev_test",
     state_version: 4,
     selected_at: "2026-07-19T00:00:00Z",
-    reason: "manual"
+    reason: "manual",
+    candidate_ref: "hc_test",
+    write_target_ref: "ht_test"
   };
 }
 

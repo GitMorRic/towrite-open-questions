@@ -105,6 +105,8 @@ export interface DeviceCaptureResult {
 }
 
 export interface DeviceWritebackMetadata {
+  capture_id?: string;
+  activity_digest?: string;
   source_device?: string;
   target_id?: string;
   candidate_id?: string;
