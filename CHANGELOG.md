@@ -1,5 +1,21 @@
 # Changelog / 更新日志
 
+## 0.3.0-beta.7 - 2026-07-21
+
+- Added a top-level Inbox beside All, ToThink, and ToWrite. It incrementally indexes configured Quick Notes folders and groups pending notes by project or folder without reading note bodies.
+- Inbox notes can be opened directly or explicitly selected as the current e-ink/NFC target; only title-level candidates that pass local privacy rules may enter Agent recommendations.
+- Moved the full Device Content Library out of the sidebar into a dedicated Inbox & Library settings tab with open, show-now, remove, mode, and rotation controls.
+- Reworked the recommendation and filter surfaces around Obsidian's neutral theme tokens, keeping color only where it communicates category, online status, or selected/displayed mismatch.
+- Added metadata-only, path-boundary, incremental-update, grouping, search, and settings-migration tests.
+
+中文摘要：
+
+- 顶部新增 Inbox，与全部、ToThink、ToWrite 并列；可增量收集配置的 Quick Notes 目录，并按项目或文件夹分组，全程不读取笔记正文。
+- Inbox 笔记可直接打开，也可手工设为墨水屏/NFC 当前内容；进入 Agent 候选的只有通过本地隐私过滤的标题级信息。
+- 完整“设备内容库”从侧栏移到独立的“Inbox 与设备库”设置页，集中管理打开、立即显示、移出、Agent/循环/定时模式。
+- UI 改为 Obsidian 原生中性色，仅在分类、在线状态和 selected/displayed 不一致时保留有语义的颜色。
+- 新增目录边界、增量更新、分组、搜索、无正文读取和设置迁移测试。
+
 ## 0.3.0-beta.4 - 2026-07-20
 
 - Added Device Hub V1 with scoped receiver/device pairing, non-enumerable identifiers, secret-bound device authentication, persistent selected/displayed state, long polling, ACK handling, NFC tap routing, encrypted PWA writeback, and an ESP32 simulator contract.

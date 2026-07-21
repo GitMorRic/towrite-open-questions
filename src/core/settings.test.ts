@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_ARTICLE_TYPES, DEFAULT_DEVICE_PROFILES, DEFAULT_REMINDER_PRESETS, DEFAULT_SETTINGS, normalizeArticleTypesSettings, normalizeDeviceProfiles, normalizeExternalApiBindHost, normalizeExternalApiPublicBaseUrl, normalizePushSettings, normalizeQuote0Settings, normalizeReminderPresets } from "./settings";
+import { DEFAULT_ARTICLE_TYPES, DEFAULT_DEVICE_PROFILES, DEFAULT_REMINDER_PRESETS, DEFAULT_SETTINGS, normalizeArticleTypesSettings, normalizeDeviceProfiles, normalizeExternalApiBindHost, normalizeExternalApiPublicBaseUrl, normalizeInboxSettings, normalizePushSettings, normalizeQuote0Settings, normalizeReminderPresets } from "./settings";
 
 describe("settings normalization", () => {
   it("keeps private, no-ai, and no-cloud content outside default remote scope", () => {
@@ -14,6 +14,23 @@ describe("settings normalization", () => {
       autoAddSelections: true,
       rotationIntervalMinutes: 30,
       manualHoldMinutes: 30
+    });
+  });
+
+  it("normalizes Inbox folders and preserves safe defaults for upgraded data", () => {
+    expect(normalizeInboxSettings(undefined)).toEqual(DEFAULT_SETTINGS.inbox);
+    expect(normalizeInboxSettings({
+      enabled: true,
+      folderPrefixes: [" /00-Raw_Materials/Quick_Notes/ ", "00-Raw_Materials\\Quick_Notes", "Inbox"],
+      groupBy: "folder",
+      maxItems: 99_999,
+      includeInDeviceCandidates: false
+    })).toEqual({
+      enabled: true,
+      folderPrefixes: ["00-Raw_Materials/Quick_Notes", "Inbox"],
+      groupBy: "folder",
+      maxItems: 2_000,
+      includeInDeviceCandidates: false
     });
   });
 

@@ -14,6 +14,7 @@ import type { ArticleTypeSettings, ToWriteLanguage, ToWriteReminderPreset, Workf
 import type { WorkflowIndexPayload } from "../workflow";
 import type { ProactiveSuggestion, ProactiveSuggestionAction } from "../suggestions";
 import type { DeviceLibrarySnapshot, HubDeviceState, HubFeedbackAction, HubSelectionMode } from "../hub";
+import type { InboxDeviceEligibility, InboxSnapshot } from "../inbox/types";
 
 export interface ActiveLineRange {
   filePath: string;
@@ -41,6 +42,8 @@ export interface ToWriteUiApi {
   getCompactEditorDecorations(): boolean;
   getReminderPresets(): ToWriteReminderPreset[];
   getProactiveSuggestions(): ProactiveSuggestion[];
+  getInboxSnapshot(): InboxSnapshot;
+  getInboxItemDeviceEligibility(id: string): InboxDeviceEligibility;
   getDeviceHubState(): HubDeviceState | undefined;
   getDeviceContentLibrary(): DeviceLibrarySnapshot;
   getDefaultColor(lane: OpenQuestionLane): OpenQuestionColor;
@@ -57,6 +60,7 @@ export interface ToWriteUiApi {
   actOnSuggestion(id: string, action: ProactiveSuggestionAction): Promise<void>;
   syncDeviceHub(): Promise<HubDeviceState | undefined>;
   sendQuestionToDeviceHub(id: string): Promise<HubDeviceState | undefined>;
+  sendInboxItemToDeviceHub(id: string): Promise<HubDeviceState | undefined>;
   advanceDeviceHub(): Promise<HubDeviceState | undefined>;
   setDeviceHubSelectionMode(mode: HubSelectionMode): Promise<void>;
   toggleQuestionInDeviceLibrary(id: string): Promise<void>;

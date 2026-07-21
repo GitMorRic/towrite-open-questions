@@ -30,15 +30,17 @@
   import type { WorkflowIndexPayload } from "../workflow";
   import type { ProactiveSuggestion, ProactiveSuggestionAction } from "../suggestions";
   import type { DeviceLibraryEntry, DeviceLibrarySnapshot, HubDeviceState, HubFeedbackAction, HubSelectionMode } from "../hub";
+  import type { InboxSnapshot } from "../inbox/types";
   import type { ActiveLineRange, ToWriteUiApi } from "./api";
   import ArticleSummaryCard from "./ArticleSummaryCard.svelte";
+  import InboxPanel from "./InboxPanel.svelte";
   import QuestionCard from "./QuestionCard.svelte";
   import { compactPath } from "./path";
 
   export let api: ToWriteUiApi;
 
   type OtherMode = "list" | "tree";
-  type LaneFilter = "all" | OpenQuestionLane;
+  type LaneFilter = "all" | OpenQuestionLane | "inbox";
   type ArticleFilterTab = {
     id: string;
     label: string;
@@ -68,6 +70,7 @@
   let workflowStages: WorkflowStageSettings[] = api.getWorkflowStages();
   let workflowPayload: WorkflowIndexPayload = api.getWorkflowPayload();
   let suggestions: ProactiveSuggestion[] = [];
+  let inboxSnapshot: InboxSnapshot = api.getInboxSnapshot();
   let busySuggestionId = "";
   let suggestionError = "";
   let hubState: HubDeviceState | undefined;
@@ -92,6 +95,7 @@
   $: currentThink = currentQuestions.filter((question) => question.lane === "think").length;
   $: currentWrite = currentQuestions.filter((question) => question.lane === "write").length;
   $: filteredCurrentQuestions = currentQuestions.filter(matchesLaneFilter);
+  $: questionLaneFilter = laneFilter === "inbox" ? "all" : laneFilter;
   $: currentLaneSections = buildLaneSections(filteredCurrentQuestions);
   $: groupCurrentByHeading = api.getGroupCurrentByHeading();
   $: typeTabs = buildTypeTabs(otherArticles, articleTypes, language);
@@ -114,6 +118,7 @@
     workflowStages = api.getWorkflowStages();
     workflowPayload = api.getWorkflowPayload();
     suggestions = api.getProactiveSuggestions();
+    inboxSnapshot = api.getInboxSnapshot();
     hubState = api.getDeviceHubState();
     hubLibrary = api.getDeviceContentLibrary();
     const allQuestions = api.getQuestions();
@@ -216,20 +221,6 @@
     }
   }
 
-  async function showLibraryEntry(id: string) {
-    if (hubBusy) return;
-    hubBusy = true;
-    hubError = "";
-    try {
-      hubState = await api.sendQuestionToDeviceHub(id);
-      hubLibrary = api.getDeviceContentLibrary();
-    } catch (error) {
-      hubError = error instanceof Error ? error.message : String(error);
-    } finally {
-      hubBusy = false;
-    }
-  }
-
   function suggestionSourceLabel(suggestion: ProactiveSuggestion) {
     if (suggestion.source === "due-reminder") return language === "zh" ? "到期" : "Due";
     if (suggestion.source === "active-question") return language === "zh" ? "当前笔记" : "Current note";
@@ -273,7 +264,7 @@
   }
 
   function matchesLaneFilter(question: OpenQuestion) {
-    return laneFilter === "all" || question.lane === laneFilter;
+    return laneFilter === "all" || (laneFilter !== "inbox" && question.lane === laneFilter);
   }
 
   function matchesArticleLaneFilter(article: ArticleSummary) {
@@ -439,6 +430,7 @@
         title: "开放问题",
         think: "ToThink",
         write: "ToWrite",
+        inbox: "Inbox",
         all: "全部",
         open: "未完成",
         candidate: "候选",
@@ -463,6 +455,7 @@
       title: "Open Questions",
       think: "ToThink",
       write: "ToWrite",
+      inbox: "Inbox",
       all: "All",
       open: "open",
       candidate: "candidate",
@@ -553,9 +546,13 @@
       <span>{copy.write}</span>
       <small>{currentWrite}</small>
     </button>
+    <button type="button" class:active={laneFilter === "inbox"} on:click={() => (laneFilter = "inbox")}>
+      <span>{copy.inbox}</span>
+      <small>{inboxSnapshot.count}</small>
+    </button>
   </div>
 
-  {#if typeTabs.length > 1 || stageTabs.length > 1}
+  {#if laneFilter !== "inbox" && (typeTabs.length > 1 || stageTabs.length > 1)}
     <div class="towrite-filter-stack">
       {#if typeTabs.length > 1}
         <div class="towrite-filter-row">
@@ -606,6 +603,9 @@
   {/if}
 
   <main class="towrite-card-list">
+    {#if laneFilter === "inbox"}
+      <InboxPanel {api} snapshot={inboxSnapshot} {search} />
+    {:else}
     <section class="towrite-now-section" aria-labelledby="towrite-now-heading">
       <div class="towrite-section-title">
         <span id="towrite-now-heading">{language === "zh" ? "现在" : "Now"}</span>
@@ -644,35 +644,6 @@
           <div class="towrite-hub-state">
             <span>selected · {hubState.selected?.selectedContentId || "—"}</span>
             <span class:pending={!hubState.inSync}>displayed · {hubState.displayed?.contentId || "—"}</span>
-          </div>
-          <div class="towrite-device-library">
-            <div class="towrite-device-library-head">
-              <strong>{language === "zh" ? "设备内容库" : "Device library"} · {hubLibrary.eligibleCount}</strong>
-              <small>{hubLibrary.mode === "agent"
-                ? `${hubLibrary.uploadedCount}/20 ${language === "zh" ? "发送给 Agent" : "sent to Agent"}`
-                : hubLibrary.mode === "rotation"
-                  ? `${language === "zh" ? "每" : "every "}${hubLibrary.rotationIntervalMinutes}${language === "zh" ? " 分钟" : " min"}`
-                  : hubLibrary.mode === "schedule"
-                    ? (language === "zh" ? "按卡片时间窗" : "per-card windows")
-                    : (language === "zh" ? "只响应手工发送" : "manual sends only")}</small>
-            </div>
-            {#if hubLibrary.entries.filter((entry) => entry.inLibrary).length === 0}
-              <p>{language === "zh" ? "划线加入 ToThink / ToWrite 后会自动出现在这里。" : "Selections saved as ToThink / ToWrite appear here automatically."}</p>
-            {:else}
-              {#each hubLibrary.entries.filter((entry) => entry.inLibrary).slice(0, 8) as entry (entry.id)}
-                <div class:excluded={!entry.eligible} class="towrite-device-library-item">
-                  <button type="button" class="towrite-device-library-title" title={entry.title} on:click={() => api.jumpToQuestion(entry.id)}>
-                    <span>{entry.title}</span>
-                    <small>{entry.lane === "write" ? "ToWrite" : "ToThink"}{entry.schedule?.enabled ? ` · ${entry.schedule.localTime}` : ""}{entry.priority ? ` · ${entry.priority}` : ""}</small>
-                  </button>
-                  <button type="button" disabled={hubBusy || !entry.eligible} title={entry.eligible ? (language === "zh" ? "立即显示并保持" : "Show now and hold") : (language === "zh" ? "该卡片被隐私或来源规则排除" : "Excluded by privacy or source policy")} on:click={() => showLibraryEntry(entry.id)}><ChevronRight size={13} /></button>
-                </div>
-              {/each}
-            {/if}
-            {#if hubLibrary.excludedCount > 0}<small class="towrite-device-library-note">{language === "zh" ? `${hubLibrary.excludedCount} 条因隐私或来源类型未发送` : `${hubLibrary.excludedCount} excluded by privacy or source type`}</small>{/if}
-            {#if hubLibrary.mode === "rotation" || hubLibrary.mode === "schedule"}
-              <small class="towrite-device-library-note">{language === "zh" ? "当前 V1 由 Obsidian 插件调度；关闭 Obsidian 后暂停，已显示内容保持不变。" : "V1 scheduling runs in the Obsidian connector; it pauses while Obsidian is closed and keeps the current display."}</small>
-            {/if}
           </div>
           {#if hubError}<p class="towrite-suggestion-error" role="alert">{hubError}</p>{/if}
           <div class="towrite-now-actions">
@@ -815,7 +786,7 @@
       {:else if otherMode === "list"}
         <div class="towrite-article-list">
           {#each visibleOtherArticles as article (article.filePath)}
-            <ArticleSummaryCard {article} {api} {laneFilter} questions={questionsByFile.get(article.filePath) ?? []} deviceLibraryById={hubLibraryById} />
+            <ArticleSummaryCard {article} {api} laneFilter={questionLaneFilter} questions={questionsByFile.get(article.filePath) ?? []} deviceLibraryById={hubLibraryById} />
           {/each}
         </div>
       {:else}
@@ -823,11 +794,12 @@
           <section class="towrite-folder-group">
             <h3>{folder}</h3>
             {#each articles as article (article.filePath)}
-              <ArticleSummaryCard {article} {api} {laneFilter} questions={questionsByFile.get(article.filePath) ?? []} deviceLibraryById={hubLibraryById} />
+              <ArticleSummaryCard {article} {api} laneFilter={questionLaneFilter} questions={questionsByFile.get(article.filePath) ?? []} deviceLibraryById={hubLibraryById} />
             {/each}
           </section>
         {/each}
       {/if}
     </section>
+    {/if}
   </main>
 </section>

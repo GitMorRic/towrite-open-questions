@@ -7,6 +7,7 @@ import {
   DEFAULT_WORKFLOW_STAGES,
   normalizeExternalApiBindHost,
   normalizeExternalApiPublicBaseUrl,
+  normalizeInboxSettings,
   normalizeArticleTypesSettings,
   normalizeDeviceProfiles,
   normalizePushSettings,
@@ -28,7 +29,7 @@ import type { Quote0CanvasPayload, Quote0Device, Quote0ImagePayload, Quote0TextP
 import type { Quote0SyncPreview } from "../quote0/sync-service";
 import { normalizeCaptureBridgeBaseUrl } from "../capture-bridge";
 
-type SettingsTabId = "general" | "cards" | "capture" | "learning" | "workflow" | "api" | "push" | "quote0" | "ai" | "backend" | "hub" | "about";
+type SettingsTabId = "general" | "cards" | "capture" | "inbox" | "learning" | "workflow" | "api" | "push" | "quote0" | "ai" | "backend" | "hub" | "about";
 
 const ABOUT_LINKS = {
   repository: "https://github.com/GitMorRic/towrite-open-questions",
@@ -282,6 +283,7 @@ const COPY: Record<ToWriteLanguage, SettingCopy> = {
       "general": "通用",
       "cards": "卡片与编辑器",
       "capture": "记录",
+      "inbox": "Inbox 与设备库",
       "learning": "建议与习惯",
       "workflow": "Workflow",
       "api": "API 与设备",
@@ -523,6 +525,7 @@ const COPY: Record<ToWriteLanguage, SettingCopy> = {
       "general": "General",
       "cards": "Cards & Editor",
       "capture": "Capture",
+      "inbox": "Inbox & Library",
       "learning": "Suggestions & Habits",
       "workflow": "Workflow",
       "api": "API & Device",
@@ -824,6 +827,9 @@ export class ToWriteSettingTab extends PluginSettingTab {
   /** Shown only after provisioning/rotation so it can be copied to the ESP32. */
   private hubOneTimeDeviceSecret = "";
   private hubDeviceSecretVisible = false;
+  private inboxSettingsSaveTimer = 0;
+  private inboxSettingsSaveRunning = false;
+  private inboxSettingsSaveQueued = false;
   private activeSettingsTab: SettingsTabId = "general";
 
   constructor(app: App, private readonly plugin: ToWritePlugin) {
@@ -848,6 +854,8 @@ export class ToWriteSettingTab extends PluginSettingTab {
       this.renderCardsEditorSettings(panel, copy);
     } else if (this.activeSettingsTab === "capture") {
       this.renderCaptureSettings(panel);
+    } else if (this.activeSettingsTab === "inbox") {
+      this.renderInboxSettings(panel);
     } else if (this.activeSettingsTab === "learning") {
       this.renderLearningSettings(panel, copy);
     } else if (this.activeSettingsTab === "workflow") {
@@ -874,6 +882,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
       { id: "general", label: copy.tabs.general },
       { id: "cards", label: copy.tabs.cards },
       { id: "capture", label: copy.tabs.capture },
+      { id: "inbox", label: copy.tabs.inbox },
       { id: "learning", label: copy.tabs.learning },
       { id: "workflow", label: copy.tabs.workflow },
       { id: "api", label: copy.tabs.api },
@@ -1180,6 +1189,206 @@ export class ToWriteSettingTab extends PluginSettingTab {
         });
         text.inputEl.rows = 3;
       });
+  }
+
+  private renderInboxSettings(containerEl: HTMLElement): void {
+    const zh = this.plugin.settings.language !== "en";
+    const inbox = this.plugin.settings.inbox;
+    const snapshot = this.plugin.getInboxSnapshot();
+
+    new Setting(containerEl)
+      .setName(zh ? "统一 Inbox" : "Unified Inbox")
+      .setDesc(zh
+        ? "把 Capture 生成但尚未整理的 Markdown 收拢到一个入口。V1 只索引路径、标题、tags 与时间，不读取正文；后续 Agent 来信和他人留言会复用同一 InboxItem 契约。"
+        : "Collect captured Markdown that still needs organizing. V1 indexes only path, title, tags, and timestamps, never note bodies; future agent and human messages use the same InboxItem contract.")
+      .addToggle((toggle) => toggle.setValue(inbox.enabled).onChange(async (value) => {
+        inbox.enabled = value;
+        await this.plugin.savePluginData();
+        this.plugin.refreshInboxIndex();
+        this.refreshSettingsUi();
+      }));
+
+    if (inbox.enabled) {
+      new Setting(containerEl)
+        .setName(zh ? "监控文件夹" : "Watched folders")
+        .setDesc(zh
+          ? `当前 ${snapshot.count} 条待整理笔记。一行一个 Vault 相对路径；子文件夹会自动纳入。`
+          : `${snapshot.count} notes are waiting. Enter one vault-relative folder per line; descendants are included.`)
+        .addTextArea((text) => {
+          text.setValue(inbox.folderPrefixes.join("\n")).setPlaceholder("00-Raw_Materials/Quick_Notes").onChange((value) => {
+            Object.assign(inbox, normalizeInboxSettings({
+              ...inbox,
+              folderPrefixes: splitWorkflowList(value)
+            }));
+            this.queueInboxSettingsSave();
+          });
+          text.inputEl.rows = 4;
+        });
+
+      new Setting(containerEl)
+        .setName(zh ? "分组方式" : "Group Inbox by")
+        .setDesc(zh ? "项目取监控根目录下的第一层文件夹；文件夹模式保留完整相对层级。" : "Project uses the first folder below a watched root; Folder preserves the full relative folder hierarchy.")
+        .addDropdown((dropdown) => dropdown
+          .addOption("project", zh ? "项目" : "Project")
+          .addOption("folder", zh ? "文件夹" : "Folder")
+          .setValue(inbox.groupBy)
+          .onChange(async (value) => {
+            inbox.groupBy = value === "folder" ? "folder" : "project";
+            await this.plugin.savePluginData();
+            this.plugin.notifyUi();
+          }));
+
+      new Setting(containerEl)
+        .setName(zh ? "最大显示条数" : "Maximum visible notes")
+        .setDesc(zh ? "按最近修改排序；只限制 UI，不会读取笔记正文。" : "Sorted by most recently modified; this limits UI metadata only and never reads bodies.")
+        .addText((text) => text.setValue(String(inbox.maxItems)).onChange(async (value) => {
+          inbox.maxItems = clampInteger(value, 10, 2_000, 200);
+          await this.plugin.savePluginData();
+          this.plugin.notifyUi();
+        }));
+
+      new Setting(containerEl)
+        .setName(zh ? "允许进入设备推荐候选" : "Include in device recommendations")
+        .setDesc(zh
+          ? "开启后只发送通过本地隐私过滤的标题级候选；不会读取或上传 Quick Note 正文。手工发送仍会冻结到原笔记作为 NFC 追加目标。"
+          : "Adds title-only candidates after local privacy filtering; Quick Note bodies are never read or uploaded. Manual sends still freeze the original note as the NFC append target.")
+        .addToggle((toggle) => toggle.setValue(inbox.includeInDeviceCandidates).onChange(async (value) => {
+          inbox.includeInDeviceCandidates = value;
+          await this.plugin.savePluginData();
+          this.plugin.notifyUi();
+          void this.plugin.syncDeviceHub(false);
+        }));
+
+      new Setting(containerEl)
+        .setName(zh ? "Inbox 索引" : "Inbox index")
+        .setDesc(snapshot.truncated
+          ? (zh ? `共 ${snapshot.count} 条，当前显示最近 ${snapshot.visibleCount} 条。` : `${snapshot.count} total; showing the latest ${snapshot.visibleCount}.`)
+          : (zh ? `${snapshot.count} 条，按 ${snapshot.groups.length} 个分组显示。` : `${snapshot.count} notes in ${snapshot.groups.length} groups.`))
+        .addButton((button) => button.setButtonText(zh ? "立即刷新" : "Refresh now").onClick(() => {
+          this.plugin.refreshInboxIndex();
+          this.refreshSettingsUi();
+        }));
+    }
+
+    this.renderDeviceLibrarySettings(containerEl, zh);
+  }
+
+  private renderDeviceLibrarySettings(containerEl: HTMLElement, zh: boolean): void {
+    const hub = this.plugin.settings.hub;
+    const library = this.plugin.getDeviceContentLibrary();
+
+    new Setting(containerEl)
+      .setName(zh ? "设备内容库" : "Device content library")
+      .setDesc(zh
+        ? `ToThink / ToWrite 卡片中有 ${library.eligibleCount} 条可发送，${library.excludedCount} 条被隐私或来源规则排除。完整列表放在这里，侧栏只保留当前推荐。`
+        : `${library.eligibleCount} ToThink / ToWrite cards are eligible and ${library.excludedCount} are excluded. The full library lives here while the sidebar shows only the current recommendation.`)
+      .setHeading();
+
+    new Setting(containerEl)
+      .setName(zh ? "内容选择方式" : "Content selection mode")
+      .setDesc(zh ? "Agent 只能在本地白名单候选中重排；不会发明笔记或路径。" : "Agent may only rerank locally allowlisted candidates and cannot invent notes or paths.")
+      .addDropdown((dropdown) => dropdown
+        .addOption("manual", zh ? "手动" : "Manual")
+        .addOption("agent", "Agent")
+        .addOption("rotation", zh ? "循环播放" : "Rotation")
+        .addOption("schedule", zh ? "固定时间" : "Schedule")
+        .setValue(hub.selectionMode)
+        .onChange((value) => {
+          void this.plugin.setDeviceHubSelectionMode(value as typeof hub.selectionMode).then(() => this.refreshSettingsUi());
+        }));
+
+    new Setting(containerEl)
+      .setName(zh ? "划线卡自动加入设备库" : "Auto-add selection cards")
+      .setDesc(zh ? "解决、隐藏或手工移出的卡片不会再参与推荐。" : "Resolved, hidden, or explicitly removed cards no longer participate.")
+      .addToggle((toggle) => toggle.setValue(hub.autoAddSelections).onChange(async (value) => {
+        hub.autoAddSelections = value;
+        await this.plugin.savePluginData();
+        this.plugin.notifyUi();
+        void this.plugin.syncDeviceHub(false);
+      }));
+
+    if (hub.selectionMode === "rotation") {
+      new Setting(containerEl)
+        .setName(zh ? "循环间隔（分钟）" : "Rotation interval (minutes)")
+        .setDesc(zh ? "设备成功 ACK 后才开始下一轮计时。" : "The next interval starts only after a successful display ACK.")
+        .addText((text) => text.setValue(String(hub.rotationIntervalMinutes)).onChange(async (value) => {
+          hub.rotationIntervalMinutes = clampInteger(value, 1, 1440, 30);
+          await this.plugin.savePluginData();
+          this.plugin.configureDeviceHub();
+        }));
+    }
+
+    const entries = library.entries.filter((entry) => entry.inLibrary);
+    const details = containerEl.createEl("details", { cls: "towrite-settings-device-library" });
+    const summary = details.createEl("summary", { cls: "towrite-settings-device-library-summary" });
+    summary.createSpan({ text: zh ? `查看 ${entries.length} 张卡片` : `Review ${entries.length} cards` });
+    summary.createEl("small", { text: zh ? "打开、立即显示或移出" : "Open, show now, or remove" });
+    const list = details.createDiv({ cls: "towrite-settings-device-library-list" });
+    if (entries.length === 0) {
+      list.createEl("p", { text: zh ? "划线加入 ToThink / ToWrite 后，卡片会出现在这里。" : "Cards appear here after a selection is saved as ToThink / ToWrite." });
+      return;
+    }
+
+    for (const entry of entries) {
+      const row = list.createDiv({ cls: `towrite-settings-device-library-row${entry.eligible ? "" : " is-excluded"}` });
+      const copy = row.createDiv({ cls: "towrite-settings-device-library-copy" });
+      copy.createEl("strong", { text: entry.title });
+      copy.createEl("small", {
+        text: [
+          entry.lane === "write" ? "ToWrite" : "ToThink",
+          entry.schedule?.enabled ? entry.schedule.localTime : "",
+          entry.priority || "",
+          entry.eligible ? (zh ? "可发送" : "Eligible") : (zh ? "已排除" : "Excluded")
+        ].filter(Boolean).join(" · ")
+      });
+      const actions = row.createDiv({ cls: "towrite-settings-device-library-actions" });
+      const openLabel = zh ? `打开 ${entry.title}` : `Open ${entry.title}`;
+      const open = actions.createEl("button", { attr: { type: "button", title: openLabel, "aria-label": openLabel } });
+      setIcon(open, "external-link");
+      open.addEventListener("click", () => void this.plugin.jumpToQuestion(entry.id));
+      const sendLabel = zh ? `立即显示 ${entry.title}` : `Show ${entry.title} now`;
+      const send = actions.createEl("button", { attr: { type: "button", title: sendLabel, "aria-label": sendLabel } });
+      setIcon(send, "monitor-up");
+      send.disabled = !entry.eligible;
+      send.addEventListener("click", () => {
+        void this.plugin.sendQuestionToDeviceHub(entry.id).then(() => this.refreshSettingsUi()).catch((error: unknown) => {
+          new Notice(`${zh ? "发送失败" : "Could not send"}: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      });
+      const removeLabel = zh ? `移出 ${entry.title}` : `Remove ${entry.title}`;
+      const remove = actions.createEl("button", { attr: { type: "button", title: removeLabel, "aria-label": removeLabel } });
+      setIcon(remove, "trash-2");
+      remove.addEventListener("click", () => {
+        void this.plugin.toggleQuestionInDeviceLibrary(entry.id).then(() => this.refreshSettingsUi());
+      });
+    }
+  }
+
+  private queueInboxSettingsSave(): void {
+    if (this.inboxSettingsSaveTimer) window.clearTimeout(this.inboxSettingsSaveTimer);
+    this.inboxSettingsSaveTimer = window.setTimeout(() => {
+      this.inboxSettingsSaveTimer = 0;
+      void this.flushInboxSettingsSave();
+    }, 450);
+  }
+
+  private async flushInboxSettingsSave(): Promise<void> {
+    if (this.inboxSettingsSaveRunning) {
+      this.inboxSettingsSaveQueued = true;
+      return;
+    }
+    this.inboxSettingsSaveRunning = true;
+    try {
+      do {
+        this.inboxSettingsSaveQueued = false;
+        await this.plugin.savePluginData();
+      } while (this.inboxSettingsSaveQueued);
+      this.plugin.refreshInboxIndex();
+    } catch (error) {
+      new Notice(`${this.plugin.settings.language === "zh" ? "Inbox 设置保存失败" : "Could not save Inbox settings"}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      this.inboxSettingsSaveRunning = false;
+    }
   }
 
   private renderLearningSettings(containerEl: HTMLElement, copy: SettingCopy): void {
@@ -1561,44 +1770,6 @@ export class ToWriteSettingTab extends PluginSettingTab {
         hub.shareDisplayBody = value;
         await this.plugin.savePluginData();
       }));
-
-    const library = this.plugin.getDeviceContentLibrary();
-    new Setting(containerEl)
-      .setName(zh ? "设备内容选择方式" : "Device content selection")
-      .setDesc(zh
-        ? `设备内容库 ${library.eligibleCount} 条可发送，${library.excludedCount} 条被隐私或来源规则排除。Agent 只会在最多 20 条本地白名单中重排。`
-        : `${library.eligibleCount} library items are eligible and ${library.excludedCount} are excluded by privacy/source rules. Agent can only rerank the local allowlist of up to 20 items.`)
-      .addDropdown((dropdown) => dropdown
-        .addOption("manual", zh ? "手动" : "Manual")
-        .addOption("agent", "Agent")
-        .addOption("rotation", zh ? "循环播放" : "Rotation")
-        .addOption("schedule", zh ? "固定时间" : "Schedule")
-        .setValue(hub.selectionMode)
-        .onChange((value) => {
-          void this.plugin.setDeviceHubSelectionMode(value as typeof hub.selectionMode).then(() => this.refreshSettingsUi());
-        }));
-
-    new Setting(containerEl)
-      .setName(zh ? "划线卡自动加入设备内容库" : "Auto-add selection cards to device library")
-      .setDesc(zh
-        ? "保存为 ToThink / ToWrite 后立即入库，但仍需通过隐私过滤；解决、隐藏或手工移出后不会再发送。"
-        : "Saving a selection as ToThink / ToWrite adds it immediately, subject to privacy rules. Resolved, hidden, or explicitly removed cards are not sent.")
-      .addToggle((toggle) => toggle.setValue(hub.autoAddSelections).onChange(async (value) => {
-        hub.autoAddSelections = value;
-        await this.plugin.savePluginData();
-        void this.plugin.syncDeviceHub(false);
-      }));
-
-    if (hub.selectionMode === "rotation") {
-      new Setting(containerEl)
-        .setName(zh ? "循环间隔（分钟）" : "Rotation interval (minutes)")
-        .setDesc(zh ? "只在设备成功 ACK 当前内容后开始计时；轮询和失败 ACK 都不会跳过卡片。" : "The timer starts only after the device ACKs the current item; polling and failed ACKs never advance the rotation.")
-        .addText((text) => text.setValue(String(hub.rotationIntervalMinutes)).onChange(async (value) => {
-          hub.rotationIntervalMinutes = clampInteger(value, 1, 1440, 30);
-          await this.plugin.savePluginData();
-          this.plugin.configureDeviceHub();
-        }));
-    }
 
     new Setting(containerEl)
       .setName(zh ? "手工显示保持（分钟）" : "Manual display hold (minutes)")

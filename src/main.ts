@@ -24,6 +24,7 @@ import {
   normalizeExternalApiPublicBaseUrl,
   normalizeArticleTypesSettings,
   normalizeDeviceProfiles,
+  normalizeInboxSettings,
   normalizePushSettings,
   normalizeQuote0Settings,
   normalizeReminderPresets,
@@ -152,6 +153,8 @@ import {
 import { Quote0SyncService, type Quote0SyncPreview, type Quote0SyncResult } from "./quote0/sync-service";
 import type { Quote0Device, Quote0DeviceStatus } from "./quote0/client";
 import { WorkflowIndex } from "./workflow";
+import { InboxIndex } from "./inbox";
+import type { InboxDeviceEligibility, InboxSnapshot } from "./inbox/types";
 import { yieldToEventLoop } from "./core/async-batch";
 import { createQuestionDecorations, refreshQuestionDecorations } from "./obsidian/decorations";
 import { OpenQuestionIndexer } from "./obsidian/indexer";
@@ -195,6 +198,7 @@ export default class ToWritePlugin extends Plugin {
   private sidecars!: QuestionSidecarRepository;
   private exporter!: QuestionExporter;
   private workflowIndex!: WorkflowIndex;
+  private inboxIndex!: InboxIndex;
   private localKnowledgeIndex!: LocalKnowledgeIndex;
   private aiService!: AiQuestionService;
   private aiProvider!: OpenAiCompatibleProvider;
@@ -262,6 +266,7 @@ export default class ToWritePlugin extends Plugin {
       () => this.settings.exportDirectory,
       () => this.store.getAllQuestions()
     );
+    this.inboxIndex = new InboxIndex(this.app, () => this.settings.inbox);
     this.exporter = new QuestionExporter(this.app, this.store, () => this.settings, () => this.workflowIndex.getPayload());
     this.localKnowledgeIndex = new LocalKnowledgeIndex();
     this.backendClient = new BackendEnhancementClient(() => this.settings.backend);
@@ -653,6 +658,34 @@ export default class ToWritePlugin extends Plugin {
     return this.store.getArticleSummary(filePath);
   }
 
+  getInboxSnapshot(): InboxSnapshot {
+    return this.inboxIndex.getSnapshot();
+  }
+
+  refreshInboxIndex(): void {
+    this.inboxIndex.rebuild();
+    this.store.notify();
+    this.queueDeviceHubSync();
+  }
+
+  getInboxItemDeviceEligibility(itemId: string): InboxDeviceEligibility {
+    const item = this.inboxIndex.getItem(itemId);
+    if (!item) {
+      return {
+        eligible: false,
+        reason: this.settings.language === "zh" ? "笔记已被移动或删除" : "The note was moved or deleted"
+      };
+    }
+    const privacy = this.hubPrivacyForPath(item.filePath, item.tags);
+    if (privacy?.private || privacy?.excluded) {
+      return {
+        eligible: false,
+        reason: this.settings.language === "zh" ? "已被本地隐私规则排除" : "Excluded by the local privacy policy"
+      };
+    }
+    return { eligible: true };
+  }
+
   async jumpToQuestion(id: string): Promise<void> {
     const question = this.store.getQuestion(id);
     if (!question) {
@@ -1003,6 +1036,7 @@ export default class ToWritePlugin extends Plugin {
   }
 
   async refreshIndex(): Promise<void> {
+    this.inboxIndex.rebuild();
     await this.indexer.rebuildVault(false);
     await this.refreshSidecars({ rebuildWorkflow: false, notify: false });
     // Publish the core question index before optional knowledge/workflow scans.
@@ -1993,7 +2027,17 @@ export default class ToWritePlugin extends Plugin {
     if (!entry?.inLibrary) {
       await this.updateQuestionDeliveryPolicy(questionId, { membership: "included" });
     }
-    await this.localTapSelection.selectLocal(questionId);
+    return this.sendLocalCandidateToDeviceHub(questionId);
+  }
+
+  async sendInboxItemToDeviceHub(itemId: string): Promise<HubDeviceState | undefined> {
+    const eligibility = this.getInboxItemDeviceEligibility(itemId);
+    if (!eligibility.eligible) throw new Error(eligibility.reason || "This Inbox note is not eligible.");
+    return this.sendLocalCandidateToDeviceHub(itemId);
+  }
+
+  private async sendLocalCandidateToDeviceHub(localId: string): Promise<HubDeviceState | undefined> {
+    await this.localTapSelection.selectLocal(localId);
     if (!this.settings.hub.enabled) {
       new Notice(this.settings.captureBridge.flow === "local_capture"
         ? (this.settings.language === "zh" ? "已设为本地 NFC / Capture 当前内容。" : "Set as the current local NFC / Capture card.")
@@ -2016,10 +2060,10 @@ export default class ToWritePlugin extends Plugin {
       }
       const holdMs = Math.max(0, this.settings.hub.manualHoldMinutes) * 60_000;
       this.settings.hub.manualHoldUntil = holdMs > 0 ? new Date(Date.now() + holdMs).toISOString() : "";
-      this.settings.hub.manualHoldCandidateId = questionId;
+      this.settings.hub.manualHoldCandidateId = localId;
       this.settings.hub.manualHoldContentId = "";
-      const state = await this.deviceHub.selectLocalCandidate(questionId, this.buildHubCandidates(questionId));
-      await this.localTapSelection.rememberHubSelection(questionId, state);
+      const state = await this.deviceHub.selectLocalCandidate(localId, this.buildHubCandidates(localId));
+      await this.localTapSelection.rememberHubSelection(localId, state);
       this.settings.hub.manualHoldContentId = state.selected?.selectedContentId ?? "";
       await this.savePluginData();
       new Notice(this.settings.language === "zh" ? "已将这张卡设为墨水屏期望内容。" : "This card is now the desired e-ink content.");
@@ -3173,6 +3217,33 @@ export default class ToWritePlugin extends Plugin {
         };
       });
 
+    const includeInbox = this.settings.inbox.includeInDeviceCandidates;
+    const inboxPool = this.inboxIndex.getCandidateItems(8, preferredLocalId);
+    for (const item of inboxPool) {
+      if (!includeInbox && item.id !== preferredLocalId) continue;
+      const privacy = this.hubPrivacyForPath(item.filePath, item.tags);
+      if (privacy?.private || privacy?.excluded) continue;
+      const ageDays = Math.max(0, (now.getTime() - Date.parse(item.updatedAt)) / 86_400_000);
+      candidates.push({
+        localId: item.id,
+        type: "note_continue",
+        display: {
+          title: item.title,
+          prompt: this.settings.language === "zh" ? "整理或继续这条 Inbox 笔记" : "Organize or continue this Inbox note"
+        },
+        sourceLocalId: item.filePath,
+        writeTargetLocalId: item.filePath,
+        writeTargetKind: "existingNote",
+        writeTargetAction: "append",
+        writeTargetHeading: this.settings.deviceCapture.appendHeading,
+        allowedActions: ["open", "capture", "later", "skip"],
+        reasonCode: "inbox_pending",
+        score: Math.max(0.3, 0.52 - Math.min(ageDays, 90) / 900),
+        expiresAt: leaseExpiresAt,
+        privacy
+      });
+    }
+
     const blankCreateFolder = this.settings.deviceCapture.targetFolders[0]?.trim();
     candidates.push({
       localId: "towrite:blank-capture",
@@ -3309,6 +3380,8 @@ export default class ToWritePlugin extends Plugin {
       getCompactEditorDecorations: () => this.settings.compactEditorDecorations,
       getReminderPresets: () => this.settings.reminderPresets,
       getProactiveSuggestions: () => this.getProactiveSuggestions(),
+      getInboxSnapshot: () => this.getInboxSnapshot(),
+      getInboxItemDeviceEligibility: (id) => this.getInboxItemDeviceEligibility(id),
       getDeviceHubState: () => this.getDeviceHubState(),
       getDeviceContentLibrary: () => this.getDeviceContentLibrary(),
       getDefaultColor: (lane) => this.defaultColorForLane(lane),
@@ -3327,6 +3400,7 @@ export default class ToWritePlugin extends Plugin {
       actOnSuggestion: (id, action) => this.actOnSuggestion(id, action),
       syncDeviceHub: () => this.syncDeviceHub(false),
       sendQuestionToDeviceHub: (id) => this.sendQuestionToDeviceHub(id),
+      sendInboxItemToDeviceHub: (id) => this.sendInboxItemToDeviceHub(id),
       advanceDeviceHub: () => this.advanceDeviceHub(),
       setDeviceHubSelectionMode: (mode) => this.setDeviceHubSelectionMode(mode),
       toggleQuestionInDeviceLibrary: (id) => this.toggleQuestionInDeviceLibrary(id),
@@ -3392,6 +3466,7 @@ export default class ToWritePlugin extends Plugin {
     const reindexFile = debounce((file: TFile) => {
       void (async () => {
         await this.indexer.indexFile(file, false);
+        this.inboxIndex.upsert(file);
         if (this.shouldBuildLocalKnowledgeIndex()) {
           await this.localKnowledgeIndex.upsert(this.app, file, this.settings.exportDirectory, this.getLocalKnowledgeScope());
         }
@@ -3409,6 +3484,11 @@ export default class ToWritePlugin extends Plugin {
     const notifyActiveContext = debounce(() => {
       this.notifyActiveContext();
     }, 120, true);
+    const rebuildInboxAfterFolderChange = debounce(() => {
+      this.inboxIndex.rebuild();
+      this.store.notify();
+      this.queueDeviceHubSync();
+    }, 300, true);
 
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
@@ -3430,15 +3510,18 @@ export default class ToWritePlugin extends Plugin {
 
     this.registerEvent(
       this.app.vault.on("delete", (file) => {
+        if (file instanceof TFolder) rebuildInboxAfterFolderChange();
         this.handleDeletedFile(file);
       })
     );
 
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
+        if (file instanceof TFolder) rebuildInboxAfterFolderChange();
         void (async () => {
           const sidecarQuestions = this.store.getSidecarQuestionsForFile(oldPath);
           await this.indexer.removeFile(oldPath, false);
+          this.inboxIndex.remove(oldPath);
           this.localKnowledgeIndex.remove(oldPath);
           this.workflowIndex.removeFile(oldPath);
           if (sidecarQuestions.length > 0 && file instanceof TFile) {
@@ -3496,6 +3579,7 @@ export default class ToWritePlugin extends Plugin {
     if (file instanceof TFile && file.extension === "md") {
       void (async () => {
         await this.indexer.removeFile(file.path, false);
+        this.inboxIndex.remove(file.path);
         this.localKnowledgeIndex.remove(file.path);
         this.workflowIndex.removeFile(file.path);
         if (this.store.hasSidecarQuestionsForFile(file.path)) {
@@ -4026,6 +4110,7 @@ function normalizeSettings(settings?: Partial<ToWriteSettings>): ToWriteSettings
     learning: normalizeLearningSettings(settings?.learning),
     backend: normalizeBackendSettings(settings?.backend),
     captureBridge: normalizeCaptureBridgeSettings(settings?.captureBridge),
+    inbox: normalizeInboxSettings(settings?.inbox),
     hub: normalizeHubSettings(settings?.hub),
     deviceProfiles: normalizeDeviceProfiles(settings?.deviceProfiles),
     articleTypes: normalizeArticleTypesSettings(settings?.articleTypes),

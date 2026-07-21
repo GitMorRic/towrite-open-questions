@@ -179,6 +179,18 @@ export interface ToWriteReminderPreset {
   value: string;
 }
 
+export type ToWriteInboxGroupBy = "project" | "folder";
+
+export interface ToWriteInboxSettings {
+  enabled: boolean;
+  /** Vault-relative roots monitored without reading note bodies. */
+  folderPrefixes: string[];
+  groupBy: ToWriteInboxGroupBy;
+  maxItems: number;
+  /** Allow locally indexed Inbox notes to enter the privacy-gated device candidate pool. */
+  includeInDeviceCandidates: boolean;
+}
+
 export interface ToWriteSettings {
   language: ToWriteLanguage;
   exportDirectory: string;
@@ -197,6 +209,7 @@ export interface ToWriteSettings {
   learning: ToWriteLearningSettings;
   backend: ToWriteBackendSettings;
   captureBridge: CaptureBridgeSettings;
+  inbox: ToWriteInboxSettings;
   hub: ToWriteHubSettings;
   deviceProfiles: ToWriteDeviceProfileSettings[];
   articleTypes: ArticleTypesSettings;
@@ -503,6 +516,13 @@ export const DEFAULT_SETTINGS: ToWriteSettings = {
     timeoutMs: 2500
   },
   captureBridge: { ...DEFAULT_CAPTURE_BRIDGE_SETTINGS },
+  inbox: {
+    enabled: true,
+    folderPrefixes: ["00-Raw_Materials/Quick_Notes", "00-Raw/Quick_Notes"],
+    groupBy: "project",
+    maxItems: 200,
+    includeInDeviceCandidates: true
+  },
   hub: {
     enabled: false,
     baseUrl: "http://127.0.0.1:8080",
@@ -569,6 +589,17 @@ export function normalizeArticleTypesSettings(settings?: Partial<ArticleTypesSet
     enabled: settings?.enabled !== false,
     parseHierarchicalTags: settings?.parseHierarchicalTags !== false,
     types: normalized.length > 0 ? normalized : DEFAULT_ARTICLE_TYPES
+  };
+}
+
+export function normalizeInboxSettings(settings?: Partial<ToWriteInboxSettings>): ToWriteInboxSettings {
+  const folderPrefixes = normalizeArticleStringList(settings?.folderPrefixes);
+  return {
+    enabled: settings?.enabled !== false,
+    folderPrefixes: folderPrefixes.length > 0 ? folderPrefixes : [...DEFAULT_SETTINGS.inbox.folderPrefixes],
+    groupBy: settings?.groupBy === "folder" ? "folder" : "project",
+    maxItems: clampIntegerSetting(settings?.maxItems, 10, 2_000, DEFAULT_SETTINGS.inbox.maxItems),
+    includeInDeviceCandidates: settings?.includeInDeviceCandidates !== false
   };
 }
 
