@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_ARTICLE_TYPES, DEFAULT_DEVICE_PROFILES, DEFAULT_REMINDER_PRESETS, DEFAULT_SETTINGS, normalizeArticleTypesSettings, normalizeDeviceProfiles, normalizeExternalApiBindHost, normalizeExternalApiPublicBaseUrl, normalizeInboxSettings, normalizePushSettings, normalizeQuote0Settings, normalizeReminderPresets } from "./settings";
+import { DEFAULT_ARTICLE_TYPES, DEFAULT_DEVICE_PROFILES, DEFAULT_REMINDER_PRESETS, DEFAULT_SETTINGS, ensureInboxWorkflowStage, normalizeArticleTypesSettings, normalizeDeviceProfiles, normalizeExternalApiBindHost, normalizeExternalApiPublicBaseUrl, normalizeInboxSettings, normalizePushSettings, normalizeQuote0Settings, normalizeReminderPresets } from "./settings";
 
 describe("settings normalization", () => {
   it("keeps private, no-ai, and no-cloud content outside default remote scope", () => {
@@ -24,14 +24,22 @@ describe("settings normalization", () => {
       folderPrefixes: [" /00-Raw_Materials/Quick_Notes/ ", "00-Raw_Materials\\Quick_Notes", "Inbox"],
       groupBy: "folder",
       maxItems: 99_999,
+      autoApplyStageOnCreate: true,
       includeInDeviceCandidates: false
     })).toEqual({
       enabled: true,
       folderPrefixes: ["00-Raw_Materials/Quick_Notes", "Inbox"],
+      autoApplyStageOnCreate: true,
       groupBy: "folder",
       maxItems: 2_000,
       includeInDeviceCandidates: false
     });
+  });
+
+  it("keeps Inbox as the shared core workflow stage for upgraded configurations", () => {
+    const stages = ensureInboxWorkflowStage([{ ...DEFAULT_SETTINGS.workflowStages.stages.find((stage) => stage.id === "raw")! }]);
+    expect(stages.map((stage) => stage.id)).toEqual(["inbox", "raw"]);
+    expect(ensureInboxWorkflowStage(stages)).toBe(stages);
   });
 
   it("normalizes common External API bind host values", () => {

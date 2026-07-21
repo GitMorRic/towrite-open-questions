@@ -1,10 +1,12 @@
 export type InboxItemKind = "vault-note" | "agent-letter" | "human-message" | "device-message";
-export type InboxItemSource = "vault-folder" | "agent" | "mailbox" | "device";
+export type InboxItemSource = "vault-folder" | "vault-metadata" | "agent" | "mailbox" | "device";
 
 export interface InboxItem {
   id: string;
   kind: InboxItemKind;
   source: InboxItemSource;
+  /** Why this note currently belongs to Inbox. Explicit metadata always wins. */
+  matchedBy: "metadata" | "folder";
   status: "pending";
   title: string;
   filePath: string;

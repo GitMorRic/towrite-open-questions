@@ -20,6 +20,7 @@ import {
   DEFAULT_SETTINGS,
   DEFAULT_STATUS_OPTIONS,
   DEFAULT_WORKFLOW_STAGES,
+  ensureInboxWorkflowStage,
   normalizeExternalApiBindHost,
   normalizeExternalApiPublicBaseUrl,
   normalizeArticleTypesSettings,
@@ -154,6 +155,7 @@ import { Quote0SyncService, type Quote0SyncPreview, type Quote0SyncResult } from
 import type { Quote0Device, Quote0DeviceStatus } from "./quote0/client";
 import { WorkflowIndex } from "./workflow";
 import { InboxIndex } from "./inbox";
+import { applyInboxStageMetadata, materializeInboxStageMetadata, type InboxMetadataBatchResult } from "./inbox/metadata";
 import type { InboxDeviceEligibility, InboxSnapshot } from "./inbox/types";
 import { yieldToEventLoop } from "./core/async-batch";
 import { createQuestionDecorations, refreshQuestionDecorations } from "./obsidian/decorations";
@@ -229,6 +231,7 @@ export default class ToWritePlugin extends Plugin {
   private backgroundRefreshRunning = false;
   private backgroundRefreshQueued = false;
   private readonly pendingWorkflowPaths = new Set<string>();
+  private readonly inboxMetadataWrites = new Set<string>();
   private readonly activeContextListeners = new Set<() => void>();
   private lastEditorActivityAt = 0;
   private readonly lastLearningEditPresence = new Map<string, number>();
@@ -666,6 +669,16 @@ export default class ToWritePlugin extends Plugin {
     this.inboxIndex.rebuild();
     this.store.notify();
     this.queueDeviceHubSync();
+  }
+
+  async materializeInboxMetadata(): Promise<InboxMetadataBatchResult> {
+    const result = await materializeInboxStageMetadata(this.app, this.settings.inbox);
+    for (const path of result.updatedPaths) this.pendingWorkflowPaths.add(path);
+    if (result.updatedPaths.length > 0) this.scheduleBackgroundRefresh(undefined, 900);
+    this.inboxIndex.rebuild();
+    this.store.notify();
+    this.queueDeviceHubSync();
+    return result;
   }
 
   getInboxItemDeviceEligibility(itemId: string): InboxDeviceEligibility {
@@ -3489,6 +3502,26 @@ export default class ToWritePlugin extends Plugin {
       this.store.notify();
       this.queueDeviceHubSync();
     }, 300, true);
+    const pendingInboxMetadataFiles = new Map<string, TFile>();
+    const refreshInboxFromMetadata = debounce(() => {
+      let changed = false;
+      for (const file of pendingInboxMetadataFiles.values()) {
+        changed = this.inboxIndex.upsertFromMetadata(file) || changed;
+      }
+      pendingInboxMetadataFiles.clear();
+      if (!changed) return;
+      this.store.notify();
+      this.queueDeviceHubSync();
+    }, 180, true);
+
+    this.registerEvent(
+      this.app.metadataCache.on("changed", (file) => {
+        if (file.extension === "md") {
+          pendingInboxMetadataFiles.set(file.path, file);
+          refreshInboxFromMetadata();
+        }
+      })
+    );
 
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
@@ -3503,7 +3536,9 @@ export default class ToWritePlugin extends Plugin {
     this.registerEvent(
       this.app.vault.on("create", (file) => {
         if (file instanceof TFile && file.extension === "md") {
-          reindexFile(file);
+          void this.autoApplyInboxMetadata(file)
+            .catch((error: unknown) => console.error("ToWrite could not apply Inbox metadata", error))
+            .finally(() => reindexFile(file));
         }
       })
     );
@@ -3539,6 +3574,11 @@ export default class ToWritePlugin extends Plugin {
             this.store.replaceSidecarQuestions(file.path, resolved, false);
           }
           if (file instanceof TFile && file.extension === "md") {
+            try {
+              await this.autoApplyInboxMetadata(file);
+            } catch (error) {
+              console.error("ToWrite could not apply Inbox metadata after a rename", error);
+            }
             reindexFile(file);
           } else {
             this.store.notify();
@@ -3573,6 +3613,16 @@ export default class ToWritePlugin extends Plugin {
         notifyActiveContext();
       }
     });
+  }
+
+  private async autoApplyInboxMetadata(file: TFile): Promise<void> {
+    if (!this.settings.inbox.autoApplyStageOnCreate || this.inboxMetadataWrites.has(file.path)) return;
+    this.inboxMetadataWrites.add(file.path);
+    try {
+      await applyInboxStageMetadata(this.app, file, this.settings.inbox);
+    } finally {
+      this.inboxMetadataWrites.delete(file.path);
+    }
   }
 
   private handleDeletedFile(file: TAbstractFile): void {
@@ -4259,7 +4309,7 @@ function normalizeWorkflowStages(settings?: Partial<ToWriteSettings["workflowSta
 
   return {
     enabled: settings?.enabled === true,
-    stages: normalizeWorkflowStageList(stages)
+    stages: ensureInboxWorkflowStage(normalizeWorkflowStageList(stages))
   };
 }
 

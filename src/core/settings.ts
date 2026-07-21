@@ -185,6 +185,8 @@ export interface ToWriteInboxSettings {
   enabled: boolean;
   /** Vault-relative roots monitored without reading note bodies. */
   folderPrefixes: string[];
+  /** Add `workflow_stage: inbox` to new or moved Markdown notes under a watched root. */
+  autoApplyStageOnCreate: boolean;
   groupBy: ToWriteInboxGroupBy;
   maxItems: number;
   /** Allow locally indexed Inbox notes to enter the privacy-gated device candidate pool. */
@@ -244,6 +246,16 @@ export const DEFAULT_STATUS_OPTIONS: QuestionStatusOption[] = [
 
 export const DEFAULT_WORKFLOW_STAGES: WorkflowStageSettings[] = [
   {
+    id: "inbox",
+    title: "Inbox",
+    description: "未处理、待整理或等待分流",
+    color: "slate",
+    folderPrefixes: [],
+    tags: ["inbox"],
+    limit: 50,
+    staleAfterDays: 7
+  },
+  {
     id: "raw",
     title: "Raw",
     description: "Capture / 未整理",
@@ -294,6 +306,17 @@ export const DEFAULT_WORKFLOW_STAGES: WorkflowStageSettings[] = [
     staleAfterDays: 0
   }
 ];
+
+/** Inbox is a core workflow state shared by the sidebar, Capture, and device delivery. */
+export function ensureInboxWorkflowStage(stages: WorkflowStageSettings[]): WorkflowStageSettings[] {
+  if (stages.some((stage) => String(stage.id ?? "").trim().toLocaleLowerCase() === "inbox")) {
+    return stages;
+  }
+  const inbox = DEFAULT_WORKFLOW_STAGES.find((stage) => stage.id === "inbox");
+  return inbox
+    ? [{ ...inbox, folderPrefixes: [...inbox.folderPrefixes], tags: [...inbox.tags] }, ...stages]
+    : stages;
+}
 
 export const DEFAULT_ARTICLE_TYPES: ArticleTypeSettings[] = [
   {
@@ -519,6 +542,7 @@ export const DEFAULT_SETTINGS: ToWriteSettings = {
   inbox: {
     enabled: true,
     folderPrefixes: ["00-Raw_Materials/Quick_Notes", "00-Raw/Quick_Notes"],
+    autoApplyStageOnCreate: false,
     groupBy: "project",
     maxItems: 200,
     includeInDeviceCandidates: true
@@ -597,6 +621,7 @@ export function normalizeInboxSettings(settings?: Partial<ToWriteInboxSettings>)
   return {
     enabled: settings?.enabled !== false,
     folderPrefixes: folderPrefixes.length > 0 ? folderPrefixes : [...DEFAULT_SETTINGS.inbox.folderPrefixes],
+    autoApplyStageOnCreate: settings?.autoApplyStageOnCreate === true,
     groupBy: settings?.groupBy === "folder" ? "folder" : "project",
     maxItems: clampIntegerSetting(settings?.maxItems, 10, 2_000, DEFAULT_SETTINGS.inbox.maxItems),
     includeInDeviceCandidates: settings?.includeInDeviceCandidates !== false

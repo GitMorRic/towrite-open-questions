@@ -8,6 +8,7 @@
   export let api: ToWriteUiApi;
   export let snapshot: InboxSnapshot;
   export let search = "";
+  export let compact = false;
 
   let busyId = "";
   let error = "";
@@ -31,6 +32,19 @@
     }).format(new Date(timestamp));
   }
 
+  function itemMetadataLabel(item: InboxItem): string {
+    const parts: string[] = [];
+    if (item.matchedBy === "metadata") {
+      parts.push(language === "zh" ? "属性" : "Metadata");
+    } else {
+      parts.push(language === "zh" ? "目录规则" : "Folder rule");
+    }
+    if (item.tags.length > 0) {
+      parts.push(`#${item.tags.slice(0, 3).join(" #")}`);
+    }
+    return parts.join(" · ");
+  }
+
   async function sendToScreen(item: InboxItem): Promise<void> {
     if (busyId) return;
     busyId = item.id;
@@ -51,15 +65,17 @@
       <span class="towrite-inbox-icon" aria-hidden="true"><Inbox size={16} /></span>
       <div>
         <h3 id="towrite-inbox-heading">Inbox</h3>
-        <p>{language === "zh"
-          ? "这里收拢尚未整理的 Quick Notes；把笔记移出监控目录后，它会自动离开 Inbox。"
-          : "Quick Notes waiting to be organized. Move a note outside a watched folder and it leaves Inbox automatically."}</p>
+        {#if !compact}
+          <p>{language === "zh"
+            ? "workflow_stage: inbox 是显式状态；没有该属性时，监控目录作为兼容规则收拢待整理笔记。"
+            : "workflow_stage: inbox is explicit; watched folders collect unmarked notes as a compatibility fallback."}</p>
+        {/if}
       </div>
     </div>
     <span class="towrite-inbox-total">{snapshot.count}</span>
   </header>
 
-  {#if snapshot.sourceRoots.length > 0}
+  {#if !compact && snapshot.sourceRoots.length > 0}
     <div class="towrite-inbox-roots" aria-label={language === "zh" ? "监控目录" : "Watched folders"}>
       {#each snapshot.sourceRoots as root (root)}
         <span title={root}>{compactPath(root, 3)}</span>
@@ -91,7 +107,7 @@
                   <strong>{item.title}</strong>
                   <span>{compactPath(item.filePath, 4)}</span>
                   <small>
-                    {#if item.tags.length > 0}<span>#{item.tags.slice(0, 3).join(" #")}</span>{/if}
+                    {#if itemMetadataLabel(item)}<span>{itemMetadataLabel(item)}</span>{/if}
                     <time datetime={item.updatedAt}>{updatedLabel(item)}</time>
                   </small>
                 </button>

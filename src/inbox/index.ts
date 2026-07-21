@@ -1,6 +1,7 @@
 import type { App, TFile } from "obsidian";
 import { shortHash, slugify } from "../core/hash";
 import type { ToWriteInboxSettings } from "../core/settings";
+import { normalizeWorkflowStageId, readExplicitWorkflowStage } from "../core/workflow-metadata";
 import type { InboxGroup, InboxItem, InboxSnapshot } from "./types";
 
 const ROOT_GROUP = "__root__";
@@ -30,23 +31,37 @@ export class InboxIndex {
     }
   }
 
-  upsert(file: TFile): void {
-    const path = normalizeVaultPath(file.path);
-    this.remove(path);
-    const settings = this.getSettings();
-    if (!settings.enabled || file.extension.toLowerCase() !== "md") return;
-    const sourceRoot = matchingRoot(path, settings.folderPrefixes);
-    if (!sourceRoot) return;
+  upsert(file: TFile): boolean {
+    return this.upsertInternal(file, false);
+  }
 
-    const relativePath = path.slice(sourceRoot.length + 1);
-    if (!relativePath) return;
-    const parts = relativePath.split("/").filter(Boolean);
-    const relativeFolder = parts.slice(0, -1).join("/");
-    const project = parts.length > 1 ? parts[0] : ROOT_GROUP;
+  /** Update cached metadata without waking the whole sidebar for timestamp-only body edits. */
+  upsertFromMetadata(file: TFile): boolean {
+    return this.upsertInternal(file, true);
+  }
+
+  private upsertInternal(file: TFile, semanticSignalOnly: boolean): boolean {
+    const path = normalizeVaultPath(file.path);
+    const previous = this.itemsByPath.get(path);
+    const settings = this.getSettings();
+    if (!settings.enabled || file.extension.toLowerCase() !== "md") return this.remove(path);
     const cache = this.app.metadataCache.getFileCache(file);
     const frontmatter = cache?.frontmatter && typeof cache.frontmatter === "object"
       ? cache.frontmatter as Record<string, unknown>
       : {};
+    const membership = resolveInboxMembership(path, frontmatter, settings.folderPrefixes);
+    if (!membership) return this.remove(path);
+    const { sourceRoot, matchedBy } = membership;
+
+    const relativePath = sourceRoot ? path.slice(sourceRoot.length + 1) : path;
+    if (!relativePath) return this.remove(path);
+    const parts = relativePath.split("/").filter(Boolean);
+    const relativeFolder = parts.slice(0, -1).join("/");
+    const explicitProject = normalizeTitle(frontmatter.project);
+    const project = explicitProject
+      || (sourceRoot
+        ? (parts.length > 1 ? parts[0] : ROOT_GROUP)
+        : (parts.length > 1 ? parts.at(-2) || ROOT_GROUP : ROOT_GROUP));
     const title = normalizeTitle(frontmatter.title)
       || file.basename
       || parts.at(-1)?.replace(/\.md$/iu, "")
@@ -61,7 +76,8 @@ export class InboxIndex {
     const item: InboxItem = {
       id: `inb_${slugify(file.basename || path)}_${shortHash(path)}`,
       kind: "vault-note",
-      source: "vault-folder",
+      source: matchedBy === "metadata" ? "vault-metadata" : "vault-folder",
+      matchedBy,
       status: "pending",
       title,
       filePath: path,
@@ -72,18 +88,26 @@ export class InboxIndex {
       createdAt,
       updatedAt
     };
+    const semanticChanged = !previous || !sameInboxMetadata(previous, item);
+    const changed = semanticChanged
+      || previous.createdAt !== item.createdAt
+      || previous.updatedAt !== item.updatedAt;
+    if (!changed) return false;
+    if (previous && previous.id !== item.id) this.itemsById.delete(previous.id);
     this.itemsByPath.set(path, item);
     this.itemsById.set(item.id, item);
     this.markDirty();
+    return semanticSignalOnly ? semanticChanged : true;
   }
 
-  remove(path: string): void {
+  remove(path: string): boolean {
     const normalized = normalizeVaultPath(path);
     const previous = this.itemsByPath.get(normalized);
-    if (!previous) return;
+    if (!previous) return false;
     this.itemsByPath.delete(normalized);
     this.itemsById.delete(previous.id);
     this.markDirty();
+    return true;
   }
 
   getItem(id: string): InboxItem | undefined {
@@ -177,7 +201,31 @@ function createSnapshot(
   };
 }
 
-function matchingRoot(path: string, roots: readonly string[]): string | undefined {
+export interface InboxMembership {
+  matchedBy: "metadata" | "folder";
+  sourceRoot: string;
+}
+
+/**
+ * Explicit workflow metadata is authoritative. Folder roots are a compatibility
+ * fallback for captured notes that have not been materialized yet.
+ */
+export function resolveInboxMembership(
+  path: string,
+  frontmatter: Record<string, unknown> | undefined,
+  roots: readonly string[]
+): InboxMembership | undefined {
+  const explicitStage = readExplicitWorkflowStage(frontmatter);
+  const sourceRoot = matchingInboxRoot(path, roots) ?? "";
+  if (explicitStage) {
+    return normalizeWorkflowStageId(explicitStage) === "inbox"
+      ? { matchedBy: "metadata", sourceRoot }
+      : undefined;
+  }
+  return sourceRoot ? { matchedBy: "folder", sourceRoot } : undefined;
+}
+
+export function matchingInboxRoot(path: string, roots: readonly string[]): string | undefined {
   const normalizedPath = path.toLocaleLowerCase();
   return roots
     .map(normalizeVaultPath)
@@ -230,6 +278,21 @@ function compareInboxItems(left: InboxItem, right: InboxItem): number {
 
 function cloneItem(item: InboxItem): InboxItem {
   return { ...item, tags: [...item.tags] };
+}
+
+function sameInboxMetadata(left: InboxItem, right: InboxItem): boolean {
+  return left.id === right.id
+    && left.kind === right.kind
+    && left.source === right.source
+    && left.matchedBy === right.matchedBy
+    && left.status === right.status
+    && left.title === right.title
+    && left.filePath === right.filePath
+    && left.sourceRoot === right.sourceRoot
+    && left.project === right.project
+    && left.folder === right.folder
+    && left.tags.length === right.tags.length
+    && left.tags.every((tag, index) => tag === right.tags[index]);
 }
 
 export { ROOT_GROUP as INBOX_ROOT_GROUP };

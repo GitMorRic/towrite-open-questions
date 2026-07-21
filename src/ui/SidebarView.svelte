@@ -36,11 +36,11 @@
   import InboxPanel from "./InboxPanel.svelte";
   import QuestionCard from "./QuestionCard.svelte";
   import { compactPath } from "./path";
+  import { allSurfaceCount, shouldRenderInboxPreview, type SidebarLaneFilter } from "./sidebar-lanes";
 
   export let api: ToWriteUiApi;
 
   type OtherMode = "list" | "tree";
-  type LaneFilter = "all" | OpenQuestionLane | "inbox";
   type ArticleFilterTab = {
     id: string;
     label: string;
@@ -51,7 +51,7 @@
 
   let search = "";
   let otherMode: OtherMode = "list";
-  let laneFilter: LaneFilter = "all";
+  let laneFilter: SidebarLaneFilter = "all";
   let typeFilter = "";
   let stageFilter = "";
   let activeFile: string | null = null;
@@ -101,10 +101,18 @@
   $: typeTabs = buildTypeTabs(otherArticles, articleTypes, language);
   $: typeFilteredOtherArticles = otherArticles.filter(matchesArticleTypeFilter);
   $: stageTabs = buildStageTabs(typeFilteredOtherArticles, workflowStages, language);
+  $: inboxFilePaths = new Set(inboxSnapshot.items.map((item) => item.filePath));
   $: if (typeFilter && !typeTabs.some((tab) => tab.id === typeFilter)) typeFilter = "";
   $: if (stageFilter && !stageTabs.some((tab) => tab.id === stageFilter)) stageFilter = "";
-  $: visibleOtherArticles = typeFilteredOtherArticles.filter(matchesArticleStageFilter).filter(matchesArticleLaneFilter);
+  $: visibleOtherArticles = typeFilteredOtherArticles
+    .filter(matchesArticleStageFilter)
+    .filter(matchesArticleLaneFilter)
+    .filter((article) => shouldShowArticleAlongsideInbox(article, laneFilter, inboxFilePaths));
   $: folderGroups = groupArticlesByFolder(visibleOtherArticles);
+  $: hasQuestionSurfaceContent = Boolean(hubState)
+    || suggestions.length > 0
+    || currentQuestions.length > 0
+    || visibleOtherArticles.length > 0;
   $: activePathLabel = activeFile ? (activePathExpanded ? activeFile : compactPath(activeFile, 3)) : "";
   $: language = api.getLanguage();
   $: copy = sidebarCopy(language);
@@ -269,6 +277,17 @@
 
   function matchesArticleLaneFilter(article: ArticleSummary) {
     return true;
+  }
+
+  function shouldShowArticleAlongsideInbox(
+    article: ArticleSummary,
+    currentLane: SidebarLaneFilter,
+    currentInboxPaths: ReadonlySet<string>
+  ): boolean {
+    if (currentLane !== "all" || !currentInboxPaths.has(article.filePath)) {
+      return true;
+    }
+    return article.open + article.candidate + article.resolved + article.ignored > 0;
   }
 
   function matchesArticleTypeFilter(article: ArticleSummary) {
@@ -536,7 +555,7 @@
   <div class="towrite-segmented towrite-lane-filter" role="group" aria-label="Lane filter">
     <button type="button" class:active={laneFilter === "all"} on:click={() => (laneFilter = "all")}>
       <span>{copy.all}</span>
-      <small>{currentQuestions.length}</small>
+      <small>{allSurfaceCount(currentQuestions.length, inboxSnapshot.count)}</small>
     </button>
     <button type="button" class:active={laneFilter === "think"} on:click={() => (laneFilter = "think")}>
       <span>{copy.think}</span>
@@ -606,6 +625,10 @@
     {#if laneFilter === "inbox"}
       <InboxPanel {api} snapshot={inboxSnapshot} {search} />
     {:else}
+    {#if shouldRenderInboxPreview(laneFilter, inboxSnapshot.count)}
+      <InboxPanel {api} snapshot={inboxSnapshot} {search} compact />
+    {/if}
+    {#if laneFilter !== "all" || inboxSnapshot.count === 0 || hasQuestionSurfaceContent}
     <section class="towrite-now-section" aria-labelledby="towrite-now-heading">
       <div class="towrite-section-title">
         <span id="towrite-now-heading">{language === "zh" ? "现在" : "Now"}</span>
@@ -800,6 +823,7 @@
         {/each}
       {/if}
     </section>
+    {/if}
     {/if}
   </main>
 </section>

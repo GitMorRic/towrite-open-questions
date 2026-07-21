@@ -258,6 +258,44 @@ describe("workflow stages", () => {
     expect(matchWorkflowStage(documents[0], settings.stages[1])).toBe(false);
   });
 
+  it("treats an explicit workflow_stage as authoritative over folders and tags", () => {
+    const document = {
+      filePath: "01-Sparks/explicit.md",
+      tags: ["spark"],
+      frontmatter: { workflow_stage: " Processing " }
+    };
+
+    expect(matchWorkflowStage(document, settings.stages[0])).toBe(false);
+    expect(matchWorkflowStage(document, settings.stages[1])).toBe(true);
+  });
+
+  it("falls back to legacy workflow_status while preferring workflow_stage", () => {
+    expect(matchWorkflowStage({
+      filePath: "Other/legacy.md",
+      tags: [],
+      frontmatter: { workflow_status: "SPARKS" }
+    }, settings.stages[0])).toBe(true);
+
+    const migrated = {
+      filePath: "01-Sparks/migrated.md",
+      tags: ["spark"],
+      frontmatter: {
+        workflow_stage: "processing",
+        workflow_status: "sparks"
+      }
+    };
+    expect(matchWorkflowStage(migrated, settings.stages[0])).toBe(false);
+    expect(matchWorkflowStage(migrated, settings.stages[1])).toBe(true);
+  });
+
+  it("does not fall back to folder or tag matching for an unknown explicit stage", () => {
+    expect(matchWorkflowStage({
+      filePath: "01-Sparks/unknown.md",
+      tags: ["spark"],
+      frontmatter: { workflow_stage: "custom-stage" }
+    }, settings.stages[0])).toBe(false);
+  });
+
   it("classifies hierarchical tags as article type and workflow stage", () => {
     const payload = buildWorkflowPayload({
       settings,

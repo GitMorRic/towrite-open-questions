@@ -2,6 +2,7 @@ import { TFile, type App } from "obsidian";
 import { mapInBatches } from "../core/async-batch";
 import type { ArticleTypeSettings, ArticleTypesSettings, WorkflowStageSettings, WorkflowStagesSettings } from "../core/settings";
 import type { OpenQuestion, OpenQuestionColor } from "../core/types";
+import { normalizeWorkflowStageId, readExplicitWorkflowStage } from "../core/workflow-metadata";
 
 export interface WorkflowSourceDocument {
   filePath: string;
@@ -315,10 +316,15 @@ export function workflowQueryFromUrl(url: URL): WorkflowQuery {
 }
 
 export function matchWorkflowStage(
-  document: Pick<WorkflowSourceDocument, "filePath" | "tags">,
+  document: Pick<WorkflowSourceDocument, "filePath" | "tags" | "frontmatter">,
   stage: WorkflowStageSettings,
   parseHierarchicalTags = true
 ): boolean {
+  const explicitStage = readExplicitWorkflowStage(document.frontmatter);
+  if (explicitStage) {
+    return normalizeWorkflowStageId(explicitStage) === normalizeWorkflowStageId(stage.id);
+  }
+
   const folders = normalizeList(stage.folderPrefixes).map(normalizePath);
   const tags = new Set(normalizeList(stage.tags).map(normalizeTag));
   const filePath = normalizePath(document.filePath);

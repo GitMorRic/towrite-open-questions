@@ -5,6 +5,7 @@ import {
   DEFAULT_DEVICE_PROFILES,
   DEFAULT_REMINDER_PRESETS,
   DEFAULT_WORKFLOW_STAGES,
+  ensureInboxWorkflowStage,
   normalizeExternalApiBindHost,
   normalizeExternalApiPublicBaseUrl,
   normalizeInboxSettings,
@@ -1209,11 +1210,21 @@ export class ToWriteSettingTab extends PluginSettingTab {
       }));
 
     if (inbox.enabled) {
+      const metadataSetting = new Setting(containerEl)
+        .setName(zh ? "显式 Inbox 属性" : "Explicit Inbox property")
+        .setDesc(zh
+          ? "workflow_stage 是权威状态：设为 inbox 会从任意位置进入 Inbox；改为 raw、processing 等其他阶段会立即离开。没有该属性时才使用下方目录规则。"
+          : "workflow_stage is authoritative: inbox enters from any folder; raw, processing, or another stage leaves immediately. Folder rules are used only when the property is absent.");
+      metadataSetting.controlEl.createEl("code", { text: "workflow_stage: inbox" });
+      metadataSetting.addButton((button) => button
+        .setButtonText(zh ? "复制属性" : "Copy property")
+        .onClick(() => void copyToClipboard("workflow_stage: inbox", zh ? "已复制 Inbox 属性" : "Inbox property copied")));
+
       new Setting(containerEl)
         .setName(zh ? "监控文件夹" : "Watched folders")
         .setDesc(zh
-          ? `当前 ${snapshot.count} 条待整理笔记。一行一个 Vault 相对路径；子文件夹会自动纳入。`
-          : `${snapshot.count} notes are waiting. Enter one vault-relative folder per line; descendants are included.`)
+          ? `当前 ${snapshot.count} 条待整理笔记。一行一个 Vault 相对路径；子文件夹会作为兼容规则自动纳入。`
+          : `${snapshot.count} notes are waiting. Enter one vault-relative folder per line; descendants are included as a compatibility fallback.`)
         .addTextArea((text) => {
           text.setValue(inbox.folderPrefixes.join("\n")).setPlaceholder("00-Raw_Materials/Quick_Notes").onChange((value) => {
             Object.assign(inbox, normalizeInboxSettings({
@@ -1224,6 +1235,36 @@ export class ToWriteSettingTab extends PluginSettingTab {
           });
           text.inputEl.rows = 4;
         });
+
+      new Setting(containerEl)
+        .setName(zh ? "新建或移入时写入 Inbox 属性" : "Write Inbox property on create or move")
+        .setDesc(zh
+          ? "默认关闭。开启后，只给监控目录中尚无 workflow_stage 的新笔记或移入笔记写入 workflow_stage: inbox；绝不覆盖已有阶段。"
+          : "Off by default. Adds workflow_stage: inbox only to new or moved notes in watched folders that have no explicit stage; existing stages are never overwritten.")
+        .addToggle((toggle) => toggle.setValue(inbox.autoApplyStageOnCreate).onChange(async (value) => {
+          inbox.autoApplyStageOnCreate = value;
+          await this.plugin.savePluginData();
+        }));
+
+      new Setting(containerEl)
+        .setName(zh ? "补写现有笔记的 Inbox 属性" : "Materialize metadata for existing notes")
+        .setDesc(zh
+          ? "一次性给当前监控目录中的旧笔记补写显式属性。已有 workflow_stage / workflow_status 的笔记会跳过。"
+          : "One-time migration for existing notes in watched folders. Notes with workflow_stage or workflow_status are skipped.")
+        .addButton((button) => button.setButtonText(zh ? "补写属性" : "Write metadata").onClick(async () => {
+          button.setDisabled(true);
+          try {
+            const result = await this.plugin.materializeInboxMetadata();
+            new Notice(zh
+              ? `已补写 ${result.updated} 篇；跳过 ${result.alreadyExplicit} 篇已有阶段的笔记。`
+              : `Updated ${result.updated}; skipped ${result.alreadyExplicit} notes with an existing stage.`);
+            this.refreshSettingsUi();
+          } catch (error) {
+            new Notice(`${zh ? "补写失败" : "Could not write Inbox metadata"}: ${error instanceof Error ? error.message : String(error)}`);
+          } finally {
+            button.setDisabled(false);
+          }
+        }));
 
       new Setting(containerEl)
         .setName(zh ? "分组方式" : "Group Inbox by")
@@ -3897,6 +3938,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
     const list = containerEl.createDiv({ cls: "towrite-workflow-stage-editor" });
 
     for (const [index, stage] of stages.entries()) {
+      const coreInboxStage = stage.id === "inbox";
       const card = list.createEl("details", { cls: `towrite-workflow-stage-card towrite-color-${stage.color}` });
       card.open = this.openWorkflowStageIds.has(stage.id);
       card.addEventListener("toggle", () => {
@@ -3912,7 +3954,9 @@ export class ToWriteSettingTab extends PluginSettingTab {
       title.createEl("strong", { text: `${stage.title || stage.id} (${stage.id})` });
       title.createSpan({
         cls: "towrite-workflow-stage-meta",
-        text: `${stage.folderPrefixes.length} folders · ${stage.tags.length} tags · limit ${stage.limit}`
+        text: coreInboxStage
+          ? `core · workflow_stage: inbox · limit ${stage.limit}`
+          : `${stage.folderPrefixes.length} folders · ${stage.tags.length} tags · limit ${stage.limit}`
       });
       const actions = header.createDiv({ cls: "towrite-workflow-stage-actions" });
       const up = createIconButton(actions, "arrow-up", copy.workflowStageMoveUp);
@@ -3920,6 +3964,10 @@ export class ToWriteSettingTab extends PluginSettingTab {
       const remove = createIconButton(actions, "trash-2", copy.workflowStageRemove);
       up.disabled = index === 0;
       down.disabled = index === stages.length - 1;
+      remove.disabled = coreInboxStage;
+      if (coreInboxStage) {
+        remove.title = this.plugin.settings.language === "zh" ? "Inbox 是核心阶段，不能删除" : "Inbox is a core stage and cannot be removed";
+      }
       for (const button of [up, down, remove]) {
         button.addEventListener("click", (event) => {
           event.stopPropagation();
@@ -3964,6 +4012,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
             .onChange(async (value) => {
               await this.patchWorkflowStage(index, { id: normalizeStageId(value) });
             });
+          text.setDisabled(coreInboxStage);
         });
 
       new Setting(body)
@@ -4730,7 +4779,7 @@ function normalizeWorkflowStages(stages: WorkflowStageSettings[]): WorkflowStage
     });
   }
 
-  return output;
+  return ensureInboxWorkflowStage(output);
 }
 
 function splitWorkflowList(value: string): string[] {

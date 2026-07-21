@@ -81,6 +81,60 @@ describe("InboxIndex", () => {
     expect(second.id).toBe(first.id);
   });
 
+  it("treats workflow_stage metadata as authoritative over watched folders", () => {
+    const explicitAnywhere = file("Projects/Next/plan.md", 30);
+    const processedInside = file("00-Raw_Materials/Quick_Notes/done.md", 20);
+    const fallbackInside = file("00-Raw_Materials/Quick_Notes/new.md", 10);
+    const caches = new Map([
+      [explicitAnywhere, { frontmatter: { workflow_stage: "INBOX", project: "Next" } }],
+      [processedInside, { frontmatter: { workflow_stage: "processing" } }]
+    ]);
+    const app = fakeApp([explicitAnywhere, processedInside, fallbackInside], caches);
+    const index = new InboxIndex(app, () => settings());
+
+    index.rebuild();
+    const snapshot = index.getSnapshot();
+
+    expect(snapshot.items.map((item) => item.filePath)).toEqual([
+      "Projects/Next/plan.md",
+      "00-Raw_Materials/Quick_Notes/new.md"
+    ]);
+    expect(snapshot.items[0]).toMatchObject({ matchedBy: "metadata", project: "Next", sourceRoot: "" });
+    expect(snapshot.items[1]).toMatchObject({ matchedBy: "folder" });
+  });
+
+  it("moves a note in and out immediately when explicit metadata changes", () => {
+    const note = file("Elsewhere/note.md", 10);
+    const cache: { frontmatter: Record<string, unknown> } = { frontmatter: {} };
+    const app = fakeApp([note], new Map([[note, cache]]));
+    const index = new InboxIndex(app, () => settings());
+    index.rebuild();
+    expect(index.getSnapshot().count).toBe(0);
+
+    cache.frontmatter.workflow_stage = "inbox";
+    index.upsert(note);
+    expect(index.getSnapshot().items[0]).toMatchObject({ filePath: note.path, matchedBy: "metadata" });
+
+    cache.frontmatter.workflow_stage = "raw";
+    index.upsert(note);
+    expect(index.getSnapshot().count).toBe(0);
+  });
+
+  it("does not signal a sidebar refresh for timestamp-only metadata-cache updates", () => {
+    const note = file("00-Raw_Materials/Quick_Notes/note.md", 10);
+    const cache: { frontmatter: Record<string, unknown> } = { frontmatter: { title: "Note" } };
+    const app = fakeApp([note], new Map([[note, cache]]));
+    const index = new InboxIndex(app, () => settings());
+    index.rebuild();
+
+    note.stat.mtime = 20;
+    expect(index.upsertFromMetadata(note)).toBe(false);
+
+    cache.frontmatter.title = "Renamed";
+    expect(index.upsertFromMetadata(note)).toBe(true);
+    expect(index.getSnapshot().items[0].title).toBe("Renamed");
+  });
+
   it("limits visible items and filters title, path, project, and tags", () => {
     const files = [
       file("Inbox/Alpha/one.md", 10),
@@ -117,6 +171,7 @@ function settings(patch: Partial<ToWriteInboxSettings> = {}): ToWriteInboxSettin
   return {
     enabled: true,
     folderPrefixes: ["00-Raw_Materials/Quick_Notes"],
+    autoApplyStageOnCreate: false,
     groupBy: "project",
     maxItems: 200,
     includeInDeviceCandidates: true,
