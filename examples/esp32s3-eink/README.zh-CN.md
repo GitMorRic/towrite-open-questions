@@ -131,4 +131,19 @@ $headers = @{ Authorization = "Bearer <target-token>" }
 Invoke-RestMethod "http://192.168.1.20:48321/api/v1/eink?targetId=local-web&limit=1&cursor=0" -Headers $headers
 ```
 
+## 7. 屏幕连接状态
+
+示例会把以下状态作为卡片底部的小字传给渲染函数：
+
+```text
+WiFi OK | API OK | target local-web | sync @123s (0s ago)
+```
+
+- `renderCard()` 与 `renderEmpty()` 在整张卡片内容变化时绘制这个 footer；
+- `renderConnectionStatus()` 只用于状态区的局部刷新，稳定连接时最多每分钟一次，不会因为 5 秒轮询而整屏刷新；
+- HTTP、JSON 与 Wi-Fi 错误会进入 `renderError()`，因此真实驱动应把错误画到屏幕状态区，而不只是写入串口；
+- 状态与错误文本不会包含 API token。
+
+若显示 `API ERR | HTTP 401`，请检查 `DEVICE_TARGET_ID` 是否与该 target 的独立 token 完全匹配。若显示 `WiFi OFF`，请检查 Wi-Fi 和 ESP32 是否能访问电脑的局域网地址。
+
 不要把真实 Wi-Fi 密码、token 或设备地址提交到 GitHub。

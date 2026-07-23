@@ -31,6 +31,7 @@
   import type { ProactiveSuggestion, ProactiveSuggestionAction } from "../suggestions";
   import type { DeviceLibraryEntry, DeviceLibrarySnapshot, HubDeviceState, HubFeedbackAction, HubSelectionMode } from "../hub";
   import type { InboxSnapshot } from "../inbox/types";
+  import type { SmallScreenConnectionStatus } from "../device-status";
   import type { ActiveLineRange, ToWriteUiApi } from "./api";
   import ArticleSummaryCard from "./ArticleSummaryCard.svelte";
   import InboxPanel from "./InboxPanel.svelte";
@@ -74,6 +75,7 @@
   let busySuggestionId = "";
   let suggestionError = "";
   let hubState: HubDeviceState | undefined;
+  let smallScreenStatus: SmallScreenConnectionStatus = api.getSmallScreenConnectionStatus();
   let hubLibrary: DeviceLibrarySnapshot = api.getDeviceContentLibrary();
   let hubLibraryById = new Map<string, DeviceLibraryEntry>();
   let hubBusy = false;
@@ -81,9 +83,11 @@
 
   const unsubscribe = api.subscribe(reload);
   const unsubscribeActiveContext = api.subscribeActiveContext(refreshActiveContext);
+  const deviceStatusTimer = window.setInterval(refreshSmallScreenStatus, 5_000);
   onDestroy(() => {
     unsubscribe();
     unsubscribeActiveContext();
+    window.clearInterval(deviceStatusTimer);
   });
 
   reload();
@@ -128,6 +132,7 @@
     suggestions = api.getProactiveSuggestions();
     inboxSnapshot = api.getInboxSnapshot();
     hubState = api.getDeviceHubState();
+    smallScreenStatus = api.getSmallScreenConnectionStatus();
     hubLibrary = api.getDeviceContentLibrary();
     const allQuestions = api.getQuestions();
     questionsByFile = groupQuestionsByFile(allQuestions);
@@ -163,6 +168,34 @@
     }
     activeLineRange = nextActiveLineRange;
     currentQuestions = sortCurrentQuestions(currentQuestionSnapshot, activeLineRange);
+  }
+
+  function refreshSmallScreenStatus() {
+    smallScreenStatus = api.getSmallScreenConnectionStatus();
+  }
+
+  function localConnectionLabel(status: SmallScreenConnectionStatus["local"]): string {
+    const zh = language === "zh";
+    if (status.state === "online") return zh ? "ESP32 在线" : "ESP32 online";
+    if (status.state === "waiting") return zh ? "监听中，等待首次拉取" : "Listening; waiting for first poll";
+    if (status.state === "stale") return zh ? "拉取已超时" : "Poll overdue";
+    if (status.state === "error") return zh ? `请求失败${status.lastErrorStatus ? ` · HTTP ${status.lastErrorStatus}` : ""}` : `Request failed${status.lastErrorStatus ? ` · HTTP ${status.lastErrorStatus}` : ""}`;
+    if (status.state === "stopped") return zh ? "API 未监听" : "API not listening";
+    return zh ? "External API 已关闭" : "External API disabled";
+  }
+
+  function overallConnectionLabel(status: SmallScreenConnectionStatus): string {
+    if (status.overall === "online") return language === "zh" ? "在线" : "Online";
+    if (status.overall === "waiting") return language === "zh" ? "等待设备" : "Waiting";
+    if (status.overall === "disabled") return language === "zh" ? "未启用" : "Disabled";
+    return language === "zh" ? "离线" : "Offline";
+  }
+
+  function connectionTimestamp(value?: string): string {
+    if (!value) return language === "zh" ? "从未" : "Never";
+    const parsed = new Date(value);
+    if (!Number.isFinite(parsed.getTime())) return value;
+    return parsed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   }
 
   function groupQuestionsByFile(items: OpenQuestion[]): Map<string, OpenQuestion[]> {
@@ -634,6 +667,56 @@
         <span id="towrite-now-heading">{language === "zh" ? "现在" : "Now"}</span>
         <small>{suggestions.length}</small>
       </div>
+      <article class="towrite-device-status-card">
+          <div class="towrite-hub-card-head">
+            <div>
+              <small>{language === "zh" ? "小屏连接" : "Small-screen connection"}</small>
+              <strong>{smallScreenStatus.current.title || (language === "zh" ? "尚未选择当前卡" : "No current card")}</strong>
+            </div>
+            <span
+              class:online={smallScreenStatus.overall === "online"}
+              class:waiting={smallScreenStatus.overall === "waiting"}
+              class:error={smallScreenStatus.overall === "offline"}
+            >{overallConnectionLabel(smallScreenStatus)}</span>
+          </div>
+          <div class="towrite-device-connection-rows">
+            <div>
+              <span class:online={smallScreenStatus.local.online} class:error={smallScreenStatus.local.state === "error" || smallScreenStatus.local.state === "stopped"}>
+                <i aria-hidden="true"></i>
+                {language === "zh" ? "本地 ESP32" : "Local ESP32"}
+              </span>
+              <strong>{localConnectionLabel(smallScreenStatus.local)}</strong>
+              <small>
+                {smallScreenStatus.local.running ? `${smallScreenStatus.local.bindHost}:${smallScreenStatus.local.port}` : (language === "zh" ? "服务已停止" : "Service stopped")}
+                · {language === "zh" ? "最近拉取" : "last poll"} {connectionTimestamp(smallScreenStatus.local.lastPollAt)}
+              </small>
+            </div>
+            {#if smallScreenStatus.hub.enabled}
+              <div>
+                <span class:online={smallScreenStatus.hub.online}>
+                  <i aria-hidden="true"></i>
+                  Device Hub
+                </span>
+                <strong>{smallScreenStatus.hub.online ? (language === "zh" ? "设备在线" : "Device online") : (language === "zh" ? "设备离线 / 未 ACK" : "Offline / no ACK")}</strong>
+                <small>
+                  selected {smallScreenStatus.hub.selectedContentId ? "✓" : "—"}
+                  · displayed {smallScreenStatus.hub.displayedContentId ? "✓" : "—"}
+                </small>
+              </div>
+            {/if}
+          </div>
+          {#if smallScreenStatus.local.lastError && smallScreenStatus.local.state === "error"}
+            <p class="towrite-device-status-error" role="alert">{smallScreenStatus.local.lastError}</p>
+          {:else if smallScreenStatus.hub.lastError && !smallScreenStatus.hub.online}
+            <p class="towrite-device-status-error" role="alert">{smallScreenStatus.hub.lastError}</p>
+          {/if}
+          <div class="towrite-device-status-footer">
+            <span>{language === "zh" ? "当前" : "current"} · {smallScreenStatus.current.localId || "—"}</span>
+            <button type="button" title={language === "zh" ? "刷新连接状态" : "Refresh connection status"} on:click={refreshSmallScreenStatus}>
+              <RefreshCw size={13} />
+            </button>
+          </div>
+      </article>
       {#if hubState}
         <article class="towrite-hub-card" aria-busy={hubBusy}>
           <div class="towrite-hub-card-head">

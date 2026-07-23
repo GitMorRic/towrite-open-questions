@@ -6,7 +6,15 @@ This sketch uses ToWrite's local External API to display one shared small-screen
 2. eligible ToThink / ToWrite cards;
 3. wrap back to the first card.
 
-The right button advances, the optional left button goes back, and a manual **Show now** action in Obsidian becomes visible within about five seconds. Unchanged polls do not redraw the e-ink panel.
+The right button advances, the optional left button goes back, and a manual **Show now** action in Obsidian becomes visible within about five seconds. Unchanged polls do not redraw the full e-ink panel.
+
+The sketch also maintains a small connection footer:
+
+```text
+WiFi OK | API OK | target local-web | sync @123s (0s ago)
+```
+
+`renderCard()` and `renderEmpty()` receive that footer for a normal full-card draw. `renderConnectionStatus()` is a separate hook for a narrow partial refresh when only connectivity changes. HTTP, JSON, and Wi-Fi failures call the screen-oriented `renderError()` hook instead of existing only in Serial output. None of these strings contains the device token.
 
 ## Obsidian setup
 
@@ -75,6 +83,6 @@ Content-Type: application/json
 
 ToWrite commits the shared cursor before returning `200`, and duplicate event IDs are idempotent. The device then polls cursor zero again to render the selected card.
 
-Replace `renderCard()` with your GxEPD2, Waveshare, or LilyGo drawing code. Echo cards expose `sourceType: "echo"`; annotation cards expose `sourceType: "question"`.
+Replace `renderCard()`, `renderEmpty()`, `renderConnectionStatus()`, and `renderError()` with your GxEPD2, Waveshare, or LilyGo drawing code. Reserve a narrow footer for connection state and use a partial-window refresh there; do not full-refresh the entire panel for every healthy five-second poll. Echo cards expose `sourceType: "echo"`; annotation cards expose `sourceType: "question"`.
 
-If annotation cards work but templates do not, verify that the template was saved, **Screen paging** is enabled, the target ID matches its token, and the firmware is polling the new single-card playlist URL.
+If the footer says `API ERR | HTTP 401`, the target ID and target-scoped token do not match. If it says `WiFi OFF`, verify the SSID/password and that the ESP32 can reach the computer's LAN address. If annotation cards work but templates do not, verify that the template was saved, **Screen paging** is enabled, and the firmware is polling the new single-card playlist URL.

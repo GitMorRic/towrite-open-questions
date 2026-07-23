@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildDeviceLibrary,
   canAdvanceRotation,
+  canManuallySendDeviceLibraryEntry,
   isManualHoldActive,
   nextRotationCursor,
   rotationChoice,
@@ -35,6 +36,24 @@ describe("Device content library", () => {
     });
     expect(snapshot.eligibleCount).toBe(0);
     expect(snapshot.excludedCount).toBe(2);
+  });
+
+  it("allows an explicit send before library inclusion without bypassing policy exclusions", () => {
+    const notSelected = buildDeviceLibrary([question("manual")], {
+      ...options(),
+      autoAddSelections: false
+    }).entries[0];
+    const included = buildDeviceLibrary([question("included", {
+      deliveryPolicy: { membership: "included" }
+    })], options()).entries[0];
+
+    expect(notSelected.exclusionReason).toBe("not-selected");
+    expect(canManuallySendDeviceLibraryEntry(notSelected)).toBe(true);
+    expect(canManuallySendDeviceLibraryEntry(included)).toBe(true);
+    expect(canManuallySendDeviceLibraryEntry({ ...notSelected, exclusionReason: "privacy" })).toBe(false);
+    expect(canManuallySendDeviceLibraryEntry({ ...notSelected, exclusionReason: "unsupported-source" })).toBe(false);
+    expect(canManuallySendDeviceLibraryEntry({ ...notSelected, exclusionReason: "inactive" })).toBe(false);
+    expect(canManuallySendDeviceLibraryEntry(undefined)).toBe(false);
   });
 
   it("rotates in stable order and advances to the entry after the acknowledged one", () => {

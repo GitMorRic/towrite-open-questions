@@ -50,6 +50,31 @@ describe("LocalTapSelectionService", () => {
     await expect(service.resolve()).rejects.toThrow(/revision changed/iu);
     expect(validateSnapshot).toHaveBeenCalledTimes(1);
   });
+
+  it("does not resolve a selection mutation before its persistence callback completes", async () => {
+    let finishPersistence: (() => void) | undefined;
+    const persistenceGate = new Promise<void>((resolve) => {
+      finishPersistence = resolve;
+    });
+    const onStateChanged = vi.fn(() => persistenceGate);
+    const service = new LocalTapSelectionService({
+      createSnapshot: async (reference) => snapshot(reference),
+      getFallbackLocalId: () => "fallback",
+      onStateChanged
+    });
+
+    let resolved = false;
+    const selecting = service.selectLocal("local").then((result) => {
+      resolved = true;
+      return result;
+    });
+    await vi.waitFor(() => expect(onStateChanged).toHaveBeenCalledTimes(1));
+    expect(resolved).toBe(false);
+
+    finishPersistence?.();
+    await expect(selecting).resolves.toMatchObject({ localId: "local" });
+    expect(resolved).toBe(true);
+  });
 });
 
 function hubState(): HubDeviceState {

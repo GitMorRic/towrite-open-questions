@@ -155,6 +155,10 @@ import {
 } from "./hub";
 import { buildExternalEinkPlaylistPayload } from "./external/eink-playlist";
 import {
+  resolveLocalEinkConnectionStatus,
+  type SmallScreenConnectionStatus
+} from "./device-status";
+import {
   ECHO_CARD_HARD_LIMITS,
   ECHO_CARD_MAX_COUNT,
   ECHO_CARD_REFERENCE_PRESETS,
@@ -203,6 +207,8 @@ import type {
   AiAssistantContextPreview,
   AiAssistantSendRequest
 } from "./ui/ai-assistant-types";
+
+const LOCAL_EINK_EXPECTED_POLL_SECONDS = 5;
 
 interface CaptureLaunchOptions {
   intent?: CaptureIntent;
@@ -311,9 +317,10 @@ export default class ToWritePlugin extends Plugin {
       createSnapshot: (reference) => this.createTapSelectionSnapshot(reference),
       getFallbackLocalId: () => this.buildHubCandidates()[0]?.localId,
       validateSnapshot: (snapshot) => this.validatePersistedTapSelectionSnapshot(snapshot),
-      onStateChanged: () => {
+      onStateChanged: async () => {
         this.invalidateLegacyEinkPlaylist();
-        void this.savePluginData();
+        this.notifyUi();
+        await this.savePluginData();
       }
     });
     this.localTapSelection.restore(this.savedCaptureBridgeState);
@@ -2158,15 +2165,18 @@ export default class ToWritePlugin extends Plugin {
   }
 
   private async sendLocalCandidateToDeviceHub(localId: string): Promise<HubDeviceState | undefined> {
-    await this.localTapSelection.selectLocal(localId);
+    try {
+      await this.localTapSelection.selectLocal(localId);
+    } catch (error) {
+      const message = messageForError(error);
+      new Notice(this.settings.language === "zh"
+        ? `未能准备墨水屏卡片：${message}`
+        : `Could not prepare the e-ink card: ${message}`);
+      throw error;
+    }
+    const localStatus = this.getSmallScreenConnectionStatus().local;
     if (!this.deviceHub.isConfigured()) {
-      new Notice(this.settings.captureBridge.flow === "local_capture"
-        ? (this.settings.language === "zh"
-          ? "已设为本地 NFC / Capture 与旧版墨水屏接口的当前内容。"
-          : "Set as the current local NFC / Capture and legacy e-ink card.")
-        : (this.settings.language === "zh"
-          ? "已设为旧版墨水屏接口的当前内容；如需远程 Hub，请先启用并配对。"
-          : "Set as the current legacy e-ink card. Enable and pair Device Hub for remote delivery."));
+      new Notice(this.localScreenSelectionNotice(localStatus.state));
       return undefined;
     }
     if (this.hubCandidateSyncTimer) {
@@ -2195,9 +2205,21 @@ export default class ToWritePlugin extends Plugin {
         ? (this.settings.language === "zh"
           ? "墨水屏已 ACK 显示这张卡。"
           : "The e-ink display acknowledged this card.")
-        : (this.settings.language === "zh"
-          ? "已提交为墨水屏期望内容，等待设备拉取并 ACK；旧版 /api/v1/eink 也会优先返回它。"
-          : "Queued as desired e-ink content and waiting for the device ACK; legacy /api/v1/eink also prioritizes it."));
+        : state.online
+          ? (this.settings.language === "zh"
+            ? "已提交为墨水屏期望内容，设备在线，等待本次刷新 ACK。"
+            : "Queued as desired content; the device is online and the display ACK is pending.")
+          : localStatus.online
+            ? (this.settings.language === "zh"
+              ? "Hub 设备离线，但本地 ESP32 在线；已设为 /api/v1/eink 当前卡，下一次拉取会刷新。"
+              : "The Hub device is offline, but the local ESP32 is online; the next /api/v1/eink poll will refresh this card.")
+            : localStatus.state === "waiting"
+              ? (this.settings.language === "zh"
+                ? "卡片已保存；本地 API 正在监听，但尚未看到 ESP32 拉取，Hub 设备也离线。"
+                : "Card saved; the local API is listening but no ESP32 poll has been observed, and the Hub device is offline.")
+              : (this.settings.language === "zh"
+                ? "卡片已保存为期望内容，但 ESP32 当前离线或从未连接；屏幕暂时不会变化。"
+                : "Saved as desired content, but the ESP32 is offline or has never connected, so the screen will not change yet."));
       return state;
     } catch (error) {
       this.settings.hub.manualHoldUntil = previousHold.until;
@@ -2211,6 +2233,23 @@ export default class ToWritePlugin extends Plugin {
       await this.savePluginData();
       return undefined;
     }
+  }
+
+  private localScreenSelectionNotice(state: SmallScreenConnectionStatus["local"]["state"]): string {
+    if (this.settings.language === "zh") {
+      if (state === "online") return "已设为当前卡；ESP32 在线，将在下一次拉取时刷新。";
+      if (state === "waiting") return "已设为当前卡；本地 API 正在监听，但尚未看到 ESP32 拉取。";
+      if (state === "error") return "已设为当前卡；ESP32 最近一次请求失败，请查看“小屏连接状态”。";
+      if (state === "stale") return "已设为当前卡；ESP32 已超过预期时间没有拉取，屏幕可能仍显示旧内容。";
+      if (state === "stopped") return "已设为当前卡，但本地 API 没有成功监听，屏幕不会刷新。";
+      return "已设为当前卡，但本地 External API 已关闭，屏幕不会刷新。";
+    }
+    if (state === "online") return "Set as current; the online ESP32 will refresh on its next poll.";
+    if (state === "waiting") return "Set as current; the API is listening but no ESP32 poll has been observed.";
+    if (state === "error") return "Set as current; the ESP32's latest request failed. Check Small-screen connection.";
+    if (state === "stale") return "Set as current; the ESP32 has missed its expected poll window and may still show old content.";
+    if (state === "stopped") return "Set as current, but the local API is not listening, so the display will not refresh.";
+    return "Set as current, but the local External API is disabled, so the display will not refresh.";
   }
 
   getDeviceContentLibrary(): DeviceLibrarySnapshot {
@@ -2534,6 +2573,82 @@ export default class ToWritePlugin extends Plugin {
       online: false,
       tapUrl: this.settings.hub.tapUrl || undefined
     } : undefined);
+  }
+
+  getSmallScreenConnectionStatus(nowMs = Date.now()): SmallScreenConnectionStatus {
+    const runtime = this.externalApiServer?.getRuntimeStatus();
+    const lastTarget = runtime?.lastTargetId
+      ? this.settings.push.targets.find((target) => target.id === runtime.lastTargetId)
+      : undefined;
+    const expectedTarget = lastTarget
+      ?? this.settings.push.targets.find((target) => target.enabled && target.type === "local-web")
+      ?? this.settings.push.targets.find((target) => target.enabled && target.id !== "quote0");
+    const local = resolveLocalEinkConnectionStatus({
+      enabled: this.settings.externalApi.enabled,
+      bindHost: this.settings.externalApi.bindHost,
+      port: this.settings.externalApi.port,
+      refreshSeconds: LOCAL_EINK_EXPECTED_POLL_SECONDS,
+      targetId: expectedTarget?.id,
+      targetName: expectedTarget?.name,
+      targetTokenConfigured: Boolean(expectedTarget?.token?.trim()),
+      masterTokenConfigured: Boolean(this.settings.externalApi.token.trim()),
+      runtime,
+      nowMs
+    });
+    const hubState = this.getDeviceHubState();
+    const hubConfigured = Boolean(
+      this.settings.hub.enabled
+      && this.settings.hub.receiverId.trim()
+      && this.settings.hub.receiverToken.trim()
+      && this.settings.hub.deviceId.trim()
+    );
+    const hubSelectedId = hubState?.selected?.selectedContentId
+      || this.settings.hub.lastSelectedContentId
+      || undefined;
+    const hubDisplayedId = hubState?.displayed?.contentId
+      || this.settings.hub.lastDisplayedContentId
+      || undefined;
+    const currentLocalId = this.currentDevicePagingLocalId();
+    const currentEcho = currentLocalId?.startsWith("echo-card:")
+      ? this.settings.echoCards.find((card) => echoCardLocalId(card) === currentLocalId)
+      : undefined;
+    const currentQuestion = currentLocalId && !currentEcho
+      ? this.store?.getQuestion(currentLocalId)
+      : undefined;
+    const hasConfiguredRoute = local.enabled || hubConfigured;
+    const deliveryReady = local.online || Boolean(hubState?.online);
+    const waiting = local.state === "waiting";
+    return {
+      overall: deliveryReady
+        ? "online"
+        : !hasConfiguredRoute
+          ? "disabled"
+          : waiting
+            ? "waiting"
+            : "offline",
+      local,
+      hub: {
+        enabled: this.settings.hub.enabled,
+        configured: hubConfigured,
+        online: Boolean(hubState?.online),
+        inSync: Boolean(hubState?.inSync),
+        selectedContentId: hubSelectedId,
+        displayedContentId: hubDisplayedId,
+        lastSyncedAt: this.settings.hub.lastSyncedAt || undefined,
+        lastError: this.settings.hub.lastError || undefined
+      },
+      current: {
+        localId: currentLocalId,
+        title: currentEcho?.name
+          || currentQuestion?.title
+          || currentQuestion?.question
+          || local.lastServedTitle,
+        contentType: currentEcho?.contentType
+          || (currentQuestion ? (currentQuestion.lane === "write" ? "note_continue" : "question_prompt") : undefined)
+      },
+      hasConfiguredRoute,
+      deliveryReady
+    };
   }
 
   async sendDeviceHubFeedback(action: HubFeedbackAction): Promise<void> {
@@ -3742,6 +3857,7 @@ export default class ToWritePlugin extends Plugin {
       getInboxSnapshot: () => this.getInboxSnapshot(),
       getInboxItemDeviceEligibility: (id) => this.getInboxItemDeviceEligibility(id),
       getDeviceHubState: () => this.getDeviceHubState(),
+      getSmallScreenConnectionStatus: () => this.getSmallScreenConnectionStatus(),
       getDeviceContentLibrary: () => this.getDeviceContentLibrary(),
       getDefaultColor: (lane) => this.defaultColorForLane(lane),
       renderMarkdown: (markdown, element, sourcePath) => this.renderMarkdown(markdown, element, sourcePath),

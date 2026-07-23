@@ -1,5 +1,25 @@
 # Changelog / 更新日志
 
+## 0.3.0-beta.11 - 2026-07-23
+
+- Added a persistent small-screen connection card in the Obsidian sidebar and detailed diagnostics in both Device Library and API & Devices settings. It distinguishes API disabled/stopped, waiting for the first poll, authenticated ESP32 online, stale polling, and sanitized device-route errors.
+- Fixed problem-card “send” actions that appeared to do nothing: local screen controls no longer depend on Device Hub, snapshot errors are visible on the card, and the selected local card is durably saved before any optional Hub request.
+- Clarified delivery truth in notices and status: local selection, Hub desired state, device online state, and display ACK are reported separately instead of claiming a disconnected screen changed.
+- Added safe in-memory External API telemetry for the latest authenticated `/api/v1/eink` poll, served card, playlist revision, target, and hardware-button event without retaining credentials, card bodies, or Vault paths.
+- Added one-click local API startup plus scoped ESP32 token generation/copying in settings. Existing Tailscale Serve or LAN routing remains an explicit user choice.
+- Updated the ESP32-S3 example with a bounded Wi-Fi connection attempt and a rate-limited status footer for Wi-Fi, API, target, and last successful sync; unchanged cards still avoid full e-ink refreshes.
+- Added connection-state, runtime privacy, firmware contract, send-feedback, persistence-order, and lightweight polling regression tests.
+
+中文摘要：
+
+- Obsidian 右侧栏新增常驻“小屏连接”卡片，“设备内容库”和“API 与设备”设置也会显示详细诊断；可区分 API 关闭/未监听、等待首次拉取、ESP32 已认证在线、拉取超时和经过脱敏的请求错误。
+- 修复问题卡点击发送看似无反应：本地小屏按钮不再依赖 Device Hub，快照错误会直接显示，并且当前卡会在任何可选 Hub 请求之前可靠写入插件数据。
+- 发送提示不再混淆“本地已选择、Hub desired、设备在线、屏幕 ACK”四种状态；离线设备不会被误报为已经刷新。
+- External API 新增仅驻留内存的安全遥测，记录最近一次已认证 `/api/v1/eink` 拉取、返回卡片、播放列表修订、target 和硬件按键事件，不保存凭据、卡片正文或 Vault 路径。
+- 设置页可一键启动本地 API，并为 ESP32 生成/复制独立 target token；是否通过 Tailscale Serve 或局域网暴露仍由用户明确配置。
+- ESP32-S3 示例增加有超时的 Wi-Fi 连接和限频状态 footer，显示 Wi-Fi、API、target 与最后成功同步；内容不变时仍不会整屏刷新。
+- 新增连接状态、运行遥测隐私、固件契约、发送反馈、持久化顺序和轻量轮询回归测试。
+
 ## 0.3.0-beta.10 - 2026-07-23
 
 - Unified saved Echo templates and ToThink / ToWrite annotations into one template-first small-screen playlist, including manual current-card selection, wrapping next/previous paging, and backwards-compatible `/api/v1/eink` fields.

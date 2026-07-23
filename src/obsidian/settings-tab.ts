@@ -1364,6 +1364,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
         : `${library.eligibleCount} ToThink / ToWrite cards are eligible and ${library.excludedCount} are excluded. The full library lives here while the sidebar shows only the current recommendation.`)
       .setHeading();
 
+    this.renderSmallScreenConnectionStatus(containerEl, zh);
     this.renderEchoCardWorkbench(containerEl, zh);
 
     const pagingQueue = this.plugin.getDevicePagingQueue();
@@ -2772,6 +2773,8 @@ export class ToWriteSettingTab extends PluginSettingTab {
           });
       });
 
+    this.renderSmallScreenConnectionStatus(containerEl, this.plugin.settings.language === "zh");
+
     if (this.plugin.settings.externalApi.enabled) {
       const endpoint = buildExternalApiExampleUrl(this.plugin.settings);
       const dashboard = buildExternalApiDashboardUrl(this.plugin.settings);
@@ -3470,6 +3473,89 @@ export class ToWriteSettingTab extends PluginSettingTab {
         text: `${copy.quote0PreviewUnavailable} ${errorMessage(error)}`
       });
     }
+  }
+
+  private renderSmallScreenConnectionStatus(containerEl: HTMLElement, zh: boolean): void {
+    const status = this.plugin.getSmallScreenConnectionStatus();
+    const local = status.local;
+    const localLabel = local.state === "online"
+      ? (zh ? "ESP32 在线" : "ESP32 online")
+      : local.state === "waiting"
+        ? (zh ? "API 正在监听，等待 ESP32 首次拉取" : "API listening; waiting for the first ESP32 poll")
+        : local.state === "stale"
+          ? (zh ? "ESP32 拉取已超时" : "ESP32 poll is overdue")
+          : local.state === "error"
+            ? `${zh ? "最近请求失败" : "Latest request failed"}${local.lastErrorStatus ? ` (HTTP ${local.lastErrorStatus})` : ""}`
+            : local.state === "stopped"
+              ? (zh ? "External API 未监听" : "External API is not listening")
+              : (zh ? "External API 已关闭" : "External API is disabled");
+    const bindingWarning = local.bindHost === "127.0.0.1"
+      ? (zh
+        ? "当前仅本机可访问；普通 Wi‑Fi ESP32 不能直连。局域网模式需改为 0.0.0.0，或用 Tailscale Serve 代理此端口。"
+        : "Currently loopback-only; a normal Wi-Fi ESP32 cannot connect directly. Use 0.0.0.0 on the LAN or proxy this port with Tailscale Serve.")
+      : "";
+    const details = [
+      localLabel,
+      `${local.bindHost}:${local.port}`,
+      `${zh ? "最近拉取" : "last poll"} ${formatDeviceStatusTime(local.lastPollAt, zh)}`,
+      local.lastTargetId ? `target ${local.lastTargetId}` : "",
+      local.expectedTargetId && !local.targetTokenConfigured
+        ? (zh ? `目标 ${local.expectedTargetId} 尚无独立设备 token` : `Target ${local.expectedTargetId} has no scoped device token`)
+        : "",
+      status.current.title ? `${zh ? "当前卡" : "current"} ${status.current.title}` : "",
+      bindingWarning,
+      local.lastError && local.state === "error" ? local.lastError : ""
+    ].filter(Boolean).join(" · ");
+    const setting = new Setting(containerEl)
+      .setName(zh ? "小屏连接状态" : "Small-screen connection")
+      .setDesc(details);
+
+    if (!local.enabled) {
+      setting.addButton((button) => button
+        .setCta()
+        .setButtonText(zh ? "启用本地 API" : "Enable local API")
+        .onClick(() => {
+          button.setDisabled(true);
+          this.plugin.settings.externalApi.enabled = true;
+          void this.plugin.savePluginData()
+            .then(() => this.plugin.configureExternalApiServer(true))
+            .finally(() => this.refreshSettingsUi());
+        }));
+    } else if (!local.running || local.state === "error") {
+      setting.addButton((button) => button
+        .setButtonText(zh ? "重启 API" : "Restart API")
+        .onClick(() => {
+          button.setDisabled(true);
+          void this.plugin.configureExternalApiServer(true)
+            .finally(() => this.refreshSettingsUi());
+        }));
+    }
+
+    const target = this.plugin.settings.push.targets.find((item) => item.id === local.expectedTargetId);
+    if (target && !target.token.trim()) {
+      setting.addButton((button) => button
+        .setButtonText(zh ? "生成设备 token" : "Generate device token")
+        .onClick(() => {
+          target.token = createDeviceTargetToken();
+          button.setDisabled(true);
+          void this.plugin.savePluginData().then(() => {
+            new Notice(zh
+              ? `已为 ${target.id} 生成独立 token；请复制到 ESP32 的 DEVICE_TOKEN。`
+              : `Generated a scoped token for ${target.id}; copy it into DEVICE_TOKEN on the ESP32.`);
+            this.refreshSettingsUi();
+          });
+        }));
+    } else if (target?.token) {
+      setting.addButton((button) => button
+        .setIcon("copy")
+        .setTooltip(zh ? "复制 ESP32 设备 token" : "Copy ESP32 device token")
+        .onClick(() => void copyToClipboard(target.token, zh ? "已复制设备 token" : "Device token copied")));
+    }
+
+    setting.addButton((button) => button
+      .setIcon("refresh-cw")
+      .setTooltip(zh ? "刷新连接状态" : "Refresh connection status")
+      .onClick(() => this.refreshSettingsUi()));
   }
 
   private async runQuote0PreviewAction(button: HTMLButtonElement, action: Quote0PreviewAction): Promise<void> {
@@ -5409,6 +5495,23 @@ async function copyToClipboard(value: string, copiedMessage: string): Promise<vo
   }
   await navigator.clipboard.writeText(value);
   new Notice(copiedMessage);
+}
+
+function createDeviceTargetToken(): string {
+  const bytes = new Uint8Array(32);
+  window.crypto.getRandomValues(bytes);
+  const binary = Array.from(bytes, (value) => String.fromCharCode(value)).join("");
+  return `twd_${window.btoa(binary).replace(/\+/gu, "-").replace(/\//gu, "_").replace(/=+$/u, "")}`;
+}
+
+function formatDeviceStatusTime(value: string | undefined, zh: boolean): string {
+  if (!value) return zh ? "从未" : "never";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return value;
+  const sameDay = date.toDateString() === new Date().toDateString();
+  return sameDay
+    ? date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+    : date.toLocaleString([], { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
 function splitTriggerWords(value: string): string[] {

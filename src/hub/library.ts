@@ -106,6 +106,15 @@ export function deviceLibraryEntry(
   };
 }
 
+/**
+ * A card that has not been added to the persistent device library can still be
+ * sent explicitly. The manual send path will include it before creating the
+ * selection, while policy/privacy exclusions remain non-sendable.
+ */
+export function canManuallySendDeviceLibraryEntry(entry: DeviceLibraryEntry | undefined): boolean {
+  return Boolean(entry && (entry.eligible || entry.exclusionReason === "not-selected"));
+}
+
 export function normalizeQuestionDeliveryPolicy(value: unknown): QuestionDeliveryPolicy {
   const raw = value && typeof value === "object" ? value as Partial<QuestionDeliveryPolicy> : {};
   const membership = raw.membership === "included" || raw.membership === "excluded" || raw.membership === "auto"

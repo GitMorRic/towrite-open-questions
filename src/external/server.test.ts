@@ -570,6 +570,284 @@ describe("external server", () => {
     });
   });
 
+  it("tracks service lifecycle without exposing credentials", async () => {
+    const updates: Array<ReturnType<ToWriteExternalApiServer["getRuntimeStatus"]>> = [];
+    const server = makeServer({
+      getSettings: () => ({
+        enabled: true,
+        bindHost: "127.0.0.1",
+        port: 0,
+        token: "lifecycle-secret",
+        allowQueryTokenForRead: false,
+        publicBaseUrl: ""
+      }),
+      onRuntimeStatusChanged: (status) => {
+        updates.push(status);
+      }
+    });
+
+    expect(server.isRunning()).toBe(false);
+    expect(server.getRuntimeStatus()).toEqual({
+      running: false,
+      successfulPolls: 0
+    });
+
+    await server.start();
+    try {
+      const running = server.getRuntimeStatus();
+      expect(server.isRunning()).toBe(true);
+      expect(running).toMatchObject({
+        running: true,
+        successfulPolls: 0,
+        startedAt: expect.any(String)
+      });
+      expect(JSON.stringify(running)).not.toContain("lifecycle-secret");
+    } finally {
+      await server.stop();
+    }
+
+    expect(server.isRunning()).toBe(false);
+    expect(server.getRuntimeStatus()).toMatchObject({
+      running: false,
+      stoppedAt: expect.any(String)
+    });
+    expect(updates.map((status) => status.running)).toEqual([true, false]);
+  });
+
+  it("starts each listener run with fresh device telemetry", async () => {
+    const server = makeServer({
+      getSettings: () => ({
+        enabled: true,
+        bindHost: "127.0.0.1",
+        port: 0,
+        token: "secret",
+        allowQueryTokenForRead: false,
+        publicBaseUrl: ""
+      })
+    });
+    const response = new FakeResponse();
+    await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
+      .handleRequest(new FakeRequest("GET", "/api/v1/eink?targetId=desk", {}), response);
+    expect(server.getRuntimeStatus()).toMatchObject({
+      successfulPolls: 1,
+      lastPollAt: expect.any(String),
+      lastTargetId: "desk"
+    });
+
+    await server.start();
+    try {
+      expect(server.getRuntimeStatus()).toMatchObject({
+        running: true,
+        successfulPolls: 0,
+        startedAt: expect.any(String)
+      });
+      expect(server.getRuntimeStatus().lastPollAt).toBeUndefined();
+      expect(server.getRuntimeStatus().lastTargetId).toBeUndefined();
+      expect(server.getRuntimeStatus().lastEventAt).toBeUndefined();
+      expect(server.getRuntimeStatus().lastErrorAt).toBeUndefined();
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("reports a configuration startup failure without retaining an old heartbeat", async () => {
+    const server = makeServer({
+      getSettings: () => ({
+        enabled: true,
+        bindHost: "127.0.0.1",
+        port: 48_321,
+        token: "",
+        allowQueryTokenForRead: false,
+        publicBaseUrl: ""
+      })
+    });
+    await expect(server.start()).rejects.toThrow("External API token is missing.");
+    expect(server.getRuntimeStatus()).toMatchObject({
+      running: false,
+      successfulPolls: 0,
+      stoppedAt: expect.any(String),
+      lastErrorAt: expect.any(String),
+      lastErrorStatus: 400,
+      lastError: "External API failed to start."
+    });
+    expect(server.getRuntimeStatus().lastPollAt).toBeUndefined();
+  });
+
+  it("records safe e-ink poll metadata and not card bodies or paths", async () => {
+    const updates: Array<ReturnType<ToWriteExternalApiServer["getRuntimeStatus"]>> = [];
+    const server = makeServer({
+      getEinkPayload: () => ({
+        schemaVersion: 2,
+        generatedAt: "2026-07-23T00:00:00.000Z",
+        summary: { open: 1, candidate: 0, blockedArticles: 0 },
+        focus: [{
+          id: "echo-card:memory",
+          title: "Memory echo",
+          body: "private body D:\\Vault\\secret.md",
+          question: "private question",
+          article: "private source",
+          lane: "write",
+          kind: "other",
+          sourceType: "echo"
+        }],
+        playlist: {
+          order: "echo_then_questions",
+          cursor: 0,
+          total: 1,
+          nextCursor: 0,
+          previousCursor: 0,
+          selectedId: "echo-card:memory",
+          revision: "einkrev_safe"
+        }
+      }),
+      onRuntimeStatusChanged: (status) => {
+        updates.push(status);
+      }
+    });
+    const response = new FakeResponse();
+
+    await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
+      .handleRequest(new FakeRequest("GET", "/api/v1/eink?targetId=desk&limit=1", {}), response);
+
+    expect(response.statusCode).toBe(200);
+    expect(server.getRuntimeStatus()).toMatchObject({
+      running: false,
+      successfulPolls: 1,
+      lastPollAt: expect.any(String),
+      lastTargetId: "desk",
+      lastServedCardId: "echo-card:memory",
+      lastServedTitle: "Memory echo",
+      lastPlaylistRevision: "einkrev_safe"
+    });
+    const serialized = JSON.stringify(server.getRuntimeStatus());
+    expect(serialized).not.toContain("private body");
+    expect(serialized).not.toContain("private question");
+    expect(serialized).not.toContain("secret.md");
+    expect(serialized).not.toContain("Bearer secret");
+    expect(updates).toHaveLength(1);
+  });
+
+  it("records sanitized device-route failures without credentials", async () => {
+    const server = makeServer({
+      getRestrictedAccessTokens: () => ["desk-token", "wall-token"],
+      getPushTargets: () => ["desk", "wall"].map((id) => ({
+        id,
+        name: id,
+        type: "local-web" as const,
+        enabled: true,
+        profile: "eink-bw" as const,
+        width: 264,
+        height: 176,
+        inches: 2.7,
+        defaultPage: "cards" as const,
+        defaultLane: "" as const,
+        refreshSeconds: 60,
+        quietHoursStart: "",
+        quietHoursEnd: "",
+        token: `${id}-token`,
+        capabilities: ["buttons"]
+      }))
+    });
+    const response = new FakeResponse();
+
+    await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
+      .handleRequest(new FakeRequest("GET", "/api/v1/eink?targetId=wall", {}, {
+        authorization: "Bearer desk-token"
+      }), response);
+
+    expect(response.statusCode).toBe(401);
+    expect(server.getRuntimeStatus()).toMatchObject({
+      running: false,
+      successfulPolls: 0,
+      lastErrorAt: expect.any(String),
+      lastErrorStatus: 401,
+      lastError: "Device authorization failed for the requested target."
+    });
+    const serialized = JSON.stringify(server.getRuntimeStatus());
+    expect(serialized).not.toContain("desk-token");
+    expect(serialized).not.toContain("wall-token");
+  });
+
+  it("ignores unauthenticated and unknown-target device-route noise", async () => {
+    const targets = ["desk", "wall"].map((id) => ({
+      id,
+      name: id,
+      type: "local-web" as const,
+      enabled: true,
+      profile: "eink-bw" as const,
+      width: 264,
+      height: 176,
+      inches: 2.7,
+      defaultPage: "cards" as const,
+      defaultLane: "" as const,
+      refreshSeconds: 60,
+      quietHoursStart: "",
+      quietHoursEnd: "",
+      token: `${id}-token`,
+      capabilities: ["buttons"]
+    }));
+    const server = makeServer({
+      getRestrictedAccessTokens: () => targets.map((target) => target.token),
+      getPushTargets: () => targets
+    });
+    const unauthenticated = new FakeResponse();
+    await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
+      .handleRequest(new FakeRequest("GET", "/api/v1/eink?targetId=desk", {}, {
+        authorization: undefined
+      }), unauthenticated);
+    expect(unauthenticated.statusCode).toBe(401);
+    expect(server.getRuntimeStatus().lastErrorAt).toBeUndefined();
+
+    const unknownTarget = new FakeResponse();
+    await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
+      .handleRequest(new FakeRequest("GET", "/api/v1/eink?targetId=unknown", {}, {
+        authorization: "Bearer desk-token"
+      }), unknownTarget);
+    expect(unknownTarget.statusCode).toBe(401);
+    expect(server.getRuntimeStatus().lastErrorAt).toBeUndefined();
+  });
+
+  it("records an authenticated cross-target button failure for a configured screen", async () => {
+    const targets = ["desk", "wall"].map((id) => ({
+      id,
+      name: id,
+      type: "local-web" as const,
+      enabled: true,
+      profile: "eink-bw" as const,
+      width: 264,
+      height: 176,
+      inches: 2.7,
+      defaultPage: "cards" as const,
+      defaultLane: "" as const,
+      refreshSeconds: 60,
+      quietHoursStart: "",
+      quietHoursEnd: "",
+      token: `${id}-token`,
+      capabilities: ["buttons"],
+      buttonMappings: [{ button: "right", action: "next" as const, label: "Next" }]
+    }));
+    const server = makeServer({
+      getRestrictedAccessTokens: () => targets.map((target) => target.token),
+      getPushTargets: () => targets
+    });
+    const response = new FakeResponse();
+    await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
+      .handleRequest(new FakeRequest("POST", "/api/v1/device/events", {
+        eventId: "cross-target-status",
+        targetId: "wall",
+        button: "right"
+      }, {
+        authorization: "Bearer desk-token"
+      }), response);
+
+    expect(response.statusCode).toBe(401);
+    expect(server.getRuntimeStatus()).toMatchObject({
+      lastErrorAt: expect.any(String),
+      lastErrorStatus: 401,
+      lastError: "Device authorization failed for the requested target."
+    });
+  });
+
   it("does not embed the External API token in a Bearer-authenticated device feed", async () => {
     const server = makeServer({
       getSettings: () => ({
@@ -801,6 +1079,10 @@ describe("external server", () => {
       clientId: "small-screen-01",
       at: "2026-07-09T04:00:00.000Z"
     }]);
+    expect(server.getRuntimeStatus()).toMatchObject({
+      lastEventAt: expect.any(String),
+      lastEventAction: "respond"
+    });
   });
 
   it("binds scoped device tokens to their target for feeds and button events", async () => {

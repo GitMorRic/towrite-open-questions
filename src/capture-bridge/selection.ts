@@ -5,7 +5,7 @@ export interface LocalTapSelectionServiceOptions {
   createSnapshot(reference: TapSelectionReference): Promise<TapSelectionSnapshot>;
   getFallbackLocalId(): string | undefined;
   validateSnapshot?(snapshot: TapSelectionSnapshot): Promise<void>;
-  onStateChanged?(): void;
+  onStateChanged?(): void | Promise<void>;
 }
 
 export interface LocalTapSelectionState {
@@ -28,7 +28,7 @@ export class LocalTapSelectionService {
   async selectLocal(localId: string): Promise<TapSelectionSnapshot> {
     const snapshot = await this.options.createSnapshot({ source: "local", localId });
     this.localSnapshot = clone(snapshot);
-    this.options.onStateChanged?.();
+    await this.options.onStateChanged?.();
     return clone(snapshot);
   }
 
@@ -62,7 +62,7 @@ export class LocalTapSelectionService {
       }
     }
     this.trimContentSnapshots();
-    this.options.onStateChanged?.();
+    await this.options.onStateChanged?.();
   }
 
   async rememberHubStateMappings(
@@ -100,7 +100,7 @@ export class LocalTapSelectionService {
       }
     }
     this.trimContentSnapshots();
-    if (changed) this.options.onStateChanged?.();
+    if (changed) await this.options.onStateChanged?.();
   }
 
   recordHubState(state: HubDeviceState): void {
@@ -148,11 +148,11 @@ export class LocalTapSelectionService {
     return this.selectLocal(fallbackLocalId);
   }
 
-  clear(): void {
+  async clear(): Promise<void> {
     this.hubState = undefined;
     this.localSnapshot = undefined;
     this.contentSnapshots.clear();
-    this.options.onStateChanged?.();
+    await this.options.onStateChanged?.();
   }
 
   serialize(): LocalTapSelectionState {

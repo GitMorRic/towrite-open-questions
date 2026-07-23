@@ -3554,6 +3554,16 @@
   box-shadow: inset 3px 0 0 var(--background-modifier-border-hover);
 }
 
+.towrite-device-status-card {
+  display: grid;
+  gap: 8px;
+  padding: 11px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 11px;
+  background: var(--background-primary);
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--color-cyan) 58%, var(--background-modifier-border));
+}
+
 .towrite-hub-card-head {
   display: flex;
   align-items: flex-start;
@@ -3596,6 +3606,123 @@
 .towrite-hub-card-head > span.online {
   color: var(--color-green);
   background: color-mix(in srgb, var(--color-green) 12%, transparent);
+}
+
+.towrite-hub-card-head > span.waiting {
+  color: var(--color-orange);
+  background: color-mix(in srgb, var(--color-orange) 12%, transparent);
+}
+
+.towrite-hub-card-head > span.error {
+  color: var(--color-red);
+  background: color-mix(in srgb, var(--color-red) 10%, transparent);
+}
+
+.towrite-device-connection-rows {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.towrite-device-connection-rows > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  padding: 7px 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-secondary);
+}
+
+.towrite-device-connection-rows span {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-muted);
+  font-size: 9px;
+}
+
+.towrite-device-connection-rows span i {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+
+.towrite-device-connection-rows span.online {
+  color: var(--color-green);
+}
+
+.towrite-device-connection-rows span.online i {
+  background: var(--color-green);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-green) 15%, transparent);
+}
+
+.towrite-device-connection-rows span.error {
+  color: var(--color-red);
+}
+
+.towrite-device-connection-rows span.error i {
+  background: var(--color-red);
+}
+
+.towrite-device-connection-rows strong,
+.towrite-device-connection-rows small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.towrite-device-connection-rows strong {
+  font-size: 10px;
+}
+
+.towrite-device-connection-rows small {
+  color: var(--text-faint);
+  font-size: 9px;
+}
+
+.towrite-device-status-error {
+  margin: 0;
+  padding: 6px 7px;
+  border-radius: 7px;
+  color: var(--color-red);
+  background: color-mix(in srgb, var(--color-red) 8%, transparent);
+  font-size: 9px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.towrite-device-status-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-faint);
+  font-family: var(--font-monospace);
+  font-size: 9px;
+}
+
+.towrite-device-status-footer span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.towrite-device-status-footer button {
+  width: 26px;
+  min-width: 26px;
+  height: 24px;
+  min-height: 24px;
+  padding: 0;
+  box-shadow: none;
+}
+
+@media (max-width: 420px) {
+  .towrite-device-connection-rows {
+    grid-template-columns: 1fr;
+  }
 }
 
 .towrite-hub-card > p {

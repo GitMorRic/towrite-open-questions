@@ -15,6 +15,7 @@ import type { WorkflowIndexPayload } from "../workflow";
 import type { ProactiveSuggestion, ProactiveSuggestionAction } from "../suggestions";
 import type { DeviceLibrarySnapshot, HubDeviceState, HubFeedbackAction, HubSelectionMode } from "../hub";
 import type { InboxDeviceEligibility, InboxSnapshot } from "../inbox/types";
+import type { SmallScreenConnectionStatus } from "../device-status";
 
 export interface ActiveLineRange {
   filePath: string;
@@ -45,6 +46,7 @@ export interface ToWriteUiApi {
   getInboxSnapshot(): InboxSnapshot;
   getInboxItemDeviceEligibility(id: string): InboxDeviceEligibility;
   getDeviceHubState(): HubDeviceState | undefined;
+  getSmallScreenConnectionStatus(): SmallScreenConnectionStatus;
   getDeviceContentLibrary(): DeviceLibrarySnapshot;
   getDefaultColor(lane: OpenQuestionLane): OpenQuestionColor;
   renderMarkdown(markdown: string, element: HTMLElement, sourcePath: string): Promise<void>;

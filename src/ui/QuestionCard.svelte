@@ -40,7 +40,7 @@
     Trash2
   } from "lucide-svelte";
   import type { OpenQuestion, OpenQuestionKind, OpenQuestionLane } from "../core/types";
-  import type { DeviceLibraryEntry } from "../hub";
+  import { canManuallySendDeviceLibraryEntry, type DeviceLibraryEntry } from "../hub";
   import { stripQuestionRuleSyntax } from "../core/rule-text";
   import type { LinkSuggestion, ToWriteUiApi } from "./api";
   import MarkdownPreview from "./MarkdownPreview.svelte";
@@ -81,6 +81,7 @@
   let aiLoading = false;
   let hubSending = false;
   let aiError: string | undefined;
+  let deviceSendError = "";
   let pathExpanded = false;
   let titleDraft = "";
   let noteDraft = "";
@@ -768,10 +769,11 @@
       return;
     }
     hubSending = true;
+    deviceSendError = "";
     try {
       await api.sendQuestionToDeviceHub(question.id);
-    } catch {
-      // The plugin already presents the actionable Hub error as an Obsidian Notice.
+    } catch (error) {
+      deviceSendError = error instanceof Error ? error.message : String(error);
     } finally {
       hubSending = false;
     }
@@ -784,7 +786,7 @@
   function showDeviceLibraryMenu(event: MouseEvent) {
     event.preventDefault();
     const menu = new Menu();
-    if (deviceLibraryEntry?.eligible) {
+    if (canManuallySendDeviceLibraryEntry(deviceLibraryEntry)) {
       menu.addItem((item) => item.setTitle(copy.sendToScreen).setIcon("monitor-up").onClick(() => void sendToDeviceHub()));
     }
     menu.addItem((item) => item
@@ -1208,8 +1210,8 @@
     <button type="button" title={copy.answerCapture} aria-label={copy.answerCapture} aria-haspopup="dialog" on:click={() => api.openCaptureForQuestion(question.id)}>
       <MessageSquarePlus size={15} />
     </button>
-    {#if api.getDeviceHubState() && isMarkdownSource && !["candidate", "resolved", "ignored"].includes(question.status)}
-      <button type="button" class:towrite-ai-loading={hubSending} title={deviceLibraryEntry?.eligible ? (hubSending ? copy.sendingToScreen : copy.sendToScreen) : (deviceLibraryEntry?.exclusionReason === "privacy" ? "Excluded by Device Hub privacy rules" : copy.sendToScreen)} on:click={sendToDeviceHub} on:contextmenu={showDeviceLibraryMenu} disabled={hubSending || !deviceLibraryEntry?.eligible}>
+    {#if isMarkdownSource && !["candidate", "resolved", "ignored"].includes(question.status)}
+      <button type="button" class:towrite-ai-loading={hubSending} title={canManuallySendDeviceLibraryEntry(deviceLibraryEntry) ? (hubSending ? copy.sendingToScreen : copy.sendToScreen) : (deviceLibraryEntry?.exclusionReason === "privacy" ? "Excluded by Device Hub privacy rules" : copy.sendToScreen)} on:click={sendToDeviceHub} on:contextmenu={showDeviceLibraryMenu} disabled={hubSending || !canManuallySendDeviceLibraryEntry(deviceLibraryEntry)}>
         <MonitorUp size={15} />
       </button>
       <button type="button" class:towrite-action-active={deviceLibraryEntry?.inLibrary} title={copy.manageDeviceLibrary} aria-haspopup="menu" on:click={showDeviceLibraryMenu} on:contextmenu={showDeviceLibraryMenu}>
@@ -1272,5 +1274,8 @@
       <Trash2 size={15} />
     </button>
   </div>
+  {#if deviceSendError}
+    <p class="towrite-ai-error" role="alert">{language === "zh" ? `发送到小屏失败：${deviceSendError}` : `Could not send to the display: ${deviceSendError}`}</p>
+  {/if}
   {/if}
 </article>

@@ -49,6 +49,23 @@ import {
   queryFromUrl
 } from "./payloads";
 
+export interface ExternalApiRuntimeStatus {
+  running: boolean;
+  startedAt?: string;
+  stoppedAt?: string;
+  lastPollAt?: string;
+  lastTargetId?: string;
+  lastServedCardId?: string;
+  lastServedTitle?: string;
+  lastPlaylistRevision?: string;
+  lastEventAt?: string;
+  lastEventAction?: DeviceActionIntent;
+  lastErrorAt?: string;
+  lastErrorStatus?: number;
+  lastError?: string;
+  successfulPolls: number;
+}
+
 interface ExternalApiServerOptions {
   pluginVersion: string;
   getSettings(): ToWriteExternalApiSettings;
@@ -75,6 +92,8 @@ interface ExternalApiServerOptions {
   undoCapture?(captureId: string, undoToken: string): Promise<CaptureUndoResult>;
   /** Advances the local small-screen playlist after a mapped hardware button event. */
   advanceDevicePage?(direction: "next" | "prev"): Promise<void>;
+  /** Receives safe, in-memory connection diagnostics without credentials or Vault data. */
+  onRuntimeStatusChanged?(status: ExternalApiRuntimeStatus): void;
   subscribe(listener: () => void): () => void;
 }
 
@@ -205,8 +224,20 @@ export class ToWriteExternalApiServer {
   private readonly pushSseClients = new Map<HttpResponse, string | undefined>();
   private readonly handoffs = new Map<string, DeviceHandoff>();
   private readonly deviceEventRecords = new Map<string, DeviceEventRecord>();
+  private runtimeStatus: ExternalApiRuntimeStatus = {
+    running: false,
+    successfulPolls: 0
+  };
 
   constructor(private readonly options: ExternalApiServerOptions) {}
+
+  isRunning(): boolean {
+    return this.runtimeStatus.running;
+  }
+
+  getRuntimeStatus(): ExternalApiRuntimeStatus {
+    return { ...this.runtimeStatus };
+  }
 
   async start(): Promise<void> {
     const settings = this.options.getSettings();
@@ -217,6 +248,15 @@ export class ToWriteExternalApiServer {
     const token = settings.token.trim();
     const bindHost = normalizeExternalApiBindHost(settings.bindHost);
     if (!token) {
+      const at = new Date().toISOString();
+      this.updateRuntimeStatus({
+        ...emptyRuntimeSessionStatus(),
+        running: false,
+        stoppedAt: at,
+        lastErrorAt: at,
+        lastErrorStatus: 400,
+        lastError: "External API failed to start."
+      });
       throw new ExternalApiError(400, "External API token is missing.");
     }
 
@@ -228,18 +268,42 @@ export class ToWriteExternalApiServer {
       this.broadcastUpdate();
     });
 
-    await new Promise<void>((resolve, reject) => {
-      let settled = false;
-      server.on("error", (error) => {
-        if (!settled) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        server.on("error", (error) => {
+          if (!settled) {
+            settled = true;
+            reject(error);
+          }
+        });
+        server.listen(settings.port, bindHost, () => {
           settled = true;
-          reject(error);
-        }
+          resolve();
+        });
       });
-      server.listen(settings.port, bindHost, () => {
-        settled = true;
-        resolve();
+    } catch (error) {
+      if (this.server === server) {
+        this.server = undefined;
+      }
+      this.unsubscribe?.();
+      this.unsubscribe = undefined;
+      const at = new Date().toISOString();
+      this.updateRuntimeStatus({
+        ...emptyRuntimeSessionStatus(),
+        running: false,
+        stoppedAt: at,
+        lastErrorAt: at,
+        lastErrorStatus: 500,
+        lastError: "External API failed to start."
       });
+      throw error;
+    }
+    this.updateRuntimeStatus({
+      ...emptyRuntimeSessionStatus(),
+      running: true,
+      startedAt: new Date().toISOString(),
+      stoppedAt: undefined
     });
   }
 
@@ -257,13 +321,24 @@ export class ToWriteExternalApiServer {
     this.pushSseClients.clear();
 
     const server = this.server;
+    const wasRunning = this.runtimeStatus.running;
     this.server = undefined;
     if (!server) {
+      if (wasRunning) {
+        this.updateRuntimeStatus({
+          running: false,
+          stoppedAt: new Date().toISOString()
+        });
+      }
       return;
     }
 
     await new Promise<void>((resolve) => {
       server.close(() => resolve());
+    });
+    this.updateRuntimeStatus({
+      running: false,
+      stoppedAt: new Date().toISOString()
     });
   }
 
@@ -330,13 +405,10 @@ export class ToWriteExternalApiServer {
 
       throw new ExternalApiError(405, "Method not allowed.");
     } catch (error) {
-      const apiError = error instanceof ExternalApiError
-        ? error
-        : error instanceof CaptureConflictError
-          ? new ExternalApiError(409, error.message)
-          : error instanceof CaptureUndoTokenError
-            ? new ExternalApiError(400, error.message)
-        : new ExternalApiError(500, error instanceof Error ? error.message : String(error));
+      const apiError = normalizeExternalApiError(error);
+      if (this.shouldRecordEinkRouteError(request, url, method)) {
+        this.recordDeviceRouteError(apiError);
+      }
       this.writeJson(response, apiError.statusCode, {
         error: apiError.message
       });
@@ -424,11 +496,15 @@ export class ToWriteExternalApiServer {
       if (this.options.getEinkPayload) {
         const query = queryFromUrl(url);
         delete query.limit;
-        this.writeJson(response, 200, this.options.getEinkPayload(limit, cursor, query));
+        const payload = this.options.getEinkPayload(limit, cursor, query);
+        this.writeJson(response, 200, payload);
+        this.recordSuccessfulEinkPoll(payload, targetId);
         return;
       }
       const questions = this.options.getQuestions(queryFromUrl(url));
-      this.writeJson(response, 200, buildExternalEinkPayload(vaultName, questions, this.options.getArticleSummaries(), limit));
+      const payload = buildExternalEinkPayload(vaultName, questions, this.options.getArticleSummaries(), limit);
+      this.writeJson(response, 200, payload);
+      this.recordSuccessfulEinkPoll(payload, targetId);
       return;
     }
 
@@ -580,36 +656,43 @@ export class ToWriteExternalApiServer {
     if (url.pathname === "/api/v1/device/events") {
       const body = await readJsonBody(request);
       const event = this.readDeviceEvent(body);
-      this.assertDeviceTargetAuthorization(request, url, "POST", event.targetId);
-      const fingerprint = deviceEventFingerprint(event);
-      const cached = this.deviceEventRecords.get(event.eventId);
-      if (cached) {
-        if (cached.fingerprint !== fingerprint) {
-          throw new ExternalApiError(409, "The event id was already used with different data.");
-        }
-        const cachedResult = cached.result ?? await cached.pending;
-        if (!cachedResult) {
-          throw new ExternalApiError(409, "The event is already being processed.");
-        }
-        this.writeJson(response, 200, { ...cachedResult, duplicate: true });
-        return;
-      }
-      const record: DeviceEventRecord = { fingerprint };
-      record.pending = this.processDeviceEvent(request, url, event);
-      this.deviceEventRecords.set(event.eventId, record);
       try {
-        const result = await record.pending;
-        record.result = result;
-        record.pending = undefined;
-        this.trimDeviceEventRecords();
-        this.writeJson(response, 200, result);
+        this.assertDeviceTargetAuthorization(request, url, "POST", event.targetId);
+        const fingerprint = deviceEventFingerprint(event);
+        const cached = this.deviceEventRecords.get(event.eventId);
+        if (cached) {
+          if (cached.fingerprint !== fingerprint) {
+            throw new ExternalApiError(409, "The event id was already used with different data.");
+          }
+          const cachedResult = cached.result ?? await cached.pending;
+          if (!cachedResult) {
+            throw new ExternalApiError(409, "The event is already being processed.");
+          }
+          this.writeJson(response, 200, { ...cachedResult, duplicate: true });
+          return;
+        }
+        const record: DeviceEventRecord = { fingerprint };
+        record.pending = this.processDeviceEvent(request, url, event);
+        this.deviceEventRecords.set(event.eventId, record);
+        try {
+          const result = await record.pending;
+          record.result = result;
+          record.pending = undefined;
+          this.trimDeviceEventRecords();
+          this.writeJson(response, 200, result);
+        } catch (error) {
+          if (this.deviceEventRecords.get(event.eventId) === record) {
+            this.deviceEventRecords.delete(event.eventId);
+          }
+          throw error;
+        }
+        return;
       } catch (error) {
-        if (this.deviceEventRecords.get(event.eventId) === record) {
-          this.deviceEventRecords.delete(event.eventId);
+        if (this.isKnownDeviceTarget(event.targetId)) {
+          this.recordDeviceRouteError(normalizeExternalApiError(error));
         }
         throw error;
       }
-      return;
     }
 
     if (url.pathname === "/api/v1/device/handoffs") {
@@ -854,7 +937,62 @@ export class ToWriteExternalApiServer {
       await this.options.advanceDevicePage(result.action);
     }
     await this.recordDeviceEventFeedback(event, result);
+    this.updateRuntimeStatus({
+      lastEventAt: new Date().toISOString(),
+      lastEventAction: result.action
+    });
     return result;
+  }
+
+  private recordSuccessfulEinkPoll(payload: ExportEinkPayload, targetId?: string): void {
+    const first = payload.focus[0];
+    this.updateRuntimeStatus({
+      lastPollAt: new Date().toISOString(),
+      lastTargetId: safeRuntimeText(targetId, 160),
+      lastServedCardId: safeRuntimeText(first?.id, 200),
+      lastServedTitle: safeRuntimeText(first?.title, 200),
+      lastPlaylistRevision: safeRuntimeText(payload.playlist?.revision, 160),
+      successfulPolls: this.runtimeStatus.successfulPolls + 1
+    });
+  }
+
+  private recordDeviceRouteError(error: ExternalApiError): void {
+    const at = new Date().toISOString();
+    this.updateRuntimeStatus({
+      lastErrorAt: at,
+      lastErrorStatus: error.statusCode,
+      lastError: safeDeviceRouteError(error.statusCode)
+    });
+  }
+
+  private isKnownDeviceTarget(targetId: string | undefined): boolean {
+    const normalized = targetId?.trim();
+    return Boolean(normalized && this.options.getPushTargets?.().some((target) => target.id === normalized));
+  }
+
+  private shouldRecordEinkRouteError(request: HttpRequest, url: URL, method: string): boolean {
+    if (method !== "GET" || url.pathname !== "/api/v1/eink") {
+      return false;
+    }
+    const targetId = url.searchParams.get("targetId")?.trim();
+    if (!this.isKnownDeviceTarget(targetId)) {
+      return false;
+    }
+    // Only a recognized master/scoped credential may affect operator-visible
+    // diagnostics. Random probes and stale public requests remain invisible.
+    return this.isAuthorized(request, url, method);
+  }
+
+  private updateRuntimeStatus(patch: Partial<ExternalApiRuntimeStatus>): void {
+    this.runtimeStatus = {
+      ...this.runtimeStatus,
+      ...patch
+    };
+    try {
+      this.options.onRuntimeStatusChanged?.(this.getRuntimeStatus());
+    } catch {
+      // Diagnostics must never interrupt a device request or service lifecycle.
+    }
   }
 
   private async recordDeviceEventFeedback(event: DeviceEventInput, result: DeviceEventResult): Promise<void> {
@@ -1123,6 +1261,61 @@ export class ToWriteExternalApiServer {
     response.setHeader("content-type", contentType);
     response.end(payload);
   }
+}
+
+function emptyRuntimeSessionStatus(): Pick<
+  ExternalApiRuntimeStatus,
+  | "startedAt"
+  | "lastPollAt"
+  | "lastTargetId"
+  | "lastServedCardId"
+  | "lastServedTitle"
+  | "lastPlaylistRevision"
+  | "lastEventAt"
+  | "lastEventAction"
+  | "lastErrorAt"
+  | "lastErrorStatus"
+  | "lastError"
+  | "successfulPolls"
+> {
+  return {
+    startedAt: undefined,
+    lastPollAt: undefined,
+    lastTargetId: undefined,
+    lastServedCardId: undefined,
+    lastServedTitle: undefined,
+    lastPlaylistRevision: undefined,
+    lastEventAt: undefined,
+    lastEventAction: undefined,
+    lastErrorAt: undefined,
+    lastErrorStatus: undefined,
+    lastError: undefined,
+    successfulPolls: 0
+  };
+}
+
+function normalizeExternalApiError(error: unknown): ExternalApiError {
+  return error instanceof ExternalApiError
+    ? error
+    : error instanceof CaptureConflictError
+      ? new ExternalApiError(409, error.message)
+      : error instanceof CaptureUndoTokenError
+        ? new ExternalApiError(400, error.message)
+        : new ExternalApiError(500, error instanceof Error ? error.message : String(error));
+}
+
+function safeRuntimeText(value: string | undefined, maxLength: number): string | undefined {
+  const normalized = value?.trim();
+  return normalized ? normalized.slice(0, maxLength) : undefined;
+}
+
+function safeDeviceRouteError(status: number): string {
+  if (status === 400) return "The device request was invalid.";
+  if (status === 401 || status === 403) return "Device authorization failed for the requested target.";
+  if (status === 404) return "The device route was not found.";
+  if (status === 409) return "The device request conflicts with an earlier event.";
+  if (status === 429) return "The device request was rate limited.";
+  return "The device route failed.";
 }
 
 function setCorsHeaders(response: HttpResponse): void {

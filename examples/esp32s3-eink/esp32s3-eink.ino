@@ -20,6 +20,10 @@ const int PREVIOUS_BUTTON_PIN = -1;
 
 const unsigned long POLL_INTERVAL_MS = 5000;
 const unsigned long BUTTON_DEBOUNCE_MS = 45;
+const unsigned long WIFI_CONNECT_TIMEOUT_MS = 20000;
+// A narrow status footer may use a partial refresh. Do not full-refresh the
+// complete panel every five seconds just to update connectivity text.
+const unsigned long STATUS_FOOTER_REFRESH_MS = 60000;
 
 struct ButtonState {
   int pin;
@@ -33,9 +37,22 @@ ButtonState nextButton = {NEXT_BUTTON_PIN, "right", false, false, 0};
 ButtonState previousButton = {PREVIOUS_BUTTON_PIN, "left", false, false, 0};
 
 unsigned long lastPollAt = 0;
+unsigned long lastStatusRenderAt = 0;
 uint32_t bootNonce = 0;
 String lastRenderedCardId;
 String lastPlaylistRevision;
+String lastStatusFingerprint;
+
+struct ConnectionState {
+  bool wifiOk;
+  bool apiOk;
+  bool hasSuccessfulSync;
+  int lastHttpStatus;
+  unsigned long lastSuccessfulSyncAt;
+  String lastError;
+};
+
+ConnectionState connectionState = {false, false, false, 0, 0, ""};
 
 void setup() {
   Serial.begin(115200);
@@ -43,8 +60,11 @@ void setup() {
   bootNonce = esp_random();
   configureButton(nextButton);
   configureButton(previousButton);
-  connectWifi();
-  refreshEinkPayload(true);
+  if (connectWifi()) {
+    refreshEinkPayload(true);
+  } else {
+    lastPollAt = millis();
+  }
 }
 
 void loop() {
@@ -85,24 +105,42 @@ void pollButton(ButtonState& button) {
   }
 }
 
-void connectWifi() {
+bool connectWifi() {
+  if (WiFi.status() == WL_CONNECTED) {
+    connectionState.wifiOk = true;
+    return true;
+  }
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   Serial.print("Connecting WiFi");
-  while (WiFi.status() != WL_CONNECTED) {
+  const unsigned long startedAt = millis();
+  while (WiFi.status() != WL_CONNECTED
+      && millis() - startedAt < WIFI_CONNECT_TIMEOUT_MS) {
     Serial.print(".");
     delay(500);
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    connectionState.wifiOk = false;
+    markConnectionError("WiFi connection timed out", 0);
+    WiFi.disconnect();
+    return false;
   }
   Serial.println();
   Serial.print("WiFi connected: ");
   Serial.println(WiFi.localIP());
+  connectionState.wifiOk = true;
+  return true;
 }
 
 void refreshEinkPayload(bool forceRender) {
-  if (WiFi.status() != WL_CONNECTED) {
-    connectWifi();
-  }
   lastPollAt = millis();
+  if (WiFi.status() != WL_CONNECTED && !connectWifi()) {
+    // Start the retry interval after the bounded connection attempt, otherwise
+    // a 20-second timeout would immediately enter another blocking attempt.
+    lastPollAt = millis();
+    return;
+  }
+  connectionState.wifiOk = true;
 
   const String url = String(API_BASE_URL)
     + "/api/v1/eink?targetId=" + urlEncode(DEVICE_TARGET_ID)
@@ -113,34 +151,42 @@ void refreshEinkPayload(bool forceRender) {
   http.addHeader("Authorization", String("Bearer ") + DEVICE_TOKEN);
   const int code = http.GET();
   if (code != 200) {
-    renderError(String("GET /api/v1/eink -> HTTP ") + code);
     http.end();
+    markConnectionError(String("GET /api/v1/eink returned HTTP ") + code, code);
     return;
   }
 
   const String body = http.getString();
   http.end();
 
-  StaticJsonDocument<24576> doc;
+  // Keep the relatively large response buffer on the heap. A 24 KiB local
+  // StaticJsonDocument can overflow the Arduino loop task stack on ESP32-S3.
+  DynamicJsonDocument doc(24576);
   const DeserializationError error = deserializeJson(doc, body);
   if (error) {
-    renderError(String("JSON parse failed: ") + error.c_str());
+    markConnectionError(String("JSON parse failed: ") + error.c_str(), code);
     return;
   }
+  markConnectionSuccess(code);
 
   JsonObject summary = doc["summary"];
   JsonArray focus = doc["focus"].as<JsonArray>();
   JsonObject playlist = doc["playlist"];
   const String revision = playlist["revision"] | "";
+  const String statusText = connectionStatusText();
   if (focus.size() == 0) {
     if (forceRender || lastRenderedCardId.length() > 0 || revision != lastPlaylistRevision) {
       renderEmpty(
         summary["open"] | 0,
         summary["candidate"] | 0,
-        summary["blockedArticles"] | 0
+        summary["blockedArticles"] | 0,
+        statusText
       );
       lastRenderedCardId = "";
       lastPlaylistRevision = revision;
+      rememberRenderedStatus();
+    } else {
+      renderConnectionStatusIfNeeded(false);
     }
     return;
   }
@@ -148,6 +194,7 @@ void refreshEinkPayload(bool forceRender) {
   JsonObject card = focus[0];
   const String cardId = card["id"] | "";
   if (!forceRender && cardId == lastRenderedCardId && revision == lastPlaylistRevision) {
+    renderConnectionStatusIfNeeded(false);
     return; // Polling never refreshes unchanged e-ink pixels.
   }
 
@@ -165,15 +212,17 @@ void refreshEinkPayload(bool forceRender) {
     card["article"] | "",
     card["lane"] | "",
     card["sourceType"] | "question",
-    summaryText
+    summaryText,
+    statusText
   );
   lastRenderedCardId = cardId;
   lastPlaylistRevision = revision;
+  rememberRenderedStatus();
 }
 
 void sendButtonEvent(const char* buttonName) {
-  if (WiFi.status() != WL_CONNECTED) {
-    connectWifi();
+  if (WiFi.status() != WL_CONNECTED && !connectWifi()) {
+    return;
   }
 
   StaticJsonDocument<512> event;
@@ -190,11 +239,12 @@ void sendButtonEvent(const char* buttonName) {
   http.addHeader("Authorization", String("Bearer ") + DEVICE_TOKEN);
   http.addHeader("Content-Type", "application/json");
   const int code = http.POST(payload);
-  const String response = http.getString();
   http.end();
 
   if (code != 200) {
-    renderError(String("POST button ") + buttonName + " -> HTTP " + code + " " + response);
+    // Do not render or log the response body: it is untrusted and is not needed
+    // to diagnose target/token mismatch. The long-lived token is never shown.
+    markConnectionError(String("POST button ") + buttonName + " returned HTTP " + code, code);
     return;
   }
 
@@ -218,18 +268,27 @@ void renderCard(
   const String& article,
   const String& lane,
   const String& sourceType,
-  const String& summaryText
+  const String& summaryText,
+  const String& connectionText
 ) {
   // Replace this Serial output with GxEPD2/Waveshare/LilyGo drawing calls.
+  // Reserve a narrow footer for connectionText so the physical screen shows
+  // Wi-Fi/API state, target ID, and last successful sync without exposing keys.
   Serial.println("----- ToWrite E-ink Card -----");
   Serial.println(summaryText);
   Serial.println(sourceType + " | " + lane + " | " + article);
   Serial.println(title);
   Serial.println(body);
+  Serial.println(connectionText);
   Serial.println("------------------------------");
 }
 
-void renderEmpty(int openCount, int candidateCount, int blockedArticles) {
+void renderEmpty(
+  int openCount,
+  int candidateCount,
+  int blockedArticles,
+  const String& connectionText
+) {
   Serial.println("----- ToWrite E-ink Card -----");
   Serial.println("No paging cards.");
   Serial.print("open: ");
@@ -238,13 +297,96 @@ void renderEmpty(int openCount, int candidateCount, int blockedArticles) {
   Serial.println(candidateCount);
   Serial.print("blocked articles: ");
   Serial.println(blockedArticles);
+  Serial.println(connectionText);
   Serial.println("------------------------------");
 }
 
-void renderError(const String& message) {
+void renderError(const String& message, const String& connectionText) {
+  // This is a display hook, not only a logging callback. In the real panel
+  // implementation, draw message plus connectionText in an error/status region.
+  // A partial refresh is sufficient; keep the previous card body visible.
   Serial.println("----- ToWrite API Error -----");
   Serial.println(message);
+  Serial.println(connectionText);
   Serial.println("-----------------------------");
+}
+
+void renderConnectionStatus(const String& connectionText, bool isError) {
+  // Replace this with a partial-window refresh of only the footer. It is called
+  // immediately on a state transition and at most once per minute while stable,
+  // so healthy five-second polling does not full-refresh the entire panel.
+  Serial.print(isError ? "[status:error] " : "[status:ok] ");
+  Serial.println(connectionText);
+}
+
+void markConnectionSuccess(int httpStatus) {
+  connectionState.wifiOk = WiFi.status() == WL_CONNECTED;
+  connectionState.apiOk = true;
+  connectionState.hasSuccessfulSync = true;
+  connectionState.lastHttpStatus = httpStatus;
+  connectionState.lastSuccessfulSyncAt = millis();
+  connectionState.lastError = "";
+}
+
+void markConnectionError(const String& message, int httpStatus) {
+  connectionState.wifiOk = WiFi.status() == WL_CONNECTED;
+  connectionState.apiOk = false;
+  connectionState.lastHttpStatus = httpStatus;
+  connectionState.lastError = message.substring(0, 80);
+  const String fingerprint = connectionStatusFingerprint();
+  const bool stateChanged = fingerprint != lastStatusFingerprint;
+  const bool intervalElapsed = millis() - lastStatusRenderAt >= STATUS_FOOTER_REFRESH_MS;
+  if (stateChanged || intervalElapsed) {
+    // Repeated identical failures update only at the status cadence rather than
+    // refreshing the error region on every five-second poll.
+    renderError(connectionState.lastError, connectionStatusText());
+    rememberRenderedStatus();
+  }
+}
+
+String connectionStatusText() {
+  String text = connectionState.wifiOk ? "WiFi OK" : "WiFi OFF";
+  text += connectionState.apiOk ? " | API OK" : " | API ERR";
+  text += " | target ";
+  text += DEVICE_TARGET_ID;
+  if (connectionState.hasSuccessfulSync) {
+    const unsigned long ageSeconds = (millis() - connectionState.lastSuccessfulSyncAt) / 1000;
+    text += " | sync @";
+    text += String(connectionState.lastSuccessfulSyncAt / 1000);
+    text += "s (";
+    text += String(ageSeconds);
+    text += "s ago)";
+  } else {
+    text += " | never synced";
+  }
+  if (!connectionState.apiOk && connectionState.lastHttpStatus != 0) {
+    text += " | HTTP ";
+    text += String(connectionState.lastHttpStatus);
+  }
+  return text;
+}
+
+String connectionStatusFingerprint() {
+  return String(connectionState.wifiOk ? "wifi:1" : "wifi:0")
+    + (connectionState.apiOk ? "|api:1" : "|api:0")
+    + "|http:" + String(connectionState.lastHttpStatus)
+    + "|error:" + connectionState.lastError;
+}
+
+void rememberRenderedStatus() {
+  lastStatusFingerprint = connectionStatusFingerprint();
+  lastStatusRenderAt = millis();
+}
+
+void renderConnectionStatusIfNeeded(bool force) {
+  const String fingerprint = connectionStatusFingerprint();
+  const bool stateChanged = fingerprint != lastStatusFingerprint;
+  const bool intervalElapsed = millis() - lastStatusRenderAt >= STATUS_FOOTER_REFRESH_MS;
+  if (!force && !stateChanged && !intervalElapsed) {
+    return;
+  }
+  renderConnectionStatus(connectionStatusText(), !connectionState.apiOk);
+  rememberRenderedStatus();
 }
 
 String urlEncode(const char* value) {
