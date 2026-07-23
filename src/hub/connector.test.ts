@@ -90,7 +90,8 @@ describe("DeviceHubConnector", () => {
           writeTargetLocalId: "Folder/A.md",
           allowedActions: ["respond"],
           reasonCode: "local-a",
-          score: 0.8
+          score: 0.8,
+          policyBasis: "general"
         },
         {
           localId: "note-b",
@@ -106,6 +107,8 @@ describe("DeviceHubConnector", () => {
           ...local[1]!,
           display: { title: "Backend must not replace display", body: "injected" },
           writeTargetRef: "target_injected",
+          policyBasis: "due",
+          urgency: 1,
           reasonCode: "whitelist explanation",
           score: 12
         },
@@ -124,6 +127,8 @@ describe("DeviceHubConnector", () => {
     expect(uploaded[0].score).toBe(1);
     expect(uploaded[0].display.body).toBeUndefined();
     expect(uploaded[0].writeTargetRef).toBeUndefined();
+    expect(uploaded[0].policyBasis).toBe("general");
+    expect(uploaded[0].urgency).toBe(0);
     expect(uploaded.some((candidate) => candidate.candidateRef === "hc_invented_outside_whitelist")).toBe(false);
   });
 
@@ -155,7 +160,8 @@ describe("DeviceHubConnector", () => {
     expect(client.selections[0]).toMatchObject({
       candidateRef: client.batches[0].candidates[0].candidateRef,
       reason: "manual",
-      score: 0.82
+      score: 0.82,
+      requestVibration: true
     });
     expect(state.selected?.selectedContentId).toBe("cnt_manual");
   });
@@ -223,7 +229,8 @@ function configuredSettings() {
     receiverId: "recv_0123456789abcdef0123456789abcdef",
     deviceId: "dev_0123456789abcdef0123456789abcdef",
     referenceSecret: "0123456789abcdef0123456789abcdef",
-    autoSelect: true
+    autoSelect: true,
+    manualSelectionVibration: true
   };
 }
 

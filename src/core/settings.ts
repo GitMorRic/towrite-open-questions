@@ -7,6 +7,7 @@ import type { AiAssistantState } from "../ai/chat";
 import { DEFAULT_CAPTURE_BRIDGE_SETTINGS } from "../capture-bridge/settings";
 import type { CaptureBridgeSettings } from "../capture-bridge/types";
 import type { LocalTapSelectionState } from "../capture-bridge/selection";
+import type { EchoCard } from "../hub/echo-cards";
 
 export type ToWriteLanguage = "zh" | "en";
 
@@ -136,6 +137,8 @@ export interface ToWriteHubSettings {
   deviceId: string;
   syncIntervalSeconds: number;
   shareDisplayBody: boolean;
+  /** Ask the Hub to vibrate for explicit user "show now" selections. */
+  manualSelectionVibration: boolean;
   /** Compatibility mirror for older settings; selectionMode is authoritative. */
   autoSelect: boolean;
   selectionMode: ToWriteHubSelectionMode;
@@ -148,6 +151,8 @@ export interface ToWriteHubSettings {
   manualHoldUntil: string;
   manualHoldCandidateId: string;
   manualHoldContentId: string;
+  /** Recently consumed schedule occurrence IDs; prevents overlapping cards from alternating in one window. */
+  scheduleOccurrenceIds: string[];
   lastScheduleOccurrenceId: string;
   manualPlace: string;
   manualMode: string;
@@ -212,6 +217,8 @@ export interface ToWriteSettings {
   backend: ToWriteBackendSettings;
   captureBridge: CaptureBridgeSettings;
   inbox: ToWriteInboxSettings;
+  /** User-authored e-ink cards. Built-in examples are immutable presets and are not persisted here. */
+  echoCards: EchoCard[];
   hub: ToWriteHubSettings;
   deviceProfiles: ToWriteDeviceProfileSettings[];
   articleTypes: ArticleTypesSettings;
@@ -547,6 +554,7 @@ export const DEFAULT_SETTINGS: ToWriteSettings = {
     maxItems: 200,
     includeInDeviceCandidates: true
   },
+  echoCards: [],
   hub: {
     enabled: false,
     baseUrl: "http://127.0.0.1:8080",
@@ -558,6 +566,7 @@ export const DEFAULT_SETTINGS: ToWriteSettings = {
     deviceId: "",
     syncIntervalSeconds: 60,
     shareDisplayBody: false,
+    manualSelectionVibration: true,
     autoSelect: true,
     selectionMode: "agent",
     autoAddSelections: true,
@@ -569,6 +578,7 @@ export const DEFAULT_SETTINGS: ToWriteSettings = {
     manualHoldUntil: "",
     manualHoldCandidateId: "",
     manualHoldContentId: "",
+    scheduleOccurrenceIds: [],
     lastScheduleOccurrenceId: "",
     manualPlace: "",
     manualMode: "",

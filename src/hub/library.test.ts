@@ -61,6 +61,19 @@ describe("Device content library", () => {
     expect(scheduledLibraryChoice(snapshot.entries, now, choice?.occurrenceId)).toBeUndefined();
   });
 
+  it("does not cycle through already consumed overlapping schedule occurrences", () => {
+    const schedule = { enabled: true, weekdays: [1], localTime: "10:00", durationMinutes: 30 };
+    const snapshot = buildDeviceLibrary([
+      question("first", { deliveryPolicy: { membership: "included", schedule } }),
+      question("second", { deliveryPolicy: { membership: "included", schedule } })
+    ], options("schedule"));
+    const now = new Date(2026, 6, 20, 10, 5, 0);
+    const first = scheduledLibraryChoice(snapshot.entries, now);
+    const second = scheduledLibraryChoice(snapshot.entries, now, [first!.occurrenceId]);
+    expect(second?.entry.id).not.toBe(first?.entry.id);
+    expect(scheduledLibraryChoice(snapshot.entries, now, [first!.occurrenceId, second!.occurrenceId])).toBeUndefined();
+  });
+
   it("treats a future manual hold as active", () => {
     expect(isManualHoldActive("2026-07-20T10:01:00.000Z", new Date("2026-07-20T10:00:00.000Z"))).toBe(true);
     expect(isManualHoldActive("2026-07-20T09:59:00.000Z", new Date("2026-07-20T10:00:00.000Z"))).toBe(false);

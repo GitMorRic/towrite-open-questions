@@ -536,6 +536,64 @@ describe("external server", () => {
     });
   });
 
+  it("does not embed the External API token in a Bearer-authenticated device feed", async () => {
+    const server = makeServer({
+      getSettings: () => ({
+        enabled: true,
+        bindHost: "0.0.0.0",
+        port: 48321,
+        token: "header-only-secret",
+        allowQueryTokenForRead: true,
+        publicBaseUrl: "http://device-feed.local:48321"
+      })
+    });
+    const response = new FakeResponse();
+
+    await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
+      .handleRequest(new FakeRequest("GET", "/api/v1/device-feed?page=cards", {}, {
+        authorization: "Bearer header-only-secret"
+      }), response);
+
+    expect(response.statusCode).toBe(200);
+    const payload = JSON.parse(response.body);
+    expect(response.body).not.toContain("header-only-secret");
+    expect(payload.screens[0].companionUrl).toBeUndefined();
+    expect(payload.screens[0].items[0].answerUrl).toBeUndefined();
+    expect(payload.screens[0].actions).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ url: expect.stringContaining("token=") })
+    ]));
+  });
+
+  it("preserves browser action links for an explicitly enabled query-token device feed", async () => {
+    const server = makeServer({
+      getSettings: () => ({
+        enabled: true,
+        bindHost: "127.0.0.1",
+        port: 48321,
+        token: "browser-query-secret",
+        allowQueryTokenForRead: true,
+        publicBaseUrl: "http://127.0.0.1:48321"
+      })
+    });
+    const response = new FakeResponse();
+
+    await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
+      .handleRequest(new FakeRequest(
+        "GET",
+        "/api/v1/device-feed?page=cards&token=browser-query-secret",
+        {},
+        { authorization: undefined }
+      ), response);
+
+    expect(response.statusCode).toBe(200);
+    const payload = JSON.parse(response.body);
+    expect(payload.screens[0].companionUrl).toContain("token=browser-query-secret");
+    expect(payload.screens[0].items[0].answerUrl).toContain("token=browser-query-secret");
+    expect(payload.screens[0].actions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ url: expect.stringContaining("token=browser-query-secret") })
+    ]));
+  });
+
   it("records push feedback and context anchors", async () => {
     const calls: unknown[] = [];
     const server = makeServer({

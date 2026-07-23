@@ -238,6 +238,9 @@ function candidateBatchToWire(batch: HubCandidateBatch): Record<string, unknown>
       sensitivity: candidate.sensitivity,
       reason_code: candidate.reasonCode,
       score: candidate.score,
+      urgency: candidate.urgency,
+      context_states: candidate.contextStates,
+      policy_basis: candidate.policyBasis,
       expires_at: candidate.expiresAt
     }))
   };
@@ -292,6 +295,7 @@ function normalizeCapabilities(value: unknown): HubCapabilities {
     manualSelection: readBoolean(record, "manual_selection", "manualSelection"),
     deviceState: readBoolean(record, "device_state", "deviceState"),
     feedback: readBoolean(record, "feedback"),
+    deviceEvents: readOptionalBoolean(record, "device_events", "deviceEvents"),
     longPolling: readOptionalBoolean(record, "long_polling", "longPolling"),
     encryptedCapture: readOptionalBoolean(record, "encrypted_capture", "encryptedCapture"),
     maxCandidates: readNonNegativeInteger(record, "max_candidates", "maxCandidates") || 20

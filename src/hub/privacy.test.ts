@@ -11,9 +11,12 @@ describe("Device Hub candidate privacy", () => {
       display: { title: "Continue this scene", prompt: "What does the character notice?" },
       sourceLocalId: "Projects/Novel/Chapter 1.md",
       writeTargetLocalId: "Projects/Novel/Chapter 1.md#Captures",
-      allowedActions: ["respond", "later"],
+      allowedActions: ["respond", "useful", "later"],
       reasonCode: "Current note / matching project",
       score: 0.9,
+      policyBasis: "due",
+      urgency: 2,
+      contextStates: ["desk_focus", "desk_focus"],
       path: "Projects/Novel/Chapter 1.md",
       rawBody: "PRIVATE NOTE BODY THAT MUST NOT CROSS THE WIRE"
     } as LocalHubCandidate & { path: string; rawBody: string };
@@ -30,7 +33,11 @@ describe("Device Hub candidate privacy", () => {
       sourceRef: expect.stringMatching(/^hs_[A-Za-z0-9_-]{22}$/u),
       writeTargetRef: expect.stringMatching(/^ht_[A-Za-z0-9_-]{22}$/u),
       display: { title: "Continue this scene", prompt: "What does the character notice?" },
-      reasonCode: "current_note_matching_project"
+      reasonCode: "current_note_matching_project",
+      allowedActions: ["respond", "useful", "later"],
+      policyBasis: "due",
+      urgency: 1,
+      contextStates: ["desk_focus"]
     });
     expect(serialized).not.toContain("Projects/Novel");
     expect(serialized).not.toContain("PRIVATE NOTE BODY");

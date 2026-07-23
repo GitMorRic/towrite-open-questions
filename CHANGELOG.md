@@ -1,5 +1,23 @@
 # Changelog / 更新日志
 
+## 0.3.0-beta.8 - 2026-07-23
+
+- Added a user-managed Echo card workbench for 2.7-inch e-ink displays, with blank cards, eight reference templates, a live 264 × 176 monochrome preview, explicit AI inference/simulation/perspective labels, and one-to-three display actions.
+- Echo cards can be sent manually or explicitly opted into Agent, rotation, and daily schedule selection; reference templates remain inert until copied and saved by the user.
+- Unified Echo cards with the local NFC/Capture snapshot path, including opaque Hub refs, local target authorization, revision conflict checks, safe Inbox fallback, and correct generic capture handling for custom question-shaped cards.
+- Added layout budgets, strict persistence normalization, overlapping-schedule de-duplication, double-send protection, and tests that keep template editing off the settings write/network hot path.
+- Manual “show now” selections request vibration by default, while Hub DND/quiet policy silently downgrades them; device-authenticated e-ink buttons can submit idempotent `useful`/`later`/`skip` feedback against the current desired version.
+- Prevented Bearer-authenticated device feeds from embedding the long-lived External API token in generated browser URLs.
+
+中文摘要：
+
+- 设置页新增面向 2.7 英寸墨水屏的 Echo 卡片工作台：支持空白卡、8 个参考模板、264 × 176 黑白实时预览、明确的 AI 推测/模拟/视角标记，以及 1–3 个屏幕操作。
+- Echo 卡可手动发送，也可由用户明确加入 Agent、循环和每日定时选择；参考模板在用户复制并保存前不会进入候选库。
+- Echo 卡与本地 NFC/Capture 快照链路统一，包含 Hub opaque 引用、本地目标授权、修订冲突检查、安全 Inbox 兜底，以及自定义问题卡的正确通用记录行为。
+- 新增小屏布局预算、严格持久化规范化、重叠定时去重、防重复发送，并确保模板输入过程不触发设置写入、网络或索引工作。
+- 手动“立即显示”默认请求振动，但 Hub 在勿扰/静默时段会静默降级；墨水屏可用 Device 鉴权幂等提交 `useful`/`later`/`skip` 按键反馈。
+- 使用 Bearer 鉴权读取设备 Feed 时，不再把长期 External API token 嵌入生成的浏览器链接。
+
 ## 0.3.0-beta.7 - 2026-07-21
 
 - Added a top-level Inbox beside All, ToThink, and ToWrite. It incrementally indexes configured Quick Notes folders and groups pending notes by project or folder without reading note bodies.

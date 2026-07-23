@@ -27,7 +27,15 @@ describe("HubClient", () => {
     expect(init.redirect).toBe("error");
     expect(init.referrerPolicy).toBe("no-referrer");
     const body = JSON.parse(String(init.body)) as Record<string, unknown>;
-    expect(body).toMatchObject({ protocol_version: "1", batch_id: "hbatch_test" });
+    expect(body).toMatchObject({
+      protocol_version: "1",
+      batch_id: "hbatch_test",
+      candidates: [{
+        policy_basis: "accepted_habit",
+        urgency: 0.7,
+        context_states: ["desk_focus"]
+      }]
+    });
     expect(JSON.stringify(body)).toContain("candidate_ref");
     expect(JSON.stringify(body)).not.toContain("candidateRef");
   });
@@ -41,6 +49,7 @@ describe("HubClient", () => {
         manual_selection: true,
         device_state: true,
         feedback: true,
+        device_events: true,
         long_polling: true,
         encrypted_capture: true,
         max_candidates: 20
@@ -69,7 +78,7 @@ describe("HubClient", () => {
     const fetcher = vi.fn(async () => jsonResponse(responses.shift()));
     const client = createClient(fetcher);
 
-    await expect(client.getCapabilities()).resolves.toMatchObject({ longPolling: true, maxCandidates: 20 });
+    await expect(client.getCapabilities()).resolves.toMatchObject({ deviceEvents: true, longPolling: true, maxCandidates: 20 });
     await expect(client.submitContextObservations([{
       observationId: "obs_test",
       source: "manual",
@@ -222,7 +231,10 @@ function candidateBatch(): HubCandidateBatch {
       allowedActions: ["respond"],
       sensitivity: "normal",
       reasonCode: "stale_note",
-      score: 0.8
+      score: 0.8,
+      policyBasis: "accepted_habit",
+      urgency: 0.7,
+      contextStates: ["desk_focus"]
     }]
   };
 }

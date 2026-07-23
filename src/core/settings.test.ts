@@ -12,9 +12,12 @@ describe("settings normalization", () => {
       selectionMode: "agent",
       autoSelect: true,
       autoAddSelections: true,
+      manualSelectionVibration: true,
       rotationIntervalMinutes: 30,
-      manualHoldMinutes: 30
+      manualHoldMinutes: 30,
+      scheduleOccurrenceIds: []
     });
+    expect(DEFAULT_SETTINGS.echoCards).toEqual([]);
   });
 
   it("normalizes Inbox folders and preserves safe defaults for upgraded data", () => {

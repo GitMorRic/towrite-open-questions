@@ -104,6 +104,7 @@ Authorization: Device <device_secret>
 
 - `GET /v1/hub/devices/{deviceId}/desired`
 - `POST /v1/hub/devices/{deviceId}/display-acks`
+- `POST /v1/hub/devices/{deviceId}/events`
 
 知道 `device_id`、`tap_id` 或另一个设备的 secret 均不能通过鉴权。轮换后旧 secret 必须立即失效；撤销设备后所有设备接口必须立即拒绝。
 
@@ -113,7 +114,7 @@ Authorization: Device <device_secret>
 | --- | --- | --- |
 | ToWrite Connector / 账户 PWA | `Authorization: Bearer <access_token>` | 账户内获准的 Receiver、设备、选择、状态、写回 |
 | Receiver Connector | Bearer，或迁移期的 `X-Receiver-Token` | 仅绑定 Receiver 的候选与上下文 |
-| ESP32 | `Authorization: Device <device_secret>` | 只读本设备 desired、提交本设备 ACK |
+| ESP32 | `Authorization: Device <device_secret>` | 只读本设备 desired、提交本设备 ACK 与受限按键反馈 |
 | 外部留言者 | `Authorization: Sender <sender_key>` | 仅指定 mailbox 的 `messages:create` |
 | Tap 页面 | URL 中只有 `tap_id`；写操作另需登录、CSRF | 只读本次卡片；登录后提交本次反馈/加密回答 |
 
@@ -145,15 +146,18 @@ human_message        wellbeing_reminder
   },
   "source_ref": "hs_BSC3GLQq73fhdCjpxRgv0Q",
   "write_target_ref": "ht_qB4B5cFbI_OieR6wDGnB0w",
-  "allowed_actions": ["open", "respond", "later", "skip"],
+  "allowed_actions": ["open", "respond", "useful", "later", "skip"],
   "sensitivity": "normal",
   "reason_code": "stale_note",
   "score": 0.72,
+  "urgency": 0,
+  "context_states": [],
+  "policy_basis": "general",
   "expires_at": "2026-07-20T12:00:00Z"
 }
 ```
 
-`source_ref` 和 `write_target_ref` 必须是 Connector 生成的 opaque 引用。Hub 不得从中推断路径；只有原 Connector 能把它们解析回本地目标。
+`source_ref` 和 `write_target_ref` 必须是 Connector 生成的 opaque 引用。Hub 不得从中推断路径；只有原 Connector 能把它们解析回本地目标。`policy_basis` 只能来自 Connector 的确定性策略（`general`、`due` 或 `accepted_habit`），可选 AI 重排不得覆盖它；候选不能声明 `manual`，该通知依据只能由显式手动选择接口授予。
 
 ### 4.2 ContextObservation 与 ContextSnapshot
 
@@ -207,7 +211,7 @@ exercising         resting          do_not_disturb
 - 新选择在数据库事务中令 `state_version + 1`，并更新 selected；不得同时假装 displayed 已更新。
 - 设备只能渲染高于其本地已应用版本的 desired。
 - ACK 只有在 `selection_id`、`state_version`、`content_id` 和 `revision_id` 全部等于当前 selected，且 `status=displayed` 时才被接受。
-- 重复 ACK 按 `ack_id` 幂等返回；迟到、乱序、跨设备或字段不一致的 ACK 只记审计，绝不能覆盖更高版本的 selected 或 displayed。
+- 只有 payload 完全一致的 ACK 才按 `ack_id` 幂等返回；同一 ID 携带不同 tuple、状态或 payload 时返回 `409`。迟到、乱序、跨设备或字段不一致的 ACK 只记审计，绝不能覆盖更高版本的 selected 或 displayed。
 - 服务器重启后 selected 和 displayed 均保持；设备离线或重试不回滚状态。
 
 示例：
@@ -231,7 +235,7 @@ Tap Router 优先冻结最近成功的 displayed；尚无任何成功 ACK 时才
 GET /v1/hub/capabilities
 ```
 
-返回协议版本、最多候选数、内容/上下文类型、最大长轮询时间、ACK 支持和鉴权要求。客户端必须在不兼容的 major version 下停止使用 Hub，并回退本地能力。
+返回协议版本、最多候选数、内容/上下文类型、最大长轮询时间、ACK 支持、`device_events` 与鉴权要求。客户端必须在不兼容的 major version 下停止使用 Hub，并回退本地能力。
 
 ### 6.2 上传候选批次
 
@@ -302,11 +306,12 @@ Authorization: Bearer <access_token>
   "score": 1,
   "policy_version": "manual-v1",
   "model_version": "none",
+  "request_vibration": true,
   "expires_at": ""
 }
 ```
 
-内容必须属于账户内与该设备绑定的 Receiver。成功时事务创建 `selection_id`、`delivery_id` 并递增 `state_version`。
+内容必须属于账户内与该设备绑定的 Receiver。成功时事务创建 `selection_id`、`delivery_id` 并递增 `state_version`。显式手动推送使用 `manual` 通知依据；勿扰或静默时段不得拒绝 selection，而是返回 `allow_vibration=false`，让设备静默显示卡片。
 
 ### 6.5 设备长轮询 desired
 
@@ -363,6 +368,25 @@ Content-Type: application/json
 ```
 
 请求体见 4.4。响应包含 `accepted`、`duplicate` 和原因。设备应在完整刷新成功后 ACK；不要在开始绘制前 ACK。若刷新失败，提交 `failed` 便于诊断，然后继续保留上一个本地 displayed/version。
+
+#### 6.6.1 设备提交受限反馈
+
+```http
+POST /v1/hub/devices/{deviceId}/events
+Authorization: Device <device_secret>
+Content-Type: application/json
+```
+
+```json
+{
+  "event_id": "evt_2bfa6e1ac43d4827b946a13b06663303",
+  "selection_id": "sel_…",
+  "state_version": 8,
+  "action": "skip"
+}
+```
+
+只接受 `useful`、`later`、`skip`；`event_id` 必须是 `evt_` 加 32 位小写十六进制。`selection_id` 和 `state_version` 必须与当前 desired 完全一致，否则返回 `409`。完全相同的事件可安全重试；同一 ID 携带不同数据返回 `409`。`skip` 成功后可以提交下一条 selection，但响应只返回 `desired_changed` 和新的 `state_version`；设备仍须通过 `desired` 获取新卡片并正常 ACK。
 
 ### 6.7 查看设备状态
 

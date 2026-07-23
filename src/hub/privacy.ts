@@ -1,4 +1,12 @@
-import { HUB_PROTOCOL_VERSION, type HubCandidate, type HubCandidateBatch, type HubContentAction, type HubContentType } from "./types";
+import {
+  HUB_PROTOCOL_VERSION,
+  type HubCandidate,
+  type HubCandidateBatch,
+  type HubContentAction,
+  type HubContentType,
+  type HubContextState,
+  type HubPolicyBasis
+} from "./types";
 import type { CaptureTargetAction, CaptureTargetKind } from "../capture";
 
 const MAX_HUB_CANDIDATES = 20;
@@ -26,6 +34,10 @@ export interface LocalHubCandidate {
   allowedActions: HubContentAction[];
   reasonCode: string;
   score: number;
+  /** Deterministic notification policy; it is never sourced from an AI rerank. */
+  policyBasis?: HubPolicyBasis;
+  urgency?: number;
+  contextStates?: HubContextState[];
   expiresAt?: string;
   privacy?: {
     private?: boolean;
@@ -122,8 +134,34 @@ async function sanitizeCandidate(candidate: LocalHubCandidate, secret: Uint8Arra
     sensitivity: candidate.privacy?.private ? "private" : "normal",
     reasonCode: normalizeReasonCode(candidate.reasonCode),
     score: Number.isFinite(candidate.score) ? candidate.score : 0,
+    policyBasis: normalizePolicyBasis(candidate.policyBasis),
+    urgency: Number.isFinite(candidate.urgency) ? clamp(candidate.urgency ?? 0, 0, 1) : 0,
+    contextStates: normalizeContextStates(candidate.contextStates),
     expiresAt: normalizeIsoDate(candidate.expiresAt)
   };
+}
+
+function normalizePolicyBasis(value: HubPolicyBasis | undefined): HubPolicyBasis {
+  return value === "due" || value === "accepted_habit" ? value : "general";
+}
+
+function normalizeContextStates(value: readonly HubContextState[] | undefined): HubContextState[] {
+  const allowed = new Set<HubContextState>([
+    "unknown",
+    "desk_focus",
+    "desk_idle",
+    "walking",
+    "outdoors",
+    "commuting",
+    "exercising",
+    "resting",
+    "do_not_disturb"
+  ]);
+  return [...new Set(value ?? [])].filter((state) => allowed.has(state)).slice(0, 6);
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
 }
 
 function cleanDisplayText(value: string | undefined, limit: number): string | undefined {

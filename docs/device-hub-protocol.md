@@ -104,6 +104,7 @@ The Hub stores only a secure hash bound to one user and one `device_id`. The dev
 
 - `GET /v1/hub/devices/{deviceId}/desired`
 - `POST /v1/hub/devices/{deviceId}/display-acks`
+- `POST /v1/hub/devices/{deviceId}/events`
 
 Knowing a device ID or Tap ID is insufficient. A secret from another device must be rejected. Rotation immediately invalidates the old secret; revocation immediately denies all device calls.
 
@@ -113,7 +114,7 @@ Knowing a device ID or Tap ID is insufficient. A secret from another device must
 | --- | --- | --- |
 | ToWrite Connector / account PWA | `Authorization: Bearer <access_token>` | authorized Receivers, devices, selections, state, and writeback |
 | Receiver Connector | Bearer, or migration-only `X-Receiver-Token` | candidates/context for one Receiver |
-| ESP32 | `Authorization: Device <device_secret>` | desired and ACK for exactly one device |
+| ESP32 | `Authorization: Device <device_secret>` | desired, ACK, and bounded button feedback for exactly one device |
 | Guest sender | `Authorization: Sender <sender_key>` | `messages:create` for exactly one mailbox |
 | Tap page | URL contains only `tap_id`; writes additionally require login and CSRF | read the frozen card; submit a response for that session |
 
@@ -145,15 +146,18 @@ An uploaded candidate has the following shape:
   },
   "source_ref": "hs_BSC3GLQq73fhdCjpxRgv0Q",
   "write_target_ref": "ht_qB4B5cFbI_OieR6wDGnB0w",
-  "allowed_actions": ["open", "respond", "later", "skip"],
+  "allowed_actions": ["open", "respond", "useful", "later", "skip"],
   "sensitivity": "normal",
   "reason_code": "stale_note",
   "score": 0.72,
+  "urgency": 0,
+  "context_states": [],
+  "policy_basis": "general",
   "expires_at": "2026-07-20T12:00:00Z"
 }
 ```
 
-`source_ref` and `write_target_ref` are opaque values produced by the Connector. The Hub cannot convert them into paths; only the originating Connector can resolve them locally.
+`source_ref` and `write_target_ref` are opaque values produced by the Connector. The Hub cannot convert them into paths; only the originating Connector can resolve them locally. `policy_basis` is deterministic Connector policy (`general`, `due`, or `accepted_habit`), is preserved across optional AI reranking, and cannot be `manual`; only the explicit selection route may grant the manual notification basis.
 
 ### 4.2 Context observations and snapshots
 
@@ -206,7 +210,7 @@ This is the central protocol invariant:
 - Committing a new selection increments `state_version` in a transaction and updates selected. It does not pretend the display has changed.
 - A device renders only a version greater than the highest version it has applied locally.
 - An ACK is accepted only when `status=displayed` and `selection_id`, `state_version`, `content_id`, and `revision_id` exactly match current selected state.
-- Duplicate ACKs are idempotent by `ack_id`. Late, reordered, cross-device, failed, or mismatched ACKs are auditable but cannot overwrite newer selected or displayed state.
+- Exact duplicate ACKs are idempotent by `ack_id`; reusing an ID with a different tuple, status, or payload returns `409`. Late, reordered, cross-device, failed, or mismatched ACKs are auditable but cannot overwrite newer selected or displayed state.
 - A server restart, device outage, or retry does not reset or roll back either state.
 
 Example:
@@ -230,7 +234,7 @@ The Tap Router freezes the most recent successfully displayed selection. It fall
 GET /v1/hub/capabilities
 ```
 
-Returns the protocol version, maximum candidate count, supported content/context types, maximum long-poll wait, ACK support, and authentication requirements. An incompatible major version causes clients to stop using the Hub and keep local behavior.
+Returns the protocol version, maximum candidate count, supported content/context types, maximum long-poll wait, ACK support, `device_events`, and authentication requirements. An incompatible major version causes clients to stop using the Hub and keep local behavior.
 
 ### 6.2 Upload a candidate batch
 
@@ -299,11 +303,12 @@ Authorization: Bearer <access_token>
   "score": 1,
   "policy_version": "manual-v1",
   "model_version": "none",
+  "request_vibration": true,
   "expires_at": ""
 }
 ```
 
-The content must belong to a Receiver bound to the device. A successful transaction creates `selection_id` and `delivery_id`, and increments `state_version`.
+The content must belong to a Receiver bound to the device. A successful transaction creates `selection_id` and `delivery_id`, and increments `state_version`. An explicit request uses the `manual` notification basis. DND and quiet hours never reject the selection: they set `allow_vibration=false` so the card is still delivered silently.
 
 ### 6.5 Long-poll desired state from a device
 
@@ -360,6 +365,25 @@ Content-Type: application/json
 ```
 
 The body is specified in section 4.4. The response reports `accepted`, `duplicate`, and a reason. The device sends the ACK after a complete successful refresh, never before rendering. A failed refresh should send `failed` for diagnostics while retaining the previous local displayed/version state.
+
+#### 6.6.1 Submit bounded device feedback
+
+```http
+POST /v1/hub/devices/{deviceId}/events
+Authorization: Device <device_secret>
+Content-Type: application/json
+```
+
+```json
+{
+  "event_id": "evt_2bfa6e1ac43d4827b946a13b06663303",
+  "selection_id": "sel_…",
+  "state_version": 8,
+  "action": "skip"
+}
+```
+
+Only `useful`, `later`, and `skip` are accepted. The event ID must be `evt_` plus 32 lowercase hexadecimal characters. The selection and version must exactly match current desired state or the Hub returns `409`. Replaying the same complete event is idempotent; reusing its ID for different data returns `409`. A successful `skip` may commit a later selection, but the response contains only `desired_changed` and the resulting `state_version`; the device must fetch that card through `desired` and ACK it normally.
 
 ### 6.7 Read owner-visible device state
 

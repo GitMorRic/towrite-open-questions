@@ -51,7 +51,7 @@ Device Hub uses separate credentials for separate principals:
 | --- | --- | --- |
 | Account/PWA | short-lived account Bearer token | the account's authorized Receiver/device setup and one authenticated Tap submission |
 | ToWrite Receiver | Receiver pull token in `Authorization: Bearer ...` | candidate/context upload, bound device state/actions, and this Receiver's encrypted Capture queue |
-| ESP32 | one-time-provisioned 256-bit `device_secret` in `Authorization: Device ...` | desired state and ACK for exactly the device ID in the path |
+| ESP32 | one-time-provisioned 256-bit `device_secret` in `Authorization: Device ...` | desired state, ACK, and `useful`/`later`/`skip` feedback for exactly the device ID in the path |
 | NFC tag | random revocable `tap_id` in a canonical HTTPS path | view the approved frozen card; it is not write authority |
 | Guest sender | independently issued `sender_key` | `messages:create` for exactly one mailbox |
 

@@ -142,13 +142,16 @@ export function normalizeQuestionDeviceSchedule(value: unknown): DeviceLibraryEn
 export function scheduledLibraryChoice(
   entries: readonly DeviceLibraryEntry[],
   now: Date,
-  lastOccurrenceId = ""
+  consumedOccurrenceIds: string | readonly string[] = ""
 ): ScheduledLibraryChoice | undefined {
+  const consumed = new Set(typeof consumedOccurrenceIds === "string"
+    ? [consumedOccurrenceIds].filter(Boolean)
+    : consumedOccurrenceIds);
   const matches: ScheduledLibraryChoice[] = [];
   for (const entry of entries) {
     if (!entry.inLibrary || !entry.eligible || !entry.schedule?.enabled) continue;
     const occurrence = activeScheduleOccurrence(entry, now);
-    if (occurrence && occurrence.occurrenceId !== lastOccurrenceId) {
+    if (occurrence && !consumed.has(occurrence.occurrenceId)) {
       matches.push(occurrence);
     }
   }

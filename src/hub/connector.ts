@@ -15,6 +15,7 @@ export interface DeviceHubConnectorSettings {
   deviceId: string;
   referenceSecret: string;
   autoSelect: boolean;
+  manualSelectionVibration: boolean;
 }
 
 export interface DeviceHubConnectorOptions {
@@ -140,6 +141,7 @@ export class DeviceHubConnector {
       candidateRef,
       reason: options.reason ?? "manual",
       score: localCandidate.score,
+      requestVibration: (options.reason ?? "manual") === "manual" && settings.manualSelectionVibration,
       idempotencyKey: opaqueEventId("evt")
     });
     const state = await this.options.client.getDeviceState(settings.deviceId.trim());

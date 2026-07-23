@@ -365,7 +365,11 @@ export class ToWriteExternalApiServer {
     if (url.pathname === "/api/v1/device-feed") {
       const settings = this.options.getSettings();
       const query = deviceFeedQueryFromUrl(url);
-      query.token = settings.token.trim();
+      const queryToken = url.searchParams.get("token")?.trim();
+      const usesEnabledQueryToken = settings.allowQueryTokenForRead
+        && Boolean(queryToken)
+        && queryToken === settings.token.trim();
+      query.token = usesEnabledQueryToken ? queryToken : undefined;
       query.companionBaseUrl = settings.publicBaseUrl || "";
       this.writeJson(response, 200, buildDeviceFeedPayload(
         vaultName,

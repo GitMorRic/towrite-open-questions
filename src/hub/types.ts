@@ -16,7 +16,8 @@ export type HubContentType =
   | "human_message"
   | "wellbeing_reminder";
 
-export type HubContentAction = "respond" | "capture" | "open" | "next" | "later" | "skip";
+export type HubContentAction = "respond" | "capture" | "open" | "next" | "useful" | "later" | "skip";
+export type HubPolicyBasis = "general" | "due" | "accepted_habit";
 export type HubSensitivity = "normal" | "private";
 
 export interface HubDisplayContent {
@@ -37,6 +38,10 @@ export interface HubCandidate {
   sensitivity: HubSensitivity;
   reasonCode: string;
   score: number;
+  /** Deterministic Connector policy metadata; AI enhancement cannot replace it. */
+  policyBasis?: HubPolicyBasis;
+  urgency?: number;
+  contextStates?: HubContextState[];
   expiresAt?: string;
 }
 
@@ -99,6 +104,7 @@ export interface HubCapabilities {
   manualSelection: boolean;
   deviceState: boolean;
   feedback: boolean;
+  deviceEvents?: boolean;
   longPolling?: boolean;
   encryptedCapture?: boolean;
   maxCandidates: number;

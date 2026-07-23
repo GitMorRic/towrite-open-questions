@@ -29,6 +29,16 @@ import type { AiModelInfo } from "../ai/types";
 import type { Quote0CanvasPayload, Quote0Device, Quote0ImagePayload, Quote0TextPayload } from "../quote0/client";
 import type { Quote0SyncPreview } from "../quote0/sync-service";
 import { normalizeCaptureBridgeBaseUrl } from "../capture-bridge";
+import {
+  createEchoCardId,
+  echoCardActionLabel,
+  echoCardDisclosureLabel,
+  validateEchoCardLayout,
+  type EchoCard,
+  type EchoCardDisclosure,
+  type EchoCardReferencePreset
+} from "../hub/echo-cards";
+import type { HubContentAction, HubContentType } from "../hub/types";
 
 type SettingsTabId = "general" | "cards" | "capture" | "inbox" | "learning" | "workflow" | "api" | "push" | "quote0" | "ai" | "backend" | "hub" | "about";
 
@@ -41,6 +51,22 @@ const ABOUT_LINKS = {
   // Set this after a real support page has been created; an empty value stays hidden.
   support: "" as string
 } as const;
+
+const ECHO_ACTION_OPTIONS: readonly HubContentAction[] = ["respond", "capture", "open", "next", "useful", "later", "skip"];
+
+const ECHO_CONTENT_TYPE_OPTIONS: ReadonlyArray<{ value: HubContentType; zh: string; en: string }> = [
+  { value: "question_prompt", zh: "未完成问题", en: "Unfinished question" },
+  { value: "note_continue", zh: "继续创作", en: "Continue note" },
+  { value: "title_only", zh: "标题笔记", en: "Title only" },
+  { value: "blank_capture", zh: "快速记录", en: "Blank capture" },
+  { value: "excerpt", zh: "内容回响 / 摘录", en: "Content echo / excerpt" },
+  { value: "quote", zh: "语录", en: "Quote" },
+  { value: "on_this_day", zh: "那年今日", en: "On this day" },
+  { value: "stale_note_nudge", zh: "久未继续", en: "Stale-note nudge" },
+  { value: "character_letter", zh: "角色来信", en: "Character letter" },
+  { value: "human_message", zh: "他人来信", en: "Human message" },
+  { value: "wellbeing_reminder", zh: "轻提醒", en: "Wellbeing reminder" }
+];
 
 type Quote0PreviewAction = {
   label: string;
@@ -831,6 +857,11 @@ export class ToWriteSettingTab extends PluginSettingTab {
   private inboxSettingsSaveTimer = 0;
   private inboxSettingsSaveRunning = false;
   private inboxSettingsSaveQueued = false;
+  /** Echo edits stay here until Save / Show now is explicitly pressed. */
+  private echoCardDraft?: EchoCard;
+  private echoCardDraftBaseline = "";
+  private echoCardDeleteConfirmId = "";
+  private echoCardMutationRunning = false;
   private activeSettingsTab: SettingsTabId = "general";
 
   constructor(app: App, private readonly plugin: ToWritePlugin) {
@@ -1325,6 +1356,8 @@ export class ToWriteSettingTab extends PluginSettingTab {
         : `${library.eligibleCount} ToThink / ToWrite cards are eligible and ${library.excludedCount} are excluded. The full library lives here while the sidebar shows only the current recommendation.`)
       .setHeading();
 
+    this.renderEchoCardWorkbench(containerEl, zh);
+
     new Setting(containerEl)
       .setName(zh ? "内容选择方式" : "Content selection mode")
       .setDesc(zh ? "Agent 只能在本地白名单候选中重排；不会发明笔记或路径。" : "Agent may only rerank locally allowlisted candidates and cannot invent notes or paths.")
@@ -1402,6 +1435,444 @@ export class ToWriteSettingTab extends PluginSettingTab {
       remove.addEventListener("click", () => {
         void this.plugin.toggleQuestionInDeviceLibrary(entry.id).then(() => this.refreshSettingsUi());
       });
+    }
+  }
+
+  private renderEchoCardWorkbench(containerEl: HTMLElement, zh: boolean): void {
+    const presets = this.plugin.getEchoCardPresets();
+    const cards = this.plugin.getEchoCards();
+    const section = containerEl.createEl("section", {
+      cls: "towrite-echo-workbench",
+      attr: { "aria-labelledby": "towrite-echo-heading" }
+    });
+    const heading = section.createDiv({ cls: "towrite-echo-section-heading" });
+    const headingCopy = heading.createDiv();
+    headingCopy.createEl("h3", { text: zh ? "Echo 墨水屏卡片" : "Echo e-ink cards", attr: { id: "towrite-echo-heading" } });
+    headingCopy.createEl("p", {
+      text: zh
+        ? "一张卡只保留一个核心信息与最多三个动作。参考模板不会自动加入设备库，也不会触发 AI。"
+        : "Keep one core idea and at most three actions per card. Reference templates never enter the library or invoke AI automatically."
+    });
+    const blank = heading.createEl("button", {
+      cls: "towrite-echo-new-button",
+      text: zh ? "新建空白卡" : "New blank card",
+      attr: { type: "button" }
+    });
+    blank.addEventListener("click", () => void this.startEchoCardDraft(undefined));
+
+    const presetDetails = section.createEl("details", { cls: "towrite-echo-presets" });
+    const presetSummary = presetDetails.createEl("summary");
+    presetSummary.createSpan({ text: zh ? `参考模板 · ${presets.length}` : `Reference templates · ${presets.length}` });
+    presetSummary.createEl("small", { text: zh ? "选择后先编辑，不会立即保存" : "Choose, edit, then save" });
+    const presetGrid = presetDetails.createDiv({ cls: "towrite-echo-preset-grid" });
+    for (const preset of presets) {
+      this.renderEchoPresetButton(presetGrid, preset, zh);
+    }
+
+    const library = section.createDiv({ cls: "towrite-echo-user-library" });
+    const libraryHeading = library.createDiv({ cls: "towrite-echo-subheading" });
+    libraryHeading.createEl("strong", { text: zh ? "我的卡片" : "My cards" });
+    libraryHeading.createEl("small", {
+      text: cards.length > 0
+        ? (zh ? `${cards.length} 张 · 只有明确启用的卡片才参与 Agent、循环或定时` : `${cards.length} · only explicitly enabled cards join Agent, rotation, or schedules`)
+        : (zh ? "尚未保存卡片" : "No saved cards yet")
+    });
+
+    if (cards.length > 0) {
+      const cardList = library.createDiv({ cls: "towrite-echo-card-list" });
+      for (const card of cards) {
+        const row = cardList.createEl("article", {
+          cls: `towrite-echo-card-row${this.echoCardDraft?.id === card.id ? " is-editing" : ""}`
+        });
+        const cardCopy = row.createDiv({ cls: "towrite-echo-card-row-copy" });
+        const title = cardCopy.createDiv({ cls: "towrite-echo-card-row-title" });
+        title.createEl("strong", { text: card.name });
+        const disclosure = echoCardDisclosureLabel(card.disclosure, zh ? "zh-CN" : "en");
+        if (disclosure) title.createSpan({ cls: "towrite-echo-disclosure", text: disclosure });
+        cardCopy.createEl("small", {
+          text: [
+            card.typeLabel,
+            card.subject,
+            card.inLibrary ? (zh ? "设备库" : "In library") : (zh ? "仅手动" : "Manual only"),
+            card.schedule?.enabled ? card.schedule.localTime : ""
+          ].filter(Boolean).join(" · ")
+        });
+        const rowActions = row.createDiv({ cls: "towrite-echo-card-row-actions" });
+        this.createEchoIconButton(rowActions, "pencil", zh ? `编辑 ${card.name}` : `Edit ${card.name}`, () => {
+          if (!this.canReplaceEchoCardDraft(zh)) return;
+          this.echoCardDraft = cloneEchoCardForEditor(card);
+          this.echoCardDraftBaseline = echoCardFingerprint(card);
+          this.echoCardDeleteConfirmId = "";
+          this.refreshSettingsUi();
+        });
+        this.createEchoIconButton(rowActions, "monitor-up", zh ? `立即显示 ${card.name}` : `Show ${card.name} now`, () => {
+          void this.sendSavedEchoCard(card.id, zh);
+        });
+        this.createEchoIconButton(rowActions, "copy", zh ? `复制 ${card.name}` : `Duplicate ${card.name}`, () => {
+          if (!this.canReplaceEchoCardDraft(zh)) return;
+          this.duplicateEchoCardDraft(card, zh);
+        });
+        const armed = this.echoCardDeleteConfirmId === card.id;
+        this.createEchoIconButton(rowActions, armed ? "alert-triangle" : "trash-2", armed
+          ? (zh ? "再次点击确认删除" : "Click again to confirm deletion")
+          : (zh ? `删除 ${card.name}` : `Delete ${card.name}`), () => {
+          if (!armed) {
+            this.echoCardDeleteConfirmId = card.id;
+            this.refreshSettingsUi();
+            return;
+          }
+          void this.plugin.deleteEchoCard(card.id).then(() => {
+            if (this.echoCardDraft?.id === card.id) {
+              this.echoCardDraft = undefined;
+              this.echoCardDraftBaseline = "";
+            }
+            this.echoCardDeleteConfirmId = "";
+            new Notice(zh ? "Echo 卡片已删除。" : "Echo card deleted.");
+            this.refreshSettingsUi();
+          }).catch((error: unknown) => {
+            new Notice(`${zh ? "删除失败" : "Could not delete"}: ${error instanceof Error ? error.message : String(error)}`);
+          });
+        }, armed ? "is-danger" : "");
+      }
+    }
+
+    if (this.echoCardDraft) {
+      this.renderEchoCardEditor(section, this.echoCardDraft, cards, zh);
+    }
+  }
+
+  private renderEchoPresetButton(containerEl: HTMLElement, preset: EchoCardReferencePreset, zh: boolean): void {
+    const button = containerEl.createEl("button", {
+      cls: "towrite-echo-preset-card",
+      attr: { type: "button", "aria-label": `${zh ? "使用模板" : "Use template"}: ${preset.name}` }
+    });
+    const top = button.createDiv({ cls: "towrite-echo-preset-top" });
+    top.createEl("strong", { text: preset.typeLabel });
+    if (preset.subject) top.createSpan({ text: preset.subject });
+    const disclosure = echoCardDisclosureLabel(preset.disclosure, zh ? "zh-CN" : "en");
+    if (disclosure) button.createSpan({ cls: "towrite-echo-disclosure", text: disclosure });
+    button.createEl("p", { text: preset.content });
+    button.createEl("small", { text: preset.name });
+    button.addEventListener("click", () => void this.startEchoCardDraft(preset.presetId));
+  }
+
+  private async startEchoCardDraft(presetId?: string): Promise<void> {
+    const zh = this.plugin.settings.language !== "en";
+    if (!this.canReplaceEchoCardDraft(zh)) return;
+    try {
+      const draft = await this.plugin.createEchoCardFromPreset(presetId);
+      this.echoCardDraft = cloneEchoCardForEditor(draft);
+      this.echoCardDraftBaseline = "";
+      this.echoCardDeleteConfirmId = "";
+      this.refreshSettingsUi();
+    } catch (error) {
+      new Notice(`Echo: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private duplicateEchoCardDraft(card: EchoCard, zh: boolean): void {
+    const now = new Date().toISOString();
+    this.echoCardDraft = {
+      ...cloneEchoCardForEditor(card),
+      id: createEchoCardId(),
+      name: `${card.name}${zh ? "（副本）" : " copy"}`,
+      inLibrary: false,
+      agentEligible: false,
+      rotationEligible: false,
+      schedule: undefined,
+      createdAt: now,
+      updatedAt: now
+    };
+    this.echoCardDraftBaseline = "";
+    this.echoCardDeleteConfirmId = "";
+    this.refreshSettingsUi();
+  }
+
+  private renderEchoCardEditor(containerEl: HTMLElement, draft: EchoCard, savedCards: readonly EchoCard[], zh: boolean): void {
+    const editor = containerEl.createEl("section", {
+      cls: "towrite-echo-editor",
+      attr: { "aria-label": zh ? "Echo 卡片编辑器" : "Echo card editor" }
+    });
+    const editorHeader = editor.createDiv({ cls: "towrite-echo-editor-header" });
+    const editorTitle = editorHeader.createDiv();
+    editorTitle.createEl("strong", { text: zh ? "编辑卡片" : "Edit card" });
+    const editorStatus = editorTitle.createEl("small");
+    const close = editorHeader.createEl("button", {
+      cls: "towrite-echo-close",
+      attr: { type: "button", title: zh ? "关闭编辑器" : "Close editor", "aria-label": zh ? "关闭编辑器" : "Close editor" }
+    });
+    setIcon(close, "x");
+    close.addEventListener("click", () => {
+      if (!this.canReplaceEchoCardDraft(zh)) return;
+      this.echoCardDraft = undefined;
+      this.echoCardDraftBaseline = "";
+      this.refreshSettingsUi();
+    });
+
+    const layout = editor.createDiv({ cls: "towrite-echo-editor-layout" });
+    const form = layout.createDiv({ cls: "towrite-echo-form" });
+    const previewPanel = layout.createDiv({ cls: "towrite-echo-preview-panel" });
+    previewPanel.createEl("span", { cls: "towrite-echo-preview-label", text: zh ? "2.7 英寸 · 264 × 176 预览" : "2.7 inch · 264 × 176 preview" });
+    const preview = previewPanel.createDiv({ cls: "towrite-echo-preview-root" });
+    const fitMessage = previewPanel.createDiv({ cls: "towrite-echo-fit-message", attr: { "aria-live": "polite" } });
+
+    const updatePreview = (): void => {
+      const validation = validateEchoCardLayout(draft);
+      preview.empty();
+      this.renderEchoScreenPreview(preview, draft, validation.fits, zh);
+      fitMessage.empty();
+      fitMessage.toggleClass("is-overflow", !validation.fits);
+      if (validation.fits) {
+        fitMessage.createSpan({ text: zh
+          ? `适合 2.7 英寸布局 · ${validation.weightedUnits}/${validation.maxWeightedUnits}`
+          : `Fits the 2.7-inch layout · ${validation.weightedUnits}/${validation.maxWeightedUnits}` });
+      } else {
+        const fields = [...new Set(validation.issues.map((issue) => echoLayoutFieldLabel(issue.field, zh)))];
+        fitMessage.createSpan({ text: zh
+          ? `需要精简：${fields.join("、")} · ${validation.weightedUnits}/${validation.maxWeightedUnits}`
+          : `Shorten: ${fields.join(", ")} · ${validation.weightedUnits}/${validation.maxWeightedUnits}` });
+      }
+      const dirty = !this.echoCardDraftBaseline || echoCardFingerprint(draft) !== this.echoCardDraftBaseline;
+      editorStatus.setText([
+        dirty ? (zh ? "未保存修改" : "Unsaved changes") : (zh ? "已保存" : "Saved"),
+        validation.fits ? (zh ? "屏幕适配" : "Screen fit") : (zh ? "内容过长" : "Too long")
+      ].join(" · "));
+      saveButton.disabled = !draft.name.trim();
+      sendButton.disabled = !draft.name.trim() || !validation.fits;
+      sendButton.title = validation.fits ? "" : (zh ? "请先精简标记出的字段" : "Shorten the highlighted fields first");
+    };
+    const mutate = (patch: Partial<EchoCard>): void => {
+      Object.assign(draft, patch);
+      this.echoCardDraft = draft;
+      updatePreview();
+    };
+
+    new Setting(form)
+      .setName(zh ? "卡片名称" : "Card name")
+      .setDesc(zh ? "只用于在插件里识别，不会完整显示到屏幕。" : "Used inside the plugin; it is not shown verbatim on screen.")
+      .addText((input) => input.setValue(draft.name).setPlaceholder(zh ? "例如：潮汐 · 去年今天" : "e.g. Tide · On this day").onChange((value) => mutate({ name: value })));
+
+    const identity = form.createDiv({ cls: "towrite-echo-field-grid" });
+    new Setting(identity)
+      .setName(zh ? "内容类型" : "Content type")
+      .addDropdown((dropdown) => {
+        for (const option of ECHO_CONTENT_TYPE_OPTIONS) dropdown.addOption(option.value, zh ? option.zh : option.en);
+        dropdown.setValue(draft.contentType).onChange((value) => mutate({ contentType: value as HubContentType }));
+      });
+    new Setting(identity)
+      .setName(zh ? "卡片类型标签" : "Type label")
+      .addText((input) => input.setValue(draft.typeLabel).setPlaceholder(zh ? "记忆回响" : "Memory echo").onChange((value) => mutate({ typeLabel: value })));
+    new Setting(identity)
+      .setName(zh ? "项目 / 角色" : "Project / character")
+      .addText((input) => input.setValue(draft.subject).setPlaceholder(zh ? "《潮汐》 / 林屿" : "Tide / Lin Yu").onChange((value) => mutate({ subject: value })));
+    new Setting(identity)
+      .setName(zh ? "AI 标记" : "AI disclosure")
+      .setDesc(zh ? "AI 生成内容必须明确标记为推测、模拟或视角。" : "AI content must be labelled as inference, simulation, or perspective.")
+      .addDropdown((dropdown) => dropdown
+        .addOption("none", zh ? "非 AI / 用户原文" : "Non-AI / user text")
+        .addOption("ai_inference", zh ? "AI 推测" : "AI inference")
+        .addOption("ai_simulation", zh ? "AI 模拟" : "AI simulation")
+        .addOption("ai_perspective", zh ? "AI 视角" : "AI perspective")
+        .setValue(draft.disclosure)
+        .onChange((value) => mutate({ disclosure: value as EchoCardDisclosure })));
+
+    new Setting(form)
+      .setName(zh ? "一句上下文" : "One-line context")
+      .addTextArea((input) => {
+        input.setValue(draft.context).setPlaceholder(zh ? "上次你停在……" : "Last time, you stopped at…").onChange((value) => mutate({ context: value }));
+        input.inputEl.rows = 2;
+      });
+    new Setting(form)
+      .setName(zh ? "核心内容 / 问题" : "Core content / question")
+      .setDesc(zh ? "这张卡真正需要被注意的一件事。" : "The one thing this card asks the reader to notice.")
+      .addTextArea((input) => {
+        input.setValue(draft.content).setPlaceholder(zh ? "写下一条真正值得注意的内容。" : "Write one thing worth noticing.").onChange((value) => mutate({ content: value }));
+        input.inputEl.rows = 4;
+      });
+    new Setting(form)
+      .setName(zh ? "为什么此刻出现" : "Why now")
+      .addTextArea((input) => {
+        input.setValue(draft.whyNow).setPlaceholder(zh ? "继续上次未完成的创作线索。" : "Continue an unfinished thread from last time.").onChange((value) => mutate({ whyNow: value }));
+        input.inputEl.rows = 2;
+      });
+    new Setting(form)
+      .setName(zh ? "内容来源" : "Source")
+      .addText((input) => input.setValue(draft.sourceLabel).setPlaceholder(zh ? "来自 2025.07.24 · 人物草稿" : "From 2025-07-24 · character draft").onChange((value) => mutate({ sourceLabel: value })));
+
+    const actionSetting = new Setting(form)
+      .setName(zh ? "屏幕操作" : "Screen actions")
+      .setDesc(zh ? "选择 1–3 个操作；操作顺序与这里一致。" : "Choose 1–3 actions in this order.");
+    const actionGrid = actionSetting.controlEl.createDiv({ cls: "towrite-echo-action-picker" });
+    const renderActionPicker = (): void => {
+      actionGrid.empty();
+      for (const action of ECHO_ACTION_OPTIONS) {
+        const selected = draft.actions.includes(action);
+        const actionButton = actionGrid.createEl("button", {
+          cls: `towrite-echo-action-chip${selected ? " is-selected" : ""}`,
+          text: echoCardActionLabel(action, draft, zh ? "zh-CN" : "en"),
+          attr: { type: "button", "aria-pressed": String(selected) }
+        });
+        actionButton.disabled = !selected && draft.actions.length >= 3;
+        actionButton.addEventListener("click", () => {
+          if (selected && draft.actions.length === 1) {
+            new Notice(zh ? "至少保留一个屏幕操作。" : "Keep at least one screen action.");
+            return;
+          }
+          draft.actions = selected
+            ? draft.actions.filter((item) => item !== action)
+            : [...draft.actions, action].slice(0, 3);
+          renderActionPicker();
+          updatePreview();
+        });
+      }
+    };
+    renderActionPicker();
+
+    const advanced = form.createEl("details", { cls: "towrite-echo-advanced" });
+    advanced.createEl("summary", { text: zh ? "发送、目标与自动选择" : "Delivery, target, and automation" });
+    const advancedBody = advanced.createDiv({ cls: "towrite-echo-advanced-body" });
+    new Setting(advancedBody)
+      .setName(zh ? "记录目标" : "Capture target")
+      .setDesc(zh ? "留空使用 Capture Inbox。可填写已有 Markdown 笔记或已授权的新建文件夹。" : "Leave empty for the Capture Inbox. Use an existing Markdown note or an authorized create folder.")
+      .addText((input) => input.setValue(draft.targetPath ?? "").setPlaceholder(zh ? "留空 = Capture Inbox" : "Blank = Capture Inbox").onChange((value) => mutate({ targetPath: value.trim() || undefined })));
+    new Setting(advancedBody)
+      .setName(zh ? "加入设备内容库" : "Include in device library")
+      .setDesc(zh ? "关闭时仍可手动发送；Agent、循环和定时不会自动选择。" : "Manual sending still works when off; Agent, rotation, and schedules will not select it.")
+      .addToggle((toggle) => toggle.setValue(draft.inLibrary).onChange((value) => mutate({ inLibrary: value })));
+    new Setting(advancedBody)
+      .setName(zh ? "允许 Agent 选择" : "Allow Agent selection")
+      .addToggle((toggle) => toggle.setValue(draft.agentEligible).onChange((value) => mutate({ agentEligible: value, ...(value ? { inLibrary: true } : {}) })));
+    new Setting(advancedBody)
+      .setName(zh ? "允许循环播放" : "Allow rotation")
+      .addToggle((toggle) => toggle.setValue(draft.rotationEligible).onChange((value) => mutate({ rotationEligible: value, ...(value ? { inLibrary: true } : {}) })));
+    new Setting(advancedBody)
+      .setName(zh ? "固定显示时间" : "Scheduled time")
+      .setDesc(zh ? "使用 24 小时 HH:mm；留空关闭。V1 默认每天生效 30 分钟。" : "Use 24-hour HH:mm; leave blank to disable. V1 uses a daily 30-minute window.")
+      .addText((input) => input.setValue(draft.schedule?.enabled ? draft.schedule.localTime : "").setPlaceholder("15:30").onChange((value) => {
+        const time = value.trim();
+        mutate({
+          schedule: time ? {
+            enabled: true,
+            weekdays: draft.schedule?.weekdays ?? [0, 1, 2, 3, 4, 5, 6],
+            localTime: time,
+            durationMinutes: draft.schedule?.durationMinutes ?? 30
+          } : undefined,
+          ...(time ? { inLibrary: true } : {})
+        });
+      }));
+
+    const footer = editor.createDiv({ cls: "towrite-echo-editor-footer" });
+    const secondary = footer.createDiv({ cls: "towrite-echo-editor-secondary" });
+    const duplicateButton = secondary.createEl("button", { text: zh ? "复制为新卡" : "Duplicate", attr: { type: "button" } });
+    duplicateButton.addEventListener("click", () => this.duplicateEchoCardDraft(draft, zh));
+    const persisted = savedCards.some((card) => card.id === draft.id);
+    if (persisted) {
+      const deleteButton = secondary.createEl("button", { text: zh ? "删除" : "Delete", attr: { type: "button" } });
+      deleteButton.addClass("towrite-echo-delete-text");
+      deleteButton.addEventListener("click", () => {
+        if (this.echoCardDeleteConfirmId !== draft.id) {
+          this.echoCardDeleteConfirmId = draft.id;
+          deleteButton.setText(zh ? "再次点击删除" : "Confirm delete");
+          deleteButton.addClass("is-armed");
+          return;
+        }
+        void this.plugin.deleteEchoCard(draft.id).then(() => {
+          this.echoCardDraft = undefined;
+          this.echoCardDraftBaseline = "";
+          this.echoCardDeleteConfirmId = "";
+          new Notice(zh ? "Echo 卡片已删除。" : "Echo card deleted.");
+          this.refreshSettingsUi();
+        });
+      });
+    }
+    const primary = footer.createDiv({ cls: "towrite-echo-editor-primary" });
+    const saveButton = primary.createEl("button", { text: zh ? "保存" : "Save", attr: { type: "button" } });
+    saveButton.addEventListener("click", () => void this.saveEchoCardDraft(draft, zh, false));
+    const sendButton = primary.createEl("button", { cls: "mod-cta", text: zh ? "立即发送" : "Show now", attr: { type: "button" } });
+    sendButton.addEventListener("click", () => void this.saveEchoCardDraft(draft, zh, true));
+
+    updatePreview();
+  }
+
+  private renderEchoScreenPreview(containerEl: HTMLElement, card: EchoCard, fits: boolean, zh: boolean): void {
+    const screen = containerEl.createDiv({ cls: `towrite-echo-screen${fits ? "" : " is-overflow"}` });
+    const header = screen.createDiv({ cls: "towrite-echo-screen-header" });
+    const label = header.createDiv();
+    label.createEl("strong", { text: card.typeLabel || (zh ? "卡片类型" : "Card type") });
+    const disclosure = echoCardDisclosureLabel(card.disclosure, zh ? "zh-CN" : "en");
+    if (disclosure) label.createSpan({ text: disclosure });
+    header.createEl("span", { text: card.subject || (zh ? "项目 / 角色" : "Project / character"), cls: card.subject ? "" : "is-placeholder" });
+    const content = screen.createDiv({ cls: "towrite-echo-screen-content" });
+    if (card.context) content.createEl("p", { cls: "towrite-echo-screen-context", text: card.context });
+    content.createEl("p", {
+      cls: `towrite-echo-screen-core${card.content ? "" : " is-placeholder"}`,
+      text: card.content || (zh ? "一条真正值得注意的内容，或者一个问题。" : "One thing worth noticing, or one question.")
+    });
+    if (card.whyNow) content.createEl("p", { cls: "towrite-echo-screen-why", text: card.whyNow });
+    const bottom = screen.createDiv({ cls: "towrite-echo-screen-bottom" });
+    bottom.createEl("small", {
+      cls: card.sourceLabel ? "" : "is-placeholder",
+      text: card.sourceLabel || (zh ? "内容来源 / 为什么此刻出现" : "Source / why now")
+    });
+    const actions = bottom.createDiv({ cls: "towrite-echo-screen-actions" });
+    for (const action of card.actions.slice(0, 3)) {
+      actions.createSpan({ text: echoCardActionLabel(action, card, zh ? "zh-CN" : "en") });
+    }
+  }
+
+  private createEchoIconButton(
+    containerEl: HTMLElement,
+    icon: string,
+    label: string,
+    run: () => void,
+    extraClass = ""
+  ): HTMLButtonElement {
+    const button = containerEl.createEl("button", {
+      cls: `towrite-echo-icon-button${extraClass ? ` ${extraClass}` : ""}`,
+      attr: { type: "button", title: label, "aria-label": label }
+    });
+    setIcon(button, icon);
+    button.addEventListener("click", run);
+    return button;
+  }
+
+  private canReplaceEchoCardDraft(zh: boolean): boolean {
+    const draft = this.echoCardDraft;
+    if (!draft) return true;
+    const dirty = !this.echoCardDraftBaseline || echoCardFingerprint(draft) !== this.echoCardDraftBaseline;
+    return !dirty || window.confirm(zh ? "放弃尚未保存的 Echo 卡片修改？" : "Discard unsaved Echo card changes?");
+  }
+
+  private async saveEchoCardDraft(draft: EchoCard, zh: boolean, send: boolean): Promise<void> {
+    if (this.echoCardMutationRunning) return;
+    this.echoCardMutationRunning = true;
+    try {
+      const saved = await this.plugin.upsertEchoCard(cloneEchoCardForEditor(draft));
+      this.echoCardDraft = cloneEchoCardForEditor(saved);
+      this.echoCardDraftBaseline = echoCardFingerprint(saved);
+      if (send) await this.plugin.sendEchoCardToDeviceHub(saved.id);
+      new Notice(send
+        ? (zh ? "Echo 卡片已保存并设为当前显示内容。" : "Echo card saved and selected for display.")
+        : (zh ? "Echo 卡片已保存。" : "Echo card saved."));
+      this.refreshSettingsUi();
+    } catch (error) {
+      new Notice(`${send ? (zh ? "发送失败" : "Could not send") : (zh ? "保存失败" : "Could not save")}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      this.echoCardMutationRunning = false;
+    }
+  }
+
+  private async sendSavedEchoCard(cardId: string, zh: boolean): Promise<void> {
+    if (this.echoCardMutationRunning) return;
+    this.echoCardMutationRunning = true;
+    try {
+      await this.plugin.sendEchoCardToDeviceHub(cardId);
+      new Notice(zh ? "Echo 卡片已设为当前显示内容。" : "Echo card selected for display.");
+      this.refreshSettingsUi();
+    } catch (error) {
+      new Notice(`${zh ? "发送失败" : "Could not send"}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      this.echoCardMutationRunning = false;
     }
   }
 
@@ -1809,6 +2280,14 @@ export class ToWriteSettingTab extends PluginSettingTab {
       .setDesc(zh ? "默认关闭。关闭时只发送标题、类型、动作、分数与可读理由；路径和完整正文始终不发送。" : "Off by default. When off, only title, kind, actions, score, and reason are sent; paths and full note text are never sent.")
       .addToggle((toggle) => toggle.setValue(hub.shareDisplayBody).onChange(async (value) => {
         hub.shareDisplayBody = value;
+        await this.plugin.savePluginData();
+      }));
+
+    new Setting(containerEl)
+      .setName(zh ? "手动推送时振动" : "Vibrate for manual push")
+      .setDesc(zh ? "默认开启。勿扰或静默时段仍会显示卡片，但 Hub 会把本次提醒降级为静默。" : "On by default. During DND or quiet hours the card is still shown, but the Hub downgrades the notification to silent.")
+      .addToggle((toggle) => toggle.setValue(hub.manualSelectionVibration).onChange(async (value) => {
+        hub.manualSelectionVibration = value;
         await this.plugin.savePluginData();
       }));
 
@@ -4281,6 +4760,35 @@ export class ToWriteSettingTab extends PluginSettingTab {
       this.refreshSettingsUi();
     }
   }
+}
+
+function cloneEchoCardForEditor(card: EchoCard): EchoCard {
+  return {
+    ...card,
+    actions: [...card.actions],
+    schedule: card.schedule ? {
+      ...card.schedule,
+      weekdays: [...card.schedule.weekdays]
+    } : undefined
+  };
+}
+
+function echoCardFingerprint(card: EchoCard): string {
+  return JSON.stringify(cloneEchoCardForEditor(card));
+}
+
+function echoLayoutFieldLabel(field: string, zh: boolean): string {
+  const labels: Record<string, { zh: string; en: string }> = {
+    card: { zh: "整张卡", en: "whole card" },
+    header: { zh: "标题", en: "header" },
+    context: { zh: "上下文", en: "context" },
+    content: { zh: "核心内容", en: "core content" },
+    whyNow: { zh: "出现原因", en: "why now" },
+    sourceLabel: { zh: "来源", en: "source" },
+    actions: { zh: "操作", en: "actions" }
+  };
+  const label = labels[field] ?? { zh: field, en: field };
+  return zh ? label.zh : label.en;
 }
 
 function isQuote0Device(device: Quote0Device): boolean {

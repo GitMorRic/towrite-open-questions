@@ -51,7 +51,7 @@ Device Hub 为不同调用方使用不同凭据：
 | --- | --- | --- |
 | 账户/PWA | 短期账户 Bearer token | 账户内获准的 Receiver/设备配置，以及一次已认证 Tap 提交 |
 | ToWrite Receiver | `Authorization: Bearer ...` 中的 Receiver pull token | 候选/上下文上传、绑定设备状态与动作、本 Receiver 的加密 Capture 队列 |
-| ESP32 | 一次性配发的 256-bit `device_secret`，使用 `Authorization: Device ...` | 只读路径中同一 device ID 的 desired，并提交该设备 ACK |
+| ESP32 | 一次性配发的 256-bit `device_secret`，使用 `Authorization: Device ...` | 只读路径中同一 device ID 的 desired，并提交 ACK 与 `useful`/`later`/`skip` 反馈 |
 | NFC 标签 | canonical HTTPS 路径中的随机可撤销 `tap_id` | 查看获准的冻结卡片，不授予写权限 |
 | 外部留言者 | 独立签发的 `sender_key` | 仅一个 mailbox 的 `messages:create` |
 
