@@ -652,9 +652,10 @@ last ETag
 ```powershell
 python scripts/eink_device_simulator.py `
   --base-url https://hub.example.com `
-  --device-id dev_0123456789abcdef0123456789abcdef `
-  --device-secret <一次性配对密钥>
+  --device-id dev_0123456789abcdef0123456789abcdef
 ```
+
+脚本随后通过隐藏输入提示读取一次性设备密钥；它不接受 `--device-secret`，避免密钥进入命令历史或进程参数。自动化环境可使用临时环境变量 `TOWRITE_DEVICE_SECRET`，运行后立即清除。
 
 模拟器应打印卡片、ETag 和 state version，模拟刷新后提交 ACK。端到端验收：创建新 selected 后，模拟器在 5 秒内收到；ACK 后账户状态的 `in_sync` 为 true；旧 ACK 不改变状态。
 

@@ -649,9 +649,10 @@ The simulator is delivered in the separate ObsidianAI-Backend repository. From t
 ```powershell
 python scripts/eink_device_simulator.py `
   --base-url https://hub.example.com `
-  --device-id dev_0123456789abcdef0123456789abcdef `
-  --device-secret <one-time-pairing-secret>
+  --device-id dev_0123456789abcdef0123456789abcdef
 ```
+
+The script then reads the one-time device secret through a hidden prompt. It intentionally does not accept `--device-secret`, which keeps the secret out of shell history and process arguments. Automation may use the temporary `TOWRITE_DEVICE_SECRET` environment variable and clear it immediately afterward.
 
 The simulator prints the card, ETag, and state version, then posts a display ACK. Acceptance criteria: it receives a new selection within five seconds, owner state becomes `in_sync` after ACK, and an old ACK cannot change state.
 

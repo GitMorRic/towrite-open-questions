@@ -1,5 +1,21 @@
 # Changelog / 更新日志
 
+## 0.3.0-beta.9 - 2026-07-23
+
+- Added prominent “Create custom card” and “Open card library” shortcuts at the top of Device Hub settings, and changed the settings tabs to wrap instead of hiding the card entry in a horizontal scroller.
+- Moved the actual Device Hub connection and provisioning controls ahead of the separate Local Capture Bridge section.
+- Added an ESP32 provisioning checklist with validated canonical HTTPS endpoints for desired polling, display ACKs, and button events, plus safe copy actions for endpoint templates and the one-time device configuration.
+- Bound the one-time device secret to the Hub origin that issued it, rejected loopback/non-canonical origins for hardware configuration, and prevented private Tailscale Serve origins from being presented as directly reachable by a normal ESP32.
+- Clarified when an Echo card was only selected locally instead of actually sent to a connected display, and corrected the simulator documentation to use its hidden device-secret prompt.
+
+中文摘要：
+
+- Device Hub 设置页顶部新增醒目的“新建手写卡片”和“打开卡片库”入口；设置标签改为自动换行，不再把卡片入口藏在横向滚动区域。
+- 将真正的 Device Hub 连接与设备配对配置移到独立的本机 Capture Bridge 之前。
+- 新增 ESP32 接入清单，自动生成并校验 desired 长轮询、display ACK 和按键事件端点，并可安全复制端点模板与本次一次性设备配置。
+- 一次性设备密钥现在绑定到签发它的 Hub origin；硬件配置拒绝 loopback 和非 canonical 地址，也不会把私有 Tailscale Serve 错当成普通 ESP32 可直连入口。
+- 明确区分“仅设为本地当前卡片”和“已发送到设备”，并修正模拟器文档，改用隐藏的设备密钥输入。
+
 ## 0.3.0-beta.8 - 2026-07-23
 
 - Added a user-managed Echo card workbench for 2.7-inch e-ink displays, with blank cards, eight reference templates, a live 264 × 176 monochrome preview, explicit AI inference/simulation/perspective labels, and one-to-three display actions.

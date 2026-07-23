@@ -5,6 +5,7 @@ export * from "./connector";
 export * from "./crypto";
 export * from "./echo-card-selection";
 export * from "./echo-cards";
+export * from "./esp32-config";
 export * from "./library";
 export * from "./ndef";
 export * from "./privacy";

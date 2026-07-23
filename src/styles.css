@@ -2404,12 +2404,13 @@
 }
 .towrite-settings-tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   margin: 0 0 14px;
   padding: 4px;
   border-radius: 8px;
   background: var(--background-secondary);
-  overflow-x: auto;
+  overflow: visible;
 }
 
 .towrite-settings-tab {
@@ -2438,6 +2439,81 @@
 .towrite-settings-tab-panel {
   display: grid;
   gap: 10px;
+}
+
+.towrite-esp32-guide {
+  overflow: hidden;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 10px;
+  background: var(--background-secondary);
+}
+
+.towrite-esp32-guide > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 11px 13px;
+  cursor: pointer;
+  color: var(--text-normal);
+  font-weight: 650;
+}
+
+.towrite-esp32-guide > summary small {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-weight: 500;
+}
+
+.towrite-esp32-guide-body {
+  display: grid;
+  gap: 10px;
+  padding: 0 13px 13px;
+}
+
+.towrite-esp32-guide-body > p,
+.towrite-esp32-guide-body > ol {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.towrite-esp32-guide-body > ol {
+  display: grid;
+  gap: 5px;
+  padding-left: 22px;
+}
+
+.towrite-esp32-network-warning {
+  padding: 9px 10px;
+  border-left: 3px solid var(--color-orange);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--color-orange) 8%, var(--background-primary));
+  color: var(--text-normal);
+}
+
+.towrite-esp32-config-preview {
+  max-height: 250px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.towrite-esp32-config-preview code {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.towrite-esp32-guide-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
 }
 
 .towrite-about-meta {
@@ -3919,6 +3995,7 @@
   gap: 12px;
   margin: 2px 0 12px;
   padding: 14px;
+  scroll-margin-top: 12px;
   border: 1px solid var(--background-modifier-border);
   border-radius: 12px;
   background: color-mix(in srgb, var(--background-secondary) 70%, var(--background-primary));

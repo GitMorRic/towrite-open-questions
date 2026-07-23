@@ -212,9 +212,10 @@ To simulate a real display ACK, run this command pattern from the Backend reposi
 ```powershell
 .\.venv\Scripts\python.exe scripts\eink_device_simulator.py `
   --base-url https://<capture-host>.<tailnet>.ts.net:10000 `
-  --device-id dev_<32-hex-characters-shown-by-ToWrite> `
-  --device-secret <one-time-device-secret>
+  --device-id dev_<32-hex-characters-shown-by-ToWrite>
 ```
+
+The script asks for the one-time device secret through a hidden prompt; do not add a nonexistent `--device-secret` argument. Automation may set `TOWRITE_DEVICE_SECRET` temporarily and clear it immediately afterward.
 
 Never screenshot the device secret, commit it to Git, or copy it to the NFC tag.
 

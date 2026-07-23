@@ -38,6 +38,12 @@ import {
   type EchoCardDisclosure,
   type EchoCardReferencePreset
 } from "../hub/echo-cards";
+import {
+  buildEsp32DeviceEndpoints,
+  isHubDeviceId,
+  isPrivateTailscaleServeOrigin,
+  normalizeEsp32HubOrigin
+} from "../hub/esp32-config";
 import type { HubContentAction, HubContentType } from "../hub/types";
 
 type SettingsTabId = "general" | "cards" | "capture" | "inbox" | "learning" | "workflow" | "api" | "push" | "quote0" | "ai" | "backend" | "hub" | "about";
@@ -310,7 +316,7 @@ const COPY: Record<ToWriteLanguage, SettingCopy> = {
       "general": "通用",
       "cards": "卡片与编辑器",
       "capture": "记录",
-      "inbox": "Inbox 与设备库",
+      "inbox": "Inbox / 卡片",
       "learning": "建议与习惯",
       "workflow": "Workflow",
       "api": "API 与设备",
@@ -552,7 +558,7 @@ const COPY: Record<ToWriteLanguage, SettingCopy> = {
       "general": "General",
       "cards": "Cards & Editor",
       "capture": "Capture",
-      "inbox": "Inbox & Library",
+      "inbox": "Inbox / Cards",
       "learning": "Suggestions & Habits",
       "workflow": "Workflow",
       "api": "API & Device",
@@ -853,6 +859,8 @@ export class ToWriteSettingTab extends PluginSettingTab {
   private hubAccountAccessToken = "";
   /** Shown only after provisioning/rotation so it can be copied to the ESP32. */
   private hubOneTimeDeviceSecret = "";
+  /** Binds the one-time secret to the Hub that issued it so it cannot be copied to another origin. */
+  private hubOneTimeDeviceSecretOrigin = "";
   private hubDeviceSecretVisible = false;
   private inboxSettingsSaveTimer = 0;
   private inboxSettingsSaveRunning = false;
@@ -1556,18 +1564,41 @@ export class ToWriteSettingTab extends PluginSettingTab {
     button.addEventListener("click", () => void this.startEchoCardDraft(preset.presetId));
   }
 
-  private async startEchoCardDraft(presetId?: string): Promise<void> {
+  private async startEchoCardDraft(presetId?: string, replaceConfirmed = false): Promise<void> {
     const zh = this.plugin.settings.language !== "en";
-    if (!this.canReplaceEchoCardDraft(zh)) return;
+    if (!replaceConfirmed && !this.canReplaceEchoCardDraft(zh)) return;
     try {
       const draft = await this.plugin.createEchoCardFromPreset(presetId);
       this.echoCardDraft = cloneEchoCardForEditor(draft);
       this.echoCardDraftBaseline = "";
       this.echoCardDeleteConfirmId = "";
       this.refreshSettingsUi();
+      this.focusEchoCardWorkbench();
     } catch (error) {
       new Notice(`Echo: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  private openEchoCardWorkbench(createBlank: boolean): void {
+    if (createBlank) {
+      const zh = this.plugin.settings.language !== "en";
+      if (!this.canReplaceEchoCardDraft(zh)) return;
+      this.activeSettingsTab = "inbox";
+      void this.startEchoCardDraft(undefined, true);
+      return;
+    }
+    this.activeSettingsTab = "inbox";
+    this.refreshSettingsUi();
+    this.focusEchoCardWorkbench();
+  }
+
+  private focusEchoCardWorkbench(): void {
+    window.requestAnimationFrame(() => {
+      this.containerEl.querySelector<HTMLElement>(".towrite-echo-workbench")?.scrollIntoView({
+        block: "start",
+        behavior: "smooth"
+      });
+    });
   }
 
   private duplicateEchoCardDraft(card: EchoCard, zh: boolean): void {
@@ -1788,7 +1819,19 @@ export class ToWriteSettingTab extends PluginSettingTab {
     const primary = footer.createDiv({ cls: "towrite-echo-editor-primary" });
     const saveButton = primary.createEl("button", { text: zh ? "保存" : "Save", attr: { type: "button" } });
     saveButton.addEventListener("click", () => void this.saveEchoCardDraft(draft, zh, false));
-    const sendButton = primary.createEl("button", { cls: "mod-cta", text: zh ? "立即发送" : "Show now", attr: { type: "button" } });
+    const hubReady = Boolean(
+      this.plugin.settings.hub.enabled
+      && this.plugin.settings.hub.baseUrl
+      && this.plugin.settings.hub.receiverId
+      && this.plugin.settings.hub.deviceId
+    );
+    const sendButton = primary.createEl("button", {
+      cls: "mod-cta",
+      text: hubReady
+        ? (zh ? "保存并发送到屏幕" : "Save and send to display")
+        : (zh ? "保存并设为当前卡片" : "Save as current card"),
+      attr: { type: "button" }
+    });
     sendButton.addEventListener("click", () => void this.saveEchoCardDraft(draft, zh, true));
 
     updatePreview();
@@ -1850,9 +1893,11 @@ export class ToWriteSettingTab extends PluginSettingTab {
       const saved = await this.plugin.upsertEchoCard(cloneEchoCardForEditor(draft));
       this.echoCardDraft = cloneEchoCardForEditor(saved);
       this.echoCardDraftBaseline = echoCardFingerprint(saved);
-      if (send) await this.plugin.sendEchoCardToDeviceHub(saved.id);
+      const hubState = send ? await this.plugin.sendEchoCardToDeviceHub(saved.id) : undefined;
       new Notice(send
-        ? (zh ? "Echo 卡片已保存并设为当前显示内容。" : "Echo card saved and selected for display.")
+        ? hubState
+          ? (zh ? "Echo 卡片已保存并发送到设备。" : "Echo card saved and sent to the device.")
+          : (zh ? "Echo 卡片已保存为本地当前卡片；Device Hub 尚未连接，未发送到 ESP32。" : "Echo card saved as the local current card. Device Hub is not connected, so it was not sent to the ESP32.")
         : (zh ? "Echo 卡片已保存。" : "Echo card saved."));
       this.refreshSettingsUi();
     } catch (error) {
@@ -1866,8 +1911,10 @@ export class ToWriteSettingTab extends PluginSettingTab {
     if (this.echoCardMutationRunning) return;
     this.echoCardMutationRunning = true;
     try {
-      await this.plugin.sendEchoCardToDeviceHub(cardId);
-      new Notice(zh ? "Echo 卡片已设为当前显示内容。" : "Echo card selected for display.");
+      const hubState = await this.plugin.sendEchoCardToDeviceHub(cardId);
+      new Notice(hubState
+        ? (zh ? "Echo 卡片已发送到设备。" : "Echo card sent to the device.")
+        : (zh ? "已设为本地当前卡片；Device Hub 尚未连接，未发送到 ESP32。" : "Selected as the local current card. Device Hub is not connected, so it was not sent to the ESP32."));
       this.refreshSettingsUi();
     } catch (error) {
       new Notice(`${zh ? "发送失败" : "Could not send"}: ${error instanceof Error ? error.message : String(error)}`);
@@ -2033,9 +2080,22 @@ export class ToWriteSettingTab extends PluginSettingTab {
   private renderHubSettings(containerEl: HTMLElement): void {
     const zh = this.plugin.settings.language !== "en";
     const hub = this.plugin.settings.hub;
-    const tailscaleServe = /^https:\/\/[^/?#]+\.ts\.net(?::\d+)?$/iu.test(hub.baseUrl);
+    const tailscaleServe = isPrivateTailscaleServeOrigin(hub.baseUrl);
 
-    this.renderLocalCaptureBridgeSettings(containerEl, zh);
+    const echoCards = this.plugin.getEchoCards();
+    const deviceLibrary = this.plugin.getDeviceContentLibrary();
+    new Setting(containerEl)
+      .setName(zh ? "卡片与屏幕" : "Cards and display")
+      .setDesc(zh
+        ? `手写 Echo 卡片、套用参考模板，或发送已有 ToThink / ToWrite 卡片。当前有 ${echoCards.length} 张手写卡、${deviceLibrary.eligibleCount} 张可发送划线卡。`
+        : `Write Echo cards, start from a reference template, or send an existing ToThink / ToWrite card. There are ${echoCards.length} custom cards and ${deviceLibrary.eligibleCount} eligible selection cards.`)
+      .addButton((button) => button
+        .setCta()
+        .setButtonText(zh ? "新建手写卡片" : "Create custom card")
+        .onClick(() => this.openEchoCardWorkbench(true)))
+      .addButton((button) => button
+        .setButtonText(zh ? "打开卡片库" : "Open card library")
+        .onClick(() => this.openEchoCardWorkbench(false)));
 
     new Setting(containerEl)
       .setName(zh ? "连接 ToWrite Device Hub" : "Connect ToWrite Device Hub")
@@ -2055,7 +2115,14 @@ export class ToWriteSettingTab extends PluginSettingTab {
         ? "填写固定的 canonical HTTP(S) origin，不要带 /t/v1、query 或 fragment；NFC 使用 HTTPS。"
         : "Enter the canonical HTTP(S) origin without /t/v1, a query, or a fragment; NFC uses HTTPS.")
       .addText((text) => text.setValue(hub.baseUrl).setPlaceholder("https://hub.example.com").onChange(async (value) => {
-        hub.baseUrl = value.trim().replace(/\/+$/u, "");
+        const nextBaseUrl = value.trim().replace(/\/+$/u, "");
+        const nextCanonicalOrigin = normalizeEsp32HubOrigin(nextBaseUrl) ?? "";
+        if (this.hubOneTimeDeviceSecretOrigin && nextCanonicalOrigin !== this.hubOneTimeDeviceSecretOrigin) {
+          this.hubOneTimeDeviceSecret = "";
+          this.hubOneTimeDeviceSecretOrigin = "";
+          this.hubDeviceSecretVisible = false;
+        }
+        hub.baseUrl = nextBaseUrl;
         await this.plugin.savePluginData();
         this.plugin.configureDeviceHub();
         this.refreshSettingsUi();
@@ -2146,6 +2213,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
               }
               const result = await this.plugin.provisionPersonalDeviceHub(this.hubAccountAccessToken);
               this.hubOneTimeDeviceSecret = result.deviceSecret;
+              this.hubOneTimeDeviceSecretOrigin = normalizeEsp32HubOrigin(hub.baseUrl) ?? "";
               this.hubDeviceSecretVisible = false;
               new Notice(zh
                 ? "配对成功。ESP32 密钥显示在下方；写 NFC 时只复制“完整 Tap URL”。"
@@ -2162,6 +2230,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
             .onClick(() => {
               void this.plugin.rotateHubDeviceSecret(this.hubAccountAccessToken).then(async (result) => {
                 this.hubOneTimeDeviceSecret = result.deviceSecret;
+                this.hubOneTimeDeviceSecretOrigin = normalizeEsp32HubOrigin(hub.baseUrl) ?? "";
                 this.hubDeviceSecretVisible = false;
                 await copyToClipboard(result.deviceSecret, zh ? "新设备密钥已复制" : "New device secret copied");
                 this.refreshSettingsUi();
@@ -2206,6 +2275,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
           .setButtonText(zh ? "清除显示" : "Clear")
           .onClick(() => {
             this.hubOneTimeDeviceSecret = "";
+            this.hubOneTimeDeviceSecretOrigin = "";
             this.hubDeviceSecretVisible = false;
             this.refreshSettingsUi();
           }));
@@ -2265,6 +2335,8 @@ export class ToWriteSettingTab extends PluginSettingTab {
         hub.deviceId = value.trim();
         await this.plugin.savePluginData();
       }));
+
+    this.renderEsp32ProvisioningGuide(containerEl, zh, tailscaleServe);
 
     new Setting(containerEl)
       .setName(zh ? "同步间隔（秒）" : "Sync interval (seconds)")
@@ -2363,6 +2435,128 @@ export class ToWriteSettingTab extends PluginSettingTab {
       .setDesc(zh
         ? "每批最多 20 个 opaque 候选；发送类型、显示标题、可选获准片段、动作、分数、理由和粗粒度工作流信息。临时选区绝不上传；由划线明确保存的卡片只有在开启正文片段开关后才会发送截断内容。Vault 路径、完整正文、剪贴板、精确位置和长期 token 始终不发送。"
         : "At most 20 opaque candidates per batch: kind, display title, optional approved snippet, actions, score, reason, and coarse workflow metadata. Ephemeral selections are never uploaded; a card explicitly saved from a selection shares truncated content only when display snippets are enabled. Vault paths, full text, clipboard data, precise location, and long-lived tokens are never sent.");
+
+    this.renderLocalCaptureBridgeSettings(containerEl, zh);
+  }
+
+  private renderEsp32ProvisioningGuide(containerEl: HTMLElement, zh: boolean, tailscaleServe: boolean): void {
+    const hub = this.plugin.settings.hub;
+    const origin = normalizeEsp32HubOrigin(hub.baseUrl) ?? "";
+    const originIsDeviceReachable = Boolean(origin);
+    const deviceId = hub.deviceId.trim();
+    const deviceIdValid = isHubDeviceId(deviceId);
+    const endpoints = buildEsp32DeviceEndpoints(origin, deviceId);
+    const placeholderRoot = "https://hub.example.com/v1/hub/devices/{device_id}";
+    const secretMatchesOrigin = Boolean(
+      this.hubOneTimeDeviceSecret
+      && origin
+      && this.hubOneTimeDeviceSecretOrigin === origin
+    );
+    const previewConfig = {
+      protocol: "towrite-device-hub/v1",
+      hub_origin: origin || (zh ? "<ESP32 可访问的 HTTPS Hub 地址>" : "<HTTPS Hub origin reachable by ESP32>"),
+      device_id: deviceIdValid ? deviceId : (zh ? "<一键配对后生成的 dev_…>" : "<dev_… generated during provisioning>"),
+      device_secret: secretMatchesOrigin
+        ? (zh ? "<已生成；点击下方按钮安全复制>" : "<ready; use the secure copy button below>")
+        : (zh ? "<配对或轮换时只显示一次>" : "<shown once after provisioning or rotation>"),
+      desired_url: endpoints?.desiredUrl ?? `${placeholderRoot}/desired?after={state_version}&wait=25`,
+      display_ack_url: endpoints?.displayAckUrl ?? `${placeholderRoot}/display-acks`,
+      event_url: endpoints?.eventUrl ?? `${placeholderRoot}/events`,
+      authorization: "Device <device_secret>"
+    };
+
+    const details = containerEl.createEl("details", { cls: "towrite-esp32-guide" });
+    details.open = true;
+    const summary = details.createEl("summary");
+    summary.createSpan({ text: zh ? "ESP32 接入清单" : "ESP32 provisioning checklist" });
+    summary.createEl("small", {
+      text: deviceIdValid
+        ? (zh ? `已绑定 ${deviceId}` : `Bound to ${deviceId}`)
+        : (zh ? "尚未完成设备配对" : "Device not provisioned")
+    });
+
+    const body = details.createDiv({ cls: "towrite-esp32-guide-body" });
+    body.createEl("p", {
+      cls: tailscaleServe ? "towrite-esp32-network-warning" : "",
+      text: tailscaleServe
+        ? (zh
+          ? "当前 Hub URL 是 Tailscale Serve 私有地址：手机和电脑可访问，但普通 ESP32 不能直接加入 tailnet。真机需要一个 ESP32 可访问且受保护的 HTTPS 入口，或由同一局域网内的 Tailscale 网关代转。"
+          : "The Hub URL is a private Tailscale Serve origin. Phones and computers can reach it, but a normal ESP32 cannot join the tailnet directly. Hardware needs a protected HTTPS origin it can reach, or a gateway on the same LAN.")
+        : (zh
+          ? "ESP32 必须能直接访问上面的 Hub HTTPS 地址；Wi-Fi 名称和密码只保存在 ESP32，不填写到 ToWrite。"
+          : "The ESP32 must be able to reach the Hub HTTPS origin. Wi-Fi credentials stay on the ESP32 and are never entered into ToWrite.")
+    });
+
+    const checklist = body.createEl("ol");
+    checklist.createEl("li", {
+      text: hub.enabled
+        ? (zh ? "Device Hub 已启用。" : "Device Hub is enabled.")
+        : (zh ? "先开启“连接 ToWrite Device Hub”。" : "Enable Connect ToWrite Device Hub.")
+    });
+    checklist.createEl("li", {
+      text: originIsDeviceReachable
+        ? (zh ? `Hub 地址：${origin}` : `Hub origin: ${origin}`)
+        : origin
+          ? (zh ? `当前 ${origin} 仅适合本机开发；请改为 ESP32 可访问的非 loopback HTTPS 地址。` : `${origin} is suitable only for local development. Use a non-loopback HTTPS origin reachable by the ESP32.`)
+          : (zh ? "填写 ESP32 可访问的非 loopback HTTPS Hub URL。" : "Enter a non-loopback HTTPS Hub URL reachable by the ESP32.")
+    });
+    checklist.createEl("li", {
+      text: deviceIdValid
+        ? (zh ? `设备 ID：${deviceId}` : `Device ID: ${deviceId}`)
+        : (zh ? "登录 Hub 后点击“一键创建并配对”；不要自己编造 device_id。" : "Sign in, then use Provision and pair. Do not invent a device ID.")
+    });
+    checklist.createEl("li", {
+      text: secretMatchesOrigin
+        ? (zh ? "一次性 device_secret 已就绪；复制到 ESP32 安全存储。" : "The one-time device secret is ready; copy it into ESP32 secure storage.")
+        : deviceIdValid
+          ? (zh ? "device_secret 不会长期保存在插件里；若上次没有保存，请先登录并“轮换设备密钥”。" : "The device secret is not persisted by the plugin. Sign in and rotate it if you did not save the previous value.")
+          : (zh ? "配对完成后会显示一次 device_secret。" : "Provisioning reveals the device secret once.")
+    });
+    checklist.createEl("li", {
+      text: zh
+        ? "固件用 Authorization: Device <device_secret> 长轮询 desired；渲染成功后提交 display ACK。"
+        : "Firmware long-polls desired with Authorization: Device <device_secret>, then submits a display ACK after rendering."
+    });
+    body.createEl("p", {
+      text: zh
+        ? "当前版本交付 Device Hub 协议与模拟器，不包含与你具体墨水屏型号绑定的 ESP32 刷屏驱动；现有 examples/esp32s3-eink 仍是旧 External API 示例，不能直接当作 Device Hub 固件。"
+        : "This version delivers the Device Hub protocol and simulator, not a display driver for a particular e-ink panel. The existing examples/esp32s3-eink sketch still targets the legacy External API and is not Device Hub firmware."
+    });
+
+    const preview = body.createEl("pre", { cls: "towrite-esp32-config-preview" });
+    preview.createEl("code", { text: JSON.stringify(previewConfig, null, 2) });
+
+    const actions = body.createDiv({ cls: "towrite-esp32-guide-actions" });
+    const endpointsReady = Boolean(endpoints);
+    const completeConfigReady = Boolean(endpointsReady && !tailscaleServe && secretMatchesOrigin);
+    const endpointButton = actions.createEl("button", {
+      text: zh ? "复制端点模板" : "Copy endpoint template",
+      attr: { type: "button" }
+    });
+    endpointButton.disabled = !endpointsReady;
+    endpointButton.addEventListener("click", () => {
+      void copyToClipboard(JSON.stringify(previewConfig, null, 2), zh ? "ESP32 端点模板已复制" : "ESP32 endpoint template copied");
+    });
+    const completeButton = actions.createEl("button", {
+      cls: "mod-cta",
+      text: zh ? "复制完整 ESP32 配置" : "Copy complete ESP32 config",
+      attr: {
+        type: "button",
+        title: completeConfigReady
+          ? ""
+          : tailscaleServe
+            ? (zh ? "普通 ESP32 无法直接访问私有 Tailscale Serve；请先配置受保护的 HTTPS 网关" : "A normal ESP32 cannot reach private Tailscale Serve; configure a protected HTTPS gateway first")
+            : (zh ? "需先完成配对，并保留本次显示的一次性设备密钥" : "Provision first and keep the one-time device secret visible")
+      }
+    });
+    completeButton.disabled = !completeConfigReady;
+    completeButton.addEventListener("click", () => {
+      const completeConfig = {
+        ...previewConfig,
+        device_secret: this.hubOneTimeDeviceSecret
+      };
+      void copyToClipboard(JSON.stringify(completeConfig, null, 2), zh ? "完整 ESP32 配置已复制；请妥善保管设备密钥" : "Complete ESP32 config copied; protect the device secret");
+    });
   }
 
   private renderLocalCaptureBridgeSettings(containerEl: HTMLElement, zh: boolean): void {

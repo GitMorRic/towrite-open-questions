@@ -212,9 +212,10 @@ tailscale serve --https=10000 off
 ```powershell
 .\.venv\Scripts\python.exe scripts\eink_device_simulator.py `
   --base-url https://<capture-host>.<tailnet>.ts.net:10000 `
-  --device-id dev_<插件显示的32位hex> `
-  --device-secret <一次性设备密钥>
+  --device-id dev_<插件显示的32位hex>
 ```
+
+脚本会通过隐藏输入提示询问一次性设备密钥；不要添加不存在的 `--device-secret` 参数。自动化时可临时设置 `TOWRITE_DEVICE_SECRET`，运行后立即清除。
 
 不要把命令中的设备密钥截图、提交到 Git 或复制到 NFC 标签。
 
