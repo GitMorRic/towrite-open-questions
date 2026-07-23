@@ -1,27 +1,46 @@
-# ESP32-S3 e-ink: template-first paging
+# ESP32-S3 e-ink: Today deck and three-button protocol
 
-This sketch uses ToWrite's local External API to display one shared small-screen playlist:
+This example implements the local-device side of `towrite-device/v2`:
 
-1. saved Echo template cards with **Screen paging** enabled;
-2. eligible ToThink / ToWrite cards;
-3. wrap back to the first card.
+1. poll the card that ToWrite wants the screen to show;
+2. refresh the physical e-ink panel;
+3. acknowledge the exact tuple that was actually rendered;
+4. send single, double, or long button gestures only against that acknowledged tuple.
 
-The right button advances, the optional left button goes back, and a manual **Show now** action in Obsidian becomes visible within about five seconds. Unchanged polls do not redraw the full e-ink panel.
+That order is important. If ToWrite has selected card B while the pixels still
+show card A, a button event continues to target A. Merely downloading B never
+changes the firmware's authoritative `displayedTuple`.
 
-The screen page label comes from `playlist.currentPosition` and
-`playlist.queueTotal` when `currentInQueue` is true. A manual-only card is
-shown as **single preview** instead of silently joining paging. The firmware
-does not use the fixed request `cursor=0`, and it does not reuse the ToThink /
-ToWrite collection totals. Echo template cards are presented as **Echo
-sample**, not as ToWrite.
+The three Today pages are:
 
-The sketch also maintains a small connection footer:
+- `daily_overview`: date, theme, current task, the next two tasks, smallest next
+  step, and total completed/total progress;
+- `daily_plan_item`: one task with its goal, next step, estimate, and start time;
+- `daily_result`: completed and remaining tasks, without the full backlog or
+  writing statistics.
 
-```text
-WiFi OK | API OK | target local-web | sync @123s (0s ago)
-```
+Echo and ToThink/ToWrite cards remain compatible with the same renderer.
 
-`renderCard()` and `renderEmpty()` receive that footer for a normal full-card draw. `renderConnectionStatus()` is a separate hook for a narrow partial refresh when only connectivity changes. HTTP, JSON, and Wi-Fi failures call the screen-oriented `renderError()` hook instead of existing only in Serial output. None of these strings contains the device token.
+## Button behavior
+
+Wire three momentary buttons between GPIO and GND. The sketch enables
+`INPUT_PULLUP`.
+
+| Button | Single click | Double click | Long press |
+| --- | --- | --- | --- |
+| Left | Previous page | Previous task card | Reserved |
+| Main | Start/open the displayed note | Open create-only Capture | Recording reserved |
+| Right | Next page | Next task card | Safely complete displayed task |
+
+The firmware uses:
+
+- 45 ms debounce;
+- 320 ms double-click window;
+- 700 ms long-press threshold.
+
+A single click is emitted only after the 320 ms window expires. A long press
+cancels any pending click. The server remains authoritative: for example,
+right-long is accepted only on the currently acknowledged task card.
 
 ## Obsidian setup
 
@@ -33,20 +52,12 @@ Bind host = 0.0.0.0
 Port = 48321
 ```
 
-Create a `local-web` Push target with `buttons` capability and mappings:
+Create one device target per screen and generate a target-scoped token. Do not
+put the External API administrator token on the device. Query-token access can
+remain disabled because the sketch sends the scoped token only in the
+`Authorization` header.
 
-```text
-right: next
-left: prev
-```
-
-Generate a separate token for that target. The sketch uses it in the `Authorization` header; query-token access can remain disabled. Do not put the full External API administrator token on the device.
-
-In **Inbox & device library → Echo e-ink cards**, save each card and enable **Screen paging**. A template chooser creates only a draft; it does not enter the device queue until it is saved.
-
-## Sketch configuration
-
-Install `ArduinoJson` plus the driver for your panel, then edit:
+Configure the sketch:
 
 ```cpp
 const char* WIFI_SSID = "YOUR_WIFI";
@@ -55,71 +66,129 @@ const char* API_BASE_URL = "http://192.168.1.20:48321";
 const char* DEVICE_TARGET_ID = "local-web";
 const char* DEVICE_TOKEN = "THE_TARGET_SCOPED_TOKEN";
 
-const int NEXT_BUTTON_PIN = 4;
-const int PREVIOUS_BUTTON_PIN = 5; // or -1 when absent
+const int MAIN_BUTTON_PIN = 6;
+const int LEFT_BUTTON_PIN = 5;
+const int RIGHT_BUTTON_PIN = 4;
 ```
 
-Wire each button between its GPIO and GND. The sketch enables `INPUT_PULLUP`. Choose pins that are free on your exact ESP32-S3 board and display carrier.
+Choose GPIOs that are free on your exact ESP32-S3 board and display carrier.
+Install `ArduinoJson` and the driver for your panel, such as `GxEPD2`.
 
-A normal ESP32 is not a Tailscale node, so a private `*.ts.net` Serve origin is usually unreachable directly. Use the same LAN, a computer hotspot, or a subnet router unless your hardware network architecture explicitly provides tailnet access.
+A normal ESP32 is not itself a Tailscale node, so a private `*.ts.net` Serve
+origin is usually not directly reachable. Use the same LAN, a computer hotspot,
+or a subnet router unless your network explicitly routes the tailnet to the
+microcontroller.
 
-## Requests
+## Poll, render, and display ACK
 
-The display polls:
+The device polls:
 
 ```http
 GET /api/v1/eink?targetId=local-web&limit=1&cursor=0
-Authorization: Bearer <target-token>
+Authorization: Bearer <target-scoped-token>
 ```
 
-The right button posts:
-
-```http
-POST /api/v1/device/events
-Authorization: Bearer <target-token>
-Content-Type: application/json
-
-{
-  "schemaVersion": 1,
-  "eventId": "unique-per-press",
-  "targetId": "local-web",
-  "deviceId": "esp32-chip-id",
-  "button": "right"
-}
-```
-
-ToWrite commits the shared cursor before returning `200`, and duplicate event IDs are idempotent. The device then polls cursor zero again to render the selected card.
-
-The response includes stable progress and presentation metadata:
+In addition to the card in `focus[0]`, the response contains an exact desired
+tuple:
 
 ```json
 {
-  "focus": [{
-    "sourceType": "echo",
-    "displayCategory": "echo"
-  }],
   "playlist": {
-    "currentInQueue": true,
-    "currentIndex": 1,
-    "currentPosition": 2,
-    "queueTotal": 6
+    "desired": {
+      "deviceId": "local-web",
+      "selectionId": "sel_local_...",
+      "stateVersion": 12,
+      "contentId": "cnt_local_...",
+      "revisionId": "rev_local_...",
+      "cardId": "daily-overview:2026-07-24",
+      "playlistRevision": "einkrev_..."
+    }
   }
 }
 ```
 
-`currentIndex` is zero-based in the stable Echo-then-question queue;
-`currentPosition` is the equivalent one-based value. Both continue to describe
-the real card position when ToWrite promotes the selected card to response
-cursor zero.
+The sketch verifies that `focus[0].id` matches `desired.cardId`, then calls
+`renderCard()`. Replace the Serial stub with your panel driver and return
+`true` only after the controller successfully finishes the refresh.
 
-For a manual-only preview, `currentInQueue` is false, `currentIndex` is `-1`,
-and `currentPosition` is `0`; render a preview label rather than a fake page.
+Only after that does it send:
 
-Replace `renderCard()`, `renderEmpty()`, `renderConnectionStatus()`, and `renderError()` with your GxEPD2, Waveshare, or LilyGo drawing code. Reserve a narrow footer for connection state and use a partial-window refresh there; do not full-refresh the entire panel for every healthy five-second poll. Echo cards expose `sourceType: "echo"`; annotation cards expose `sourceType: "question"`.
+```http
+POST /api/v1/device/display-acks
+Authorization: Bearer <target-scoped-token>
+Content-Type: application/json
 
-Prefer `displayCategory` for the visible section label: `echo` means
-**Echo sample**, while `tothink` and `towrite` retain their normal meanings.
-The legacy `lane` field remains for old clients and must not be used to classify
-an Echo card.
+{
+  "eventId": "ack-unique-id",
+  "deviceId": "local-web",
+  "selectionId": "sel_local_...",
+  "stateVersion": 12,
+  "contentId": "cnt_local_...",
+  "revisionId": "rev_local_...",
+  "cardId": "daily-overview:2026-07-24",
+  "playlistRevision": "einkrev_..."
+}
+```
 
-If the footer says `API ERR | HTTP 401`, the target ID and target-scoped token do not match. If it says `WiFi OFF`, verify the SSID/password and that the ESP32 can reach the computer's LAN address. If annotation cards work but templates do not, verify that the template was saved, **Screen paging** is enabled, and the firmware is polling the new single-card playlist URL.
+The firmware copies this tuple into local `displayedTuple` only after HTTP 200.
+As soon as new pixels are rendered, the older tuple is invalidated. If ACK
+fails, the new rendered tuple is kept separately for an ACK retry and gestures
+remain disabled. A conflict clears the local tuple and forces a fresh render.
+
+## Schema-v2 gesture event
+
+Every gesture sends the complete acknowledged tuple:
+
+```http
+POST /api/v1/device/events
+Authorization: Bearer <target-scoped-token>
+Content-Type: application/json
+
+{
+  "schemaVersion": 2,
+  "eventId": "evt-unique-id",
+  "targetId": "local-web",
+  "deviceId": "local-web",
+  "selectionId": "sel_local_...",
+  "stateVersion": 12,
+  "contentId": "cnt_local_...",
+  "revisionId": "rev_local_...",
+  "cardId": "daily-overview:2026-07-24",
+  "playlistRevision": "einkrev_...",
+  "button": "primary",
+  "gesture": "single"
+}
+```
+
+The server derives the action from `button + gesture`; the device does not send
+an arbitrary action. Duplicate `eventId` values are idempotent. A stale tuple
+returns HTTP 409 rather than opening or completing a different card.
+
+The JSON response's `displayMessage` is shown through the
+`renderCommandStatus()` partial-refresh hook. The sample reduces common
+responses to short statuses such as:
+
+- `Opened`
+- `Waiting for computer`
+- `Computer offline`
+- `Conflict - refreshing`
+- `Recording unavailable`
+
+Replace `renderCard()`, `renderEmpty()`, `renderCommandStatus()`,
+`renderConnectionStatus()`, and `renderError()` with your real display calls.
+Keep command and connectivity updates in a narrow partial-refresh area so a
+healthy five-second poll does not refresh the full screen.
+
+## Security and troubleshooting
+
+- The scoped device token never enters a URL or JSON body and is never logged.
+- Give each screen a distinct target/token pair; rotating one screen's token
+  should not affect another.
+- HTTP 401/403 means the target and token are not authorized together.
+- HTTP 409 means the physical screen tuple is stale; the sample immediately
+  polls, redraws, and ACKs the new state.
+- `Computer offline` means Wi-Fi could not reach Obsidian's External API.
+- `Recording unavailable` is the intentional V1 result of main-long; no fake
+  audio session is created.
+
+Never commit real Wi-Fi credentials, tokens, or private device addresses.

@@ -1,4 +1,5 @@
 import {
+  HUB_DEVICE_EVENT_PROTOCOL_VERSION,
   HUB_PROTOCOL_VERSION,
   type HubCandidateBatch,
   type HubCandidateReceipt,
@@ -53,7 +54,7 @@ export interface HubCaptureClientLike {
 }
 
 export interface HubDeviceEventClientLike {
-  getPendingDeviceEvents(receiverId: string, limit?: number): Promise<HubPendingDeviceEvent[]>;
+  getPendingDeviceEvents(receiverId: string, limit?: number, waitSeconds?: number): Promise<HubPendingDeviceEvent[]>;
   acknowledgeDeviceEvent(
     receiverId: string,
     eventId: string,
@@ -183,12 +184,14 @@ export class HubClient implements HubClientLike, HubCaptureClientLike, HubDevice
     };
   }
 
-  async getPendingDeviceEvents(receiverId: string, limit = 50): Promise<HubPendingDeviceEvent[]> {
+  async getPendingDeviceEvents(receiverId: string, limit = 50, waitSeconds = 0): Promise<HubPendingDeviceEvent[]> {
     assertIdentifier(receiverId, "receiver ID");
     const safeLimit = Math.max(1, Math.min(200, Math.floor(limit)));
+    const safeWait = Math.max(0, Math.min(25, Math.floor(waitSeconds)));
     const response = asRecord(await this.requestJson(
-      `/v1/hub/receivers/${encodeURIComponent(receiverId)}/device-events/pending?limit=${safeLimit}`,
-      { method: "GET" }
+      `/v1/hub/receivers/${encodeURIComponent(receiverId)}/device-events/pending?limit=${safeLimit}&wait=${safeWait}`,
+      { method: "GET" },
+      safeWait > 0 ? (safeWait + 5) * 1_000 : undefined
     ), "pending device event list");
     if (!Array.isArray(response.items)) {
       throw new Error("Device Hub response is missing pending device event items.");
@@ -216,9 +219,10 @@ export class HubClient implements HubClientLike, HubCaptureClientLike, HubDevice
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          protocol_version: acknowledgement.protocolVersion ?? HUB_PROTOCOL_VERSION,
+          protocol_version: acknowledgement.protocolVersion ?? HUB_DEVICE_EVENT_PROTOCOL_VERSION,
           status: acknowledgement.status,
-          result_revision: resultRevision
+          result_revision: resultRevision,
+          message: acknowledgement.message?.trim().slice(0, 120)
         })
       }
     ), "device event acknowledgement");
@@ -236,11 +240,12 @@ export class HubClient implements HubClientLike, HubCaptureClientLike, HubDevice
       acknowledged: true,
       duplicate: response.duplicate === true,
       status,
-      acknowledgedAt: readOptionalString(response, "acknowledged_at", "acknowledgedAt")
+      acknowledgedAt: readOptionalString(response, "acknowledged_at", "acknowledgedAt"),
+      message: readOptionalString(response, "message")
     };
   }
 
-  private async requestJson(path: string, init: RequestInit): Promise<unknown> {
+  private async requestJson(path: string, init: RequestInit, timeoutOverrideMs?: number): Promise<unknown> {
     const settings = this.getSettings();
     const baseUrl = normalizeBaseUrl(settings.baseUrl);
     const token = settings.token.trim();
@@ -248,7 +253,7 @@ export class HubClient implements HubClientLike, HubCaptureClientLike, HubDevice
       throw new Error("Device Hub connector token is missing.");
     }
     const controller = new AbortController();
-    const timeoutMs = Math.max(250, Math.min(120_000, settings.timeoutMs ?? 8_000));
+    const timeoutMs = Math.max(250, Math.min(120_000, timeoutOverrideMs ?? settings.timeoutMs ?? 8_000));
     const timer = globalThis.setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await requestHub(`${baseUrl}${path}`, {
@@ -473,7 +478,9 @@ function normalizePendingCaptureEncryption(value: unknown): HubPendingCaptureEnc
 function normalizePendingDeviceEvent(value: unknown): HubPendingDeviceEvent {
   const record = asRecord(value, "pending device event");
   const action = readRequiredString(record, "action");
-  if (action !== "useful" && action !== "later" && action !== "skip" && action !== "complete") {
+  if (action !== "useful" && action !== "later" && action !== "skip" && action !== "complete"
+    && action !== "open_current" && action !== "start_open"
+    && action !== "create_note" && action !== "record_reserved") {
     throw new Error("Device Hub returned an invalid pending device event action.");
   }
   const contentType = readRequiredString(record, "content_type", "contentType");
@@ -492,7 +499,8 @@ function normalizePendingDeviceEvent(value: unknown): HubPendingDeviceEvent {
     candidateRef: readOptionalOpaqueIdentifier(record, "candidate_ref", "candidateRef"),
     sourceRef: readOptionalOpaqueIdentifier(record, "source_ref", "sourceRef"),
     writeTargetRef: readOptionalOpaqueIdentifier(record, "write_target_ref", "writeTargetRef"),
-    createdAt: readRequiredIso(record, "created_at", "createdAt")
+    createdAt: readRequiredIso(record, "created_at", "createdAt"),
+    expiresAt: readOptionalIso(record, "expires_at", "expiresAt")
   };
   return event;
 }
@@ -673,6 +681,16 @@ function readRequiredIso(record: Record<string, unknown>, ...keys: string[]): st
   return new Date(timestamp).toISOString();
 }
 
+function readOptionalIso(record: Record<string, unknown>, ...keys: string[]): string | undefined {
+  const value = readOptionalString(record, ...keys);
+  if (!value) return undefined;
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) {
+    throw new Error(`Device Hub response contains an invalid ${keys[0]}.`);
+  }
+  return new Date(timestamp).toISOString();
+}
+
 function isOpaqueIdentifier(value: string, maxLength: number): boolean {
   return value.length >= 3
     && value.length <= maxLength
@@ -695,7 +713,9 @@ function isHubContentType(value: string): value is HubPendingDeviceEvent["conten
     || value === "character_letter"
     || value === "human_message"
     || value === "wellbeing_reminder"
+    || value === "daily_overview"
     || value === "daily_plan_item"
+    || value === "daily_result"
     || value === "daily_summary";
 }
 

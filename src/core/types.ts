@@ -287,5 +287,18 @@ export interface ExportEinkPayload {
     revision: string;
     /** Monotonic local desired-state version used by guarded device actions. */
     stateVersion?: number;
+    /**
+     * Exact desired tuple that schema-v2 firmware must echo in its display ACK
+     * and subsequent gesture. It contains no Vault path or credential.
+     */
+    desired?: {
+      deviceId: string;
+      selectionId: string;
+      stateVersion: number;
+      contentId: string;
+      revisionId: string;
+      cardId: string;
+      playlistRevision: string;
+    };
   };
 }

@@ -15,6 +15,8 @@ export interface CaptureModalContext {
   questionId?: string;
   questionTitle?: string;
   questionText?: string;
+  /** The host will offer only create targets; closing leaves the Vault unchanged. */
+  createOnly?: boolean;
 }
 
 export interface CaptureModalSubmitRequest {

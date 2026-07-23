@@ -1,11 +1,16 @@
 import { shortHash } from "../core/hash";
 import {
+  DAILY_PLAN_SCHEMA_VERSION,
   DAILY_SCHEMA_VERSION,
   type DailyDevicePolicy,
   type DailyPlanCreateInput,
+  type DailyPlanDiagnostic,
+  type DailyPlanDocument,
   type DailyPlanItem,
   type DailyPlanItemKind,
+  type DailyPlanMetadataUpdate,
   type DailyPlanPriority,
+  type DailyPlanSource,
   type DailyPlanStatus,
   type DailyPlanUpdate,
   type DailySummary,
@@ -18,7 +23,10 @@ export interface DailyPlanStorage {
 }
 
 export interface DailyPlanServiceOptions {
+  /** V2 source selection. `dailyRoot` remains the V1 compatibility shortcut. */
+  source?: DailyPlanSource;
   dailyRoot?: string;
+  planHeading?: string;
   todoHeading?: string;
   summaryHeading?: string;
   now?: () => Date;
@@ -26,9 +34,20 @@ export interface DailyPlanServiceOptions {
   onChanged?: (path: string) => void | Promise<void>;
 }
 
+export interface DailyPlanParseOptions {
+  source?: DailyPlanSource;
+  planHeading?: string;
+  summaryHeading?: string;
+}
+
 export class DailyPlanConflictError extends Error {
   constructor(
-    public readonly code: "not-found" | "revision-changed" | "id-reused",
+    public readonly code:
+      | "not-found"
+      | "revision-changed"
+      | "id-reused"
+      | "invalid-document"
+      | "invalid-state",
     message: string
   ) {
     super(message);
@@ -36,10 +55,14 @@ export class DailyPlanConflictError extends Error {
   }
 }
 
+export const DAILY_SUMMARY_START_MARKER = "<!-- towrite:daily-summary:start -->";
+export const DAILY_SUMMARY_END_MARKER = "<!-- towrite:daily-summary:end -->";
+
 const TASK_RE = /^(?<indent>\s*)-\s+\[(?<mark>[^\]]*)\]\s+(?<body>.*)$/u;
-const BLOCK_RE = /\s+\^(?<id>[A-Za-z0-9_-]+)\s*$/u;
+const INLINE_BLOCK_RE = /(?:^|\s)\^(?<id>[A-Za-z0-9_-]+)\s*$/u;
 const STANDALONE_BLOCK_RE = /^(?<indent>\s+)\^(?<id>[A-Za-z0-9_-]+)\s*$/u;
-const FIELD_RE = /\s*\[towrite-(?<key>kind|device|at)::\s*(?<value>[^\]]*)\]/giu;
+const OWNED_FIELD_RE = /\[towrite-(?<key>kind|device|at|primary|minimum|goal|next|estimate|target|started)::\s*(?<value>\[\[[^\]]+\]\]|[^\]]*)\]/giu;
+const THEME_FIELD_RE = /\[towrite-theme::\s*(?<value>[^\]]*)\]/giu;
 const PRIORITY_RE = /(?:^|\s)(?<emoji>🔺|⏫|🔼|🔽|⏬)(?=\s|$)/gu;
 const DATE_RE = {
   scheduled: /\s+⏳\s+(\d{4}-\d{2}-\d{2})/u,
@@ -49,8 +72,38 @@ const DATE_RE = {
 const TAG_RE = /(?<!\S)#([\p{L}\p{N}_/-]+)/gu;
 const LINK_RE = /\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]/gu;
 
+interface ResolvedSource {
+  source: DailyPlanSource;
+  path: string;
+  nestedDate: boolean;
+  planLevel: number;
+}
+
+interface SectionRange {
+  heading: number;
+  start: number;
+  end: number;
+  level: number;
+}
+
+interface DateScope {
+  heading?: number;
+  start: number;
+  end: number;
+}
+
+interface ParsedTaskEntry {
+  item?: DailyPlanItem;
+  diagnostic?: DailyPlanDiagnostic;
+  blockIds: string[];
+  line: number;
+  endLine: number;
+}
+
 export class DailyPlanService {
+  private readonly source: DailyPlanSource;
   private readonly root: string;
+  private readonly planHeading: string;
   private readonly todoHeading: string;
   private readonly summaryHeading: string;
   private readonly now: () => Date;
@@ -61,21 +114,45 @@ export class DailyPlanService {
     private readonly storage: DailyPlanStorage,
     private readonly options: DailyPlanServiceOptions = {}
   ) {
-    this.root = normalizeRoot(options.dailyRoot ?? "Daily");
+    this.source = normalizeSource(options.source, options.dailyRoot);
+    this.root = this.source.kind === "daily-note"
+      ? normalizeRoot(this.source.dailyRoot ?? options.dailyRoot ?? "Daily")
+      : "";
+    this.planHeading = normalizeHeading(options.planHeading ?? "今日计划");
     this.todoHeading = normalizeHeading(options.todoHeading ?? "ToDo");
     this.summaryHeading = normalizeHeading(options.summaryHeading ?? "今日总结");
     this.now = options.now ?? (() => new Date());
     this.createId = options.createId ?? createDailyId;
   }
 
+  get planSource(): DailyPlanSource {
+    return cloneSource(this.source, this.root);
+  }
+
   pathForDate(value: Date | string = this.now()): string {
-    return `${this.root}/${normalizeDate(value)}.md`;
+    const date = normalizeDate(value);
+    if (this.source.kind === "fixed-document") return normalizeVaultPath(this.source.path);
+    return `${this.root}/${date}.md`;
+  }
+
+  async read(value: Date | string = this.now()): Promise<DailyPlanDocument> {
+    const date = normalizeDate(value);
+    const path = this.pathForDate(date);
+    return parseDailyPlanDocumentWithDiagnostics(
+      await this.storage.readText(path) ?? "",
+      path,
+      date,
+      this.todoHeading,
+      {
+        source: this.planSource,
+        planHeading: this.planHeading,
+        summaryHeading: this.summaryHeading
+      }
+    );
   }
 
   async list(value: Date | string = this.now()): Promise<DailyPlanItem[]> {
-    const date = normalizeDate(value);
-    const path = this.pathForDate(date);
-    return parseDailyPlanDocument(await this.storage.readText(path) ?? "", path, date, this.todoHeading);
+    return (await this.read(value)).items;
   }
 
   async get(id: string, value: Date | string = this.now()): Promise<DailyPlanItem | undefined> {
@@ -86,51 +163,50 @@ export class DailyPlanService {
     const date = normalizeDate(input.date ?? now);
     const path = this.pathForDate(date);
     const id = normalizeBlockId(input.id) || normalizeBlockId(this.createId());
-    if (!id) {
-      throw new Error("Daily plan item id is invalid.");
-    }
-    const text = normalizeTaskText(input.text);
-    const kind = normalizeKind(input.kind);
-    const devicePolicy = normalizePolicy(input.devicePolicy);
-    const priority = normalizePriority(input.priority);
-    const dueDate = normalizeOptionalDate(input.dueDate) ?? date;
-    const scheduledFor = normalizeScheduledFor(input.scheduledFor);
-    const tags = normalizeTags(input.tags);
-    const line = formatTaskLine({
+    if (!id) throw new Error("Daily plan item id is invalid.");
+
+    const desired = createItemShape({
       id,
-      text,
-      kind,
-      devicePolicy,
-      priority,
-      priorityExplicit: input.priority !== undefined,
       date,
-      dueDate,
-      scheduledFor,
-      tags
+      sourcePath: path,
+      input
     });
 
     return this.withPathLock(path, async () => {
       const current = await this.storage.readText(path) ?? "";
-      const existing = parseDailyPlanDocument(current, path, date, this.todoHeading).find((item) => item.id === id);
+      const document = this.parse(current, path, date);
+      assertWritable(document);
+      const existing = document.items.find((item) => item.id === id);
       if (existing) {
-        if (existing.text === text
-          && existing.kind === kind
-          && existing.devicePolicy === devicePolicy
-          && existing.priority === priority
-          && existing.dueDate === dueDate
-          && existing.scheduledFor === scheduledFor
-          && sameStrings(existing.tags, tags)) {
-          return existing;
-        }
+        if (sameCreateRequest(existing, desired)) return existing;
         throw new DailyPlanConflictError("id-reused", `Daily plan item id is already used: ${id}`);
       }
-      const next = appendToSection(current, date, this.todoHeading, line);
+
+      const changedItems = new Map<string, DailyPlanItem>();
+      if (desired.primary) {
+        for (const item of document.items.filter((entry) => entry.primary)) {
+          changedItems.set(item.id, { ...(changedItems.get(item.id) ?? item), primary: false });
+        }
+      }
+      if (desired.minimum) {
+        for (const item of document.items.filter((entry) => entry.minimum)) {
+          changedItems.set(item.id, { ...(changedItems.get(item.id) ?? item), minimum: false });
+        }
+      }
+      const replacements = new Map<number, string>();
+      for (const item of document.items) {
+        const changed = changedItems.get(item.id);
+        if (changed) replacements.set(item.line, formatTaskBlock(changed, item.rawBlock));
+      }
+      let next = replaceTaskBlocks(current, document.items, replacements);
+      next = appendToTodoSection(next, date, this.resolveSource(date), {
+        planHeading: this.planHeading,
+        todoHeading: this.todoHeading
+      }, formatTaskBlock(desired));
       await this.storage.writeText(path, next);
       await this.notify(path);
-      const created = parseDailyPlanDocument(next, path, date, this.todoHeading).find((item) => item.id === id);
-      if (!created) {
-        throw new Error("Daily plan item could not be verified after writing.");
-      }
+      const created = this.parse(next, path, date).items.find((item) => item.id === id);
+      if (!created) throw new Error("Daily plan item could not be verified after writing.");
       return created;
     });
   }
@@ -141,24 +217,67 @@ export class DailyPlanService {
     patch: DailyPlanUpdate,
     value: Date | string = this.now()
   ): Promise<DailyPlanItem> {
-    return this.mutate(id, expectedRevision, value, (item) => formatTaskLine({
-      id: item.id,
-      text: patch.text === undefined ? item.text : normalizeTaskText(patch.text),
-      kind: patch.kind === undefined ? item.kind : normalizeKind(patch.kind),
-      devicePolicy: patch.devicePolicy === undefined ? item.devicePolicy : normalizePolicy(patch.devicePolicy),
-      priority: patch.priority === undefined ? item.priority : normalizePriority(patch.priority),
-      priorityExplicit: patch.priority === undefined ? item.priorityExplicit : true,
-      date: item.scheduledDate || item.date,
-      dueDate: patch.dueDate === undefined ? item.dueDate : normalizeOptionalDate(patch.dueDate) ?? item.date,
-      scheduledFor: patch.scheduledFor === undefined
-        ? item.scheduledFor
-        : patch.scheduledFor === null
-          ? undefined
-          : normalizeScheduledFor(patch.scheduledFor),
-      tags: patch.tags === undefined ? item.tags : normalizeTags(patch.tags),
-      status: patch.status ?? item.status,
-      completionDate: patch.status === undefined && item.status === "done" ? item.completionDate : undefined
-    }));
+    return this.mutateItems(id, expectedRevision, value, (target, items) => {
+      const updated = applyUpdate(target, patch);
+      const replacements = new Map<string, DailyPlanItem>([[target.id, updated]]);
+      if (updated.primary && patch.primary === true) {
+        for (const item of items) {
+          if (item.id !== target.id && item.primary) {
+            replacements.set(item.id, { ...(replacements.get(item.id) ?? item), primary: false });
+          }
+        }
+      }
+      if (updated.minimum && patch.minimum === true) {
+        for (const item of items) {
+          if (item.id !== target.id && item.minimum) {
+            replacements.set(item.id, { ...(replacements.get(item.id) ?? item), minimum: false });
+          }
+        }
+      }
+      if (updated.status === "in-progress" && patch.status === "in-progress") {
+        for (const item of items) {
+          if (item.id !== target.id && item.status === "in-progress") {
+            replacements.set(item.id, {
+              ...(replacements.get(item.id) ?? item),
+              status: "todo",
+              done: false
+            });
+          }
+        }
+      }
+      return replacements;
+    });
+  }
+
+  start(
+    id: string,
+    expectedRevision: string | DailyTaskRevision,
+    value: Date | string = this.now()
+  ): Promise<DailyPlanItem> {
+    return this.mutateItems(id, expectedRevision, value, (target, items) => {
+      if (target.status === "done") {
+        throw new DailyPlanConflictError("invalid-state", "A completed daily task cannot be started.");
+      }
+      const onlyCurrent = target.status === "in-progress"
+        && Boolean(target.startedAt)
+        && items.every((item) => item.id === target.id || item.status !== "in-progress");
+      if (onlyCurrent) return new Map<string, DailyPlanItem>();
+      const replacements = new Map<string, DailyPlanItem>();
+      for (const item of items) {
+        if (item.id === target.id) {
+          replacements.set(item.id, {
+            ...item,
+            status: "in-progress",
+            done: false,
+            completionDate: undefined,
+            startedAt: this.now().toISOString()
+          });
+        } else if (item.status === "in-progress") {
+          replacements.set(item.id, { ...item, status: "todo", done: false });
+        }
+      }
+      return replacements;
+    });
   }
 
   complete(
@@ -167,20 +286,18 @@ export class DailyPlanService {
     value: Date | string = this.now()
   ): Promise<DailyPlanItem> {
     const completedAt = normalizeDate(this.now());
-    return this.mutate(id, expectedRevision, value, (item) => formatTaskLine({
-      id: item.id,
-      text: item.text,
-      kind: item.kind,
-      devicePolicy: item.devicePolicy,
-      priority: item.priority,
-      priorityExplicit: item.priorityExplicit,
-      date: item.scheduledDate || item.date,
-      dueDate: item.dueDate,
-      scheduledFor: item.scheduledFor,
-      tags: item.tags,
-      status: "done",
-      completionDate: completedAt
-    }));
+    return this.mutateItems(id, expectedRevision, value, (target) => {
+      if (target.status === "done") return new Map<string, DailyPlanItem>();
+      return new Map([[
+        target.id,
+        {
+          ...target,
+          status: "done",
+          done: true,
+          completionDate: completedAt
+        }
+      ]]);
+    });
   }
 
   reopen(
@@ -188,19 +305,108 @@ export class DailyPlanService {
     expectedRevision: string | DailyTaskRevision,
     value: Date | string = this.now()
   ): Promise<DailyPlanItem> {
-    return this.mutate(id, expectedRevision, value, (item) => formatTaskLine({
-      id: item.id,
-      text: item.text,
-      kind: item.kind,
-      devicePolicy: item.devicePolicy,
-      priority: item.priority,
-      priorityExplicit: item.priorityExplicit,
-      date: item.scheduledDate || item.date,
-      dueDate: item.dueDate,
-      scheduledFor: item.scheduledFor,
-      tags: item.tags,
-      status: "todo"
-    }));
+    return this.mutateItems(id, expectedRevision, value, (target) => {
+      if (target.status === "todo" && !target.completionDate) return new Map<string, DailyPlanItem>();
+      return new Map([[
+        target.id,
+        {
+          ...target,
+          status: "todo",
+          done: false,
+          completionDate: undefined
+        }
+      ]]);
+    });
+  }
+
+  async move(
+    id: string,
+    expectedRevision: string | DailyTaskRevision,
+    direction: "up" | "down",
+    value: Date | string = this.now()
+  ): Promise<DailyPlanItem> {
+    const date = normalizeDate(value);
+    const path = this.pathForDate(date);
+    return this.withPathLock(path, async () => {
+      const current = await this.storage.readText(path);
+      if (current === undefined) {
+        throw new DailyPlanConflictError("not-found", `Daily plan file does not exist: ${path}`);
+      }
+      const document = this.parse(current, path, date);
+      assertWritable(document);
+      const index = document.items.findIndex((item) => item.id === id);
+      if (index < 0) throw new DailyPlanConflictError("not-found", `Daily plan item does not exist: ${id}`);
+      assertRevision(document.items[index], expectedRevision);
+      const targetIndex = direction === "up" ? index - 1 : index + 1;
+      if (targetIndex < 0 || targetIndex >= document.items.length) return document.items[index];
+
+      const blocks = document.items.map((item) => item.rawBlock ?? item.rawLine);
+      [blocks[index], blocks[targetIndex]] = [blocks[targetIndex], blocks[index]];
+      const next = replaceTaskSlots(current, document.items, blocks);
+      await this.storage.writeText(path, next);
+      await this.notify(path);
+      const moved = this.parse(next, path, date).items.find((item) => item.id === id);
+      if (!moved) throw new Error("Daily plan item could not be verified after moving.");
+      return moved;
+    });
+  }
+
+  async updateMetadata(
+    patch: DailyPlanMetadataUpdate,
+    expectedRevision?: string,
+    value: Date | string = this.now()
+  ): Promise<DailyPlanDocument> {
+    const date = normalizeDate(value);
+    const path = this.pathForDate(date);
+    return this.withPathLock(path, async () => {
+      const current = await this.storage.readText(path) ?? "";
+      const document = this.parse(current, path, date);
+      assertWritable(document);
+      if (expectedRevision && expectedRevision !== document.revision) {
+        throw new DailyPlanConflictError("revision-changed", "The daily plan changed after it was loaded.");
+      }
+      let next = current;
+      const replacements = new Map<number, string>();
+      for (const [key, requestedId] of [
+        ["primary", patch.primaryId],
+        ["minimum", patch.minimumId]
+      ] as const) {
+        if (requestedId === undefined) continue;
+        if (requestedId !== null && !document.items.some((item) => item.id === requestedId)) {
+          throw new DailyPlanConflictError(
+            "not-found",
+            `Daily plan ${key} task does not exist in ${date}: ${requestedId}`
+          );
+        }
+        for (const item of document.items) {
+          const updated = {
+            ...item,
+            [key]: requestedId !== null && item.id === requestedId
+          };
+          if (Boolean(updated[key]) !== Boolean(item[key])) {
+            replacements.set(item.line, formatTaskBlock(updated, item.rawBlock));
+          }
+        }
+      }
+      if (replacements.size > 0) {
+        next = replaceTaskBlocks(next, document.items, replacements);
+      }
+      if (patch.theme !== undefined) {
+        next = updateTheme(
+          next,
+          date,
+          this.resolveSource(date),
+          this.planHeading,
+          this.todoHeading,
+          normalizeOptionalText(patch.theme, 500)
+        );
+      }
+      if (next !== current) {
+        await this.storage.writeText(path, next);
+        await this.notify(path);
+      }
+      return this.parse(next, path, date);
+    });
   }
 
   async writeSummary(
@@ -210,23 +416,32 @@ export class DailyPlanService {
     const date = normalizeDate(value);
     const path = this.pathForDate(date);
     return this.withPathLock(path, async () => {
-      const current = await this.storage.readText(path) ?? initialDocument(date, this.todoHeading);
-      const body = summary.markdown.replace(/^##\s+[^\r\n]+\r?\n/u, "").trim();
-      const next = replaceSection(current, this.summaryHeading, body);
-      if (next === current) {
-        return { path, changed: false };
-      }
+      const current = await this.storage.readText(path) ?? "";
+      const body = stripSummaryWrapper(summary.markdown);
+      const next = replaceManagedSummary(
+        current,
+        date,
+        this.resolveSource(date),
+        this.summaryHeading,
+        body,
+        this.planHeading,
+        this.todoHeading
+      );
+      if (next === current) return { path, changed: false };
       await this.storage.writeText(path, next);
       await this.notify(path);
       return { path, changed: true };
     });
   }
 
-  private async mutate(
+  private async mutateItems(
     id: string,
     expectedRevision: string | DailyTaskRevision,
     value: Date | string,
-    updateLine: (item: DailyPlanItem) => string
+    buildReplacements: (
+      target: DailyPlanItem,
+      items: DailyPlanItem[]
+    ) => Map<string, DailyPlanItem>
   ): Promise<DailyPlanItem> {
     const date = normalizeDate(value);
     const path = this.pathForDate(date);
@@ -235,26 +450,38 @@ export class DailyPlanService {
       if (current === undefined) {
         throw new DailyPlanConflictError("not-found", `Daily plan file does not exist: ${path}`);
       }
-      const item = parseDailyPlanDocument(current, path, date, this.todoHeading).find((entry) => entry.id === id);
-      if (!item) {
-        throw new DailyPlanConflictError("not-found", `Daily plan item does not exist: ${id}`);
+      const document = this.parse(current, path, date);
+      assertWritable(document);
+      const target = document.items.find((item) => item.id === id);
+      if (!target) throw new DailyPlanConflictError("not-found", `Daily plan item does not exist: ${id}`);
+      assertRevision(target, expectedRevision);
+      const byId = buildReplacements(target, document.items);
+      if (byId.size === 0) return target;
+
+      const replacements = new Map<number, string>();
+      for (const item of document.items) {
+        const replacement = byId.get(item.id);
+        if (replacement) replacements.set(item.line, formatTaskBlock(replacement, item.rawBlock));
       }
-      const expected = typeof expectedRevision === "string" ? expectedRevision : expectedRevision.value;
-      if (!expected || expected !== item.revision.value) {
-        throw new DailyPlanConflictError("revision-changed", "The daily plan item changed after it was loaded.");
-      }
-      const lines = current.split(/\r?\n/u);
-      const endLine = Math.max(item.line, item.endLine ?? item.line);
-      lines.splice(item.line - 1, endLine - item.line + 1, updateLine(item));
-      const next = `${lines.join("\n").replace(/\s+$/u, "")}\n`;
+      const next = replaceTaskBlocks(current, document.items, replacements);
       await this.storage.writeText(path, next);
       await this.notify(path);
-      const updated = parseDailyPlanDocument(next, path, date, this.todoHeading).find((entry) => entry.id === id);
-      if (!updated) {
-        throw new Error("Daily plan item could not be verified after writing.");
-      }
+      const updated = this.parse(next, path, date).items.find((item) => item.id === id);
+      if (!updated) throw new Error("Daily plan item could not be verified after writing.");
       return updated;
     });
+  }
+
+  private parse(markdown: string, path: string, date: string): DailyPlanDocument {
+    return parseDailyPlanDocumentWithDiagnostics(markdown, path, date, this.todoHeading, {
+      source: this.planSource,
+      planHeading: this.planHeading,
+      summaryHeading: this.summaryHeading
+    });
+  }
+
+  private resolveSource(date: string): ResolvedSource {
+    return resolveSource(this.planSource, this.pathForDate(date));
   }
 
   private async withPathLock<T>(path: string, operation: () => Promise<T>): Promise<T> {
@@ -268,9 +495,7 @@ export class DailyPlanService {
       return await operation();
     } finally {
       release();
-      if (this.locks.get(path) === chain) {
-        this.locks.delete(path);
-      }
+      if (this.locks.get(path) === chain) this.locks.delete(path);
     }
   }
 
@@ -279,48 +504,208 @@ export class DailyPlanService {
   }
 }
 
+/**
+ * V1-compatible parser. Use parseDailyPlanDocumentWithDiagnostics when edits
+ * must be blocked on malformed IDs.
+ */
 export function parseDailyPlanDocument(
   markdown: string,
   sourcePath: string,
   date: string,
   todoHeading = "ToDo"
 ): DailyPlanItem[] {
+  return parseDailyPlanDocumentWithDiagnostics(markdown, sourcePath, date, todoHeading).items;
+}
+
+export function parseDailyPlanDocumentWithDiagnostics(
+  markdown: string,
+  sourcePath: string,
+  date: string,
+  todoHeading = "ToDo",
+  options: DailyPlanParseOptions = {}
+): DailyPlanDocument {
+  const normalizedDate = normalizeDate(date);
+  const source = normalizeSource(options.source, undefined);
+  const resolved = resolveSource(source, sourcePath);
   const lines = markdown.split(/\r?\n/u);
-  const section = findSection(lines, todoHeading);
-  if (!section) return [];
-  const items: DailyPlanItem[] = [];
-  for (let index = section.start; index < section.end; index += 1) {
-    const rawLine = lines[index];
-    const match = TASK_RE.exec(rawLine);
-    if (!match?.groups) continue;
-    const body = match.groups.body.trim();
-    let blockId = BLOCK_RE.exec(body)?.groups?.id;
-    let endIndex = index;
-    const continuationLines: string[] = [];
-    for (let cursor = index + 1; cursor < section.end; cursor += 1) {
-      const continuation = parseTaskContinuation(lines[cursor], match.groups.indent.length);
-      if (!continuation) break;
-      if (continuation.kind === "block") {
-        if (blockId) break;
-        blockId = continuation.id;
-        continuationLines.push(lines[cursor]);
-        endIndex = cursor;
-        break;
-      }
-      continuationLines.push(lines[cursor]);
-      endIndex = cursor;
+  const scope = findDateScope(lines, normalizedDate, resolved.nestedDate);
+  const planHeading = normalizeHeading(options.planHeading ?? "今日计划");
+  const todo = scope
+    ? findNamedSection(lines, todoHeading, resolved.planLevel, scope)
+    : undefined;
+  const entries: ParsedTaskEntry[] = [];
+
+  if (todo) {
+    for (let index = todo.start; index < todo.end; index += 1) {
+      const match = TASK_RE.exec(lines[index]);
+      if (!match?.groups) continue;
+      const entry = parseTaskEntry(lines, index, todo.end, match.groups.indent.length, sourcePath, normalizedDate);
+      entries.push(entry);
+      index = Math.max(index, entry.endLine - 1);
     }
-    if (!blockId) continue;
-    const rawBlock = [rawLine, ...continuationLines].join("\n");
-    const logicalSource = [body, ...continuationLines].join(" ");
-    const fields = parseFields(logicalSource);
-    const status = normalizeStatus(match.groups.mark);
-    const revision: DailyTaskRevision = {
-      value: `dtr_${shortHash(`${sourcePath}\n${blockId}\n${rawBlock}`)}`,
-      sourcePath,
-      blockId
+  }
+
+  const diagnostics = entries.flatMap((entry) => entry.diagnostic ? [entry.diagnostic] : []);
+  const items = entries.flatMap((entry) => entry.item ? [entry.item] : []);
+  const duplicateScopeItems = resolved.nestedDate
+    ? parseAllFixedDocumentItems(lines, todoHeading, sourcePath)
+    : items;
+  const occurrences = new Map<string, DailyPlanItem[]>();
+  for (const item of duplicateScopeItems) {
+    const group = occurrences.get(item.id) ?? [];
+    group.push(item);
+    occurrences.set(item.id, group);
+  }
+  for (const [blockId, group] of occurrences) {
+    if (group.length < 2) continue;
+    for (const item of group) {
+      diagnostics.push(diagnostic(
+        "duplicate-block-id",
+        sourcePath,
+        item.line,
+        `Daily plan block id is used more than once: ${blockId}`,
+        blockId
+      ));
+    }
+  }
+
+  const primary = items.filter((item) => item.primary);
+  if (primary.length > 1) {
+    for (const item of primary) {
+      diagnostics.push(diagnostic(
+        "duplicate-primary",
+        sourcePath,
+        item.line,
+        "Only one daily task may be marked as primary.",
+        item.id
+      ));
+    }
+  }
+  const minimum = items.filter((item) => item.minimum);
+  if (minimum.length > 1) {
+    for (const item of minimum) {
+      diagnostics.push(diagnostic(
+        "duplicate-minimum",
+        sourcePath,
+        item.line,
+        "Only one daily task may be marked as the minimum commitment.",
+        item.id
+      ));
+    }
+  }
+
+  const metadataSection = scope
+    ? findNamedSection(lines, planHeading, resolved.planLevel, scope)
+    : undefined;
+  const theme = metadataSection
+    ? normalizeOptionalText(parseTheme(lines.slice(metadataSection.start, metadataSection.end).join("\n")), 500)
+    : undefined;
+  const scopedRaw = scope ? lines.slice(scope.heading ?? scope.start, scope.end).join("\n") : "";
+  return {
+    schemaVersion: DAILY_PLAN_SCHEMA_VERSION,
+    date: normalizedDate,
+    source: cloneSource(source, source.kind === "daily-note" ? normalizeRoot(source.dailyRoot ?? "Daily") : ""),
+    sourcePath,
+    metadata: {
+      theme,
+      primaryId: primary.length === 1 ? primary[0].id : undefined,
+      minimumId: minimum.length === 1 ? minimum[0].id : undefined
+    },
+    items,
+    diagnostics,
+    revision: `dpr_${shortHash(`${sourcePath}\n${normalizedDate}\n${scopedRaw}`)}`
+  };
+}
+
+function parseTaskEntry(
+  lines: string[],
+  index: number,
+  sectionEnd: number,
+  parentIndentLength: number,
+  sourcePath: string,
+  date: string
+): ParsedTaskEntry {
+  const rawLine = lines[index];
+  const match = TASK_RE.exec(rawLine)!;
+  const body = match.groups!.body.trim();
+  const continuation: string[] = [];
+  let endIndex = index;
+  for (let cursor = index + 1; cursor < sectionEnd; cursor += 1) {
+    const line = lines[cursor];
+    if (!line.trim()) {
+      const next = nextNonBlank(lines, cursor + 1, sectionEnd);
+      if (next === undefined || indentation(lines[next]) <= parentIndentLength) break;
+      continuation.push(line);
+      endIndex = cursor;
+      continue;
+    }
+    const indent = indentation(line);
+    const nextTask = TASK_RE.exec(line);
+    if (indent <= parentIndentLength || (nextTask?.groups && nextTask.groups.indent.length <= parentIndentLength)) break;
+    continuation.push(line);
+    endIndex = cursor;
+  }
+  while (continuation.length && !continuation[continuation.length - 1].trim()) {
+    continuation.pop();
+    endIndex -= 1;
+  }
+
+  const blockIds: string[] = [];
+  const inline = INLINE_BLOCK_RE.exec(body)?.groups?.id;
+  if (inline) blockIds.push(inline);
+  const directIndent = continuation
+    .filter((line) => line.trim())
+    .reduce((lowest, line) => Math.min(lowest, indentation(line)), Number.POSITIVE_INFINITY);
+  for (const line of continuation) {
+    const standalone = STANDALONE_BLOCK_RE.exec(line);
+    if (standalone?.groups?.id && indentation(line) === directIndent) blockIds.push(standalone.groups.id);
+  }
+  const lineNumber = index + 1;
+  if (blockIds.length === 0) {
+    return {
+      line: lineNumber,
+      endLine: endIndex + 1,
+      blockIds,
+      diagnostic: diagnostic(
+        "missing-block-id",
+        sourcePath,
+        lineNumber,
+        "Daily plan tasks require a stable ^daily_* block id."
+      )
     };
-    items.push({
+  }
+  if (blockIds.length > 1) {
+    return {
+      line: lineNumber,
+      endLine: endIndex + 1,
+      blockIds,
+      diagnostic: diagnostic(
+        "multiple-block-ids",
+        sourcePath,
+        lineNumber,
+        "A daily plan task contains more than one block id.",
+        blockIds[0]
+      )
+    };
+  }
+
+  const blockId = blockIds[0];
+  const rawBlock = [rawLine, ...continuation].join("\n");
+  const fields = parseFields(rawBlock);
+  const status = normalizeStatus(match.groups!.mark);
+  const logicalSource = rawBlock.replace(/\r?\n/gu, " ");
+  const target = normalizeOptionalTarget(fields.target);
+  const linkedSource = `${cleanTaskText(body)} ${target ?? ""}`;
+  const revision: DailyTaskRevision = {
+    value: `dtr_${shortHash(`${sourcePath}\n${date}\n${blockId}\n${rawBlock}`)}`,
+    sourcePath,
+    blockId
+  };
+  return {
+    line: lineNumber,
+    endLine: endIndex + 1,
+    blockIds,
+    item: {
       schemaVersion: DAILY_SCHEMA_VERSION,
       id: blockId,
       blockId,
@@ -330,7 +715,7 @@ export function parseDailyPlanDocument(
       status,
       done: status === "done",
       sourcePath,
-      line: index + 1,
+      line: lineNumber,
       endLine: endIndex + 1,
       rawLine,
       rawBlock,
@@ -342,110 +727,468 @@ export function parseDailyPlanDocument(
       devicePolicy: normalizePolicy(fields.device),
       priority: parsePriority(logicalSource),
       priorityExplicit: Boolean([...logicalSource.matchAll(PRIORITY_RE)][0]),
-      tags: [...logicalSource.matchAll(TAG_RE)].map((tag) => tag[1]),
-      linkedNotes: [...logicalSource.matchAll(LINK_RE)].map((link) => link[1].trim()).filter(Boolean)
-    });
+      tags: unique([...logicalSource.matchAll(TAG_RE)].map((tag) => tag[1])),
+      linkedNotes: unique([...linkedSource.matchAll(LINK_RE)].map((link) => link[1].trim()).filter(Boolean)),
+      primary: parseBoolean(fields.primary),
+      minimum: parseBoolean(fields.minimum),
+      goal: normalizeOptionalText(fields.goal, 1_000),
+      nextStep: normalizeOptionalText(fields.next, 1_000),
+      estimateMinutes: parseEstimateMinutes(fields.estimate),
+      target,
+      startedAt: normalizeScheduledFor(fields.started)
+    }
+  };
+}
+
+function createItemShape(args: {
+  id: string;
+  date: string;
+  sourcePath: string;
+  input: DailyPlanCreateInput;
+}): DailyPlanItem {
+  const dueDate = normalizeOptionalDate(args.input.dueDate) ?? args.date;
+  const text = normalizeTaskText(args.input.text);
+  const target = normalizeOptionalTarget(args.input.target);
+  return {
+    schemaVersion: DAILY_SCHEMA_VERSION,
+    id: args.id,
+    blockId: args.id,
+    date: args.date,
+    text,
+    kind: normalizeKind(args.input.kind),
+    status: "todo",
+    done: false,
+    sourcePath: args.sourcePath,
+    line: 0,
+    endLine: 0,
+    rawLine: "",
+    rawBlock: "",
+    revision: { value: "", sourcePath: args.sourcePath, blockId: args.id },
+    scheduledDate: args.date,
+    dueDate,
+    scheduledFor: normalizeScheduledFor(args.input.scheduledFor),
+    devicePolicy: normalizePolicy(args.input.devicePolicy),
+    priority: normalizePriority(args.input.priority),
+    priorityExplicit: args.input.priority !== undefined,
+    tags: normalizeTags(args.input.tags),
+    linkedNotes: unique([...`${text} ${target ?? ""}`.matchAll(LINK_RE)].map((link) => link[1].trim())),
+    primary: Boolean(args.input.primary),
+    minimum: Boolean(args.input.minimum),
+    goal: normalizeOptionalText(args.input.goal, 1_000),
+    nextStep: normalizeOptionalText(args.input.nextStep, 1_000),
+    estimateMinutes: normalizeEstimateMinutes(args.input.estimateMinutes),
+    target
+  };
+}
+
+function applyUpdate(item: DailyPlanItem, patch: DailyPlanUpdate): DailyPlanItem {
+  const target = patch.target === undefined ? item.target : normalizeOptionalTarget(patch.target);
+  const text = patch.text === undefined ? item.text : normalizeTaskText(patch.text);
+  const status = patch.status ?? item.status;
+  return {
+    ...item,
+    text,
+    kind: patch.kind === undefined ? item.kind : normalizeKind(patch.kind),
+    devicePolicy: patch.devicePolicy === undefined ? item.devicePolicy : normalizePolicy(patch.devicePolicy),
+    priority: patch.priority === undefined ? item.priority : normalizePriority(patch.priority),
+    priorityExplicit: patch.priority === undefined ? item.priorityExplicit : true,
+    dueDate: patch.dueDate === undefined
+      ? item.dueDate
+      : normalizeOptionalDate(patch.dueDate) ?? item.date,
+    scheduledFor: patch.scheduledFor === undefined
+      ? item.scheduledFor
+      : normalizeScheduledFor(patch.scheduledFor),
+    tags: patch.tags === undefined ? item.tags : normalizeTags(patch.tags),
+    status,
+    done: status === "done",
+    completionDate: status === "done" ? item.completionDate : undefined,
+    primary: patch.primary === undefined ? item.primary : Boolean(patch.primary),
+    minimum: patch.minimum === undefined ? item.minimum : Boolean(patch.minimum),
+    goal: patch.goal === undefined ? item.goal : normalizeOptionalText(patch.goal, 1_000),
+    nextStep: patch.nextStep === undefined ? item.nextStep : normalizeOptionalText(patch.nextStep, 1_000),
+    estimateMinutes: patch.estimateMinutes === undefined
+      ? item.estimateMinutes
+      : normalizeEstimateMinutes(patch.estimateMinutes),
+    target,
+    startedAt: patch.startedAt === undefined ? item.startedAt : normalizeScheduledFor(patch.startedAt),
+    linkedNotes: unique([...`${text} ${target ?? ""}`.matchAll(LINK_RE)].map((link) => link[1].trim()))
+  };
+}
+
+function formatTaskBlock(item: DailyPlanItem, existingRawBlock?: string): string {
+  const indent = /^\s*/u.exec(item.rawLine)?.[0] ?? "";
+  const childIndent = `${indent}  `;
+  const mark = item.status === "done" ? "x" : item.status === "in-progress" ? "/" : " ";
+  const priority = item.priority !== "normal" || item.priorityExplicit ? priorityEmoji(item.priority) : "";
+  const completed = item.status === "done" && item.completionDate ? ` ✅ ${item.completionDate}` : "";
+  const tags = item.tags.length ? ` ${item.tags.map((tag) => `#${tag}`).join(" ")}` : "";
+  const checkbox = `${indent}- [${mark}] ${item.text}${priority ? ` ${priority}` : ""}`
+    + ` ⏳ ${item.scheduledDate || item.date} 📅 ${item.dueDate}${completed}${tags}`;
+  const controlLines = [
+    `${childIndent}[towrite-kind:: ${item.kind}] [towrite-device:: ${item.devicePolicy}]`
+      + (item.scheduledFor ? ` [towrite-at:: ${item.scheduledFor}]` : ""),
+    ...optionalFieldLine(childIndent, "primary", item.primary ? "true" : undefined),
+    ...optionalFieldLine(childIndent, "minimum", item.minimum ? "true" : undefined),
+    ...optionalFieldLine(childIndent, "goal", item.goal),
+    ...optionalFieldLine(childIndent, "next", item.nextStep),
+    ...optionalFieldLine(childIndent, "estimate", item.estimateMinutes ? `${item.estimateMinutes}m` : undefined),
+    ...optionalFieldLine(childIndent, "target", item.target),
+    ...optionalFieldLine(childIndent, "started", item.startedAt)
+  ];
+  const unknown = extractUnknownContinuation(existingRawBlock, item.id);
+  return [checkbox, ...controlLines, ...unknown, `${childIndent}^${item.id}`].join("\n");
+}
+
+function optionalFieldLine(indent: string, key: string, value: string | undefined): string[] {
+  if (!value) return [];
+  return [`${indent}[towrite-${key}:: ${safeFieldValue(value, key === "target")}]`];
+}
+
+function extractUnknownContinuation(rawBlock: string | undefined, parentBlockId: string): string[] {
+  if (!rawBlock) return [];
+  const lines = rawBlock.split(/\r?\n/u).slice(1);
+  const result: string[] = [];
+  let pendingBlank = false;
+  for (const line of lines) {
+    const standalone = STANDALONE_BLOCK_RE.exec(line);
+    if (standalone?.groups?.id === parentBlockId) {
+      pendingBlank = false;
+      continue;
+    }
+    const cleaned = line.replace(OWNED_FIELD_RE, "").replace(/\s+$/u, "");
+    if (!cleaned.trim()) {
+      if (!line.trim() && result.length) pendingBlank = true;
+      continue;
+    }
+    if (pendingBlank) result.push("");
+    pendingBlank = false;
+    result.push(cleaned);
+  }
+  return result;
+}
+
+function replaceTaskBlocks(
+  markdown: string,
+  items: DailyPlanItem[],
+  replacements: ReadonlyMap<number, string>
+): string {
+  if (!replacements.size) return markdown;
+  const lines = markdown.split(/\r?\n/u);
+  const affected = items
+    .filter((item) => replacements.has(item.line))
+    .sort((left, right) => right.line - left.line);
+  for (const item of affected) {
+    lines.splice(
+      item.line - 1,
+      Math.max(1, (item.endLine ?? item.line) - item.line + 1),
+      ...replacements.get(item.line)!.split("\n")
+    );
+  }
+  return ensureTrailingNewline(lines.join("\n"));
+}
+
+function replaceTaskSlots(markdown: string, items: DailyPlanItem[], blocks: string[]): string {
+  const lines = markdown.split(/\r?\n/u);
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    lines.splice(
+      item.line - 1,
+      Math.max(1, (item.endLine ?? item.line) - item.line + 1),
+      ...blocks[index].split("\n")
+    );
+  }
+  return ensureTrailingNewline(lines.join("\n"));
+}
+
+function appendToTodoSection(
+  markdown: string,
+  date: string,
+  source: ResolvedSource,
+  headings: { planHeading: string; todoHeading: string },
+  block: string
+): string {
+  let current = ensurePlanScaffold(markdown, date, source, headings.planHeading, headings.todoHeading);
+  const lines = current.replace(/\s+$/u, "").split(/\r?\n/u);
+  const scope = findDateScope(lines, date, source.nestedDate)!;
+  const section = findNamedSection(lines, headings.todoHeading, source.planLevel, scope)!;
+  let insertion = section.end;
+  while (insertion > section.start && !lines[insertion - 1].trim()) insertion -= 1;
+  lines.splice(insertion, 0, ...(insertion > section.start ? [""] : []), ...block.split("\n"));
+  return ensureTrailingNewline(lines.join("\n"));
+}
+
+function updateTheme(
+  markdown: string,
+  date: string,
+  source: ResolvedSource,
+  heading: string,
+  todoHeading: string,
+  theme: string | undefined
+): string {
+  let current = ensurePlanScaffold(markdown, date, source, heading, todoHeading);
+  const lines = current.replace(/\s+$/u, "").split(/\r?\n/u);
+  const scope = findDateScope(lines, date, source.nestedDate)!;
+  const section = findNamedSection(lines, heading, source.planLevel, scope)!;
+  let found = false;
+  for (let index = section.start; index < section.end; index += 1) {
+    if (![...lines[index].matchAll(THEME_FIELD_RE)].length) continue;
+    const residual = lines[index].replace(THEME_FIELD_RE, "").trim();
+    if (!found && theme) {
+      lines[index] = `${residual ? `${residual} ` : ""}[towrite-theme:: ${safeFieldValue(theme, false)}]`;
+      found = true;
+    } else if (residual) {
+      lines[index] = residual;
+    } else {
+      lines.splice(index, 1);
+      index -= 1;
+      section.end -= 1;
+    }
+  }
+  if (!found && theme) lines.splice(section.start, 0, "", `[towrite-theme:: ${safeFieldValue(theme, false)}]`);
+  return ensureTrailingNewline(lines.join("\n"));
+}
+
+function replaceManagedSummary(
+  markdown: string,
+  date: string,
+  source: ResolvedSource,
+  summaryHeading: string,
+  body: string,
+  planHeading: string,
+  todoHeading: string
+): string {
+  let current = ensurePlanScaffold(markdown, date, source, planHeading, todoHeading);
+  let lines = current.replace(/\s+$/u, "").split(/\r?\n/u);
+  let scope = findDateScope(lines, date, source.nestedDate)!;
+  let section = findNamedSection(lines, summaryHeading, source.planLevel, scope);
+  const managed = [DAILY_SUMMARY_START_MARKER, body, DAILY_SUMMARY_END_MARKER];
+  if (!section) {
+    const heading = `${"#".repeat(source.planLevel)} ${summaryHeading}`;
+    lines.splice(scope.end, 0, "", heading, "", ...managed);
+    return ensureTrailingNewline(lines.join("\n"));
+  }
+
+  const startIndexes: number[] = [];
+  const endIndexes: number[] = [];
+  for (let index = section.start; index < section.end; index += 1) {
+    if (lines[index].trim() === DAILY_SUMMARY_START_MARKER) startIndexes.push(index);
+    if (lines[index].trim() === DAILY_SUMMARY_END_MARKER) endIndexes.push(index);
+  }
+  if (startIndexes.length !== endIndexes.length || startIndexes.length > 1
+    || (startIndexes.length === 1 && startIndexes[0] >= endIndexes[0])) {
+    throw new DailyPlanConflictError(
+      "invalid-document",
+      "Daily summary markers are malformed; repair them before writing a summary."
+    );
+  }
+  if (startIndexes.length === 1) {
+    lines.splice(startIndexes[0], endIndexes[0] - startIndexes[0] + 1, ...managed);
+  } else {
+    let insertion = section.end;
+    while (insertion > section.start && !lines[insertion - 1].trim()) insertion -= 1;
+    lines.splice(insertion, 0, ...(insertion > section.start ? [""] : []), ...managed);
+  }
+  return ensureTrailingNewline(lines.join("\n"));
+}
+
+function stripSummaryWrapper(markdown: string): string {
+  return markdown
+    .replace(/^#{1,6}\s+[^\r\n]+\r?\n/u, "")
+    .replaceAll(DAILY_SUMMARY_START_MARKER, "")
+    .replaceAll(DAILY_SUMMARY_END_MARKER, "")
+    .trim();
+}
+
+function ensurePlanScaffold(
+  markdown: string,
+  date: string,
+  source: ResolvedSource,
+  planHeading: string,
+  todoHeading: string
+): string {
+  const trimmed = markdown.replace(/\s+$/u, "");
+  if (!source.nestedDate) {
+    let lines = (trimmed || `# ${date}`).split(/\r?\n/u);
+    const scope: DateScope = { start: 0, end: lines.length };
+    if (!findNamedSection(lines, planHeading, source.planLevel, scope)) {
+      lines.push("", `${"#".repeat(source.planLevel)} ${planHeading}`);
+    }
+    const refreshed: DateScope = { start: 0, end: lines.length };
+    if (!findNamedSection(lines, todoHeading, source.planLevel, refreshed)) {
+      lines.push("", `${"#".repeat(source.planLevel)} ${todoHeading}`);
+    }
+    return ensureTrailingNewline(lines.join("\n"));
+  }
+
+  let lines = trimmed ? trimmed.split(/\r?\n/u) : [];
+  let scope = findDateScope(lines, date, true);
+  if (!scope) {
+    if (lines.length) lines.push("");
+    lines.push(`## ${date}`, "", `### ${planHeading}`, "", `### ${todoHeading}`);
+    return ensureTrailingNewline(lines.join("\n"));
+  }
+  if (!findNamedSection(lines, planHeading, source.planLevel, scope)) {
+    lines.splice(scope.end, 0, "", `### ${planHeading}`);
+    scope = findDateScope(lines, date, true)!;
+  }
+  if (!findNamedSection(lines, todoHeading, source.planLevel, scope)) {
+    lines.splice(scope.end, 0, "", `### ${todoHeading}`);
+  }
+  return ensureTrailingNewline(lines.join("\n"));
+}
+
+function findDateScope(lines: string[], date: string, nested: boolean): DateScope | undefined {
+  if (!nested) return { start: 0, end: lines.length };
+  const heading = lines.findIndex((line) => headingLevel(line) === 2 && headingText(line) === date);
+  if (heading < 0) return undefined;
+  let end = lines.length;
+  for (let index = heading + 1; index < lines.length; index += 1) {
+    const level = headingLevel(lines[index]);
+    if (level > 0 && level <= 2) {
+      end = index;
+      break;
+    }
+  }
+  return { heading, start: heading + 1, end };
+}
+
+function parseAllFixedDocumentItems(
+  lines: string[],
+  todoHeading: string,
+  sourcePath: string
+): DailyPlanItem[] {
+  const items: DailyPlanItem[] = [];
+  for (let heading = 0; heading < lines.length; heading += 1) {
+    if (headingLevel(lines[heading]) !== 2) continue;
+    const date = headingText(lines[heading]);
+    if (!/^\d{4}-\d{2}-\d{2}$/u.test(date)) continue;
+    const scope = findDateScope(lines, date, true);
+    const todo = scope ? findNamedSection(lines, todoHeading, 3, scope) : undefined;
+    if (!todo) continue;
+    for (let index = todo.start; index < todo.end; index += 1) {
+      const match = TASK_RE.exec(lines[index]);
+      if (!match?.groups) continue;
+      const entry = parseTaskEntry(
+        lines,
+        index,
+        todo.end,
+        match.groups.indent.length,
+        sourcePath,
+        date
+      );
+      if (entry.item) items.push(entry.item);
+      index = Math.max(index, entry.endLine - 1);
+    }
+    heading = Math.max(heading, scope?.end ? scope.end - 1 : heading);
   }
   return items;
 }
 
-interface FormattedTask {
-  id: string;
-  text: string;
-  kind: DailyPlanItemKind;
-  devicePolicy: DailyDevicePolicy;
-  priority?: DailyPlanPriority;
-  priorityExplicit?: boolean;
-  date: string;
-  dueDate: string;
-  scheduledFor?: string;
-  tags: string[];
-  status?: DailyPlanStatus;
-  completionDate?: string;
+function findNamedSection(
+  lines: string[],
+  heading: string,
+  level: number,
+  scope: DateScope
+): SectionRange | undefined {
+  const wanted = normalizeHeading(heading).toLowerCase();
+  let headingIndex = -1;
+  for (let index = scope.start; index < scope.end; index += 1) {
+    if (headingLevel(lines[index]) === level && headingText(lines[index]).toLowerCase() === wanted) {
+      headingIndex = index;
+      break;
+    }
+  }
+  if (headingIndex < 0) return undefined;
+  let end = scope.end;
+  for (let index = headingIndex + 1; index < scope.end; index += 1) {
+    const nextLevel = headingLevel(lines[index]);
+    if (nextLevel > 0 && nextLevel <= level) {
+      end = index;
+      break;
+    }
+  }
+  return { heading: headingIndex, start: headingIndex + 1, end, level };
 }
 
-function formatTaskLine(item: FormattedTask): string {
-  const mark = item.status === "done" ? "x" : item.status === "in-progress" ? "/" : " ";
-  const completed = item.status === "done" && item.completionDate ? ` ✅ ${item.completionDate}` : "";
-  const priority = item.priority !== "normal" || item.priorityExplicit
-    ? priorityEmoji(item.priority)
-    : "";
-  const at = item.scheduledFor ? ` [towrite-at:: ${item.scheduledFor}]` : "";
-  const tags = item.tags.length ? ` ${item.tags.map((tag) => `#${tag}`).join(" ")}` : "";
-  return `- [${mark}] ${item.text}${priority ? ` ${priority}` : ""} ⏳ ${item.date} 📅 ${item.dueDate}${completed}`
-    + ` [towrite-kind:: ${item.kind}] [towrite-device:: ${item.devicePolicy}]${at}${tags} ^${item.id}`;
+function headingLevel(line: string): number {
+  return /^(#{1,6})\s+/u.exec(line)?.[1].length ?? 0;
+}
+
+function headingText(line: string): string {
+  return line.replace(/^#{1,6}\s+/u, "").trim();
+}
+
+function nextNonBlank(lines: string[], from: number, end: number): number | undefined {
+  for (let index = from; index < end; index += 1) {
+    if (lines[index].trim()) return index;
+  }
+  return undefined;
+}
+
+function indentation(line: string): number {
+  return /^\s*/u.exec(line)?.[0].length ?? 0;
+}
+
+function parseFields(body: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const match of body.matchAll(OWNED_FIELD_RE)) {
+    if (match.groups) result[match.groups.key.toLowerCase()] = match.groups.value.trim();
+  }
+  return result;
+}
+
+function parseTheme(body: string): string | undefined {
+  return [...body.matchAll(THEME_FIELD_RE)][0]?.groups?.value.trim();
 }
 
 function cleanTaskText(body: string): string {
-  let text = body.replace(BLOCK_RE, "");
-  text = text.replace(FIELD_RE, "");
+  let text = body.replace(INLINE_BLOCK_RE, "");
+  text = text.replace(OWNED_FIELD_RE, "");
   text = text.replace(DATE_RE.scheduled, "").replace(DATE_RE.due, "").replace(DATE_RE.completion, "");
   text = text.replace(PRIORITY_RE, " ");
   text = text.replace(TAG_RE, "");
   return text.replace(/\s{2,}/gu, " ").trim();
 }
 
-function parseFields(body: string): Record<string, string> {
-  const result: Record<string, string> = {};
-  for (const match of body.matchAll(FIELD_RE)) {
-    if (match.groups) result[match.groups.key.toLowerCase()] = match.groups.value.trim();
-  }
-  return result;
+function parsePriority(value: string): DailyPlanPriority {
+  const emoji = [...value.matchAll(PRIORITY_RE)][0]?.groups?.emoji;
+  if (emoji === "🔺") return "highest";
+  if (emoji === "⏫") return "high";
+  if (emoji === "🔼") return "normal";
+  if (emoji === "🔽") return "low";
+  if (emoji === "⏬") return "lowest";
+  return "normal";
 }
 
-function parseTaskContinuation(
-  line: string,
-  parentIndentLength: number
-): { kind: "fields" } | { kind: "block"; id: string } | undefined {
-  const indent = /^\s*/u.exec(line)?.[0] ?? "";
-  if (indent.length <= parentIndentLength) return undefined;
-  const block = STANDALONE_BLOCK_RE.exec(line);
-  if (block?.groups?.id) return { kind: "block", id: block.groups.id };
-  const content = line.trim();
-  if (!content) return undefined;
-  const fields = [...content.matchAll(FIELD_RE)];
-  if (fields.length === 0 || content.replace(FIELD_RE, "").trim()) return undefined;
-  return { kind: "fields" };
+function priorityEmoji(priority: DailyPlanPriority | undefined): string {
+  if (priority === "highest") return "🔺";
+  if (priority === "high") return "⏫";
+  if (priority === "normal") return "🔼";
+  if (priority === "low") return "🔽";
+  if (priority === "lowest") return "⏬";
+  return "";
 }
 
-function appendToSection(markdown: string, date: string, heading: string, line: string): string {
-  const current = markdown.trim() ? markdown.replace(/\s+$/u, "") : initialDocument(date, heading).trimEnd();
-  const lines = current.split(/\r?\n/u);
-  let section = findSection(lines, heading);
-  if (!section) {
-    return `${current}\n\n## ${heading}\n\n${line}\n`;
-  }
-  while (section.end > section.start && !lines[section.end - 1].trim()) section.end -= 1;
-  lines.splice(section.end, 0, line);
-  return `${lines.join("\n").replace(/\s+$/u, "")}\n`;
+function parseBoolean(value: unknown): boolean {
+  return typeof value === "string" && /^(?:true|yes|1)$/iu.test(value.trim());
 }
 
-function replaceSection(markdown: string, heading: string, body: string): string {
-  const lines = markdown.replace(/\s+$/u, "").split(/\r?\n/u);
-  const section = findSection(lines, heading);
-  const replacement = [`## ${heading}`, "", body];
-  if (!section) return `${lines.join("\n")}\n\n${replacement.join("\n")}\n`;
-  lines.splice(section.heading, section.end - section.heading, ...replacement);
-  return `${lines.join("\n").replace(/\s+$/u, "")}\n`;
+function parseEstimateMinutes(value: unknown): number | undefined {
+  if (typeof value !== "string") return undefined;
+  const match = /^(\d{1,4})(?:\s*(?:m|min|minutes?|分钟))?$/iu.exec(value.trim());
+  return match ? normalizeEstimateMinutes(Number(match[1])) : undefined;
 }
 
-function findSection(lines: string[], heading: string): { heading: number; start: number; end: number } | undefined {
-  const wanted = heading.trim().toLowerCase();
-  const headingIndex = lines.findIndex((line) => /^##(?!#)\s+/u.test(line)
-    && line.replace(/^##(?!#)\s+/u, "").trim().toLowerCase() === wanted);
-  if (headingIndex < 0) return undefined;
-  let end = lines.length;
-  for (let index = headingIndex + 1; index < lines.length; index += 1) {
-    if (/^#{1,2}\s+/u.test(lines[index])) {
-      end = index;
-      break;
-    }
-  }
-  return { heading: headingIndex, start: headingIndex + 1, end };
+function normalizeEstimateMinutes(value: unknown): number | undefined {
+  if (value === null || value === undefined || value === "") return undefined;
+  const number = Number(value);
+  return Number.isInteger(number) && number >= 1 && number <= 1_440 ? number : undefined;
 }
 
-function initialDocument(date: string, heading: string): string {
-  return `# ${date}\n\n## ${heading}\n`;
+function normalizeStatus(mark: string): DailyPlanStatus {
+  if (mark.trim().toLowerCase() === "x") return "done";
+  if (mark.trim() === "/" || mark.trim() === "-") return "in-progress";
+  return "todo";
 }
 
 export function normalizeDailyDate(value: Date | string): string {
@@ -466,12 +1209,74 @@ function localDate(date: Date): string {
   return `${date.getFullYear().toString().padStart(4, "0")}-${(date.getMonth() + 1).toString().padStart(2, "0")}-${date.getDate().toString().padStart(2, "0")}`;
 }
 
+function normalizeSource(source: DailyPlanSource | undefined, legacyRoot: string | undefined): DailyPlanSource {
+  if (source?.kind === "fixed-document") {
+    return { kind: "fixed-document", path: normalizeVaultPath(source.path) };
+  }
+  return {
+    kind: "daily-note",
+    dailyRoot: normalizeRoot(source?.kind === "daily-note" ? source.dailyRoot ?? legacyRoot ?? "Daily" : legacyRoot ?? "Daily")
+  };
+}
+
+function cloneSource(source: DailyPlanSource, root: string): DailyPlanSource {
+  return source.kind === "fixed-document"
+    ? { kind: "fixed-document", path: normalizeVaultPath(source.path) }
+    : { kind: "daily-note", dailyRoot: normalizeRoot(root || source.dailyRoot || "Daily") };
+}
+
+function resolveSource(source: DailyPlanSource, sourcePath: string): ResolvedSource {
+  const normalized = source.kind === "fixed-document"
+    ? { kind: "fixed-document" as const, path: normalizeVaultPath(source.path || sourcePath) }
+    : { kind: "daily-note" as const, dailyRoot: normalizeRoot(source.dailyRoot ?? "Daily") };
+  return {
+    source: normalized,
+    path: sourcePath,
+    nestedDate: normalized.kind === "fixed-document",
+    planLevel: normalized.kind === "fixed-document" ? 3 : 2
+  };
+}
+
 function normalizeRoot(value: string): string {
-  const normalized = value.replace(/\\/gu, "/").replace(/^\/+|\/+$/gu, "");
-  if (!normalized || normalized.split("/").some((part) => !part || part === "." || part === "..")) {
+  const raw = String(value ?? "");
+  if (unsafeVaultPath(raw)) {
     throw new Error("Daily note root is invalid.");
   }
+  const normalized = raw.replace(/\\/gu, "/").replace(/\/+$/gu, "");
+  if (!normalized || unsafeVaultSegments(normalized)) throw new Error("Daily note root is invalid.");
   return normalized;
+}
+
+function normalizeVaultPath(value: string): string {
+  const raw = String(value ?? "");
+  if (unsafeVaultPath(raw)) {
+    throw new Error("Daily fixed planning document path is invalid.");
+  }
+  const normalized = raw.replace(/\\/gu, "/").replace(/\/+$/gu, "");
+  if (!normalized || !normalized.toLowerCase().endsWith(".md") || unsafeVaultSegments(normalized)) {
+    throw new Error("Daily fixed planning document path is invalid.");
+  }
+  return normalized;
+}
+
+function unsafeVaultPath(value: string): boolean {
+  return !value
+    || /^[A-Za-z]:/u.test(value)
+    || /^[\\/]/u.test(value)
+    || /[\u0000-\u001f\u007f:]/u.test(value);
+}
+
+function unsafeVaultSegments(value: string): boolean {
+  return value.split("/").some((part) => {
+    const normalized = part.trim();
+    const basename = normalized.split(".")[0].toUpperCase();
+    return !normalized
+      || normalized !== part
+      || normalized === "."
+      || normalized === ".."
+      || /[. ]$/u.test(part)
+      || /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/u.test(basename);
+  });
 }
 
 function normalizeHeading(value: string): string {
@@ -505,31 +1310,6 @@ function normalizePriority(value: unknown): DailyPlanPriority {
     : "normal";
 }
 
-function parsePriority(value: string): DailyPlanPriority {
-  const emoji = [...value.matchAll(PRIORITY_RE)][0]?.groups?.emoji;
-  if (emoji === "🔺") return "highest";
-  if (emoji === "⏫") return "high";
-  if (emoji === "🔼") return "normal";
-  if (emoji === "🔽") return "low";
-  if (emoji === "⏬") return "lowest";
-  return "normal";
-}
-
-function priorityEmoji(priority: DailyPlanPriority | undefined): string {
-  if (priority === "highest") return "🔺";
-  if (priority === "high") return "⏫";
-  if (priority === "normal") return "🔼";
-  if (priority === "low") return "🔽";
-  if (priority === "lowest") return "⏬";
-  return "";
-}
-
-function normalizeStatus(mark: string): DailyPlanStatus {
-  if (mark.trim().toLowerCase() === "x") return "done";
-  if (mark.trim() === "/" || mark.trim() === "-") return "in-progress";
-  return "todo";
-}
-
 function normalizeOptionalDate(value: unknown): string | undefined {
   return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/u.test(value) ? normalizeDate(value) : undefined;
 }
@@ -543,14 +1323,85 @@ function normalizeScheduledFor(value: unknown): string | undefined {
   return normalized;
 }
 
+function normalizeOptionalText(value: unknown, maxLength: number): string | undefined {
+  if (value === null || value === undefined) return undefined;
+  const normalized = String(value).replace(/[\r\n]+/gu, " ").replace(/\s+/gu, " ").trim();
+  return normalized ? normalized.slice(0, maxLength) : undefined;
+}
+
+function normalizeOptionalTarget(value: unknown): string | undefined {
+  const normalized = normalizeOptionalText(value, 500);
+  if (!normalized) return undefined;
+  const wikilink = /^\[\[([^\]\r\n]+)\]\]$/u.exec(normalized);
+  if (wikilink) return `[[${wikilink[1]}]]`;
+  return normalized.replace(/[\[\]]/gu, "").trim() || undefined;
+}
+
 function normalizeTags(values: unknown): string[] {
   if (!Array.isArray(values)) return [];
-  return [...new Set(values.map((value) => String(value).trim().replace(/^#+/u, ""))
-    .filter((value) => /^[\p{L}\p{N}_/-]+$/u.test(value)))].slice(0, 32);
+  return unique(values.map((value) => String(value).trim().replace(/^#+/u, ""))
+    .filter((value) => /^[\p{L}\p{N}_/-]+$/u.test(value))).slice(0, 32);
+}
+
+function safeFieldValue(value: string, allowWikilink: boolean): string {
+  if (allowWikilink && /^\[\[[^\]\r\n]+\]\]$/u.test(value)) return value;
+  return value.replace(/[\r\n\]]+/gu, " ").replace(/\s+/gu, " ").trim();
+}
+
+function ensureTrailingNewline(value: string): string {
+  return `${value.replace(/\s+$/u, "")}\n`;
+}
+
+function sameCreateRequest(left: DailyPlanItem, right: DailyPlanItem): boolean {
+  return left.text === right.text
+    && left.kind === right.kind
+    && left.devicePolicy === right.devicePolicy
+    && left.priority === right.priority
+    && left.dueDate === right.dueDate
+    && left.scheduledFor === right.scheduledFor
+    && Boolean(left.primary) === Boolean(right.primary)
+    && Boolean(left.minimum) === Boolean(right.minimum)
+    && left.goal === right.goal
+    && left.nextStep === right.nextStep
+    && left.estimateMinutes === right.estimateMinutes
+    && left.target === right.target
+    && sameStrings(left.tags, right.tags);
 }
 
 function sameStrings(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function unique<T>(values: T[]): T[] {
+  return [...new Set(values)];
+}
+
+function assertRevision(item: DailyPlanItem, expectedRevision: string | DailyTaskRevision): void {
+  const expected = typeof expectedRevision === "string" ? expectedRevision : expectedRevision.value;
+  if (!expected || expected !== item.revision.value) {
+    throw new DailyPlanConflictError("revision-changed", "The daily plan item changed after it was loaded.");
+  }
+}
+
+function assertWritable(document: DailyPlanDocument): void {
+  if (!document.diagnostics.length) return;
+  const details = document.diagnostics
+    .map((entry) => `${entry.code} at line ${entry.line}`)
+    .join(", ");
+  throw new DailyPlanConflictError(
+    "invalid-document",
+    `The daily plan contains diagnostics that must be repaired before writing: ${details}`
+  );
+}
+
+function diagnostic(
+  code: DailyPlanDiagnostic["code"],
+  sourcePath: string,
+  line: number,
+  message: string,
+  blockId?: string
+): DailyPlanDiagnostic {
+  return { code, severity: "error", message, sourcePath, line, blockId };
 }
 
 function createDailyId(): string {

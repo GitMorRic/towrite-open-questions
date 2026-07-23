@@ -27,11 +27,14 @@ import {
   completionGuardForDeviceEvent,
   deliveryIdFor,
   feedbackActionForIntent,
+  normalizeDeviceDisplayAcknowledgement,
   normalizeDeviceButtonMappings,
   normalizeDeviceEventInput,
   sourceRefToObsidianUri,
   type DeviceActionIntent,
   type DeviceCompletionGuard,
+  type DeviceDisplayAcknowledgement,
+  type DeviceDisplayedTuple,
   type DeviceEventInput,
   type DeviceEventResult,
   type DeviceSourceRef
@@ -55,7 +58,9 @@ import {
   DailyPlanConflictError,
   type DailyDashboardSnapshot,
   type DailyPlanCreateInput,
+  type DailyPlanDocument,
   type DailyPlanItem,
+  type DailyPlanMetadataUpdate,
   type DailyPlanUpdate,
   type DailySummary,
   type DailyTaskRevision
@@ -76,6 +81,14 @@ export interface ExternalApiRuntimeStatus {
   lastErrorStatus?: number;
   lastError?: string;
   successfulPolls: number;
+}
+
+export interface DeviceCommandExecutionResult {
+  status: "executed" | "waiting" | "unsupported" | "conflict";
+  displayMessage: string;
+  /** The locally resolved command may be more specific than open_current. */
+  action?: DeviceActionIntent;
+  resultRevision?: string;
 }
 
 interface ExternalApiServerOptions {
@@ -108,10 +121,45 @@ interface ExternalApiServerOptions {
   getDeviceCompletionGuard?(targetId?: string): DeviceCompletionGuard | undefined;
   /** Completes a Daily item only after the server has validated the displayed guard. */
   completeDeviceCard?(event: DeviceEventInput): Promise<void>;
+  /** Explicit display ACK is the only source of authoritative local displayed state. */
+  acknowledgeDeviceDisplay?(
+    acknowledgement: DeviceDisplayAcknowledgement,
+    targetId: string
+  ): Promise<void>;
+  getDeviceDisplayedTuple?(targetId?: string): DeviceDisplayedTuple | undefined;
+  /**
+   * Executes schema-v2 gestures inside the already-running Obsidian process.
+   * Schema-v1 events never enter this callback.
+   */
+  handleDeviceGesture?(event: DeviceEventInput): Promise<DeviceCommandExecutionResult>;
+  /**
+   * Resolves an already persisted terminal command before comparing the
+   * event with today's displayed tuple. New events must return undefined.
+   */
+  resolveDeviceGestureReplay?(
+    event: DeviceEventInput
+  ): DeviceCommandExecutionResult | undefined | Promise<DeviceCommandExecutionResult | undefined>;
   getDailySnapshot?(): Promise<DailyDashboardSnapshot>;
+  getDailyPlan?(date: string): Promise<DailyPlanDocument>;
+  updateDailyPlanMetadata?(
+    date: string,
+    expectedPlanRevision: string,
+    patch: DailyPlanMetadataUpdate
+  ): Promise<DailyPlanDocument>;
   createDailyItem?(input: DailyPlanCreateInput): Promise<DailyPlanItem>;
-  updateDailyItem?(id: string, revision: DailyTaskRevision, patch: DailyPlanUpdate): Promise<DailyPlanItem>;
-  completeDailyItem?(id: string, revision: DailyTaskRevision, eventId?: string): Promise<DailyPlanItem>;
+  updateDailyItem?(
+    id: string,
+    revision: DailyTaskRevision,
+    patch: DailyPlanUpdate,
+    date?: string
+  ): Promise<DailyPlanItem>;
+  startDailyItem?(id: string, revision: DailyTaskRevision, date?: string): Promise<DailyPlanItem>;
+  completeDailyItem?(
+    id: string,
+    revision: DailyTaskRevision,
+    eventId?: string,
+    date?: string
+  ): Promise<DailyPlanItem>;
   writeDailySummary?(summary: DailySummary): Promise<{ path: string; changed: boolean }>;
   /** Receives safe, in-memory connection diagnostics without credentials or Vault data. */
   onRuntimeStatusChanged?(status: ExternalApiRuntimeStatus): void;
@@ -245,6 +293,8 @@ export class ToWriteExternalApiServer {
   private readonly pushSseClients = new Map<HttpResponse, string | undefined>();
   private readonly handoffs = new Map<string, DeviceHandoff>();
   private readonly deviceEventRecords = new Map<string, DeviceEventRecord>();
+  private readonly desiredDisplayTuples = new Map<string, DeviceDisplayedTuple>();
+  private readonly acknowledgedDisplayTuples = new Map<string, DeviceDisplayedTuple>();
   private runtimeStatus: ExternalApiRuntimeStatus = {
     running: false,
     successfulPolls: 0
@@ -340,6 +390,8 @@ export class ToWriteExternalApiServer {
       client.end();
     }
     this.pushSseClients.clear();
+    this.desiredDisplayTuples.clear();
+    this.acknowledgedDisplayTuples.clear();
 
     const server = this.server;
     const wasRunning = this.runtimeStatus.running;
@@ -458,6 +510,15 @@ export class ToWriteExternalApiServer {
       return;
     }
 
+    const dailyPlanMatch = /^\/api\/v1\/daily\/plans\/(\d{4}-\d{2}-\d{2})$/u.exec(url.pathname);
+    if (dailyPlanMatch) {
+      if (!this.options.getDailyPlan) {
+        throw new ExternalApiError(501, "Daily plan documents are unavailable.");
+      }
+      this.writeJson(response, 200, { data: await this.options.getDailyPlan(dailyPlanMatch[1]) });
+      return;
+    }
+
     if (url.pathname === "/api/v1/daily/today") {
       if (!this.options.getDailySnapshot) {
         throw new ExternalApiError(501, "Daily Dashboard is unavailable.");
@@ -535,12 +596,14 @@ export class ToWriteExternalApiServer {
         const query = queryFromUrl(url);
         delete query.limit;
         const payload = this.options.getEinkPayload(limit, cursor, query);
+        this.attachDesiredDisplayTuple(payload, targetId);
         this.writeJson(response, 200, payload);
         this.recordSuccessfulEinkPoll(payload, targetId);
         return;
       }
       const questions = this.options.getQuestions(queryFromUrl(url));
       const payload = buildExternalEinkPayload(vaultName, questions, this.options.getArticleSummaries(), limit);
+      this.attachDesiredDisplayTuple(payload, targetId);
       this.writeJson(response, 200, payload);
       this.recordSuccessfulEinkPoll(payload, targetId);
       return;
@@ -604,9 +667,30 @@ export class ToWriteExternalApiServer {
         scheduledFor: readOptionalText(body, "scheduledFor"),
         dueDate: readOptionalText(body, "dueDate"),
         priority: readDailyPriority(body.priority),
-        tags: readStringList(body, "tags")
+        tags: readStringList(body, "tags"),
+        primary: body.primary === true,
+        minimum: body.minimum === true,
+        goal: readOptionalText(body, "goal"),
+        nextStep: readOptionalText(body, "nextStep"),
+        estimateMinutes: readOptionalPositiveInteger(body, "estimateMinutes"),
+        target: readOptionalText(body, "target")
       });
       this.writeJson(response, 201, { data: item });
+      return;
+    }
+
+    const dailyStartMatch = /^\/api\/v1\/daily\/items\/([^/]+)\/start$/u.exec(url.pathname);
+    if (dailyStartMatch) {
+      if (!this.options.startDailyItem) {
+        throw new ExternalApiError(501, "Daily plan start is unavailable.");
+      }
+      const body = await readJsonBody(request);
+      const item = await this.options.startDailyItem(
+        decodeURIComponent(dailyStartMatch[1]),
+        readDailyRevision(body),
+        readOptionalText(body, "date")
+      );
+      this.writeJson(response, 200, { data: item });
       return;
     }
 
@@ -621,7 +705,8 @@ export class ToWriteExternalApiServer {
       const item = await this.options.completeDailyItem(
         decodeURIComponent(dailyCompleteMatch[1]),
         revision,
-        eventId
+        eventId,
+        readOptionalText(body, "date")
       );
       this.writeJson(response, 200, { data: item });
       return;
@@ -788,6 +873,45 @@ export class ToWriteExternalApiServer {
       }
     }
 
+    if (url.pathname === "/api/v1/device/display-acks") {
+      const body = await readJsonBody(request);
+      let acknowledgement: DeviceDisplayAcknowledgement;
+      try {
+        acknowledgement = normalizeDeviceDisplayAcknowledgement(body);
+      } catch (error) {
+        throw new ExternalApiError(400, error instanceof Error ? error.message : String(error));
+      }
+      const targetId = this.authorizedDeviceTarget(request, url, "POST", acknowledgement.deviceId);
+      if (!this.options.acknowledgeDeviceDisplay) {
+        throw new ExternalApiError(501, "Display acknowledgements are not available.");
+      }
+      const desired = this.desiredDisplayTuples.get(localDeviceTargetKey(targetId));
+      if (!desired) {
+        throw new ExternalApiError(409, "No desired screen state is awaiting acknowledgement.");
+      }
+      const conflict = compareDisplayedTuple(acknowledgement, desired);
+      if (conflict) {
+        throw new ExternalApiError(409, `The desired screen changed (${conflict}).`);
+      }
+      this.acknowledgedDisplayTuples.set(localDeviceTargetKey(targetId), desired);
+      await this.options.acknowledgeDeviceDisplay(acknowledgement, targetId);
+      this.writeJson(response, 200, {
+        ok: true,
+        eventId: acknowledgement.eventId,
+        displayed: {
+          deviceId: acknowledgement.deviceId,
+          selectionId: acknowledgement.selectionId,
+          stateVersion: acknowledgement.stateVersion,
+          contentId: acknowledgement.contentId,
+          revisionId: acknowledgement.revisionId,
+          cardId: acknowledgement.cardId,
+          playlistRevision: acknowledgement.playlistRevision,
+          displayedAt: acknowledgement.displayedAt
+        }
+      });
+      return;
+    }
+
     if (url.pathname === "/api/v1/device/handoffs") {
       const body = await readJsonBody(request);
       const handoff = this.createDeviceHandoff(body);
@@ -848,6 +972,38 @@ export class ToWriteExternalApiServer {
   }
 
   private async handlePatch(request: HttpRequest, response: HttpResponse, url: URL): Promise<void> {
+    const dailyPlanMatch = /^\/api\/v1\/daily\/plans\/(\d{4}-\d{2}-\d{2})$/u.exec(url.pathname);
+    if (dailyPlanMatch) {
+      if (!this.options.updateDailyPlanMetadata) {
+        throw new ExternalApiError(501, "Daily plan metadata writing is unavailable.");
+      }
+      const body = await readJsonBody(request);
+      const revision = readOptionalText(body, "revision");
+      if (!revision) throw new ExternalApiError(400, "A complete plan revision is required.");
+      if (!Object.prototype.hasOwnProperty.call(body, "theme")
+        && !Object.prototype.hasOwnProperty.call(body, "primaryId")
+        && !Object.prototype.hasOwnProperty.call(body, "minimumId")) {
+        throw new ExternalApiError(400, "Missing daily plan metadata patch.");
+      }
+      const patch: DailyPlanMetadataUpdate = {};
+      if (Object.prototype.hasOwnProperty.call(body, "theme")) {
+        patch.theme = body.theme === null ? null : readOptionalText(body, "theme") ?? null;
+      }
+      if (Object.prototype.hasOwnProperty.call(body, "primaryId")) {
+        patch.primaryId = body.primaryId === null ? null : readOptionalText(body, "primaryId") ?? null;
+      }
+      if (Object.prototype.hasOwnProperty.call(body, "minimumId")) {
+        patch.minimumId = body.minimumId === null ? null : readOptionalText(body, "minimumId") ?? null;
+      }
+      const document = await this.options.updateDailyPlanMetadata(
+        dailyPlanMatch[1],
+        revision,
+        patch
+      );
+      this.writeJson(response, 200, { data: document });
+      return;
+    }
+
     const dailyMatch = /^\/api\/v1\/daily\/items\/([^/]+)$/u.exec(url.pathname);
     if (dailyMatch) {
       if (!this.options.updateDailyItem) {
@@ -872,6 +1028,22 @@ export class ToWriteExternalApiServer {
       }
       if (Object.prototype.hasOwnProperty.call(body, "priority")) patch.priority = readDailyPriority(body.priority);
       if (Object.prototype.hasOwnProperty.call(body, "tags")) patch.tags = readStringList(body, "tags");
+      if (Object.prototype.hasOwnProperty.call(body, "primary")) patch.primary = body.primary === true;
+      if (Object.prototype.hasOwnProperty.call(body, "minimum")) patch.minimum = body.minimum === true;
+      if (Object.prototype.hasOwnProperty.call(body, "goal")) {
+        patch.goal = body.goal === null ? null : readOptionalText(body, "goal") ?? null;
+      }
+      if (Object.prototype.hasOwnProperty.call(body, "nextStep")) {
+        patch.nextStep = body.nextStep === null ? null : readOptionalText(body, "nextStep") ?? null;
+      }
+      if (Object.prototype.hasOwnProperty.call(body, "estimateMinutes")) {
+        patch.estimateMinutes = body.estimateMinutes === null
+          ? null
+          : readOptionalPositiveInteger(body, "estimateMinutes") ?? null;
+      }
+      if (Object.prototype.hasOwnProperty.call(body, "target")) {
+        patch.target = body.target === null ? null : readOptionalText(body, "target") ?? null;
+      }
       if (Object.prototype.hasOwnProperty.call(body, "status")) {
         const status = readOptionalText(body, "status");
         if (status !== "todo" && status !== "in-progress") {
@@ -885,7 +1057,8 @@ export class ToWriteExternalApiServer {
       const item = await this.options.updateDailyItem(
         decodeURIComponent(dailyMatch[1]),
         readDailyRevision(body),
-        patch
+        patch,
+        readOptionalText(body, "date")
       );
       this.writeJson(response, 200, { data: item });
       return;
@@ -1069,7 +1242,38 @@ export class ToWriteExternalApiServer {
     event: DeviceEventInput
   ): Promise<DeviceEventResult> {
     const result = this.resolveDeviceAction(request, url, event);
-    if (result.action === "complete") {
+    if (event.schemaVersion === 2) {
+      const replay = await this.options.resolveDeviceGestureReplay?.(event);
+      if (replay) {
+        result.action = replay.action ?? result.action;
+        result.commandStatus = replay.status;
+        result.displayMessage = replay.displayMessage;
+        result.cardId = event.cardId;
+        result.stateVersion = event.stateVersion;
+        result.playlistRevision = event.playlistRevision;
+        return result;
+      }
+      const received = displayedTupleForEvent(event);
+      const current = this.acknowledgedDisplayTuples.get(localDeviceTargetKey(event.targetId))
+        ?? this.options.getDeviceDisplayedTuple?.(event.targetId);
+      if (!received || !current) {
+        throw new ExternalApiError(409, "The acknowledged displayed state is unavailable; refresh and ACK the screen first.");
+      }
+      const tupleConflict = compareDisplayedTuple(received, current);
+      if (tupleConflict) {
+        throw new ExternalApiError(409, `The displayed card changed (${tupleConflict}).`);
+      }
+      if (!this.options.handleDeviceGesture) {
+        throw new ExternalApiError(501, "Schema-v2 device gestures are not available.");
+      }
+      const outcome = await this.options.handleDeviceGesture(event);
+      result.action = outcome.action ?? result.action;
+      result.commandStatus = outcome.status;
+      result.displayMessage = outcome.displayMessage;
+      result.cardId = current.cardId;
+      result.stateVersion = current.stateVersion;
+      result.playlistRevision = current.playlistRevision;
+    } else if (result.action === "complete") {
       const received = completionGuardForDeviceEvent(event);
       const current = this.options.getDeviceCompletionGuard?.(event.targetId);
       if (!received || !current) {
@@ -1087,7 +1291,9 @@ export class ToWriteExternalApiServer {
       result.stateVersion = current.stateVersion;
       result.playlistRevision = current.playlistRevision;
     }
-    if ((result.action === "next" || result.action === "prev") && this.options.advanceDevicePage) {
+    if (event.schemaVersion !== 2
+      && (result.action === "next" || result.action === "prev")
+      && this.options.advanceDevicePage) {
       await this.options.advanceDevicePage(result.action);
     }
     await this.recordDeviceEventFeedback(event, result);
@@ -1108,6 +1314,28 @@ export class ToWriteExternalApiServer {
       lastPlaylistRevision: safeRuntimeText(payload.playlist?.revision, 160),
       successfulPolls: this.runtimeStatus.successfulPolls + 1
     });
+  }
+
+  private attachDesiredDisplayTuple(payload: ExportEinkPayload, targetId?: string): void {
+    const playlist = payload.playlist;
+    const cardId = playlist?.currentId || payload.focus[0]?.id;
+    const playlistRevision = playlist?.revision;
+    const stateVersion = playlist?.stateVersion;
+    if (!playlist || !cardId || !playlistRevision || !stateVersion) {
+      return;
+    }
+    const deviceId = targetId?.trim() || "local-web";
+    const tuple: DeviceDisplayedTuple = {
+      deviceId,
+      selectionId: localOpaqueId("sel", `${deviceId}:${stateVersion}:${playlistRevision}:${cardId}`),
+      stateVersion,
+      contentId: localOpaqueId("cnt", cardId),
+      revisionId: localOpaqueId("rev", `${cardId}:${playlistRevision}`),
+      cardId,
+      playlistRevision
+    };
+    playlist.desired = { ...tuple };
+    this.desiredDisplayTuples.set(localDeviceTargetKey(targetId), tuple);
   }
 
   private recordDeviceRouteError(error: ExternalApiError): void {
@@ -1369,6 +1597,30 @@ export class ToWriteExternalApiServer {
     throw new ExternalApiError(401, "The device token is not bound to this target.");
   }
 
+  private authorizedDeviceTarget(
+    request: HttpRequest,
+    url: URL,
+    method: string,
+    preferredTargetId?: string
+  ): string {
+    if (this.isMasterAuthorized(request, url, method)) {
+      return preferredTargetId?.trim() || "local-web";
+    }
+    const authorization = headerValue(request, "authorization");
+    const bearer = authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length).trim() : "";
+    if (!bearer) {
+      throw new ExternalApiError(401, "A device Bearer token is required.");
+    }
+    const target = this.options.getPushTargets?.().find((item) => item.token?.trim() === bearer);
+    if (target) {
+      return target.id;
+    }
+    if (this.options.getRestrictedAccessToken?.()?.trim() === bearer) {
+      return "quote0";
+    }
+    throw new ExternalApiError(401, "The device token is not bound to a target.");
+  }
+
   private restrictedTokens(): string[] {
     const values = [
       this.options.getRestrictedAccessToken?.(),
@@ -1399,6 +1651,7 @@ export class ToWriteExternalApiServer {
         || pathname === "/api/v1/capture/recommendations"
         || /^\/api\/v1\/captures\/[^/]+\/undo$/u.test(pathname)
         || pathname === "/api/v1/device/events"
+        || pathname === "/api/v1/device/display-acks"
         || pathname === "/api/v1/device/handoffs"
         || pathname === "/api/v1/push/feedback"
         || /^\/api\/v1\/questions\/[^/]+\/notes$/u.test(pathname);
@@ -1777,6 +2030,10 @@ function readNumber(value: unknown): number | undefined {
 function readDeviceIntent(value: string | null | undefined): DeviceActionIntent | undefined {
   return value === "respond" || value === "capture" || value === "open" || value === "next" || value === "prev"
     || value === "later" || value === "skipped" || value === "useful" || value === "answered" || value === "opened" || value === "opened-no-write"
+    || value === "complete" || value === "open_current" || value === "start_open"
+    || value === "create_note" || value === "record_reserved"
+    || value === "page_prev" || value === "page_next"
+    || value === "task_prev" || value === "task_next"
     ? value
     : undefined;
 }
@@ -1789,6 +2046,12 @@ function displayMessageForDeviceIntent(intent: DeviceActionIntent): string {
   if (intent === "later") return "Marked for later";
   if (intent === "skipped") return "Skipped current card";
   if (intent === "answered") return "Marked answered";
+  if (intent === "open_current" || intent === "start_open") return "Waiting for computer";
+  if (intent === "create_note") return "Opening new note";
+  if (intent === "record_reserved") return "Recording is not enabled";
+  if (intent === "page_prev" || intent === "task_prev") return "Previous page";
+  if (intent === "page_next" || intent === "task_next") return "Next page";
+  if (intent === "complete") return "Completed";
   return "Open phone input";
 }
 
@@ -1832,6 +2095,17 @@ function readPositiveInteger(body: Record<string, unknown>, key: string): number
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
 }
 
+function readOptionalPositiveInteger(body: Record<string, unknown>, key: string): number | undefined {
+  if (!Object.prototype.hasOwnProperty.call(body, key) || body[key] === null || body[key] === "") {
+    return undefined;
+  }
+  const value = Number(body[key]);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new ExternalApiError(400, `${key} must be a positive integer.`);
+  }
+  return value;
+}
+
 function readNonNegativeInteger(value: string | null): number {
   const numeric = Number(value);
   return Number.isFinite(numeric) && numeric >= 0 ? Math.floor(numeric) : 0;
@@ -1847,13 +2121,65 @@ function deviceEventFingerprint(event: DeviceEventInput): string {
     candidateId: event.candidateId,
     candidateType: event.candidateType,
     button: event.button,
+    gesture: event.gesture,
     action: event.action,
     occurredAt: event.occurredAt,
     note: event.note,
     cardId: event.cardId,
     stateVersion: event.stateVersion,
-    playlistRevision: event.playlistRevision
+    playlistRevision: event.playlistRevision,
+    selectionId: event.selectionId,
+    contentId: event.contentId,
+    revisionId: event.revisionId
   });
+}
+
+function displayedTupleForEvent(event: DeviceEventInput): DeviceDisplayedTuple | undefined {
+  if (!event.deviceId || !event.selectionId || !event.contentId || !event.revisionId
+    || !event.cardId || !event.playlistRevision || !event.stateVersion) {
+    return undefined;
+  }
+  return {
+    deviceId: event.deviceId,
+    selectionId: event.selectionId,
+    stateVersion: event.stateVersion,
+    contentId: event.contentId,
+    revisionId: event.revisionId,
+    cardId: event.cardId,
+    playlistRevision: event.playlistRevision
+  };
+}
+
+function compareDisplayedTuple(
+  received: DeviceDisplayedTuple,
+  current: DeviceDisplayedTuple
+): string | undefined {
+  if (received.deviceId !== current.deviceId) return "device-changed";
+  if (received.selectionId !== current.selectionId) return "selection-changed";
+  if (received.stateVersion !== current.stateVersion) return "state-changed";
+  if (received.contentId !== current.contentId) return "content-changed";
+  if (received.revisionId !== current.revisionId) return "revision-changed";
+  if (received.cardId !== current.cardId) return "card-changed";
+  if (received.playlistRevision !== current.playlistRevision) return "playlist-changed";
+  return undefined;
+}
+
+function localDeviceTargetKey(targetId: string | undefined): string {
+  return targetId?.trim() || "local-web";
+}
+
+function localOpaqueId(prefix: "sel" | "cnt" | "rev", input: string): string {
+  let left = 0x811c9dc5;
+  let right = 0x9e3779b9;
+  for (let index = 0; index < input.length; index += 1) {
+    const code = input.charCodeAt(index);
+    left ^= code;
+    left = Math.imul(left, 0x01000193);
+    right ^= code + index;
+    right = Math.imul(right, 0x85ebca6b);
+  }
+  const token = `${(left >>> 0).toString(16).padStart(8, "0")}${(right >>> 0).toString(16).padStart(8, "0")}`;
+  return `${prefix}_local_${token}${token}`;
 }
 
 function readPatchString(body: Record<string, unknown>, key: string, maxLength: number): { present: boolean; value?: string } {

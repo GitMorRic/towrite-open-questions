@@ -103,6 +103,68 @@ describe("External Daily API", () => {
     expect(storage.files.get(`Daily/${TODAY}.md`)).toContain("^daily_api123");
   });
 
+  it("reads and patches plan-v2 metadata and starts exactly one task", async () => {
+    const { server } = dailyServer();
+    const first = (await invoke(server, "POST", "/api/v1/daily/items", {
+      id: "daily_focus123",
+      date: TODAY,
+      text: "Write experiment",
+      kind: "edit_note",
+      primary: true,
+      minimum: true,
+      goal: "Decide whether the screen helps",
+      nextStep: "List the A/B metrics",
+      estimateMinutes: 15,
+      target: "[[Echo MVP]]"
+    })).json().data;
+    const second = (await invoke(server, "POST", "/api/v1/daily/items", {
+      id: "daily_other123",
+      date: TODAY,
+      text: "Contact users"
+    })).json().data;
+
+    const plan = await invoke(server, "GET", `/api/v1/daily/plans/${TODAY}`);
+    expect(plan.statusCode).toBe(200);
+    expect(plan.json().data).toMatchObject({
+      schemaVersion: 2,
+      metadata: {
+        primaryId: "daily_focus123",
+        minimumId: "daily_focus123"
+      }
+    });
+    expect(plan.json().data.items.find((item: { id: string }) => item.id === "daily_focus123")).toMatchObject({
+      goal: "Decide whether the screen helps",
+      nextStep: "List the A/B metrics",
+      estimateMinutes: 15,
+      target: "[[Echo MVP]]"
+    });
+
+    const themed = await invoke(server, "PATCH", `/api/v1/daily/plans/${TODAY}`, {
+      revision: plan.json().data.revision,
+      theme: "推进 Echo MVP"
+    });
+    expect(themed.statusCode).toBe(200);
+    expect(themed.json().data.metadata.theme).toBe("推进 Echo MVP");
+
+    const startFirst = await invoke(server, "POST", `/api/v1/daily/items/${first.id}/start`, {
+      revision: first.revision,
+      date: TODAY
+    });
+    expect(startFirst.statusCode).toBe(200);
+    expect(startFirst.json().data.status).toBe("in-progress");
+    const afterFirst = await invoke(server, "GET", `/api/v1/daily/plans/${TODAY}`);
+    const currentSecond = afterFirst.json().data.items.find((item: { id: string }) => item.id === second.id);
+    const startSecond = await invoke(server, "POST", `/api/v1/daily/items/${second.id}/start`, {
+      revision: currentSecond.revision,
+      date: TODAY
+    });
+    expect(startSecond.statusCode).toBe(200);
+    const finalPlan = await invoke(server, "GET", `/api/v1/daily/plans/${TODAY}`);
+    expect(finalPlan.json().data.items.filter((item: { status: string }) => item.status === "in-progress"))
+      .toHaveLength(1);
+    expect(finalPlan.json().data.items.find((item: { id: string }) => item.id === first.id).status).toBe("todo");
+  });
+
   it("maps stale Markdown task revisions to HTTP 409 without overwriting the note", async () => {
     const { server, storage } = dailyServer();
     const createdResponse = await invoke(server, "POST", "/api/v1/daily/items", {
@@ -142,6 +204,57 @@ describe("External Daily API", () => {
     });
     expect(missingRevision.statusCode).toBe(400);
     expect(missingRevision.json().error).toContain("revision");
+  });
+
+  it("routes an item PATCH to the supplied tomorrow date", async () => {
+    const { server, plan } = dailyServer();
+    const tomorrow = "2026-07-24";
+    const created = (await invoke(server, "POST", "/api/v1/daily/items", {
+      id: "daily_tomorrow_patch",
+      date: tomorrow,
+      text: "Tomorrow original"
+    })).json().data;
+
+    const response = await invoke(server, "PATCH", `/api/v1/daily/items/${created.id}`, {
+      date: tomorrow,
+      revision: created.revision,
+      text: "Tomorrow edited"
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data).toMatchObject({
+      date: tomorrow,
+      text: "Tomorrow edited"
+    });
+    await expect(plan.get(created.id, TODAY)).resolves.toBeUndefined();
+    await expect(plan.get(created.id, tomorrow)).resolves.toMatchObject({ text: "Tomorrow edited" });
+  });
+
+  it("patches primary and minimum plan selections with the plan CAS revision", async () => {
+    const { server } = dailyServer();
+    const first = (await invoke(server, "POST", "/api/v1/daily/items", {
+      id: "daily_meta_first",
+      date: TODAY,
+      text: "First"
+    })).json().data;
+    const second = (await invoke(server, "POST", "/api/v1/daily/items", {
+      id: "daily_meta_second",
+      date: TODAY,
+      text: "Second"
+    })).json().data;
+    const plan = (await invoke(server, "GET", `/api/v1/daily/plans/${TODAY}`)).json().data;
+
+    const response = await invoke(server, "PATCH", `/api/v1/daily/plans/${TODAY}`, {
+      revision: plan.revision,
+      primaryId: second.id,
+      minimumId: first.id
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data.metadata).toMatchObject({
+      primaryId: second.id,
+      minimumId: first.id
+    });
   });
 });
 
@@ -296,8 +409,11 @@ function dailyServer(): {
   const getDailySnapshot = async () => activity.getSnapshot(TODAY, await plan.list(TODAY));
   const server = makeServer({
     getDailySnapshot,
+    getDailyPlan: (date) => plan.read(date),
+    updateDailyPlanMetadata: (date, revision, patch) => plan.updateMetadata(patch, revision, date),
     createDailyItem: (input) => plan.create(input, NOW),
-    updateDailyItem: (id, revision, patch) => plan.update(id, revision, patch, TODAY),
+    updateDailyItem: (id, revision, patch, date) => plan.update(id, revision, patch, date ?? TODAY),
+    startDailyItem: (id, revision, date) => plan.start(id, revision, date ?? TODAY),
     completeDailyItem: async (id, revision, eventId) => {
       const item = await plan.complete(id, revision, TODAY);
       activity.recordTaskCompleted(item.id, NOW, eventId);

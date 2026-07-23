@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { DailyDashboardSnapshot } from "./daily-dashboard-types";
 import {
+  dailyDateForPlanningDay,
   dailySnapshotFingerprint,
-  isDailySummaryCurrent
+  isDailySummaryCurrent,
+  selectDailyOverview
 } from "./daily-dashboard-state";
 
 describe("Daily dashboard summary basis", () => {
@@ -37,7 +39,68 @@ describe("Daily dashboard summary basis", () => {
     wrongMetrics.metrics.completed += 1;
     expect(isDailySummaryCurrent(wrongMetrics, fingerprint, basis)).toBe(false);
   });
+
+  it("uses the local calendar for today and tomorrow", () => {
+    const lateLocalTime = new Date(2026, 6, 23, 23, 58);
+    expect(dailyDateForPlanningDay("today", lateLocalTime)).toBe("2026-07-23");
+    expect(dailyDateForPlanningDay("tomorrow", lateLocalTime)).toBe("2026-07-24");
+  });
+
+  it("keeps one current task and only two upcoming tasks while counting all", () => {
+    const basis = snapshot();
+    basis.plan.items = [
+      item("daily_first", "todo", { primary: true }),
+      item("daily_running", "in-progress"),
+      item("daily_next", "todo"),
+      item("daily_later", "todo"),
+      item("daily_done", "done")
+    ];
+
+    const overview = selectDailyOverview(basis.plan.items);
+    expect(overview.current?.id).toBe("daily_running");
+    expect(overview.upcoming.map((candidate) => candidate.id)).toEqual([
+      "daily_first",
+      "daily_next"
+    ]);
+    expect(overview.done).toBe(1);
+    expect(overview.total).toBe(5);
+  });
+
+  it("uses the primary item, then Markdown order, when nothing is running", () => {
+    const primary = selectDailyOverview([
+      item("daily_first", "todo"),
+      item("daily_primary", "todo", { primary: true })
+    ]);
+    const first = selectDailyOverview([
+      item("daily_first", "todo"),
+      item("daily_second", "todo")
+    ]);
+
+    expect(primary.current?.id).toBe("daily_primary");
+    expect(first.current?.id).toBe("daily_first");
+  });
 });
+
+function item(
+  id: string,
+  status: DailyDashboardSnapshot["plan"]["items"][number]["status"],
+  patch: Partial<DailyDashboardSnapshot["plan"]["items"][number]> = {}
+): DailyDashboardSnapshot["plan"]["items"][number] {
+  return {
+    ...snapshot().plan.items[0],
+    id,
+    blockId: id,
+    text: id,
+    status,
+    done: status === "done",
+    revision: {
+      value: `rev_${id}`,
+      sourcePath: "Daily/2026-07-23.md",
+      blockId: id
+    },
+    ...patch
+  };
+}
 
 function snapshot(): DailyDashboardSnapshot {
   return {

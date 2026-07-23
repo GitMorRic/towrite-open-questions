@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   adaptDailyPlanItemForDevice,
-  adaptDailySummaryForDevice
+  adaptDailySummaryForDevice,
+  buildDailyDeckSnapshot
 } from "./daily-cards";
 
 describe("Daily device card adapters", () => {
@@ -115,4 +116,153 @@ describe("Daily device card adapters", () => {
       display: { body: "Task" }
     })).toThrow(/revision/u);
   });
+
+  it("builds overview, every task page, and result in stable order", () => {
+    const deck = buildDailyDeckSnapshot({
+      date: "2026-07-24",
+      theme: "推进 Echo MVP",
+      items: [
+        task("daily_first", "写出 MVP 实验方案", {
+          primary: true,
+          goal: "判断常驻屏幕是否有效",
+          nextStep: "列出 A/B 指标",
+          estimateMinutes: 15
+        }),
+        task("daily_current", "完成问题帖初稿", {
+          status: "in-progress",
+          nextStep: "先写三个小标题",
+          startedAt: "2026-07-24T01:00:00.000Z"
+        }),
+        task("daily_next", "联系 2 位测试用户", { minimum: true }),
+        task("daily_later", "整理访谈记录"),
+        task("daily_done", "准备设备", { status: "done" })
+      ]
+    });
+
+    expect(deck.currentItemId).toBe("daily_current");
+    expect(deck.overview).toMatchObject({
+      page: "daily_overview",
+      localId: "daily-overview:2026-07-24",
+      cardId: "daily-overview:2026-07-24",
+      theme: "推进 Echo MVP",
+      current: {
+        id: "daily_current",
+        text: "完成问题帖初稿",
+        nextStep: "先写三个小标题"
+      },
+      progress: { done: 1, total: 5 }
+    });
+    expect(deck.overview.upcoming.map((item) => item.id)).toEqual([
+      "daily_first",
+      "daily_next"
+    ]);
+    expect(deck.planItems).toHaveLength(5);
+    expect(deck.activePlanItem?.item.id).toBe("daily_current");
+    expect(deck.planItems[1]).toMatchObject({
+      page: "daily_plan_item",
+      localId: "daily-plan:daily_current",
+      cardId: "daily-plan:daily_current",
+      position: 2,
+      total: 5,
+      item: {
+        id: "daily_current",
+        taskRevision: "rev_daily_current",
+        startedAt: "2026-07-24T01:00:00.000Z"
+      }
+    });
+    expect(deck.result.completed.map((item) => item.id)).toEqual(["daily_done"]);
+    expect(deck.result.localId).toBe("daily-result:2026-07-24");
+    expect(deck.result.remaining.map((item) => item.id)).toEqual([
+      "daily_first",
+      "daily_current",
+      "daily_next",
+      "daily_later"
+    ]);
+    expect(deck.pageOrder).toEqual([
+      "daily_overview",
+      "daily_plan_item",
+      "daily_result"
+    ]);
+    expect(deck.cards.map((card) => card.page)).toEqual([
+      "daily_overview",
+      "daily_plan_item",
+      "daily_plan_item",
+      "daily_plan_item",
+      "daily_plan_item",
+      "daily_plan_item",
+      "daily_result"
+    ]);
+  });
+
+  it("falls back from primary to the first unfinished item and counts all tasks", () => {
+    const primary = buildDailyDeckSnapshot({
+      date: "2026-07-24",
+      items: [
+        task("daily_done", "Done", { status: "done", primary: true }),
+        task("daily_normal", "Normal"),
+        task("daily_primary", "Primary", { primary: true })
+      ]
+    });
+    const first = buildDailyDeckSnapshot({
+      date: "2026-07-24",
+      items: [
+        task("daily_done", "Done", { status: "done" }),
+        task("daily_normal", "Normal"),
+        task("daily_other", "Other")
+      ]
+    });
+
+    expect(primary.currentItemId).toBe("daily_primary");
+    expect(first.currentItemId).toBe("daily_normal");
+    expect(first.overview.progress).toEqual({ done: 1, total: 3 });
+    expect(first.overview.upcoming.map((item) => item.id)).toEqual(["daily_other"]);
+  });
+
+  it("normalizes optional display metadata and rejects malformed deck identity", () => {
+    const deck = buildDailyDeckSnapshot({
+      date: "2026-07-24",
+      theme: "  Echo   MVP  ",
+      items: [task("daily_clean", "  Write   now  ", {
+        estimateMinutes: 12.6,
+        startedAt: "not-a-date"
+      })]
+    });
+
+    expect(deck.theme).toBe("Echo MVP");
+    expect(deck.planItems[0].item).toMatchObject({
+      text: "Write now",
+      estimateMinutes: 13,
+      startedAt: undefined
+    });
+    expect(() => buildDailyDeckSnapshot({
+      date: "07/24/2026",
+      items: []
+    })).toThrow(/YYYY-MM-DD/u);
+    expect(() => buildDailyDeckSnapshot({
+      date: "2026-07-24",
+      items: [task("", "Missing id")]
+    })).toThrow(/stable identifier/u);
+    expect(() => buildDailyDeckSnapshot({
+      date: "2026-07-24",
+      items: [
+        task("daily_same", "First"),
+        task("daily_same", "Second")
+      ]
+    })).toThrow(/unique/u);
+  });
 });
+
+function task(
+  id: string,
+  text: string,
+  patch: Partial<Parameters<typeof buildDailyDeckSnapshot>[0]["items"][number]> = {}
+): Parameters<typeof buildDailyDeckSnapshot>[0]["items"][number] {
+  return {
+    id,
+    text,
+    kind: "task",
+    status: "todo",
+    taskRevision: `rev_${id || "missing"}`,
+    ...patch
+  };
+}

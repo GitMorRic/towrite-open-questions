@@ -260,16 +260,17 @@ describe("HubClient", () => {
 
     const [pendingUrl] = fetcher.mock.calls[0] as unknown as [string, RequestInit];
     const [ackUrl, ackInit] = fetcher.mock.calls[1] as unknown as [string, RequestInit];
-    expect(pendingUrl).toBe("https://hub.example.com/v1/hub/receivers/recv_test/device-events/pending?limit=50");
+    expect(pendingUrl).toBe("https://hub.example.com/v1/hub/receivers/recv_test/device-events/pending?limit=50&wait=0");
     expect(ackUrl).toBe(
       "https://hub.example.com/v1/hub/receivers/recv_test/device-events/evt_0123456789abcdef0123456789abcdef/ack"
     );
     expect(JSON.parse(String(ackInit.body))).toEqual({
-      protocol_version: "1",
+      protocol_version: "towrite-device-hub/v2",
       status: "applied",
       result_revision: "rev_local_9"
     });
-    expect(String(ackInit.body)).not.toMatch(/[\\/]/u);
+    expect(String(ackInit.body)).not.toContain("\\");
+    expect(String(ackInit.body)).not.toContain("Daily/");
   });
 
   it("rejects path-shaped values in pending device event references", async () => {

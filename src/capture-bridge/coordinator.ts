@@ -26,6 +26,7 @@ interface CaptureBridgeHandoff {
 export interface CaptureBridgeCoordinatorOptions {
   selection: LocalTapSelectionService;
   commitAdapter: CaptureBridgeCommitAdapter;
+  createOnlySnapshot?(snapshot: TapSelectionSnapshot): Promise<TapSelectionSnapshot>;
   isTapAllowed(tapId: string): boolean;
   handoffTtlSeconds(): number;
   now?: () => Date;
@@ -42,13 +43,23 @@ export class CaptureBridgeCoordinator {
 
   async createHandoff(
     tapId: string,
-    protocolVersion: CaptureBridgeHandoffResponse["protocolVersion"] = CAPTURE_BRIDGE_PROTOCOL_VERSION
+    protocolVersion: CaptureBridgeHandoffResponse["protocolVersion"] = CAPTURE_BRIDGE_PROTOCOL_VERSION,
+    createOnly = false
   ): Promise<CaptureBridgeHandoffResponse> {
     this.cleanup();
     if (!isCaptureTapId(tapId) || !this.options.isTapAllowed(tapId)) {
       throw new CaptureBridgeRequestError(404, "Tap address is unavailable or revoked.");
     }
-    const snapshot = await this.options.selection.resolve();
+    let snapshot = await this.options.selection.resolve();
+    if (createOnly) {
+      if (protocolVersion !== CAPTURE_BRIDGE_PROTOCOL_V2 || !this.options.createOnlySnapshot) {
+        throw new CaptureBridgeRequestError(409, "Create-only Capture requires bridge v2 support.");
+      }
+      snapshot = await this.options.createOnlySnapshot(snapshot);
+      if (snapshot.candidate.action !== "create") {
+        throw new CaptureBridgeRequestError(409, "Create-only Capture did not resolve to an authorized create target.");
+      }
+    }
     const handoffId = generateCaptureHandoffId();
     const captureId = generateCaptureId();
     const expiresAt = new Date(this.now().getTime() + clampTtl(this.options.handoffTtlSeconds()) * 1_000).toISOString();
@@ -73,10 +84,13 @@ export class CaptureBridgeCoordinator {
       allowedFields: ["body", "title", "tags"],
       ...(protocolVersion === CAPTURE_BRIDGE_PROTOCOL_V2
         ? {
-            availableOperations: [
-              "capture" as const,
-              ...(snapshot.sourceContext?.dailyItemId ? ["complete" as const, "later" as const] : [])
-            ]
+            availableOperations: createOnly
+              ? ["capture" as const]
+              : [
+                  "capture" as const,
+                  ...(snapshot.sourceContext?.dailyItemId ? ["complete" as const, "later" as const] : [])
+                ],
+            ...(createOnly ? { createOnly: true } : {})
           }
         : {})
     };
@@ -142,6 +156,12 @@ export class CaptureBridgeCoordinator {
     }
 
     const operation = request.operation ?? "capture";
+    if (handoff.response.createOnly && operation !== "capture") {
+      throw new CaptureBridgeRequestError(
+        409,
+        "A create-only handoff accepts only the capture operation."
+      );
+    }
     if (operation === "complete") {
       if (!handoff.response.availableOperations?.includes("complete") || !this.options.commitAdapter.complete) {
         throw new CaptureBridgeRequestError(409, "This handoff cannot complete the displayed item.");

@@ -54,9 +54,38 @@ export class LocalTapSelectionService {
     return clone(snapshot);
   }
 
-  async recordLocalDisplayed(localId: string): Promise<void> {
+  async recordLocalDisplayed(
+    localId: string,
+    frozenSourceContext?: TapSelectionSnapshot["sourceContext"],
+    frozenDisplay?: Pick<TapSelectionSnapshot, "contentType" | "title" | "prompt" | "body" | "allowedActions">
+  ): Promise<void> {
     const snapshot = await this.options.createSnapshot({ source: "displayed", localId });
+    if (frozenSourceContext) {
+      snapshot.sourceContext = {
+        ...snapshot.sourceContext,
+        ...clone(frozenSourceContext)
+      };
+    }
+    if (frozenDisplay) {
+      snapshot.contentType = frozenDisplay.contentType;
+      snapshot.title = frozenDisplay.title;
+      snapshot.prompt = frozenDisplay.prompt;
+      snapshot.body = frozenDisplay.body;
+      snapshot.allowedActions = [...frozenDisplay.allowedActions];
+    }
     this.localDisplayedSnapshot = clone(snapshot);
+    await this.options.onStateChanged?.();
+  }
+
+  /** Records the exact snapshot that produced a rendered local card. */
+  async recordLocalDisplayedSnapshot(snapshot: TapSelectionSnapshot): Promise<void> {
+    if (!isSnapshot(snapshot) || !snapshot.localId) {
+      throw new Error("Displayed Capture snapshot is invalid.");
+    }
+    this.localDisplayedSnapshot = {
+      ...clone(snapshot),
+      source: "displayed"
+    };
     await this.options.onStateChanged?.();
   }
 
@@ -222,7 +251,8 @@ export class LocalTapSelectionService {
 function isSnapshot(value: unknown): value is TapSelectionSnapshot {
   if (!value || typeof value !== "object") return false;
   const snapshot = value as Partial<TapSelectionSnapshot>;
-  return snapshot.protocolVersion === "towrite-capture-bridge/v1"
+  return (snapshot.protocolVersion === "towrite-capture-bridge/v1"
+      || snapshot.protocolVersion === "towrite-capture-bridge/v2")
     && typeof snapshot.snapshotId === "string"
     && typeof snapshot.createdAt === "string"
     && typeof snapshot.localId === "string"

@@ -127,6 +127,73 @@ describe("LocalTapSelectionService", () => {
     await expect(selecting).resolves.toMatchObject({ localId: "local" });
     expect(resolved).toBe(true);
   });
+
+  it("restores persisted v2 frozen snapshots without silently discarding them", async () => {
+    const v2 = {
+      ...snapshot({ source: "local", localId: "card-v2" }),
+      protocolVersion: "towrite-capture-bridge/v2" as const
+    };
+    const restored = new LocalTapSelectionService({
+      createSnapshot: async (reference) => snapshot(reference),
+      getFallbackLocalId: () => "fallback"
+    });
+
+    restored.restore({
+      localSnapshot: v2,
+      localDisplayedSnapshot: v2,
+      contentSnapshots: [{ contentId: "cnt_v2", snapshot: v2 }]
+    });
+
+    await expect(restored.resolve()).resolves.toMatchObject({
+      protocolVersion: "towrite-capture-bridge/v2",
+      localId: "card-v2"
+    });
+    expect(restored.serialize().contentSnapshots).toHaveLength(1);
+  });
+
+  it("keeps the served overview task and display when Markdown advances before ACK", async () => {
+    const service = new LocalTapSelectionService({
+      createSnapshot: async (reference) => ({
+        ...snapshot(reference),
+        localId: "daily-overview:2026-07-24",
+        title: "Plan B",
+        body: "Newer task",
+        sourceContext: {
+          dailyItemId: "daily_plan_b",
+          dailyTaskRevision: "dtr_plan_b",
+          dailyDate: "2026-07-24",
+          dailySourcePath: "Daily/2026-07-24.md"
+        }
+      }),
+      getFallbackLocalId: () => undefined
+    });
+
+    await service.recordLocalDisplayed(
+      "daily-overview:2026-07-24",
+      {
+        dailyItemId: "daily_plan_a",
+        dailyTaskRevision: "dtr_plan_a",
+        dailyDate: "2026-07-24",
+        dailySourcePath: "Daily/2026-07-24.md"
+      },
+      {
+        contentType: "daily_overview",
+        title: "Plan A",
+        body: "The card actually rendered",
+        prompt: "Start A",
+        allowedActions: ["open", "capture"]
+      }
+    );
+
+    await expect(service.resolve()).resolves.toMatchObject({
+      title: "Plan A",
+      body: "The card actually rendered",
+      sourceContext: {
+        dailyItemId: "daily_plan_a",
+        dailyTaskRevision: "dtr_plan_a"
+      }
+    });
+  });
 });
 
 function hubState(): HubDeviceState {

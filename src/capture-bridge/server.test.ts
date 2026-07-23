@@ -35,8 +35,42 @@ describe("CaptureBridgeServer", () => {
       protocolVersion: CAPTURE_BRIDGE_PROTOCOL_V2,
       voiceCapture: true,
       assetUpload: true,
-      taskComplete: true
+      taskComplete: true,
+      createOnlyCapture: true
     });
+  });
+
+  it("accepts create-only only on the v2 handoff route and ignores no caller target", async () => {
+    const { server, token, tapId } = makeServer();
+    const response = new FakeResponse();
+    await invoke(server, new FakeRequest(
+      "POST",
+      `/api/v1/integrations/capture/v2/taps/${tapId}/handoffs`,
+      JSON.stringify({ createOnly: true }),
+      "127.0.0.1",
+      token
+    ), response);
+
+    expect(response.statusCode).toBe(201);
+    expect(JSON.parse(response.body)).toMatchObject({
+      protocolVersion: CAPTURE_BRIDGE_PROTOCOL_V2,
+      createOnly: true,
+      target: {
+        kind: "folder",
+        action: "create",
+        displayPath: "01-Sparks"
+      }
+    });
+
+    const unsupported = new FakeResponse();
+    await invoke(server, new FakeRequest(
+      "POST",
+      `/api/v1/integrations/capture/v2/taps/${tapId}/handoffs`,
+      JSON.stringify({ createOnly: true, targetPath: "Private/Chosen.md" }),
+      "127.0.0.1",
+      token
+    ), unsupported);
+    expect(unsupported.statusCode).toBe(400);
   });
 
   it("returns 404 for unknown routes and 413 before parsing oversized JSON", async () => {
@@ -99,7 +133,7 @@ describe("CapturePluginBridgeClient", () => {
   });
 });
 
-function makeServer(): { server: CaptureBridgeServer; token: string } {
+function makeServer(): { server: CaptureBridgeServer; token: string; tapId: string } {
   const token = generateCaptureBridgeToken();
   const tapId = generateCaptureTapId();
   const selection = new LocalTapSelectionService({
@@ -130,6 +164,23 @@ function makeServer(): { server: CaptureBridgeServer; token: string } {
   });
   const coordinator = new CaptureBridgeCoordinator({
     selection,
+    createOnlySnapshot: async (snapshot) => ({
+      ...snapshot,
+      snapshotId: "snp_server_create",
+      title: "New note",
+      prompt: "Write before creating",
+      candidate: {
+        schemaVersion: 1,
+        id: "target-folder",
+        kind: "folder",
+        action: "create",
+        path: "01-Sparks",
+        reason: "test",
+        confidence: "strong",
+        score: 1,
+        targetRevision: "folder-test"
+      }
+    }),
     isTapAllowed: (value) => value === tapId,
     handoffTtlSeconds: () => 300,
     commitAdapter: {
@@ -152,6 +203,7 @@ function makeServer(): { server: CaptureBridgeServer; token: string } {
   };
   return {
     token,
+    tapId,
     server: new CaptureBridgeServer({ pluginVersion: "test", getSettings: () => settings, coordinator })
   };
 }

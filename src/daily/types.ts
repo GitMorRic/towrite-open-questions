@@ -1,4 +1,52 @@
 export const DAILY_SCHEMA_VERSION = 1 as const;
+/** Markdown contract version. Activity/summary JSON remains schema v1. */
+export const DAILY_PLAN_SCHEMA_VERSION = 2 as const;
+
+export type DailyPlanSource =
+  | { kind: "daily-note"; dailyRoot?: string }
+  | { kind: "fixed-document"; path: string };
+
+export type DailyPlanDiagnosticCode =
+  | "missing-block-id"
+  | "multiple-block-ids"
+  | "duplicate-block-id"
+  | "duplicate-primary"
+  | "duplicate-minimum";
+
+export interface DailyPlanDiagnostic {
+  code: DailyPlanDiagnosticCode;
+  severity: "error";
+  message: string;
+  sourcePath: string;
+  line: number;
+  blockId?: string;
+}
+
+export interface DailyPlanMetadata {
+  theme?: string;
+  primaryId?: string;
+  minimumId?: string;
+}
+
+export interface DailyPlanDocument {
+  schemaVersion: typeof DAILY_PLAN_SCHEMA_VERSION;
+  date: string;
+  source: DailyPlanSource;
+  sourcePath: string;
+  metadata: DailyPlanMetadata;
+  items: DailyPlanItem[];
+  diagnostics: DailyPlanDiagnostic[];
+  /** Revision of the complete date-scoped plan, including unknown user text. */
+  revision: string;
+}
+
+export interface DailyPlanMetadataUpdate {
+  theme?: string | null;
+  /** Selects one existing task in this date-scoped plan; null clears it. */
+  primaryId?: string | null;
+  /** Selects one existing task in this date-scoped plan; null clears it. */
+  minimumId?: string | null;
+}
 
 export type DailyPlanItemKind = "task" | "create_note" | "edit_note" | "send_card";
 export type DailyDevicePolicy = "none" | "manual" | "scheduled" | "rotation" | "agent";
@@ -40,6 +88,16 @@ export interface DailyPlanItem {
   priorityExplicit?: boolean;
   tags: string[];
   linkedNotes: string[];
+  /** Always populated by the v2 parser; optional for v1 serialized callers. */
+  primary?: boolean;
+  /** Always populated by the v2 parser; optional for v1 serialized callers. */
+  minimum?: boolean;
+  goal?: string;
+  nextStep?: string;
+  estimateMinutes?: number;
+  /** Raw user-facing target, normally an Obsidian wikilink. */
+  target?: string;
+  startedAt?: string;
 }
 
 export interface DailyPlanCreateInput {
@@ -52,6 +110,12 @@ export interface DailyPlanCreateInput {
   dueDate?: string;
   priority?: DailyPlanPriority;
   tags?: string[];
+  primary?: boolean;
+  minimum?: boolean;
+  goal?: string;
+  nextStep?: string;
+  estimateMinutes?: number;
+  target?: string;
 }
 
 export interface DailyPlanUpdate {
@@ -63,6 +127,13 @@ export interface DailyPlanUpdate {
   priority?: DailyPlanPriority;
   tags?: string[];
   status?: Exclude<DailyPlanStatus, "done">;
+  primary?: boolean;
+  minimum?: boolean;
+  goal?: string | null;
+  nextStep?: string | null;
+  estimateMinutes?: number | null;
+  target?: string | null;
+  startedAt?: string | null;
 }
 
 export type DailyDocumentMeasurementReason = "created" | "modified";

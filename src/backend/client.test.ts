@@ -289,13 +289,31 @@ describe("Backend enhancement contract", () => {
         return {
           ok: true,
           json: async () => ({
-            protocol_version: "towrite-daily-ops/v1",
-            markdown_contract: "towrite-daily-plan/v1",
+            protocol_version: "towrite-daily-ops/v2",
+            markdown_contract: "towrite-daily-plan/v2",
             enabled: true,
             writer_capable: true,
             daily_note_root: "Daily",
             daily_note_format: "YYYY-MM-DD.md",
-            daily_note_todo_section: "ToDo"
+            daily_note_todo_section: "ToDo",
+            daily_plan_heading: "今日计划",
+            daily_plan_source: "daily",
+            daily_plan_document: "Planning/Daily Plans.md"
+          })
+        };
+      }
+      if (url.includes("/tools/daily/plans/")) {
+        return {
+          ok: true,
+          json: async () => ({
+            protocol_version: "towrite-daily-ops/v2",
+            markdown_contract: "towrite-daily-plan/v2",
+            date: "2026-07-23",
+            source: "daily",
+            source_path: "Daily/2026-07-23.md",
+            theme: body?.theme ?? "Echo MVP",
+            note_revision: body?.expected_note_revision ? "dnr_next" : "dnr_loaded",
+            changed: Boolean(body)
           })
         };
       }
@@ -305,7 +323,8 @@ describe("Backend enhancement contract", () => {
           task: {
             id: "daily_abc123",
             revision: "dtr_server",
-            raw_line: "- [ ] Draft ^daily_abc123"
+            raw_line: "- [ ] Draft",
+            raw_block: "- [ ] Draft\n  User note\n  ^daily_abc123"
           },
           updated: true
         })
@@ -314,9 +333,11 @@ describe("Backend enhancement contract", () => {
     const client = new BackendEnhancementClient(() => backendSettings());
 
     await expect(client.getDailyOpsStatus()).resolves.toMatchObject({
-      protocolVersion: "towrite-daily-ops/v1",
-      markdownContract: "towrite-daily-plan/v1",
-      writerCapable: true
+      protocolVersion: "towrite-daily-ops/v2",
+      markdownContract: "towrite-daily-plan/v2",
+      writerCapable: true,
+      planSource: "daily",
+      planHeading: "今日计划"
     });
     await client.createDailyTask({
       id: "daily_explicit123",
@@ -325,18 +346,49 @@ describe("Backend enhancement contract", () => {
       kind: "edit_note",
       devicePolicy: "scheduled",
       scheduledFor: "2026-07-23T09:30:00.000Z",
-      tags: ["today"]
+      tags: ["today"],
+      primary: true,
+      minimum: true,
+      goal: "Measure the experiment",
+      nextStep: "List the metrics",
+      estimateMinutes: 15,
+      target: "[[Echo MVP]]"
     });
+    await expect(client.moveDailyTask(
+      "daily_abc123",
+      "- [ ] Draft\n  User note\n  ^daily_abc123",
+      "up"
+    )).resolves.toMatchObject({
+      direction: "up"
+    });
+    const plan = await client.getDailyPlan("2026-07-23");
+    await client.updateDailyPlan("2026-07-23", "Ship Echo", plan.noteRevision);
 
-    expect(requests[1].url).toMatch(/\/tools\/daily\/tasks$/u);
-    expect(requests[1].body).toMatchObject({
+    const createRequest = requests.find((request) => request.url.endsWith("/tools/daily/tasks"));
+    expect(createRequest?.body).toMatchObject({
       task_id: "daily_explicit123",
       target: "daily",
       towrite_kind: "edit_note",
       towrite_device: "scheduled",
-      towrite_at: "2026-07-23T09:30:00.000Z"
+      towrite_at: "2026-07-23T09:30:00.000Z",
+      towrite_primary: true,
+      towrite_minimum: true,
+      towrite_goal: "Measure the experiment",
+      towrite_next: "List the metrics",
+      towrite_estimate: "15m",
+      towrite_target: "[[Echo MVP]]"
     });
-    expect(JSON.stringify(requests)).not.toContain("Daily/2026-07-23.md");
+    const planPatch = requests.find((request) => request.body?.expected_note_revision === "dnr_loaded");
+    expect(planPatch?.body).toEqual({
+      theme: "Ship Echo",
+      expected_note_revision: "dnr_loaded"
+    });
+    const moveRequest = requests.find((request) => request.body?.action === "move_up");
+    expect(moveRequest?.body).toEqual({
+      action: "move_up",
+      raw_block: "- [ ] Draft\n  User note\n  ^daily_abc123"
+    });
+    expect(requests.flatMap((request) => Object.values(request.body ?? {}))).not.toContain("Daily/2026-07-23.md");
   });
 
   it("parses the Backend NDJSON context inspection stream", async () => {

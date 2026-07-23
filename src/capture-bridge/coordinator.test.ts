@@ -172,6 +172,64 @@ describe("CaptureBridgeCoordinator", () => {
     expect(result).toMatchObject({ operation: "complete", completed: true });
     expect(complete).toHaveBeenCalledTimes(1);
   });
+
+  it("creates a fresh create-only v2 handoff without exposing a caller-selected path", async () => {
+    const tapId = generateCaptureTapId();
+    const appendTarget = candidate("existingNote", "append", "Notes/Existing.md");
+    const createTarget = candidate("folder", "create", "01-Sparks");
+    const createOnlySnapshot = vi.fn(async (snapshot: TapSelectionSnapshot): Promise<TapSelectionSnapshot> => ({
+      ...snapshot,
+      snapshotId: "snp_create_only",
+      contentType: "blank_capture",
+      title: "New note",
+      prompt: "Create a note after you submit",
+      allowedActions: ["capture"],
+      intent: "new",
+      candidate: createTarget,
+      sourceContext: {
+        dailyItemId: "daily_old_context",
+        dailyTaskRevision: "dtr_old_context"
+      }
+    }));
+    const coordinator = new CaptureBridgeCoordinator({
+      selection: selectionFor(appendTarget),
+      commitAdapter: commitAdapter(),
+      createOnlySnapshot,
+      isTapAllowed: (value) => value === tapId,
+      handoffTtlSeconds: () => 300
+    });
+
+    await expect(coordinator.createHandoff(
+      tapId,
+      CAPTURE_BRIDGE_PROTOCOL_VERSION,
+      true
+    )).rejects.toMatchObject({ statusCode: 409 });
+
+    const handoff = await coordinator.createHandoff(
+      tapId,
+      CAPTURE_BRIDGE_PROTOCOL_V2,
+      true
+    );
+    expect(handoff).toMatchObject({
+      protocolVersion: CAPTURE_BRIDGE_PROTOCOL_V2,
+      createOnly: true,
+      target: {
+        kind: "folder",
+        action: "create",
+        displayPath: "01-Sparks"
+      }
+    });
+    expect(createOnlySnapshot).toHaveBeenCalledTimes(1);
+    expect(handoff.availableOperations).toEqual(["capture"]);
+    expect(JSON.stringify(handoff)).not.toContain("Notes/Existing.md");
+    await expect(coordinator.commit(handoff.handoffId, {
+      protocolVersion: CAPTURE_BRIDGE_PROTOCOL_V2,
+      captureId: handoff.captureId,
+      idempotencyKey: "create-only-complete",
+      operation: "complete",
+      body: ""
+    })).rejects.toMatchObject({ statusCode: 409 });
+  });
 });
 
 function coordinatorFor(target: CaptureTargetCandidate, tapId: string, adapter: CaptureBridgeCommitAdapter) {

@@ -201,9 +201,15 @@ export interface ToWriteInboxSettings {
 
 export interface ToWriteDailySettings {
   enabled: boolean;
+  /** Exactly one Markdown source is active at a time. */
+  planSourceMode: "daily-note" | "fixed-document";
   /** Vault-relative root containing YYYY-MM-DD daily notes. */
   dailyNoteRoot: string;
   dailyNoteFormat: "YYYY-MM-DD.md";
+  /** Fixed planner document used when planSourceMode is fixed-document. */
+  fixedPlanPath: string;
+  /** Date section heading in a fixed planner document remains YYYY-MM-DD. */
+  planHeading: string;
   todoHeading: string;
   summaryHeading: string;
   activityTracking: boolean;
@@ -267,6 +273,20 @@ export interface ToWriteSavedData {
   dailyDeviceStateVersion?: number;
   /** Bounded idempotency keys for one-shot local Daily device schedules. */
   dailyScheduleOccurrenceIds?: string[];
+  /** Bounded, content-free idempotency journal for desktop UI side effects. */
+  deviceCommandJournal?: Array<{
+    eventId: string;
+    fingerprint: string;
+    /**
+     * `indeterminate` is persisted before a UI side effect. After a crash it
+     * is terminal and must never be replayed as successfully executed.
+     */
+    status: "processing" | "indeterminate" | "executed" | "unsupported" | "conflict";
+    processedAt: string;
+    action: string;
+    resultRevision?: string;
+    displayMessage?: string;
+  }>;
 }
 
 export const DEFAULT_STATUS_OPTIONS: QuestionStatusOption[] = [
@@ -583,8 +603,11 @@ export const DEFAULT_SETTINGS: ToWriteSettings = {
   },
   daily: {
     enabled: true,
+    planSourceMode: "daily-note",
     dailyNoteRoot: "Daily",
     dailyNoteFormat: "YYYY-MM-DD.md",
+    fixedPlanPath: "Planning/Daily Plans.md",
+    planHeading: "\u4eca\u65e5\u8ba1\u5212",
     todoHeading: "ToDo",
     summaryHeading: "\u4eca\u65e5\u603b\u7ed3",
     activityTracking: true,
@@ -682,8 +705,11 @@ export function normalizeDailySettings(settings?: Partial<ToWriteDailySettings>)
   const defaults = DEFAULT_SETTINGS.daily;
   return {
     enabled: settings?.enabled !== false,
+    planSourceMode: settings?.planSourceMode === "fixed-document" ? "fixed-document" : "daily-note",
     dailyNoteRoot: normalizeVaultFolderSetting(settings?.dailyNoteRoot, defaults.dailyNoteRoot),
     dailyNoteFormat: "YYYY-MM-DD.md",
+    fixedPlanPath: normalizeVaultFileSetting(settings?.fixedPlanPath, defaults.fixedPlanPath),
+    planHeading: normalizeHeadingSetting(settings?.planHeading, defaults.planHeading),
     todoHeading: normalizeHeadingSetting(settings?.todoHeading, defaults.todoHeading),
     summaryHeading: normalizeHeadingSetting(settings?.summaryHeading, defaults.summaryHeading),
     activityTracking: settings?.activityTracking !== false,
@@ -1122,6 +1148,18 @@ function normalizeVaultFolderSetting(value: unknown, fallback: string): string {
     .replace(/^\/+|\/+$/gu, "")
     .replace(/(?:^|\/)\.{1,2}(?=\/|$)/gu, "");
   return normalized.slice(0, 500) || fallback;
+}
+
+function normalizeVaultFileSetting(value: unknown, fallback: string): string {
+  const normalized = String(value ?? "")
+    .trim()
+    .replace(/\\/gu, "/")
+    .replace(/^\/+|\/+$/gu, "")
+    .replace(/(?:^|\/)\.{1,2}(?=\/|$)/gu, "")
+    .replace(/\/{2,}/gu, "/")
+    .replace(/^\/+|\/+$/gu, "");
+  const candidate = normalized || fallback;
+  return candidate.toLowerCase().endsWith(".md") ? candidate : `${candidate}.md`;
 }
 
 function normalizeHeadingSetting(value: unknown, fallback: string): string {

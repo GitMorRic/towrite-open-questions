@@ -127,6 +127,7 @@ export class CaptureBridgeServer {
           voiceCapture: true,
           assetUpload: true,
           taskComplete: true,
+          createOnlyCapture: true,
           availableOperations: ["capture", "complete", "later"]
         });
         return;
@@ -135,7 +136,18 @@ export class CaptureBridgeServer {
       let match = /^\/api\/v1\/integrations\/capture\/v([12])\/taps\/(tap_[A-Za-z0-9_-]{22})\/handoffs$/u.exec(url.pathname);
       if (method === "POST" && match?.[1] && match[2]) {
         const protocol = bridgeProtocolForRoute(match[1]);
-        this.writeJson(response, 201, await this.options.coordinator.createHandoff(match[2], protocol));
+        const body = protocol === CAPTURE_BRIDGE_PROTOCOL_V2
+          ? await readJson<Record<string, unknown>>(request)
+          : {};
+        const unknown = Object.keys(body).filter((key) => key !== "createOnly");
+        if (unknown.length > 0 || (body.createOnly !== undefined && typeof body.createOnly !== "boolean")) {
+          throw new CaptureBridgeRequestError(400, "Capture handoff request contains unsupported fields.");
+        }
+        this.writeJson(
+          response,
+          201,
+          await this.options.coordinator.createHandoff(match[2], protocol, body.createOnly === true)
+        );
         return;
       }
 

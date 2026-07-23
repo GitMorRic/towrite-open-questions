@@ -522,7 +522,9 @@ function defaultTypeLabel(type: HubContentType): string {
     character_letter: "角色来信",
     human_message: "来信",
     wellbeing_reminder: "轻提醒",
+    daily_overview: "今日概要",
     daily_plan_item: "今日计划",
+    daily_result: "今日结果",
     daily_summary: "今日总结"
   } as const)[type];
 }

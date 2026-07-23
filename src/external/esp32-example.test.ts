@@ -9,7 +9,10 @@ const sketch = readFileSync(
 describe("ESP32-S3 e-ink example", () => {
   it("keeps five-second content polling and redraws full cards only when content changes", () => {
     expect(sketch).toContain("const unsigned long POLL_INTERVAL_MS = 5000;");
-    expect(sketch).toContain("cardId == lastRenderedCardId && revision == lastPlaylistRevision");
+    expect(sketch).toContain("const bool alreadyAcknowledged = tuplesEqual(displayedTuple, desired);");
+    expect(sketch).toContain("if (!forceRender && alreadyAcknowledged");
+    expect(sketch).toContain("&& cardId == lastRenderedCardId");
+    expect(sketch).toContain("&& revision == lastPlaylistRevision");
     expect(sketch).toContain("renderConnectionStatusIfNeeded(false);");
     expect(sketch).toContain("return; // Polling never refreshes unchanged e-ink pixels.");
   });

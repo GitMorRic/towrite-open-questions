@@ -15,7 +15,7 @@ export interface EinkPlaylistOptions {
 
 export interface DailyEinkCard {
   localId: string;
-  contentType: "daily_plan_item" | "daily_summary";
+  contentType: "daily_overview" | "daily_plan_item" | "daily_result" | "daily_summary";
   title: string;
   body: string;
   prompt?: string;
@@ -110,11 +110,17 @@ function dailyFocus(card: DailyEinkCard): ExportEinkPayload["focus"][number] {
     title: card.title,
     body: card.body,
     question: card.body,
-    article: card.contentType === "daily_summary" ? "Daily Summary" : "Daily Plan",
+    article: card.contentType === "daily_summary"
+      ? "Daily Summary"
+      : card.contentType === "daily_result"
+        ? "Daily Result"
+        : "Daily Plan",
     lane: "write",
     kind: "other",
     nextAction: card.prompt,
-    sourceType: card.contentType === "daily_summary" ? "daily-summary" : "daily-plan",
+    sourceType: card.contentType === "daily_summary" || card.contentType === "daily_result"
+      ? "daily-summary"
+      : "daily-plan",
     displayCategory: "daily",
     contentType: card.contentType,
     actions: [...card.actions]

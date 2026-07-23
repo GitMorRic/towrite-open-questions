@@ -1376,13 +1376,49 @@ export class ToWriteSettingTab extends PluginSettingTab {
       }));
 
     new Setting(containerEl)
-      .setName(zh ? "日记目录" : "Daily note folder")
-      .setDesc(zh ? "默认使用 Daily/YYYY-MM-DD.md。" : "Defaults to Daily/YYYY-MM-DD.md.")
-      .addText((text) => text.setValue(daily.dailyNoteRoot).setPlaceholder("Daily").onChange(async (value) => {
-        daily.dailyNoteRoot = value.trim().replace(/\\/gu, "/").replace(/^\/+|\/+$/gu, "") || "Daily";
-        await this.plugin.savePluginData();
-        await this.plugin.refreshDailyDashboard();
-      }));
+      .setName(zh ? "计划 Markdown 来源" : "Plan Markdown source")
+      .setDesc(zh
+        ? "两种来源互斥；升级用户继续使用现有 Daily 日记，不会自动移动内容。"
+        : "Sources are mutually exclusive. Existing Daily notes are never moved.")
+      .addDropdown((dropdown) => dropdown
+        .addOption("daily-note", zh ? "每日一篇日记" : "One daily note")
+        .addOption("fixed-document", zh ? "固定规划文档" : "Fixed planning document")
+        .setValue(daily.planSourceMode)
+        .onChange(async (value) => {
+          daily.planSourceMode = value === "fixed-document" ? "fixed-document" : "daily-note";
+          await this.plugin.savePluginData();
+          await this.plugin.refreshDailyDashboard();
+          this.refreshSettingsUi();
+        }));
+
+    if (daily.planSourceMode === "fixed-document") {
+      new Setting(containerEl)
+        .setName(zh ? "固定规划文档" : "Fixed planning document")
+        .setDesc(zh
+        ? "按 ## YYYY-MM-DD 分区；同一文档可直接手工编辑今日和明日。"
+        : "Uses ## YYYY-MM-DD sections so today and tomorrow remain directly editable.")
+        .addText((text) => text.setValue(daily.fixedPlanPath).setPlaceholder("Planning/Daily Plans.md").onChange(async (value) => {
+          const normalized = value.trim()
+            .replace(/\\/gu, "/")
+            .replace(/^\/+|\/+$/gu, "")
+            .replace(/(?:^|\/)\.{1,2}(?=\/|$)/gu, "")
+            .replace(/\/{2,}/gu, "/")
+            .replace(/^\/+|\/+$/gu, "")
+            || "Planning/Daily Plans.md";
+          daily.fixedPlanPath = normalized.toLowerCase().endsWith(".md") ? normalized : `${normalized}.md`;
+          await this.plugin.savePluginData();
+          await this.plugin.refreshDailyDashboard();
+        }));
+    } else {
+      new Setting(containerEl)
+        .setName(zh ? "日记目录" : "Daily note folder")
+        .setDesc(zh ? "默认使用 Daily/YYYY-MM-DD.md。" : "Defaults to Daily/YYYY-MM-DD.md.")
+        .addText((text) => text.setValue(daily.dailyNoteRoot).setPlaceholder("Daily").onChange(async (value) => {
+          daily.dailyNoteRoot = value.trim().replace(/\\/gu, "/").replace(/^\/+|\/+$/gu, "") || "Daily";
+          await this.plugin.savePluginData();
+          await this.plugin.refreshDailyDashboard();
+        }));
+    }
 
     new Setting(containerEl)
       .setName(zh ? "计划与总结区段" : "Plan and summary headings")
@@ -1394,6 +1430,17 @@ export class ToWriteSettingTab extends PluginSettingTab {
       }))
       .addText((text) => text.setValue(daily.summaryHeading).setPlaceholder(zh ? "今日总结" : "Daily Summary").onChange(async (value) => {
         daily.summaryHeading = value.replace(/^#+\s*/u, "").trim() || (zh ? "今日总结" : "Daily Summary");
+        await this.plugin.savePluginData();
+        await this.plugin.refreshDailyDashboard();
+      }));
+
+    new Setting(containerEl)
+      .setName(zh ? "计划元数据区标题" : "Plan metadata heading")
+      .setDesc(zh
+        ? "插件在该区读取 [towrite-theme:: …]；任务仍保存在 ToDo 区。"
+        : "The plugin reads [towrite-theme:: …] here while tasks remain under ToDo.")
+      .addText((text) => text.setValue(daily.planHeading).setPlaceholder(zh ? "今日计划" : "Daily Plan").onChange(async (value) => {
+        daily.planHeading = value.replace(/^#+\s*/u, "").trim() || (zh ? "今日计划" : "Daily Plan");
         await this.plugin.savePluginData();
         await this.plugin.refreshDailyDashboard();
       }));

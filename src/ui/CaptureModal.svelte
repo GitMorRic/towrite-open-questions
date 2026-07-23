@@ -76,7 +76,7 @@
   $: contextSelection = context?.selection ?? (draft.intent === "selection" ? draft.source?.selection : undefined);
   $: questionTitle = context?.questionTitle;
   $: questionText = context?.questionText;
-  $: hasContext = Boolean(sourceFile || headingPath.length || contextSelection || questionTitle || questionText);
+  $: hasContext = Boolean(sourceFile || headingPath.length || contextSelection || questionTitle || questionText || context?.createOnly);
   $: busy = saving || opening || undoing;
   $: canSubmit = Boolean(body.trim())
     && (!targetRequired || (Boolean(activeCandidate) && Boolean(preview) && !recommending && !previewing))
@@ -418,6 +418,7 @@
         modeNew: "新记录",
         modeSelection: "从选区记录",
         modeAnswer: "回答问题",
+        createOnly: "新建笔记（确认保存前不会创建空文件）",
         close: "关闭",
         context: "来源上下文",
         source: "来源",
@@ -471,6 +472,7 @@
       modeNew: "New capture",
       modeSelection: "Capture selection",
       modeAnswer: "Answer question",
+      createOnly: "Create a new note (nothing is created until Save)",
       close: "Close",
       context: "Source context",
       source: "Source",
@@ -573,7 +575,7 @@
       {#if hasContext}
         <section class="towrite-capture-context" aria-label={copy.context}>
           <div class="towrite-capture-section-heading">
-            <span>{context?.sourceLabel || copy.context}</span>
+            <span>{context?.createOnly ? copy.createOnly : (context?.sourceLabel || copy.context)}</span>
             {#if sourceFile}<code title={sourceFile}>{sourceFile}</code>{/if}
           </div>
           {#if headingPath.length > 0}

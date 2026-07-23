@@ -1,5 +1,6 @@
 /** Versioned contract shared by the ToWrite connector and Device Hub. */
 export const HUB_PROTOCOL_VERSION = "1" as const;
+export const HUB_DEVICE_EVENT_PROTOCOL_VERSION = "towrite-device-hub/v2" as const;
 
 export type HubProtocolVersion = typeof HUB_PROTOCOL_VERSION;
 
@@ -15,7 +16,9 @@ export type HubContentType =
   | "character_letter"
   | "human_message"
   | "wellbeing_reminder"
+  | "daily_overview"
   | "daily_plan_item"
+  | "daily_result"
   | "daily_summary";
 
 export type HubContentAction = "respond" | "capture" | "open" | "next" | "useful" | "later" | "skip" | "complete";
@@ -259,7 +262,15 @@ export interface HubCaptureAckReceipt {
   status: "written_to_vault";
 }
 
-export type HubDeviceEventAction = "useful" | "later" | "skip" | "complete";
+export type HubDeviceEventAction =
+  | "useful"
+  | "later"
+  | "skip"
+  | "complete"
+  | "open_current"
+  | "start_open"
+  | "create_note"
+  | "record_reserved";
 export type HubDeviceEventAckStatus = "applied" | "conflict" | "ignored";
 
 /**
@@ -280,13 +291,16 @@ export interface HubPendingDeviceEvent {
   sourceRef?: string;
   writeTargetRef?: string;
   createdAt: string;
+  expiresAt?: string;
 }
 
 export interface HubDeviceEventAcknowledgement {
-  protocolVersion?: HubProtocolVersion;
+  protocolVersion?: string;
   status: HubDeviceEventAckStatus;
   /** New local task revision after an applied transition; never a file path. */
   resultRevision?: string;
+  /** Short device-safe outcome; never include a Vault path or note content. */
+  message?: string;
 }
 
 export interface HubDeviceEventAckReceipt {
@@ -296,4 +310,5 @@ export interface HubDeviceEventAckReceipt {
   duplicate: boolean;
   status: HubDeviceEventAckStatus;
   acknowledgedAt?: string;
+  message?: string;
 }

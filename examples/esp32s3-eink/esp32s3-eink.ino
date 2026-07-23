@@ -8,40 +8,50 @@ const char* WIFI_SSID = "YOUR_WIFI";
 const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
 const char* API_BASE_URL = "http://192.168.1.20:48321";
 
-// Create a local-web Push target in ToWrite, then copy that target's id/token.
-// The target-scoped token cannot turn a different screen's pages.
+// Create one target-scoped token per physical screen. The token is sent only
+// in the Authorization header and is never printed by this sketch.
 const char* DEVICE_TARGET_ID = "local-web";
 const char* DEVICE_TOKEN = "YOUR_TARGET_SCOPED_TOKEN";
 
 // Connect each button between its GPIO and GND. INPUT_PULLUP is enabled.
-// Set a pin to -1 when that button is not installed.
-const int NEXT_BUTTON_PIN = -1;
-const int PREVIOUS_BUTTON_PIN = -1;
+// Choose free pins for your exact ESP32-S3/display carrier. Use -1 only while
+// bringing up a board; all three buttons are part of the V1 interaction.
+const int MAIN_BUTTON_PIN = -1;
+const int LEFT_BUTTON_PIN = -1;
+const int RIGHT_BUTTON_PIN = -1;
 
 const unsigned long POLL_INTERVAL_MS = 5000;
 const unsigned long BUTTON_DEBOUNCE_MS = 45;
+const unsigned long BUTTON_DOUBLE_CLICK_MS = 320;
+const unsigned long BUTTON_LONG_PRESS_MS = 700;
 const unsigned long WIFI_CONNECT_TIMEOUT_MS = 20000;
 // A narrow status footer may use a partial refresh. Do not full-refresh the
 // complete panel every five seconds just to update connectivity text.
 const unsigned long STATUS_FOOTER_REFRESH_MS = 60000;
 
-struct ButtonState {
-  int pin;
-  const char* eventName;
-  bool lastReading;
-  bool stablePressed;
-  unsigned long changedAt;
+struct DisplayTuple {
+  bool valid;
+  String deviceId;
+  String selectionId;
+  uint64_t stateVersion;
+  String contentId;
+  String revisionId;
+  String cardId;
+  String playlistRevision;
 };
 
-ButtonState nextButton = {NEXT_BUTTON_PIN, "right", false, false, 0};
-ButtonState previousButton = {PREVIOUS_BUTTON_PIN, "left", false, false, 0};
-
-unsigned long lastPollAt = 0;
-unsigned long lastStatusRenderAt = 0;
-uint32_t bootNonce = 0;
-String lastRenderedCardId;
-String lastPlaylistRevision;
-String lastStatusFingerprint;
+struct ButtonState {
+  int pin;
+  const char* name;
+  bool rawPressed;
+  bool stablePressed;
+  bool longSent;
+  bool clickPending;
+  bool secondClick;
+  unsigned long rawChangedAt;
+  unsigned long pressedAt;
+  unsigned long clickReleasedAt;
+};
 
 struct ConnectionState {
   bool wifiOk;
@@ -52,14 +62,74 @@ struct ConnectionState {
   String lastError;
 };
 
+void configureButton(ButtonState& button);
+void pollButton(ButtonState& button);
+bool connectWifi();
+void refreshEinkPayload(bool forceRender);
+bool readDesiredTuple(JsonObject playlist, DisplayTuple& output);
+bool acknowledgeDisplayed(const DisplayTuple& desired);
+String displayCategoryFor(JsonObject card);
+void sendGestureEvent(const char* buttonName, const char* gestureName);
+bool tuplesEqual(const DisplayTuple& left, const DisplayTuple& right);
+void copyTuple(DisplayTuple& output, const DisplayTuple& input);
+void clearTuple(DisplayTuple& tuple);
+String makeEventId(const char* prefix);
+String commandErrorForHttp(int code);
+String shortCommandStatus(const String& value);
+bool renderCard(
+  const String& title,
+  const String& body,
+  const String& article,
+  const String& displayCategory,
+  const String& pageText,
+  const String& connectionText
+);
+bool renderEmpty(
+  int openCount,
+  int candidateCount,
+  int blockedArticles,
+  const String& connectionText
+);
+void renderCommandStatus(const String& message, bool isError);
+void renderError(const String& message, const String& connectionText);
+void renderConnectionStatus(const String& connectionText, bool isError);
+void markConnectionSuccess(int httpStatus);
+void markConnectionError(const String& message, int httpStatus);
+String connectionStatusText();
+String connectionStatusFingerprint();
+void rememberRenderedStatus();
+void renderConnectionStatusIfNeeded(bool force);
+String urlEncode(const char* value);
+
+ButtonState mainButton = {
+  MAIN_BUTTON_PIN, "primary", false, false, false, false, false, 0, 0, 0
+};
+ButtonState leftButton = {
+  LEFT_BUTTON_PIN, "left", false, false, false, false, false, 0, 0, 0
+};
+ButtonState rightButton = {
+  RIGHT_BUTTON_PIN, "right", false, false, false, false, false, 0, 0, 0
+};
+
 ConnectionState connectionState = {false, false, false, 0, 0, ""};
+DisplayTuple displayedTuple = {false, "", "", 0, "", "", "", ""};
+DisplayTuple pendingRenderedTuple = {false, "", "", 0, "", "", "", ""};
+
+unsigned long lastPollAt = 0;
+unsigned long lastStatusRenderAt = 0;
+uint32_t bootNonce = 0;
+uint32_t eventCounter = 0;
+String lastRenderedCardId;
+String lastPlaylistRevision;
+String lastStatusFingerprint;
 
 void setup() {
   Serial.begin(115200);
   delay(500);
   bootNonce = esp_random();
-  configureButton(nextButton);
-  configureButton(previousButton);
+  configureButton(mainButton);
+  configureButton(leftButton);
+  configureButton(rightButton);
   if (connectWifi()) {
     refreshEinkPayload(true);
   } else {
@@ -68,40 +138,79 @@ void setup() {
 }
 
 void loop() {
-  pollButton(nextButton);
-  pollButton(previousButton);
+  pollButton(mainButton);
+  pollButton(leftButton);
+  pollButton(rightButton);
 
   if (millis() - lastPollAt >= POLL_INTERVAL_MS) {
     refreshEinkPayload(false);
   }
-  delay(20);
+  delay(10);
 }
 
 void configureButton(ButtonState& button) {
   if (button.pin < 0) return;
   pinMode(button.pin, INPUT_PULLUP);
   const bool pressed = digitalRead(button.pin) == LOW;
-  button.lastReading = pressed;
+  button.rawPressed = pressed;
   button.stablePressed = pressed;
-  button.changedAt = millis();
+  button.rawChangedAt = millis();
+  button.pressedAt = pressed ? millis() : 0;
 }
 
 void pollButton(ButtonState& button) {
   if (button.pin < 0) return;
-  const bool reading = digitalRead(button.pin) == LOW;
+
   const unsigned long now = millis();
-
-  if (reading != button.lastReading) {
-    button.lastReading = reading;
-    button.changedAt = now;
-  }
-  if (now - button.changedAt < BUTTON_DEBOUNCE_MS || reading == button.stablePressed) {
-    return;
+  const bool reading = digitalRead(button.pin) == LOW;
+  if (reading != button.rawPressed) {
+    button.rawPressed = reading;
+    button.rawChangedAt = now;
   }
 
-  button.stablePressed = reading;
-  if (reading) {
-    sendButtonEvent(button.eventName);
+  if (reading != button.stablePressed
+      && now - button.rawChangedAt >= BUTTON_DEBOUNCE_MS) {
+    button.stablePressed = reading;
+    if (reading) {
+      // If the loop was blocked long enough for the previous click window to
+      // expire, emit that single before beginning a new press.
+      button.secondClick = false;
+      if (button.clickPending) {
+        if (now - button.clickReleasedAt <= BUTTON_DOUBLE_CLICK_MS) {
+          button.secondClick = true;
+        } else {
+          button.clickPending = false;
+          sendGestureEvent(button.name, "single");
+        }
+      }
+      button.pressedAt = now;
+      button.longSent = false;
+    } else if (!button.longSent) {
+      if (button.secondClick) {
+        button.clickPending = false;
+        button.secondClick = false;
+        sendGestureEvent(button.name, "double");
+      } else {
+        button.clickPending = true;
+        button.clickReleasedAt = now;
+      }
+    }
+  }
+
+  if (button.stablePressed && !button.longSent
+      && now - button.pressedAt >= BUTTON_LONG_PRESS_MS) {
+    button.longSent = true;
+    button.clickPending = false;
+    button.secondClick = false;
+    sendGestureEvent(button.name, "long");
+  }
+
+  // A single click is deliberately delayed until the double-click window has
+  // elapsed. Never emit it while a possible second press is being held.
+  if (!button.rawPressed && !button.stablePressed && button.clickPending
+      && now - button.clickReleasedAt > BUTTON_DOUBLE_CLICK_MS) {
+    button.clickPending = false;
+    sendGestureEvent(button.name, "single");
   }
 }
 
@@ -174,26 +283,60 @@ void refreshEinkPayload(bool forceRender) {
   JsonObject playlist = doc["playlist"];
   const String revision = playlist["revision"] | "";
   const String statusText = connectionStatusText();
+
+  DisplayTuple desired = {false, "", "", 0, "", "", "", ""};
+  const bool hasDesired = readDesiredTuple(playlist, desired);
+
   if (focus.size() == 0) {
     if (forceRender || lastRenderedCardId.length() > 0 || revision != lastPlaylistRevision) {
-      renderEmpty(
+      if (renderEmpty(
         summary["open"] | 0,
         summary["candidate"] | 0,
         summary["blockedArticles"] | 0,
         statusText
-      );
-      lastRenderedCardId = "";
-      lastPlaylistRevision = revision;
-      rememberRenderedStatus();
+      )) {
+        // There is no exact content tuple to authorize a gesture against.
+        clearTuple(displayedTuple);
+        clearTuple(pendingRenderedTuple);
+        lastRenderedCardId = "";
+        lastPlaylistRevision = revision;
+        rememberRenderedStatus();
+      }
     } else {
       renderConnectionStatusIfNeeded(false);
     }
     return;
   }
 
+  if (!hasDesired) {
+    markConnectionError(
+      "Response has no playlist.desired tuple; update ToWrite before enabling buttons",
+      code
+    );
+    return;
+  }
+
   JsonObject card = focus[0];
   const String cardId = card["id"] | "";
-  if (!forceRender && cardId == lastRenderedCardId && revision == lastPlaylistRevision) {
+  if (cardId != desired.cardId) {
+    markConnectionError("focus[0] does not match playlist.desired.cardId", 409);
+    return;
+  }
+
+  // If pixels were already refreshed but the ACK failed, retry only the ACK.
+  // The new tuple is not promoted to displayedTuple until that succeeds.
+  if (tuplesEqual(pendingRenderedTuple, desired)) {
+    if (acknowledgeDisplayed(desired)) {
+      copyTuple(displayedTuple, desired);
+      clearTuple(pendingRenderedTuple);
+    }
+    return;
+  }
+
+  const bool alreadyAcknowledged = tuplesEqual(displayedTuple, desired);
+  if (!forceRender && alreadyAcknowledged
+      && cardId == lastRenderedCardId
+      && revision == lastPlaylistRevision) {
     renderConnectionStatusIfNeeded(false);
     return; // Polling never refreshes unchanged e-ink pixels.
   }
@@ -214,7 +357,10 @@ void refreshEinkPayload(bool forceRender) {
     : String("single preview");
   const String displayCategory = displayCategoryFor(card);
 
-  renderCard(
+  // Replace renderCard() with a real driver call that returns true only after
+  // the controller reports a successful refresh. ACK must always happen after
+  // that point, never when the payload was merely downloaded.
+  const bool rendered = renderCard(
     card["title"] | "Untitled",
     cardBody,
     card["article"] | "",
@@ -222,12 +368,83 @@ void refreshEinkPayload(bool forceRender) {
     pageText,
     statusText
   );
+  if (!rendered) {
+    renderCommandStatus("Display refresh failed", true);
+    return;
+  }
+
   lastRenderedCardId = cardId;
   lastPlaylistRevision = revision;
+  // The old tuple no longer describes the pixels once this refresh succeeds.
+  // Disable gestures until the new exact tuple is acknowledged.
+  clearTuple(displayedTuple);
+  copyTuple(pendingRenderedTuple, desired);
   rememberRenderedStatus();
+
+  if (acknowledgeDisplayed(desired)) {
+    copyTuple(displayedTuple, desired);
+    clearTuple(pendingRenderedTuple);
+  }
+}
+
+bool readDesiredTuple(JsonObject playlist, DisplayTuple& output) {
+  JsonObject desired = playlist["desired"].as<JsonObject>();
+  if (desired.isNull()) return false;
+
+  output.deviceId = desired["deviceId"] | "";
+  output.selectionId = desired["selectionId"] | "";
+  output.stateVersion = desired["stateVersion"].as<uint64_t>();
+  output.contentId = desired["contentId"] | "";
+  output.revisionId = desired["revisionId"] | "";
+  output.cardId = desired["cardId"] | "";
+  output.playlistRevision = desired["playlistRevision"] | "";
+  output.valid = output.deviceId.length() > 0
+    && output.selectionId.length() > 0
+    && output.stateVersion > 0
+    && output.contentId.length() > 0
+    && output.revisionId.length() > 0
+    && output.cardId.length() > 0
+    && output.playlistRevision.length() > 0;
+  return output.valid;
+}
+
+bool acknowledgeDisplayed(const DisplayTuple& desired) {
+  if (!desired.valid) return false;
+  if (WiFi.status() != WL_CONNECTED && !connectWifi()) return false;
+
+  StaticJsonDocument<1024> ack;
+  ack["eventId"] = makeEventId("ack");
+  ack["deviceId"] = desired.deviceId;
+  ack["selectionId"] = desired.selectionId;
+  ack["stateVersion"] = desired.stateVersion;
+  ack["contentId"] = desired.contentId;
+  ack["revisionId"] = desired.revisionId;
+  ack["cardId"] = desired.cardId;
+  ack["playlistRevision"] = desired.playlistRevision;
+  String payload;
+  serializeJson(ack, payload);
+
+  HTTPClient http;
+  http.begin(String(API_BASE_URL) + "/api/v1/device/display-acks");
+  http.addHeader("Authorization", String("Bearer ") + DEVICE_TOKEN);
+  http.addHeader("Content-Type", "application/json");
+  const int code = http.POST(payload);
+  http.end();
+
+  if (code != 200) {
+    markConnectionError(String("Display ACK returned HTTP ") + code, code);
+    return false;
+  }
+  markConnectionSuccess(code);
+  return true;
 }
 
 String displayCategoryFor(JsonObject card) {
+  const String contentType = card["contentType"] | "";
+  if (contentType == "daily_overview") return "Today";
+  if (contentType == "daily_plan_item") return "Current task";
+  if (contentType == "daily_result") return "Today result";
+
   const String category = card["displayCategory"] | "";
   if (category == "echo") return "Echo sample";
   if (category == "tothink") return "ToThink";
@@ -241,17 +458,29 @@ String displayCategoryFor(JsonObject card) {
   return lane == "think" ? "ToThink" : "ToWrite";
 }
 
-void sendButtonEvent(const char* buttonName) {
+void sendGestureEvent(const char* buttonName, const char* gestureName) {
+  if (!displayedTuple.valid) {
+    renderCommandStatus("Waiting for display ACK", true);
+    return;
+  }
   if (WiFi.status() != WL_CONNECTED && !connectWifi()) {
+    renderCommandStatus("Computer offline", true);
     return;
   }
 
-  StaticJsonDocument<512> event;
-  event["schemaVersion"] = 1;
-  event["eventId"] = makeEventId();
+  StaticJsonDocument<1280> event;
+  event["schemaVersion"] = 2;
+  event["eventId"] = makeEventId("evt");
   event["targetId"] = DEVICE_TARGET_ID;
-  event["deviceId"] = chipId();
+  event["deviceId"] = displayedTuple.deviceId;
+  event["selectionId"] = displayedTuple.selectionId;
+  event["stateVersion"] = displayedTuple.stateVersion;
+  event["contentId"] = displayedTuple.contentId;
+  event["revisionId"] = displayedTuple.revisionId;
+  event["cardId"] = displayedTuple.cardId;
+  event["playlistRevision"] = displayedTuple.playlistRevision;
   event["button"] = buttonName;
+  event["gesture"] = gestureName;
   String payload;
   serializeJson(event, payload);
 
@@ -260,30 +489,108 @@ void sendButtonEvent(const char* buttonName) {
   http.addHeader("Authorization", String("Bearer ") + DEVICE_TOKEN);
   http.addHeader("Content-Type", "application/json");
   const int code = http.POST(payload);
+  const String body = code > 0 ? http.getString() : "";
   http.end();
 
-  if (code != 200) {
-    // Do not render or log the response body: it is untrusted and is not needed
-    // to diagnose target/token mismatch. The long-lived token is never shown.
-    markConnectionError(String("POST button ") + buttonName + " returned HTTP " + code, code);
+  if (code < 200 || code >= 300) {
+    const String message = commandErrorForHttp(code);
+    markConnectionError(String("Device event returned HTTP ") + code, code);
+    renderCommandStatus(message, true);
+    if (code == 409) {
+      // The selected state moved after this screen was rendered. Disable
+      // further gestures until a new payload is rendered and ACKed.
+      clearTuple(displayedTuple);
+      refreshEinkPayload(true);
+    }
     return;
   }
 
-  // ToWrite has already committed the shared cursor before returning 200.
-  // Re-read cursor 0 so the newly selected card appears immediately.
-  refreshEinkPayload(true);
+  String displayMessage = "Waiting for computer";
+  DynamicJsonDocument response(2048);
+  if (!deserializeJson(response, body)) {
+    const char* serverMessage = response["displayMessage"] | "";
+    if (serverMessage[0] != '\0') {
+      displayMessage = serverMessage;
+    }
+  }
+  renderCommandStatus(shortCommandStatus(displayMessage), false);
+  markConnectionSuccess(code);
+
+  // A start, completion, or page/task gesture can change the desired tuple.
+  // Poll without forcing a redundant refresh; a changed tuple is rendered and
+  // ACKed by refreshEinkPayload().
+  refreshEinkPayload(false);
 }
 
-String chipId() {
-  const uint64_t value = ESP.getEfuseMac();
-  return String((uint32_t)(value >> 32), HEX) + String((uint32_t)value, HEX);
+bool tuplesEqual(const DisplayTuple& left, const DisplayTuple& right) {
+  return left.valid && right.valid
+    && left.deviceId == right.deviceId
+    && left.selectionId == right.selectionId
+    && left.stateVersion == right.stateVersion
+    && left.contentId == right.contentId
+    && left.revisionId == right.revisionId
+    && left.cardId == right.cardId
+    && left.playlistRevision == right.playlistRevision;
 }
 
-String makeEventId() {
-  return String("esp32-") + chipId() + "-" + String(bootNonce, HEX) + "-" + String(millis(), HEX);
+void copyTuple(DisplayTuple& output, const DisplayTuple& input) {
+  output.valid = input.valid;
+  output.deviceId = input.deviceId;
+  output.selectionId = input.selectionId;
+  output.stateVersion = input.stateVersion;
+  output.contentId = input.contentId;
+  output.revisionId = input.revisionId;
+  output.cardId = input.cardId;
+  output.playlistRevision = input.playlistRevision;
 }
 
-void renderCard(
+void clearTuple(DisplayTuple& tuple) {
+  tuple.valid = false;
+  tuple.deviceId = "";
+  tuple.selectionId = "";
+  tuple.stateVersion = 0;
+  tuple.contentId = "";
+  tuple.revisionId = "";
+  tuple.cardId = "";
+  tuple.playlistRevision = "";
+}
+
+String makeEventId(const char* prefix) {
+  eventCounter += 1;
+  return String(prefix)
+    + "-" + String(bootNonce, HEX)
+    + "-" + String(millis(), HEX)
+    + "-" + String(eventCounter, HEX);
+}
+
+String commandErrorForHttp(int code) {
+  if (code <= 0 || code == 502 || code == 503 || code == 504) {
+    return "Computer offline";
+  }
+  if (code == 408 || code == 425) return "Waiting for computer";
+  if (code == 409) return "Conflict - refreshing";
+  if (code == 401 || code == 403) return "Device authorization failed";
+  return String("Command failed (HTTP ") + code + ")";
+}
+
+String shortCommandStatus(const String& value) {
+  String lower = value;
+  lower.toLowerCase();
+  if (lower.indexOf("record") >= 0 && (
+      lower.indexOf("not") >= 0 || lower.indexOf("unavailable") >= 0)) {
+    return "Recording unavailable";
+  }
+  if (lower.indexOf("offline") >= 0) return "Computer offline";
+  if (lower.indexOf("conflict") >= 0 || lower.indexOf("changed") >= 0) {
+    return "Conflict - refreshing";
+  }
+  if (lower.indexOf("wait") >= 0) return "Waiting for computer";
+  if (lower.indexOf("open") >= 0) return "Opened";
+  if (lower.indexOf("complete") >= 0) return "Completed";
+  return value.substring(0, 60);
+}
+
+bool renderCard(
   const String& title,
   const String& body,
   const String& article,
@@ -292,8 +599,8 @@ void renderCard(
   const String& connectionText
 ) {
   // Replace this Serial output with GxEPD2/Waveshare/LilyGo drawing calls.
-  // Reserve a narrow footer for connectionText so the physical screen shows
-  // Wi-Fi/API state, target ID, and last successful sync without exposing keys.
+  // Return true only after the physical controller has completed the refresh.
+  // Reserve a narrow footer for connectionText and command status.
   Serial.println("----- ToWrite E-ink Card -----");
   Serial.println(pageText);
   Serial.println(displayCategory + " | " + article);
@@ -301,9 +608,10 @@ void renderCard(
   Serial.println(body);
   Serial.println(connectionText);
   Serial.println("------------------------------");
+  return true;
 }
 
-void renderEmpty(
+bool renderEmpty(
   int openCount,
   int candidateCount,
   int blockedArticles,
@@ -319,6 +627,13 @@ void renderEmpty(
   Serial.println(blockedArticles);
   Serial.println(connectionText);
   Serial.println("------------------------------");
+  return true;
+}
+
+void renderCommandStatus(const String& message, bool isError) {
+  // Replace this with a small partial refresh. Keep the current card visible.
+  Serial.print(isError ? "[command:error] " : "[command:ok] ");
+  Serial.println(message);
 }
 
 void renderError(const String& message, const String& connectionText) {

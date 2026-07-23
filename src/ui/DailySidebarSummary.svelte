@@ -1,16 +1,19 @@
 <script lang="ts">
-  import { CalendarDays, Check, ChevronRight, PenLine } from "lucide-svelte";
+  import { CalendarDays, Check, ChevronRight, Target } from "lucide-svelte";
   import { onDestroy, onMount } from "svelte";
   import type {
     DailyDashboardAdapter,
     DailyDashboardSnapshot
   } from "./daily-dashboard-types";
+  import { selectDailyOverview } from "./daily-dashboard-state";
 
   export let dailyApi: DailyDashboardAdapter | undefined = undefined;
   export let onOpenDashboard: (() => void) | undefined = undefined;
 
   let snapshot: DailyDashboardSnapshot | undefined;
   let unsubscribe: (() => void) | undefined;
+
+  $: overview = selectDailyOverview(snapshot?.plan.items ?? []);
 
   onMount(() => {
     unsubscribe = dailyApi?.subscribe?.(() => {
@@ -48,19 +51,20 @@
     <div class="summary-metrics">
       <span title="已完成">
         <Check size={13} />
-        <strong>{snapshot?.plan.done ?? 0}</strong>
+        <strong>{overview.done}</strong>
         完成
       </span>
-      <span title="今日写作新增">
-        <PenLine size={13} />
-        <strong>{snapshot?.activity.positiveWritingUnits ?? 0}</strong>
-        新增
-      </span>
       <span title="待推进">
-        <strong>{(snapshot?.plan.todo ?? 0) + (snapshot?.plan.inProgress ?? 0)}</strong>
+        <strong>{overview.total - overview.done}</strong>
         待推进
       </span>
     </div>
+    {#if overview.current}
+      <button class="current-task" type="button" on:click={() => onOpenDashboard?.()}>
+        <Target size={13} />
+        <span><small>当前</small><strong>{overview.current.text}</strong></span>
+      </button>
+    {/if}
   </section>
 {/if}
 
@@ -136,7 +140,7 @@
 
   .summary-metrics {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 1px;
     border-top: 1px solid var(--background-modifier-border);
     background: var(--background-modifier-border);
@@ -157,5 +161,41 @@
 
   .summary-metrics strong {
     color: var(--text-normal);
+  }
+
+  .current-task {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 7px;
+    width: 100%;
+    padding: 8px 10px;
+    border: 0;
+    border-top: 1px solid var(--background-modifier-border);
+    color: var(--text-muted);
+    background: transparent;
+    box-shadow: none;
+    text-align: left;
+  }
+
+  .current-task:hover {
+    background: var(--background-modifier-hover);
+  }
+
+  .current-task span {
+    display: grid;
+    min-width: 0;
+  }
+
+  .current-task small {
+    font-size: 0.6rem;
+  }
+
+  .current-task strong {
+    overflow: hidden;
+    color: var(--text-normal);
+    font-size: 0.7rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 </style>

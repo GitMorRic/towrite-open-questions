@@ -1153,6 +1153,232 @@ describe("external server", () => {
     expect(directions).toEqual([]);
   });
 
+  it("requires an exact display ACK before schema-v2 gestures can open Obsidian", async () => {
+    const executed: string[] = [];
+    const target = {
+      id: "desk",
+      name: "Desk",
+      type: "local-web" as const,
+      enabled: true,
+      profile: "eink-bw" as const,
+      width: 264,
+      height: 176,
+      inches: 2.7,
+      defaultPage: "cards" as const,
+      defaultLane: "" as const,
+      refreshSeconds: 60,
+      quietHoursStart: "",
+      quietHoursEnd: "",
+      token: "desk-token",
+      capabilities: ["buttons"],
+      buttonMappings: [{ button: "center", action: "respond" as const, label: "Legacy" }]
+    };
+    const server = makeServer({
+      getRestrictedAccessTokens: () => ["desk-token"],
+      getPushTargets: () => [target],
+      getEinkPayload: () => ({
+        schemaVersion: 2,
+        generatedAt: "2026-07-23T00:00:00.000Z",
+        summary: { open: 1, candidate: 0, blockedArticles: 0 },
+        focus: [{
+          id: "daily-overview:2026-07-23",
+          title: "Today",
+          body: "Write",
+          question: "Write",
+          article: "Daily Plan",
+          lane: "write",
+          kind: "other"
+        }],
+        playlist: {
+          order: "daily_then_echo_then_questions",
+          cursor: 0,
+          total: 1,
+          queueTotal: 0,
+          currentInQueue: false,
+          currentIndex: -1,
+          currentPosition: 0,
+          currentId: "daily-overview:2026-07-23",
+          nextCursor: 0,
+          previousCursor: 0,
+          selectedId: "daily-overview:2026-07-23",
+          revision: "einkrev_overview",
+          stateVersion: 4
+        }
+      }),
+      acknowledgeDeviceDisplay: async () => undefined,
+      handleDeviceGesture: async (event) => {
+        executed.push(event.eventId);
+        return { status: "executed", action: "start_open", displayMessage: "Opened" };
+      }
+    });
+    const handle = server as unknown as {
+      handleRequest(request: FakeRequest, response: FakeResponse): Promise<void>;
+    };
+    const poll = new FakeResponse();
+    await handle.handleRequest(
+      new FakeRequest("GET", "/api/v1/eink?targetId=desk", {}, { authorization: "Bearer desk-token" }),
+      poll
+    );
+    const desired = JSON.parse(poll.body).playlist.desired as Record<string, unknown>;
+    expect(desired).toMatchObject({
+      deviceId: "desk",
+      cardId: "daily-overview:2026-07-23",
+      stateVersion: 4,
+      playlistRevision: "einkrev_overview"
+    });
+
+    const event = {
+      schemaVersion: 2,
+      eventId: "evt_primary_single",
+      targetId: "desk",
+      ...desired,
+      button: "primary",
+      gesture: "single"
+    };
+    const beforeAck = new FakeResponse();
+    await handle.handleRequest(
+      new FakeRequest("POST", "/api/v1/device/events", event, { authorization: "Bearer desk-token" }),
+      beforeAck
+    );
+    expect(beforeAck.statusCode).toBe(409);
+    expect(executed).toEqual([]);
+
+    const ack = new FakeResponse();
+    await handle.handleRequest(
+      new FakeRequest("POST", "/api/v1/device/display-acks", {
+        eventId: "evt_display_ack",
+        ...desired
+      }, { authorization: "Bearer desk-token" }),
+      ack
+    );
+    expect(ack.statusCode).toBe(200);
+
+    const first = new FakeResponse();
+    const duplicate = new FakeResponse();
+    await handle.handleRequest(
+      new FakeRequest("POST", "/api/v1/device/events", event, { authorization: "Bearer desk-token" }),
+      first
+    );
+    await handle.handleRequest(
+      new FakeRequest("POST", "/api/v1/device/events", event, { authorization: "Bearer desk-token" }),
+      duplicate
+    );
+    expect(JSON.parse(first.body)).toMatchObject({
+      action: "start_open",
+      commandStatus: "executed",
+      displayMessage: "Opened",
+      duplicate: false
+    });
+    expect(JSON.parse(duplicate.body)).toMatchObject({ duplicate: true });
+    expect(executed).toEqual(["evt_primary_single"]);
+
+    const stale = new FakeResponse();
+    await handle.handleRequest(
+      new FakeRequest("POST", "/api/v1/device/events", {
+        ...event,
+        eventId: "evt_stale",
+        selectionId: "sel_local_00000000000000000000000000000000"
+      }, { authorization: "Bearer desk-token" }),
+      stale
+    );
+    expect(stale.statusCode).toBe(409);
+    expect(executed).toEqual(["evt_primary_single"]);
+
+    const legacy = new FakeResponse();
+    await handle.handleRequest(
+      new FakeRequest("POST", "/api/v1/device/events", {
+        eventId: "evt_legacy",
+        targetId: "desk",
+        button: "center"
+      }, { authorization: "Bearer desk-token" }),
+      legacy
+    );
+    expect(legacy.statusCode).toBe(200);
+    expect(executed).toEqual(["evt_primary_single"]);
+  });
+
+  it("replays a persisted terminal schema-v2 result after displayed state changes, but blocks a new stale event", async () => {
+    const target = {
+      id: "desk",
+      name: "Desk",
+      type: "local-web" as const,
+      enabled: true,
+      profile: "eink-bw" as const,
+      width: 264,
+      height: 176,
+      inches: 2.7,
+      defaultPage: "cards" as const,
+      defaultLane: "" as const,
+      refreshSeconds: 60,
+      quietHoursStart: "",
+      quietHoursEnd: "",
+      token: "desk-token",
+      capabilities: ["buttons"],
+      buttonMappings: []
+    };
+    const executed: string[] = [];
+    const current = {
+      deviceId: "desk",
+      selectionId: "sel_local_newnewnewnewnewnewnewnewnewn",
+      stateVersion: 9,
+      contentId: "cnt_local_newnewnewnewnewnewnewnewnewn",
+      revisionId: "rev_local_newnewnewnewnewnewnewnewnewn",
+      cardId: "daily-plan:daily_new",
+      playlistRevision: "einkrev_new"
+    };
+    const oldEvent = {
+      schemaVersion: 2,
+      eventId: "evt_persisted_replay",
+      targetId: "desk",
+      deviceId: "desk",
+      selectionId: "sel_local_oldoldoldoldoldoldoldoldoldo",
+      stateVersion: 4,
+      contentId: "cnt_local_oldoldoldoldoldoldoldoldoldo",
+      revisionId: "rev_local_oldoldoldoldoldoldoldoldoldo",
+      cardId: "daily-plan:daily_old",
+      playlistRevision: "einkrev_old",
+      button: "primary",
+      gesture: "single"
+    };
+    const server = makeServer({
+      getRestrictedAccessTokens: () => ["desk-token"],
+      getPushTargets: () => [target],
+      getDeviceDisplayedTuple: () => current,
+      resolveDeviceGestureReplay: (event) => event.eventId === oldEvent.eventId
+        ? { status: "executed", action: "open_current", displayMessage: "Already opened" }
+        : undefined,
+      handleDeviceGesture: async (event) => {
+        executed.push(event.eventId);
+        return { status: "executed", displayMessage: "Opened" };
+      }
+    });
+    const handle = server as unknown as {
+      handleRequest(request: FakeRequest, response: FakeResponse): Promise<void>;
+    };
+    const replay = new FakeResponse();
+    await handle.handleRequest(
+      new FakeRequest("POST", "/api/v1/device/events", oldEvent, { authorization: "Bearer desk-token" }),
+      replay
+    );
+    expect(replay.statusCode).toBe(200);
+    expect(JSON.parse(replay.body)).toMatchObject({
+      commandStatus: "executed",
+      displayMessage: "Already opened",
+      cardId: oldEvent.cardId
+    });
+
+    const staleNew = new FakeResponse();
+    await handle.handleRequest(
+      new FakeRequest("POST", "/api/v1/device/events", {
+        ...oldEvent,
+        eventId: "evt_new_stale"
+      }, { authorization: "Bearer desk-token" }),
+      staleNew
+    );
+    expect(staleNew.statusCode).toBe(409);
+    expect(executed).toEqual([]);
+  });
+
   it("coalesces concurrent retries so one event advances only once", async () => {
     let releaseAdvance: (() => void) | undefined;
     const gate = new Promise<void>((resolve) => {

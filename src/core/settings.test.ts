@@ -54,8 +54,11 @@ describe("settings normalization", () => {
       summaryDevicePolicy: "rotation"
     })).toEqual({
       enabled: true,
+      planSourceMode: "daily-note",
       dailyNoteRoot: "Daily/Writing",
       dailyNoteFormat: "YYYY-MM-DD.md",
+      fixedPlanPath: "Planning/Daily Plans.md",
+      planHeading: "今日计划",
       todoHeading: "Plans",
       summaryHeading: "Review",
       activityTracking: false,
@@ -68,6 +71,15 @@ describe("settings normalization", () => {
     expect(normalizeDailySettings({
       summaryDevicePolicy: "scheduled" as never
     }).summaryDevicePolicy).toBe("none");
+    expect(normalizeDailySettings({
+      planSourceMode: "fixed-document",
+      fixedPlanPath: " /Planning\\Tomorrow ",
+      planHeading: "## 明日编排\n"
+    })).toMatchObject({
+      planSourceMode: "fixed-document",
+      fixedPlanPath: "Planning/Tomorrow.md",
+      planHeading: "明日编排"
+    });
   });
 
   it("keeps Inbox as the shared core workflow stage for upgraded configurations", () => {

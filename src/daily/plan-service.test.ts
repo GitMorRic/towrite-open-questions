@@ -120,10 +120,10 @@ describe("DailyPlanService", () => {
 
     const completed = await service.complete(item.id, item.revision, "2026-07-23");
     const written = storage.files.get(item.sourcePath)!;
-    expect(completed).toMatchObject({ status: "done", priority: "highest", line: 5, endLine: 5 });
+    expect(completed).toMatchObject({ status: "done", priority: "highest", line: 5, endLine: 7 });
     expect(written).toContain("- [x] 补充 [[关于创作]] 🔺");
-    expect(written).not.toContain("\n  [towrite-kind:: edit_note]");
-    expect(written).not.toContain("\n  ^daily_multiline1");
+    expect(written).toContain("\n  [towrite-kind:: edit_note]");
+    expect(written).toContain("\n  ^daily_multiline1");
     expect(written).toContain("这行与任务无关，必须保留。");
     expect(written).toContain("^daily_other1");
     expect(written).toContain("## Notes\n正文");

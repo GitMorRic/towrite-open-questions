@@ -1,12 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import {
   DEFAULT_DEVICE_BUTTON_MAPPINGS,
   buildDeviceGoUrl,
   buildDeviceInputUrl,
   compareDeviceCompletionGuard,
   completionGuardForDeviceEvent,
+  isDeviceGestureEvent,
   isGuardedDeviceCompletionEvent,
-  normalizeDeviceEventInput
+  normalizeDeviceDisplayAcknowledgement,
+  normalizeDeviceEventInput,
+  type DeviceCommandAcknowledgement,
+  type DeviceEventInput
 } from "./device-interactions";
 
 describe("device interaction protocol", () => {
@@ -16,7 +20,11 @@ describe("device interaction protocol", () => {
       eventId: "evt_0123456789abcdef0123456789abcdef",
       targetId: "target-ink",
       deviceId: "dev_0123456789abcdef0123456789abcdef",
-      action: "complete",
+      selectionId: "sel_0123456789abcdef0123456789abcdef",
+      contentId: "cnt_0123456789abcdef0123456789abcdef",
+      revisionId: "rev_0123456789abcdef0123456789abcdef",
+      button: "right",
+      gesture: "long",
       cardId: "daily-plan:daily_abc",
       stateVersion: 7,
       playlistRevision: "einkrev_0123abcd"
@@ -34,6 +42,83 @@ describe("device interaction protocol", () => {
       cardId: "daily-plan:daily_abc",
       stateVersion: 7,
       playlistRevision: "einkrev_0123abcd"
+    });
+  });
+
+  it.each([
+    ["primary", "single", "open_current"],
+    ["primary", "double", "create_note"],
+    ["primary", "long", "record_reserved"],
+    ["left", "single", "page_prev"],
+    ["left", "double", "task_prev"],
+    ["right", "single", "page_next"],
+    ["right", "double", "task_next"],
+    ["right", "long", "complete"]
+  ])("maps schema-v2 %s %s without trusting an action supplied by firmware", (button, gesture, action) => {
+    const event = normalizeDeviceEventInput({
+      schemaVersion: 2,
+      eventId: `evt_${button}_${gesture}`,
+      targetId: "target-ink",
+      deviceId: "dev_0123456789abcdef0123456789abcdef",
+      selectionId: "sel_0123456789abcdef0123456789abcdef",
+      contentId: "cnt_0123456789abcdef0123456789abcdef",
+      revisionId: "rev_0123456789abcdef0123456789abcdef",
+      button,
+      gesture,
+      action: "later",
+      cardId: "daily-plan:daily_abc",
+      stateVersion: 7,
+      playlistRevision: "einkrev_0123abcd"
+    }, DEFAULT_DEVICE_BUTTON_MAPPINGS);
+    expect(event.action).toBe(action);
+    expect(isDeviceGestureEvent(event)).toBe(true);
+    if (isDeviceGestureEvent(event)) {
+      expectTypeOf(event.schemaVersion).toEqualTypeOf<2>();
+      expectTypeOf(event.button).toEqualTypeOf<"primary" | "left" | "right">();
+    }
+  });
+
+  it("does not narrow an incomplete v2 event and exposes the command acknowledgement contract", () => {
+    const incomplete: DeviceEventInput = {
+      schemaVersion: 2,
+      eventId: "evt_incomplete",
+      targetId: "desk",
+      button: "primary",
+      gesture: "single",
+      action: "open_current"
+    };
+    expect(isDeviceGestureEvent(incomplete)).toBe(false);
+
+    const acknowledgement: DeviceCommandAcknowledgement = {
+      eventId: "evt_complete",
+      status: "executed",
+      action: "open_current",
+      message: "Opened",
+      resultRevision: "dtr_after"
+    };
+    expect(acknowledgement).toMatchObject({
+      status: "executed",
+      action: "open_current",
+      resultRevision: "dtr_after"
+    });
+  });
+
+  it("normalizes an explicit display acknowledgement tuple", () => {
+    expect(normalizeDeviceDisplayAcknowledgement({
+      event_id: "evt_ack_1",
+      device_id: "dev_0123456789abcdef0123456789abcdef",
+      selection_id: "sel_0123456789abcdef0123456789abcdef",
+      state_version: 7,
+      content_id: "cnt_0123456789abcdef0123456789abcdef",
+      revision_id: "rev_0123456789abcdef0123456789abcdef",
+      card_id: "daily-plan:daily_abc",
+      playlist_revision: "einkrev_0123abcd",
+      displayed_at: "2026-07-24T08:00:00+08:00"
+    })).toMatchObject({
+      eventId: "evt_ack_1",
+      cardId: "daily-plan:daily_abc",
+      stateVersion: 7,
+      displayedAt: "2026-07-24T00:00:00.000Z"
     });
   });
 

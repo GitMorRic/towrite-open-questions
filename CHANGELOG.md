@@ -2,6 +2,10 @@
 
 ## 0.3.0-beta.13 - 2026-07-23
 
+- Upgraded Daily planning to the `towrite-daily-plan/v2` Markdown contract with mutually exclusive daily-note and fixed-document sources, Today/Tomorrow planning, theme/primary/minimum metadata, ordered full task blocks, unique `[/]` current-task transitions, duplicate-ID diagnostics, and complete-block CAS that preserves user notes and nested lists.
+- Added the three-page e-ink deck (`daily_overview`, one card per `daily_plan_item`, and `daily_result`) plus displayed-first three-button gestures: main single starts/opens, main double opens create-only Capture without creating an empty file, main long reserves recording, left/right navigate pages/tasks, and right long safely completes only the exact ACKed task.
+- Added schema-v2 display acknowledgements and gesture events with exact device/selection/content/revision/card/playlist tuples, persisted at-most-once desktop-command handling, bounded command expiry, Hub long polling, and ESP32-S3 reference firmware with 45 ms debounce, 320 ms double-click, and 700 ms long-press timing.
+- Extended Capture Bridge v2 with a server-enforced create-only handoff used by both the native Obsidian modal and the Tailscale Capture PWA; phone requests cannot supply a target path, and cancel/reload never creates an empty note.
 - Added a dedicated Today Dashboard backed by `Daily/YYYY-MM-DD.md`: plan tasks, note creation/editing, one-shot device cards, explicit completion/reopen, deterministic summaries, preview-before-write AI wording, and a compact sidebar summary all work without the optional Backend.
 - Accepted both inline and indented multiline Daily metadata/block IDs, preserved full logical-block revisions, recognized standard Obsidian Tasks priority symbols, and kept those priorities through local and Backend mutations.
 - Added content-free daily activity accounting for positive/net visible writing units, new and uniquely modified notes, completed tasks, resolved questions, Capture commits, and selected/displayed cards. Measurements run after debounced Vault changes, raw events expire after the configured retention period, and export/pause/clear controls remain local.
@@ -12,6 +16,10 @@
 
 中文摘要：
 
+- Daily 计划升级为 `towrite-daily-plan/v2` Markdown 契约：每日笔记与固定规划文档两种来源互斥，支持今日/明日编排、主题/主任务/最低承诺、完整任务块排序、唯一 `[/]` 当前任务、重复 ID 诊断，以及保留用户说明和嵌套列表的完整块 CAS。
+- 新增墨水屏三页卡组：`daily_overview`、每条计划对应的 `daily_plan_item` 和 `daily_result`；三键动作严格绑定设备实际 ACK 的 displayed 内容。主键单击开始并打开、双击打开 create-only Capture、长按预留录音；左右键切页/切任务，右键长按仅安全完成眼前任务。
+- 新增 schema v2 显示 ACK 与手势事件，完整校验 device/selection/content/revision/card/playlist tuple，持久化桌面命令幂等与过期时间，并补充 Hub 长轮询和带 45 ms 防抖、320 ms 双击、700 ms 长按的 ESP32-S3 示例。
+- Capture Bridge v2 新增服务端强制的 create-only handoff，原生 Obsidian 弹窗和 Tailscale Capture PWA 共用；手机不能提交目标路径，取消或刷新也不会提前产生空笔记。
 - 新增以 `Daily/YYYY-MM-DD.md` 为数据真源的“今日”Dashboard：支持当天任务、新建/修改笔记、一次性定时卡片、显式完成/重开、规则总结、AI 文案预览后写回，以及侧栏紧凑摘要；没有 Backend 也能完整使用。
 - 同时支持行内与缩进多行的 Daily 元数据/block ID，以完整逻辑任务块计算修订；识别标准 Obsidian Tasks 优先级符号，并在本地与 Backend 修改时保留优先级。
 - 新增不保存正文的今日活动统计：正向新增/净增可见写作单位、新建与去重修改笔记、完成任务、解决问题、Capture 提交和卡片 selected/displayed；全文计算只在 Vault 变化后 debounce 执行，原始事件按保留期清理，并可本地导出、暂停和清空。

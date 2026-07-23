@@ -46,6 +46,8 @@ export interface CaptureBridgeCapabilities {
   voiceCapture?: boolean;
   assetUpload?: boolean;
   taskComplete?: boolean;
+  /** V2 may mint a fresh create-target handoff without creating an empty file. */
+  createOnlyCapture?: boolean;
   availableOperations?: CaptureBridgeOperation[];
   pluginVersion?: string;
   backendOnline?: boolean;
@@ -131,6 +133,8 @@ export interface CaptureBridgeHandoffResponse {
   };
   allowedFields: ["body", "title", "tags"];
   availableOperations?: CaptureBridgeOperation[];
+  /** True only when the frozen target is restricted to a create action. */
+  createOnly?: boolean;
 }
 
 export interface CaptureBridgeCommitRequest {

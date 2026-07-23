@@ -139,6 +139,9 @@ export interface BackendDailyOpsStatus {
   dailyNoteRoot: string;
   dailyNoteFormat: string;
   todoHeading: string;
+  planHeading: string;
+  planSource: "daily" | "fixed" | "";
+  planDocument: string;
 }
 
 export interface BackendDailyTaskMutation {
@@ -146,6 +149,24 @@ export interface BackendDailyTaskMutation {
   revision?: string;
   sourcePath?: string;
   rawLine?: string;
+  rawBlock?: string;
+  idempotent?: boolean;
+}
+
+export interface BackendDailyTaskMoveResult {
+  moved: boolean;
+  boundary: boolean;
+  idempotent: boolean;
+  direction: "up" | "down";
+}
+
+export interface BackendDailyPlanMutation {
+  date: string;
+  source: "daily" | "fixed" | "";
+  sourcePath: string;
+  theme: string;
+  noteRevision: string;
+  changed?: boolean;
   idempotent?: boolean;
 }
 
@@ -159,11 +180,18 @@ export interface BackendDailyTaskCreateRequest {
   scheduledFor?: string;
   dueDate?: string;
   tags?: string[];
+  primary?: boolean;
+  minimum?: boolean;
+  goal?: string;
+  nextStep?: string;
+  estimateMinutes?: number;
+  target?: string;
 }
 
 export interface BackendDailyTaskUpdateRequest {
   id: string;
   rawLine: string;
+  rawBlock?: string;
   text: string;
   date: string;
   status?: Exclude<DailyPlanStatus, "done">;
@@ -171,6 +199,13 @@ export interface BackendDailyTaskUpdateRequest {
   devicePolicy: DailyDevicePolicy;
   scheduledFor?: string;
   tags?: string[];
+  primary?: boolean;
+  minimum?: boolean;
+  goal?: string;
+  nextStep?: string;
+  estimateMinutes?: number;
+  target?: string;
+  startedAt?: string;
 }
 
 export class BackendEnhancementClient {
@@ -196,8 +231,42 @@ export class BackendEnhancementClient {
       writerCapable: payload.writer_capable === true,
       dailyNoteRoot: optionalString(payload.daily_note_root) ?? "",
       dailyNoteFormat: optionalString(payload.daily_note_format) ?? "",
-      todoHeading: optionalString(payload.daily_note_todo_section) ?? ""
+      todoHeading: optionalString(payload.daily_note_todo_section) ?? "",
+      planHeading: optionalString(payload.daily_plan_heading) ?? "",
+      planSource: normalizeDailyPlanSource(payload.daily_plan_source),
+      planDocument: optionalString(payload.daily_plan_document) ?? ""
     };
+  }
+
+  async getDailyPlan(date: string): Promise<BackendDailyPlanMutation> {
+    const settings = this.requireEnabledSettings();
+    const payload = asBackendRecord(await this.requestJson(
+      `/tools/daily/plans/${encodeURIComponent(date)}`,
+      { method: "GET" },
+      settings
+    ), "DailyOps plan");
+    return normalizeBackendDailyPlanMutation(payload);
+  }
+
+  async updateDailyPlan(
+    date: string,
+    theme: string,
+    expectedNoteRevision: string
+  ): Promise<BackendDailyPlanMutation> {
+    const settings = this.requireEnabledSettings();
+    const payload = asBackendRecord(await this.requestJson(
+      `/tools/daily/plans/${encodeURIComponent(date)}`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          theme,
+          expected_note_revision: expectedNoteRevision
+        })
+      },
+      settings
+    ), "DailyOps plan mutation");
+    return normalizeBackendDailyPlanMutation(payload);
   }
 
   async createDailyTask(request: BackendDailyTaskCreateRequest): Promise<BackendDailyTaskMutation> {
@@ -215,7 +284,13 @@ export class BackendEnhancementClient {
         tags: request.tags ?? [],
         towrite_kind: request.kind,
         towrite_device: request.devicePolicy,
-        towrite_at: request.scheduledFor ?? ""
+        towrite_at: request.scheduledFor ?? "",
+        towrite_primary: request.primary ?? false,
+        towrite_minimum: request.minimum ?? false,
+        towrite_goal: request.goal ?? "",
+        towrite_next: request.nextStep ?? "",
+        towrite_estimate: request.estimateMinutes ? `${request.estimateMinutes}m` : "",
+        towrite_target: request.target ?? ""
       })
     }, settings), "DailyOps task mutation");
     return normalizeBackendDailyTaskMutation(payload);
@@ -234,35 +309,65 @@ export class BackendEnhancementClient {
       body: JSON.stringify({
         action,
         raw_line: request.rawLine,
+        raw_block: request.rawBlock ?? request.rawLine,
         text: request.text,
         date: request.date,
         towrite_kind: request.kind,
         towrite_device: request.devicePolicy,
         towrite_at: request.scheduledFor ?? "",
+        towrite_primary: request.primary,
+        towrite_minimum: request.minimum,
+        towrite_goal: request.goal,
+        towrite_next: request.nextStep,
+        towrite_estimate: request.estimateMinutes === undefined ? undefined : `${request.estimateMinutes}m`,
+        towrite_target: request.target,
+        towrite_started: request.startedAt,
         tags: request.tags ?? []
       })
     }, settings), "DailyOps task mutation");
     return normalizeBackendDailyTaskMutation(payload);
   }
 
-  async completeDailyTask(id: string, rawLine: string): Promise<BackendDailyTaskMutation> {
+  async completeDailyTask(id: string, rawBlock: string): Promise<BackendDailyTaskMutation> {
     const settings = this.requireEnabledSettings();
     const payload = asBackendRecord(await this.requestJson(`/tools/daily/tasks/${encodeURIComponent(id)}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action: "complete", raw_line: rawLine })
+      body: JSON.stringify({ action: "complete", raw_block: rawBlock })
     }, settings), "DailyOps task mutation");
     return normalizeBackendDailyTaskMutation(payload);
   }
 
-  async reopenDailyTask(id: string, rawLine: string): Promise<BackendDailyTaskMutation> {
+  async reopenDailyTask(id: string, rawBlock: string): Promise<BackendDailyTaskMutation> {
     const settings = this.requireEnabledSettings();
     const payload = asBackendRecord(await this.requestJson(`/tools/daily/tasks/${encodeURIComponent(id)}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action: "reopen", raw_line: rawLine })
+      body: JSON.stringify({ action: "reopen", raw_block: rawBlock })
     }, settings), "DailyOps task mutation");
     return normalizeBackendDailyTaskMutation(payload);
+  }
+
+  async moveDailyTask(
+    id: string,
+    rawBlock: string,
+    direction: "up" | "down"
+  ): Promise<BackendDailyTaskMoveResult> {
+    const settings = this.requireEnabledSettings();
+    const payload = asBackendRecord(await this.requestJson(`/tools/daily/tasks/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        action: direction === "up" ? "move_up" : "move_down",
+        raw_block: rawBlock
+      })
+    }, settings), "DailyOps task reorder");
+    return {
+      moved: payload.moved === true,
+      boundary: payload.boundary === true,
+      idempotent: payload.idempotent === true,
+      direction
+    };
   }
 
   async writeDailySummary(summary: DailySummary): Promise<{ changed: boolean }> {
@@ -751,13 +856,40 @@ function normalizeBackendDailyTaskMutation(payload: Record<string, unknown>): Ba
     id,
     revision: optionalString(task.revision),
     sourcePath: optionalString(task.source_path),
-    rawLine: optionalString(task.raw_line),
+    rawLine: optionalExactString(task.raw_line),
+    rawBlock: optionalExactString(task.raw_block),
     idempotent: payload.idempotent === true
   };
 }
 
+function normalizeBackendDailyPlanMutation(payload: Record<string, unknown>): BackendDailyPlanMutation {
+  const date = optionalString(payload.date);
+  const sourcePath = optionalString(payload.source_path);
+  const noteRevision = optionalString(payload.note_revision);
+  if (!date || !sourcePath || !noteRevision) {
+    throw new Error("Obsidian AI Backend DailyOps response is missing plan identity or revision.");
+  }
+  return {
+    date,
+    source: normalizeDailyPlanSource(payload.source),
+    sourcePath,
+    theme: optionalString(payload.theme) ?? "",
+    noteRevision,
+    changed: typeof payload.changed === "boolean" ? payload.changed : undefined,
+    idempotent: typeof payload.idempotent === "boolean" ? payload.idempotent : undefined
+  };
+}
+
+function normalizeDailyPlanSource(value: unknown): "daily" | "fixed" | "" {
+  return value === "daily" || value === "fixed" ? value : "";
+}
+
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function optionalExactString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function stringList(value: unknown): string[] {

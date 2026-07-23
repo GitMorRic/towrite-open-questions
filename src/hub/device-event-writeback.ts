@@ -9,6 +9,7 @@ export interface HubDeviceEventApplyResult {
   status: HubDeviceEventAckStatus;
   /** New local task revision, if the transition changed Markdown. */
   resultRevision?: string;
+  message?: string;
 }
 
 export interface HubDeviceEventWritebackOptions {
@@ -51,17 +52,20 @@ export class HubDeviceEventWritebackService {
 
   constructor(private readonly options: HubDeviceEventWritebackOptions) {}
 
-  processPending(limit = 50): Promise<HubDeviceEventWritebackResult> {
+  processPending(limit = 50, waitSeconds = 0): Promise<HubDeviceEventWritebackResult> {
     if (this.activeRun) {
       return this.activeRun;
     }
-    this.activeRun = this.run(Math.max(1, Math.min(200, Math.floor(limit)))).finally(() => {
+    this.activeRun = this.run(
+      Math.max(1, Math.min(200, Math.floor(limit))),
+      Math.max(0, Math.min(25, Math.floor(waitSeconds)))
+    ).finally(() => {
       this.activeRun = undefined;
     });
     return this.activeRun;
   }
 
-  private async run(limit: number): Promise<HubDeviceEventWritebackResult> {
+  private async run(limit: number, waitSeconds: number): Promise<HubDeviceEventWritebackResult> {
     const receiverId = this.options.getReceiverId().trim();
     if (!receiverId) {
       return emptyResult();
@@ -69,7 +73,7 @@ export class HubDeviceEventWritebackService {
 
     let pending: HubPendingDeviceEvent[];
     try {
-      pending = await this.options.client.getPendingDeviceEvents(receiverId, limit);
+      pending = await this.options.client.getPendingDeviceEvents(receiverId, limit, waitSeconds);
     } catch (error) {
       this.options.onError?.(error);
       throw error;
@@ -102,7 +106,8 @@ export class HubDeviceEventWritebackService {
       }
       const acknowledgement: HubDeviceEventAcknowledgement = {
         status: outcome.status,
-        resultRevision: outcome.resultRevision
+        resultRevision: outcome.resultRevision,
+        message: outcome.message
       };
       const receipt = await this.options.client.acknowledgeDeviceEvent(
         receiverId,
@@ -138,7 +143,8 @@ function normalizeApplyResult(result: HubDeviceEventApplyResult): HubDeviceEvent
   if (resultRevision && !/^[A-Za-z0-9][A-Za-z0-9._:-]{2,119}$/u.test(resultRevision)) {
     throw new Error("Device event apply returned an invalid result revision.");
   }
-  return { status: result.status, resultRevision };
+  const message = result.message?.trim().slice(0, 120);
+  return { status: result.status, resultRevision, message };
 }
 
 function summarize(
