@@ -8,7 +8,7 @@
 - 到达末尾后回到第一张；
 - 轮询发现内容没有变化时，不重复刷新墨水屏。
 
-`/api/v1/eink` 仍保留原有字段，因此旧渲染代码可以继续使用；新增的 `sourceType`、`contentType`、`actions` 和 `playlist` 用于识别 Echo 卡及共享游标。
+`/api/v1/eink` 仍保留原有字段，因此旧渲染代码可以继续使用；新增的 `sourceType`、`displayCategory`、`contentType`、`actions` 和 `playlist` 用于识别 Echo 卡及共享游标。`currentInQueue=true` 时，屏幕页码使用 `playlist.currentPosition / playlist.queueTotal`；未加入轮播的手动卡显示为“单张预览”。不会把固定请求中的 `cursor=0` 或 ToThink / ToWrite 总数误当成当前页。Echo 模板会显示为“Echo 样板”，不会标成 ToWrite。
 
 ## 1. Obsidian 端准备
 
@@ -97,6 +97,27 @@ Content-Type: application/json
 
 ToWrite 会先原子地切换共享当前卡，再返回 `200`。固件随后重新请求 `cursor=0`，因此插件里的“下一页”、ESP32 按键和手动“立即显示”看到的是同一个当前状态。重复发送同一 `eventId` 不会翻两页。
 
+响应会提供稳定队列中的真实位置与显示分类：
+
+```json
+{
+  "focus": [{
+    "sourceType": "echo",
+    "displayCategory": "echo"
+  }],
+  "playlist": {
+    "currentInQueue": true,
+    "currentIndex": 1,
+    "currentPosition": 2,
+    "queueTotal": 6
+  }
+}
+```
+
+`currentIndex` 从 0 开始，`currentPosition` 从 1 开始。即使当前选择被提升到响应的 `cursor=0`，这两个字段仍按未旋转的“Echo → 问题卡”固定队列计算。
+
+未加入翻页的手动卡会返回 `currentInQueue=false`、`currentIndex=-1`、`currentPosition=0`，固件应显示“单张预览”，而不是把它偷偷算进轮播页数。
+
 ## 5. 接入真实墨水屏
 
 替换示例中的 `renderCard()`：
@@ -106,13 +127,13 @@ void renderCard(
   const String& title,
   const String& body,
   const String& article,
-  const String& lane,
-  const String& sourceType,
-  const String& summaryText
+  const String& displayCategory,
+  const String& pageText,
+  const String& connectionText
 )
 ```
 
-建议 2.7 英寸屏只显示一个核心信息、来源以及最多三个操作提示。模板卡的 `sourceType` 为 `echo`，划线卡为 `question`。
+建议 2.7 英寸屏只显示一个核心信息、来源以及最多三个操作提示。模板卡的 `sourceType` 和 `displayCategory` 都为 `echo`，应显示为“Echo 样板”；划线卡的 `sourceType` 为 `question`，其 `displayCategory` 为 `tothink` 或 `towrite`。旧 `lane` 字段只用于兼容，不能用它把 Echo 卡归入 ToWrite。
 
 ## 6. 排查
 

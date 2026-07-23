@@ -35,14 +35,24 @@ export function buildExternalEinkPlaylistPayload(
   );
   const questionFocusById = new Map(base.focus.map((item) => [item.id, {
     ...item,
-    sourceType: "question" as const
+    sourceType: "question" as const,
+    displayCategory: item.lane === "write" ? "towrite" as const : "tothink" as const
   }]));
 
-  const orderedIds = unique([
-    ...(options.selectedLocalId ? [options.selectedLocalId] : []),
-    ...options.orderedLocalIds
-  ]).filter((localId) => echoByLocalId.has(localId) || questionById.has(localId));
-  const allFocus = orderedIds.flatMap((localId): ExportEinkPayload["focus"] => {
+  const isKnown = (localId: string): boolean =>
+    echoByLocalId.has(localId) || questionById.has(localId);
+  const canonicalIds = unique(options.orderedLocalIds).filter(isKnown);
+  const requestedSelectedId = options.selectedLocalId?.trim();
+  const selectedId = requestedSelectedId && isKnown(requestedSelectedId)
+    ? requestedSelectedId
+    : undefined;
+  // A manually shown card may not be part of the configured paging queue.
+  // It is promoted into the compatibility delivery order, but it must remain a
+  // single preview rather than silently becoming another paging item.
+  const deliveryIds = selectedId
+    ? unique([selectedId, ...canonicalIds])
+    : [...canonicalIds];
+  const allFocus = deliveryIds.flatMap((localId): ExportEinkPayload["focus"] => {
     const echo = echoByLocalId.get(localId);
     if (echo) return [echoFocus(echo)];
     const question = questionFocusById.get(localId);
@@ -53,6 +63,8 @@ export function buildExternalEinkPlaylistPayload(
   const cursor = normalizeCursor(options.cursor, total);
   const limit = clampInteger(options.limit, 1, 100, 12);
   const focus = wrapSlice(allFocus, cursor, limit);
+  const currentId = deliveryIds[cursor];
+  const currentIndex = currentId ? canonicalIds.indexOf(currentId) : -1;
   return {
     ...base,
     focus,
@@ -60,12 +72,15 @@ export function buildExternalEinkPlaylistPayload(
       order: "echo_then_questions",
       cursor,
       total,
+      queueTotal: canonicalIds.length,
+      currentInQueue: currentIndex >= 0,
+      currentIndex,
+      currentPosition: currentIndex >= 0 ? currentIndex + 1 : 0,
+      currentId,
       nextCursor: total > 0 ? (cursor + 1) % total : 0,
       previousCursor: total > 0 ? (cursor - 1 + total) % total : 0,
-      selectedId: options.selectedLocalId && orderedIds.includes(options.selectedLocalId)
-        ? options.selectedLocalId
-        : undefined,
-      revision: playlistRevision(orderedIds, questionById, echoByLocalId)
+      selectedId,
+      revision: playlistRevision(canonicalIds, questionById, echoByLocalId)
     }
   };
 }
@@ -82,6 +97,7 @@ function echoFocus(card: EchoCard): ExportEinkPayload["focus"][number] {
     kind: "other",
     nextAction: card.whyNow.trim() || undefined,
     sourceType: "echo",
+    displayCategory: "echo",
     contentType: card.contentType,
     actions: [...card.actions]
   };

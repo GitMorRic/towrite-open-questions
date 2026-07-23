@@ -191,6 +191,38 @@
     return language === "zh" ? "离线" : "Offline";
   }
 
+  function pagingSourceLabel(current: SmallScreenConnectionStatus["current"]): string {
+    if (current.sourceType === "echo") {
+      return language === "zh" ? "Echo 样板" : "Echo template";
+    }
+    if (current.lane === "write") return "ToWrite";
+    if (current.lane === "think") return "ToThink";
+    return language === "zh" ? "小屏卡片" : "Screen card";
+  }
+
+  function pagingProgressLabel(current: SmallScreenConnectionStatus["current"]): string {
+    const source = pagingSourceLabel(current);
+    if (current.inQueue && current.pageNumber !== undefined) {
+      return language === "zh"
+        ? `第 ${current.pageNumber}/${current.totalPages} 张 · ${source}`
+        : `Card ${current.pageNumber}/${current.totalPages} · ${source}`;
+    }
+    return current.localId
+      ? (language === "zh" ? `单张预览 · ${source}` : `Single preview · ${source}`)
+      : (language === "zh" ? `队列 0/${current.totalPages}` : `Queue 0/${current.totalPages}`);
+  }
+
+  function laneCountTitle(lane: SidebarLaneFilter): string {
+    if (language === "zh") {
+      if (lane === "all") return "当前笔记批注与 Inbox 条目总数；不是小屏页码";
+      if (lane === "inbox") return "Inbox 待整理条目数；不是小屏页码";
+      return `当前笔记 ${lane === "write" ? "ToWrite" : "ToThink"} 批注数；不是小屏页码`;
+    }
+    if (lane === "all") return "Current-note annotations plus Inbox items; not the screen page";
+    if (lane === "inbox") return "Inbox item count; not the screen page";
+    return `Current-note ${lane === "write" ? "ToWrite" : "ToThink"} annotation count; not the screen page`;
+  }
+
   function connectionTimestamp(value?: string): string {
     if (!value) return language === "zh" ? "从未" : "Never";
     const parsed = new Date(value);
@@ -245,6 +277,7 @@
     } finally {
       hubBusy = false;
       hubLibrary = api.getDeviceContentLibrary();
+      refreshSmallScreenStatus();
     }
   }
 
@@ -586,19 +619,19 @@
   </label>
 
   <div class="towrite-segmented towrite-lane-filter" role="group" aria-label="Lane filter">
-    <button type="button" class:active={laneFilter === "all"} on:click={() => (laneFilter = "all")}>
+    <button type="button" class:active={laneFilter === "all"} title={laneCountTitle("all")} aria-label={`${copy.all}: ${allSurfaceCount(currentQuestions.length, inboxSnapshot.count)}. ${laneCountTitle("all")}`} on:click={() => (laneFilter = "all")}>
       <span>{copy.all}</span>
       <small>{allSurfaceCount(currentQuestions.length, inboxSnapshot.count)}</small>
     </button>
-    <button type="button" class:active={laneFilter === "think"} on:click={() => (laneFilter = "think")}>
+    <button type="button" class:active={laneFilter === "think"} title={laneCountTitle("think")} aria-label={`${copy.think}: ${currentThink}. ${laneCountTitle("think")}`} on:click={() => (laneFilter = "think")}>
       <span>{copy.think}</span>
       <small>{currentThink}</small>
     </button>
-    <button type="button" class:active={laneFilter === "write"} on:click={() => (laneFilter = "write")}>
+    <button type="button" class:active={laneFilter === "write"} title={laneCountTitle("write")} aria-label={`${copy.write}: ${currentWrite}. ${laneCountTitle("write")}`} on:click={() => (laneFilter = "write")}>
       <span>{copy.write}</span>
       <small>{currentWrite}</small>
     </button>
-    <button type="button" class:active={laneFilter === "inbox"} on:click={() => (laneFilter = "inbox")}>
+    <button type="button" class:active={laneFilter === "inbox"} title={laneCountTitle("inbox")} aria-label={`${copy.inbox}: ${inboxSnapshot.count}. ${laneCountTitle("inbox")}`} on:click={() => (laneFilter = "inbox")}>
       <span>{copy.inbox}</span>
       <small>{inboxSnapshot.count}</small>
     </button>
@@ -711,7 +744,7 @@
             <p class="towrite-device-status-error" role="alert">{smallScreenStatus.hub.lastError}</p>
           {/if}
           <div class="towrite-device-status-footer">
-            <span>{language === "zh" ? "当前" : "current"} · {smallScreenStatus.current.localId || "—"}</span>
+            <span title={smallScreenStatus.current.localId || ""}>{pagingProgressLabel(smallScreenStatus.current)}</span>
             <button type="button" title={language === "zh" ? "刷新连接状态" : "Refresh connection status"} on:click={refreshSmallScreenStatus}>
               <RefreshCw size={13} />
             </button>

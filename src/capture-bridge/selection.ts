@@ -37,6 +37,12 @@ export class LocalTapSelectionService {
     return this.localSnapshot?.localId;
   }
 
+  /** Returns the local card that the Hub most recently acknowledged on screen. */
+  currentDisplayedLocalId(): string | undefined {
+    const contentId = this.hubState?.displayed?.contentId;
+    return contentId ? this.contentSnapshots.get(contentId)?.localId : undefined;
+  }
+
   async rememberHubSelection(localId: string, state: HubDeviceState): Promise<void> {
     this.hubState = clone(state);
     const selected = state.selected;

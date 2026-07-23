@@ -45,6 +45,7 @@ import {
   normalizeEsp32HubOrigin
 } from "../hub/esp32-config";
 import type { HubContentAction, HubContentType } from "../hub/types";
+import type { SmallScreenConnectionStatus } from "../device-status";
 
 type SettingsTabId = "general" | "cards" | "capture" | "inbox" | "learning" | "workflow" | "api" | "push" | "quote0" | "ai" | "backend" | "hub" | "about";
 
@@ -419,7 +420,7 @@ const COPY: Record<ToWriteLanguage, SettingCopy> = {
     "quote0RefreshSeconds": "刷新间隔（秒）",
     "quote0RefreshSecondsDesc": "插件定时推送下一张卡片的间隔。quote0 接电时官方最小刷新间隔为 1 分钟。",
     "quote0ForceRefreshAfterSend": "发送后自动强制刷新",
-    "quote0ForceRefreshAfterSendDesc": "发送下一条、主页或测试卡成功后，额外调用 Dot 的设备切换/刷新接口。若你的 Loop 会跳到其他内容，可以关闭。",
+    "quote0ForceRefreshAfterSendDesc": "发送下一条、主页或连接诊断成功后，额外调用 Dot 的设备切换/刷新接口。连接诊断不属于 ToWrite，也不加入轮播。若你的 Loop 会跳到其他内容，可以关闭。",
     "quote0TaskKey": "Text API taskKey",
     "quote0TaskKeyDesc": "已有多个 Text API 内容时填写。留空则更新第一个 Text API 内容。",
     "quote0TaskAlias": "Text API taskAlias",
@@ -447,7 +448,7 @@ const COPY: Record<ToWriteLanguage, SettingCopy> = {
     "quote0NfcLinkDesc": "使用 External API 的手机/远程访问基地址生成。局域网模式请填电脑的局域网地址。",
     "quote0SendNext": "发送下一条",
     "quote0SendDashboard": "发送主页",
-    "quote0SendTest": "发送测试卡",
+    "quote0SendTest": "发送连接测试（不加入轮播）",
     "quote0ForceRefresh": "强制刷新设备",
     "quote0ApplyInterval": "应用设备间隔",
     "quote0Preview": "发送前预览",
@@ -661,7 +662,7 @@ const COPY: Record<ToWriteLanguage, SettingCopy> = {
     "quote0RefreshSeconds": "Refresh interval (seconds)",
     "quote0RefreshSecondsDesc": "How often the plugin pushes the next card. Dot documents 1 minute as the powered minimum.",
     "quote0ForceRefreshAfterSend": "Force refresh after send",
-    "quote0ForceRefreshAfterSendDesc": "After sending a card, home dashboard, or test card, also call Dot's device switch/refresh endpoint. Turn this off if your Loop jumps to another item.",
+    "quote0ForceRefreshAfterSendDesc": "After sending a card, home dashboard, or connection diagnostic, also call Dot's device switch/refresh endpoint. The diagnostic is not ToWrite content and never joins rotation. Turn this off if your Loop jumps to another item.",
     "quote0TaskKey": "Text API taskKey",
     "quote0TaskKeyDesc": "Use when multiple Text API contents exist. Leave empty to update the first Text API content.",
     "quote0TaskAlias": "Text API taskAlias",
@@ -689,7 +690,7 @@ const COPY: Record<ToWriteLanguage, SettingCopy> = {
     "quote0NfcLinkDesc": "Generated from the phone/remote base URL. For LAN mode, use this computer's LAN address.",
     "quote0SendNext": "Send next card",
     "quote0SendDashboard": "Send home",
-    "quote0SendTest": "Send test card",
+    "quote0SendTest": "Send connection test (not in rotation)",
     "quote0ForceRefresh": "Force device refresh",
     "quote0ApplyInterval": "Apply device interval",
     "quote0Preview": "Preview before sending",
@@ -1368,13 +1369,15 @@ export class ToWriteSettingTab extends PluginSettingTab {
     this.renderEchoCardWorkbench(containerEl, zh);
 
     const pagingQueue = this.plugin.getDevicePagingQueue();
+    const pagingStatus = this.plugin.getSmallScreenConnectionStatus();
+    const pagingProgress = smallScreenPagingLabel(pagingStatus.current, zh);
     const queuedEchoCount = pagingQueue.filter((localId) => localId.startsWith("echo-card:")).length;
     const queuedQuestionCount = pagingQueue.length - queuedEchoCount;
     new Setting(containerEl)
       .setName(zh ? "小屏按键翻页队列" : "Small-screen button paging")
       .setDesc(zh
-        ? `当前 ${queuedEchoCount} 张 Echo + ${queuedQuestionCount} 张 ToThink / ToWrite。顺序固定为 Echo 在前、划线卡在后，并循环返回第一张。ESP32 右键短按应发送 device event 的 right/next；旧版 /api/v1/eink 也按此顺序返回。`
-        : `${queuedEchoCount} Echo + ${queuedQuestionCount} ToThink / ToWrite cards. Echo cards come first, followed by selection cards, then the queue wraps. Map the ESP32 right short-press to the right/next device event; legacy /api/v1/eink uses the same order.`)
+        ? `${pagingProgress}。队列共 ${queuedEchoCount} 张 Echo + ${queuedQuestionCount} 张 ToThink / ToWrite。顺序固定为 Echo 在前、划线卡在后，并循环返回第一张。ESP32 右键短按应发送 device event 的 right/next；旧版 /api/v1/eink 也按此顺序返回。`
+        : `${pagingProgress}. The queue has ${queuedEchoCount} Echo + ${queuedQuestionCount} ToThink / ToWrite cards. Echo cards come first, followed by selection cards, then the queue wraps. Map the ESP32 right short-press to the right/next device event; legacy /api/v1/eink uses the same order.`)
       .addButton((button) => button
         .setButtonText(zh ? "测试下一页" : "Test next page")
         .onClick(() => {
@@ -3502,6 +3505,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
       local.expectedTargetId && !local.targetTokenConfigured
         ? (zh ? `目标 ${local.expectedTargetId} 尚无独立设备 token` : `Target ${local.expectedTargetId} has no scoped device token`)
         : "",
+      smallScreenPagingLabel(status.current, zh),
       status.current.title ? `${zh ? "当前卡" : "current"} ${status.current.title}` : "",
       bindingWarning,
       local.lastError && local.state === "error" ? local.lastError : ""
@@ -5236,7 +5240,7 @@ function formatQuote0LastSync(settings: ToWriteSettings["quote0"]): string {
   }
   return [
     settings.lastSyncedAt,
-    settings.lastSyncedQuestionId ? `question ${settings.lastSyncedQuestionId}` : "test card"
+    settings.lastSyncedQuestionId ? `question ${settings.lastSyncedQuestionId}` : "connection test (not in rotation)"
   ].join(" · ");
 }
 
@@ -5706,6 +5710,28 @@ function colorLabel(color: OpenQuestionColor, language: ToWriteLanguage): string
     return labels[color];
   }
   return color;
+}
+
+function smallScreenPagingLabel(
+  current: SmallScreenConnectionStatus["current"],
+  zh: boolean
+): string {
+  const source = current.sourceType === "echo"
+    ? (zh ? "Echo 样板" : "Echo template")
+    : current.lane === "write"
+      ? "ToWrite"
+      : current.lane === "think"
+        ? "ToThink"
+        : (zh ? "小屏卡片" : "Screen card");
+  if (current.inQueue && current.pageNumber !== undefined) {
+    return zh
+      ? `第 ${current.pageNumber}/${current.totalPages} 张 · ${source}`
+      : `Card ${current.pageNumber}/${current.totalPages} · ${source}`;
+  }
+  if (current.localId) {
+    return zh ? `单张预览 · ${source}` : `Single preview · ${source}`;
+  }
+  return zh ? `队列 0/${current.totalPages}` : `Queue 0/${current.totalPages}`;
 }
 
 function clampNumber(value: string, min: number, max: number, fallback: number): number {

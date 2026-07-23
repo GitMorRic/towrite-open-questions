@@ -39,4 +39,25 @@ describe("ESP32-S3 e-ink example", () => {
     expect(sketch).toContain("DynamicJsonDocument doc(24576);");
     expect(sketch).not.toContain("StaticJsonDocument<24576>");
   });
+
+  it("renders canonical page progress instead of treating totals or cursor zero as the page number", () => {
+    expect(sketch).toContain('const int currentIndex = playlist["currentIndex"] | 0;');
+    expect(sketch).toContain('const int currentPosition = playlist["currentPosition"] | (currentIndex + 1);');
+    expect(sketch).toContain('const bool currentInQueue = playlist.containsKey("currentInQueue")');
+    expect(sketch).toContain('? String("page ") + String(currentPosition) + "/" + String(queueTotal)');
+    expect(sketch).toContain(': String("single preview");');
+    expect(sketch).toContain('const int playlistTotal = playlist["total"] | focus.size();');
+    expect(sketch).toContain('const int queueTotal = playlist["queueTotal"] | playlistTotal;');
+    expect(sketch).not.toContain('const String summaryText = String("open ")');
+    expect(sketch).not.toMatch(/pageText[\s\S]{0,160}playlist\["cursor"\]/u);
+  });
+
+  it("labels Echo templates as samples instead of inheriting the legacy ToWrite lane", () => {
+    expect(sketch).toContain("String displayCategoryFor(JsonObject card)");
+    expect(sketch).toContain('const String category = card["displayCategory"] | "";');
+    expect(sketch).toContain('if (category == "echo") return "Echo sample";');
+    expect(sketch).toContain('if (sourceType == "echo") return "Echo sample";');
+    expect(sketch).toContain('Serial.println(displayCategory + " | " + article);');
+    expect(sketch).not.toContain('Serial.println(sourceType + " | " + lane + " | " + article);');
+  });
 });

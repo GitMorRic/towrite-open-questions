@@ -228,10 +228,12 @@ Authorization: Bearer <target-token>
 响应继续保留旧 `focus[].title/body/question/article/lane` 字段，并增加：
 
 - `focus[].sourceType`：`echo` 或 `question`。
+- `focus[].displayCategory`：`echo`、`tothink` 或 `towrite`。Echo 必须显示为样板，不能因为兼容字段 `lane=write` 而归入 ToWrite。
 - `focus[].contentType` 与 `focus[].actions`：模板卡的内容类型和屏幕操作。
-- `playlist.cursor/nextCursor/previousCursor/total/revision`：共享翻页状态。
+- `playlist.cursor/nextCursor/previousCursor/total/revision`：共享翻页与兼容游标状态。
+- `playlist.queueTotal/currentInQueue/currentIndex/currentPosition/currentId`：当前卡在未旋转固定队列中的位置；`currentIndex` 从 0 开始，`currentPosition` 从 1 开始。未加入翻页的手动卡会返回 `currentInQueue=false`、`currentIndex=-1` 和 `currentPosition=0`，应显示为“单张预览”。即使设备始终请求 `cursor=0`，翻页后这里的数字也会变化。
 
-`lane`、`status`、`kind`、`filePath`、`folderPath` 和 `search` 过滤仍用于问题卡；使用这些过滤时不混入 Echo 卡。
+`currentInQueue=true` 时，屏幕页码应渲染为 `currentPosition / queueTotal`；否则显示“单张预览”。不要使用固定请求中的 `cursor`，也不要使用 ToThink / ToWrite 的内容总数。`lane`、`status`、`kind`、`filePath`、`folderPath` 和 `search` 过滤仍用于问题卡；使用这些过滤时不混入 Echo 卡。
 
 ### `GET /api/v1/deck`
 

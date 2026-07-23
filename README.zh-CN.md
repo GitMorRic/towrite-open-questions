@@ -219,7 +219,7 @@ POST  /api/v1/device/handoffs
 PATCH /api/v1/questions/<id>
 ```
 
-`/api/v1/eink` 兼容接口现在也会返回已保存的 Echo 模板卡，并与 ToThink / ToWrite 共用“Echo 在前、划线卡在后”的循环队列。ESP32 可把右键短按作为 `right` 事件 POST 到 `/api/v1/device/events`；完整接线与固件示例见 [ESP32-S3 模板优先翻页示例](examples/esp32s3-eink/README.zh-CN.md)。
+`/api/v1/eink` 兼容接口现在也会返回已保存的 Echo 模板卡，并与 ToThink / ToWrite 共用“Echo 在前、划线卡在后”的循环队列。接口使用 `currentInQueue/currentIndex/currentPosition/queueTotal` 表示固定队列里的真实页码，即使设备始终请求 `cursor=0`，翻页数字也会变化；未加入轮播的手动卡保持为单张预览。Echo 卡通过 `displayCategory: "echo"` 明确显示为样板，不计作 ToWrite。ESP32 可把右键短按作为 `right` 事件 POST 到 `/api/v1/device/events`；完整接线与固件示例见 [ESP32-S3 模板优先翻页示例](examples/esp32s3-eink/README.zh-CN.md)。
 
 只在本机使用时保持 `127.0.0.1`。如果要给 ESP32、手机或另一台电脑访问，可以把 bind host 改成 `0.0.0.0`，但请自己用 Tailscale、Cloudflare Tunnel、反向代理、HTTPS、访问控制或防火墙保护远程访问。
 

@@ -13,6 +13,8 @@ describe("LocalTapSelectionService", () => {
       displayedLocalId: "displayed-local"
     });
 
+    expect(service.currentLocalId()).toBe("selected-local");
+    expect(service.currentDisplayedLocalId()).toBe("displayed-local");
     await expect(service.resolve()).resolves.toMatchObject({ source: "displayed", localId: "displayed-local" });
 
     const restored = new LocalTapSelectionService({
@@ -22,6 +24,7 @@ describe("LocalTapSelectionService", () => {
     });
     restored.restore(service.serialize());
     restored.recordHubState(hubState());
+    expect(restored.currentDisplayedLocalId()).toBe("displayed-local");
     await expect(restored.resolve()).resolves.toMatchObject({ source: "displayed", localId: "displayed-local" });
   });
 

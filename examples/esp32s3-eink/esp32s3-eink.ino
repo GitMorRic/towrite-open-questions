@@ -202,22 +202,43 @@ void refreshEinkPayload(bool forceRender) {
   if (cardBody[0] == '\0') {
     cardBody = card["question"] | "";
   }
-  const String summaryText = String("open ") + (int)(summary["open"] | 0)
-    + " / candidate " + (int)(summary["candidate"] | 0)
-    + " / cards " + (int)(playlist["total"] | focus.size());
+  const int playlistTotal = playlist["total"] | focus.size();
+  const int queueTotal = playlist["queueTotal"] | playlistTotal;
+  const int currentIndex = playlist["currentIndex"] | 0;
+  const int currentPosition = playlist["currentPosition"] | (currentIndex + 1);
+  const bool currentInQueue = playlist.containsKey("currentInQueue")
+    ? playlist["currentInQueue"].as<bool>()
+    : currentIndex >= 0;
+  const String pageText = currentInQueue
+    ? String("page ") + String(currentPosition) + "/" + String(queueTotal)
+    : String("single preview");
+  const String displayCategory = displayCategoryFor(card);
 
   renderCard(
     card["title"] | "Untitled",
     cardBody,
     card["article"] | "",
-    card["lane"] | "",
-    card["sourceType"] | "question",
-    summaryText,
+    displayCategory,
+    pageText,
     statusText
   );
   lastRenderedCardId = cardId;
   lastPlaylistRevision = revision;
   rememberRenderedStatus();
+}
+
+String displayCategoryFor(JsonObject card) {
+  const String category = card["displayCategory"] | "";
+  if (category == "echo") return "Echo sample";
+  if (category == "tothink") return "ToThink";
+  if (category == "towrite") return "ToWrite";
+
+  // Compatibility fallback for servers that predate displayCategory. Echo
+  // must win over the legacy lane because old Echo payloads used lane=write.
+  const String sourceType = card["sourceType"] | "question";
+  if (sourceType == "echo") return "Echo sample";
+  const String lane = card["lane"] | "";
+  return lane == "think" ? "ToThink" : "ToWrite";
 }
 
 void sendButtonEvent(const char* buttonName) {
@@ -266,17 +287,16 @@ void renderCard(
   const String& title,
   const String& body,
   const String& article,
-  const String& lane,
-  const String& sourceType,
-  const String& summaryText,
+  const String& displayCategory,
+  const String& pageText,
   const String& connectionText
 ) {
   // Replace this Serial output with GxEPD2/Waveshare/LilyGo drawing calls.
   // Reserve a narrow footer for connectionText so the physical screen shows
   // Wi-Fi/API state, target ID, and last successful sync without exposing keys.
   Serial.println("----- ToWrite E-ink Card -----");
-  Serial.println(summaryText);
-  Serial.println(sourceType + " | " + lane + " | " + article);
+  Serial.println(pageText);
+  Serial.println(displayCategory + " | " + article);
   Serial.println(title);
   Serial.println(body);
   Serial.println(connectionText);

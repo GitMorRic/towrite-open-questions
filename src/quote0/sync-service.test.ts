@@ -80,7 +80,7 @@ describe("Quote0SyncService", () => {
     expect(settings.quote0.cursor).toBe(0);
   });
 
-  it("sends a non-sensitive test card without changing cursor", async () => {
+  it("sends a non-sensitive connection diagnostic without changing rotation state", async () => {
     const settings = makeSettings();
     settings.quote0.cursor = 1;
     const client = new FakeQuote0Client();
@@ -89,8 +89,10 @@ describe("Quote0SyncService", () => {
     await service.sendTestCard();
 
     expect(settings.quote0.cursor).toBe(1);
+    expect(settings.quote0.lastSyncedQuestionId).toBe("");
     expect(client.sent[0].payload).toMatchObject({
-      title: "ToWrite Quote0 test",
+      title: "Quote0 connection check",
+      message: "Connection OK. Diagnostic only — not ToWrite content and not added to rotation.",
       taskAlias: "ToWrite Open Questions"
     });
     expect(client.sent[0].payload.message).not.toContain("Newer question");
@@ -232,7 +234,8 @@ describe("Quote0SyncService", () => {
     await service.sendTestCard();
 
     expect(client.sent[0].payload).toMatchObject({
-      title: "ToWrite Quote0 test",
+      title: "Quote0 connection check",
+      message: "Connection OK. Diagnostic only — not ToWrite content and not added to rotation.",
       taskKey: "text_task_1"
     });
     expect(client.sent[0].payload.taskAlias).toBeUndefined();

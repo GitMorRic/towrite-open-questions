@@ -133,6 +133,7 @@ import {
   buildDeviceLibrary,
   canAdvanceRotation,
   createOpaqueHubRef,
+  devicePagingPosition,
   generateHubCaptureKeyPair,
   isManualHoldActive,
   normalizeQuestionDeliveryPolicy,
@@ -2322,14 +2323,13 @@ export default class ToWritePlugin extends Plugin {
     )
       ? currentRequestedId
       : undefined;
-    const pool = prioritizeDevicePagingPool(filteredPool, currentLocalId);
     const payload = buildExternalEinkPlaylistPayload(
       this.app.vault.getName(),
       questions,
       this.store?.getArticleSummaries() ?? [],
       this.settings.echoCards,
       {
-        orderedLocalIds: pool,
+        orderedLocalIds: filteredPool,
         selectedLocalId: currentLocalId,
         cursor,
         limit
@@ -2608,13 +2608,15 @@ export default class ToWritePlugin extends Plugin {
     const hubDisplayedId = hubState?.displayed?.contentId
       || this.settings.hub.lastDisplayedContentId
       || undefined;
-    const currentLocalId = this.currentDevicePagingLocalId();
+    const currentLocalId = this.localTapSelection.currentDisplayedLocalId()
+      || this.currentDevicePagingLocalId();
     const currentEcho = currentLocalId?.startsWith("echo-card:")
       ? this.settings.echoCards.find((card) => echoCardLocalId(card) === currentLocalId)
       : undefined;
     const currentQuestion = currentLocalId && !currentEcho
       ? this.store?.getQuestion(currentLocalId)
       : undefined;
+    const paging = devicePagingPosition(this.getDevicePagingPool(), currentLocalId);
     const hasConfiguredRoute = local.enabled || hubConfigured;
     const deliveryReady = local.online || Boolean(hubState?.online);
     const waiting = local.state === "waiting";
@@ -2644,7 +2646,13 @@ export default class ToWritePlugin extends Plugin {
           || currentQuestion?.question
           || local.lastServedTitle,
         contentType: currentEcho?.contentType
-          || (currentQuestion ? (currentQuestion.lane === "write" ? "note_continue" : "question_prompt") : undefined)
+          || (currentQuestion ? (currentQuestion.lane === "write" ? "note_continue" : "question_prompt") : undefined),
+        sourceType: currentEcho ? "echo" : currentQuestion ? "question" : paging.sourceType,
+        lane: currentQuestion?.lane,
+        pageIndex: paging.pageIndex,
+        pageNumber: paging.pageNumber,
+        totalPages: paging.totalPages,
+        inQueue: paging.inQueue
       },
       hasConfiguredRoute,
       deliveryReady

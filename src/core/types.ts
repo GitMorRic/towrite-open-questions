@@ -253,6 +253,13 @@ export interface ExportEinkPayload {
     openUri?: string;
     /** Optional V2 extension used by the local ESP32 compatibility playlist. */
     sourceType?: "question" | "echo";
+    /**
+     * Presentation category for small-screen clients. `lane` remains in the
+     * payload for backwards compatibility, but Echo cards must not be
+     * presented or counted as ToWrite merely because their legacy lane is
+     * `write`.
+     */
+    displayCategory?: "tothink" | "towrite" | "echo";
     contentType?: string;
     actions?: string[];
   }>;
@@ -263,7 +270,17 @@ export interface ExportEinkPayload {
   playlist?: {
     order: "echo_then_questions";
     cursor: number;
+    /** Number of cards in this compatibility response order. */
     total: number;
+    /** Number of cards in the stable hardware-button paging queue. */
+    queueTotal: number;
+    /** Whether the current card belongs to the stable paging queue. */
+    currentInQueue: boolean;
+    /** Zero-based position in the stable queue; -1 for an empty or manual-only preview. */
+    currentIndex: number;
+    /** One-based stable-queue position; 0 for an empty or manual-only preview. */
+    currentPosition: number;
+    currentId?: string;
     nextCursor: number;
     previousCursor: number;
     selectedId?: string;

@@ -1,5 +1,19 @@
 # Changelog / 更新日志
 
+## 0.3.0-beta.12 - 2026-07-23
+
+- Separated true ToThink / ToWrite annotation counts from small-screen paging progress. Obsidian and the ESP32 compatibility payload now expose the current queued card as a stable `N / total` position even though the selected item is promoted to the front of each response; manual-only cards remain single previews.
+- Classified Echo/reference cards as display samples rather than ToWrite annotations, while preserving their separate settings-backed card library and explicit paging opt-in.
+- Made the Obsidian connection card prefer the Hub's acknowledged displayed card over a newer desired selection when the two differ.
+- Renamed the Quote0 diagnostic action and card so connection tests are clearly outside the ToThink / ToWrite collection and never imply that they advance rotation.
+
+中文摘要：
+
+- 将真实 ToThink / ToWrite 批注数量与墨水屏翻页进度彻底分开；即使当前卡会被置于响应首位，Obsidian 与 ESP32 仍会显示稳定的“第 N / 总数张”，未加入轮播的手动卡则保持“单张预览”。
+- Echo / 参考模板卡改为明确的样板分类，不再被显示成 ToWrite 批注；它们仍保存在独立卡片库中，并只在用户明确开启后进入翻页。
+- 当 Hub 的期望选择与设备 ACK 的实际显示不同时，Obsidian 连接卡优先显示屏幕真正 ACK 的卡片。
+- Quote0 连接诊断改名并补充说明，明确测试内容不属于 ToThink / ToWrite，也不会推进轮播。
+
 ## 0.3.0-beta.11 - 2026-07-23
 
 - Added a persistent small-screen connection card in the Obsidian sidebar and detailed diagnostics in both Device Library and API & Devices settings. It distinguishes API disabled/stopped, waiting for the first poll, authenticated ESP32 online, stale polling, and sanitized device-route errors.

@@ -8,6 +8,13 @@ This sketch uses ToWrite's local External API to display one shared small-screen
 
 The right button advances, the optional left button goes back, and a manual **Show now** action in Obsidian becomes visible within about five seconds. Unchanged polls do not redraw the full e-ink panel.
 
+The screen page label comes from `playlist.currentPosition` and
+`playlist.queueTotal` when `currentInQueue` is true. A manual-only card is
+shown as **single preview** instead of silently joining paging. The firmware
+does not use the fixed request `cursor=0`, and it does not reuse the ToThink /
+ToWrite collection totals. Echo template cards are presented as **Echo
+sample**, not as ToWrite.
+
 The sketch also maintains a small connection footer:
 
 ```text
@@ -83,6 +90,36 @@ Content-Type: application/json
 
 ToWrite commits the shared cursor before returning `200`, and duplicate event IDs are idempotent. The device then polls cursor zero again to render the selected card.
 
+The response includes stable progress and presentation metadata:
+
+```json
+{
+  "focus": [{
+    "sourceType": "echo",
+    "displayCategory": "echo"
+  }],
+  "playlist": {
+    "currentInQueue": true,
+    "currentIndex": 1,
+    "currentPosition": 2,
+    "queueTotal": 6
+  }
+}
+```
+
+`currentIndex` is zero-based in the stable Echo-then-question queue;
+`currentPosition` is the equivalent one-based value. Both continue to describe
+the real card position when ToWrite promotes the selected card to response
+cursor zero.
+
+For a manual-only preview, `currentInQueue` is false, `currentIndex` is `-1`,
+and `currentPosition` is `0`; render a preview label rather than a fake page.
+
 Replace `renderCard()`, `renderEmpty()`, `renderConnectionStatus()`, and `renderError()` with your GxEPD2, Waveshare, or LilyGo drawing code. Reserve a narrow footer for connection state and use a partial-window refresh there; do not full-refresh the entire panel for every healthy five-second poll. Echo cards expose `sourceType: "echo"`; annotation cards expose `sourceType: "question"`.
+
+Prefer `displayCategory` for the visible section label: `echo` means
+**Echo sample**, while `tothink` and `towrite` retain their normal meanings.
+The legacy `lane` field remains for old clients and must not be used to classify
+an Echo card.
 
 If the footer says `API ERR | HTTP 401`, the target ID and target-scoped token do not match. If it says `WiFi OFF`, verify the SSID/password and that the ESP32 can reach the computer's LAN address. If annotation cards work but templates do not, verify that the template was saved, **Screen paging** is enabled, and the firmware is polling the new single-card playlist URL.

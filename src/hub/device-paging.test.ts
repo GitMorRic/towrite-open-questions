@@ -3,6 +3,7 @@ import type { EchoCard } from "./echo-cards";
 import type { DeviceLibraryEntry } from "./library";
 import {
   buildDevicePagingPool,
+  devicePagingPosition,
   nextDevicePagingItem,
   prioritizeDevicePagingPool
 } from "./device-paging";
@@ -45,6 +46,42 @@ describe("device paging", () => {
     expect(nextDevicePagingItem(pool, "question-b")).toBe("echo-card:a");
     expect(nextDevicePagingItem(pool, "missing")).toBe("echo-card:a");
     expect(nextDevicePagingItem([], "missing")).toBeUndefined();
+  });
+
+  it("reports a stable one-based position and source without rotating the queue", () => {
+    const pool = ["echo-card:a", "question-a", "question-b"];
+    expect(devicePagingPosition(pool, "echo-card:a")).toEqual({
+      localId: "echo-card:a",
+      sourceType: "echo",
+      pageIndex: 0,
+      pageNumber: 1,
+      totalPages: 3,
+      inQueue: true
+    });
+    expect(devicePagingPosition(pool, "question-b")).toEqual({
+      localId: "question-b",
+      sourceType: "question",
+      pageIndex: 2,
+      pageNumber: 3,
+      totalPages: 3,
+      inQueue: true
+    });
+    expect(devicePagingPosition(pool, "echo-card:preview")).toEqual({
+      localId: "echo-card:preview",
+      sourceType: "echo",
+      pageIndex: undefined,
+      pageNumber: undefined,
+      totalPages: 3,
+      inQueue: false
+    });
+    expect(devicePagingPosition([], undefined)).toEqual({
+      localId: undefined,
+      sourceType: undefined,
+      pageIndex: undefined,
+      pageNumber: undefined,
+      totalPages: 0,
+      inQueue: false
+    });
   });
 
   it("rotates to preferred, otherwise current, without mutating or injecting IDs", () => {

@@ -54,6 +54,12 @@ export interface SmallScreenConnectionStatus {
     localId?: string;
     title?: string;
     contentType?: string;
+    sourceType?: "echo" | "question";
+    lane?: "think" | "write";
+    pageIndex?: number;
+    pageNumber?: number;
+    totalPages: number;
+    inQueue: boolean;
   };
   hasConfiguredRoute: boolean;
   deliveryReady: boolean;

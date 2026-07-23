@@ -40,12 +40,22 @@ describe("external e-ink compatibility playlist", () => {
       title: "Echo · Project",
       body: "Context\n\nMemory",
       sourceType: "echo",
+      displayCategory: "echo",
       contentType: "note_continue"
+    });
+    expect(payload.focus[0]).toMatchObject({
+      sourceType: "question",
+      displayCategory: "tothink"
     });
     expect(payload.playlist).toMatchObject({
       order: "echo_then_questions",
       cursor: 0,
       total: 4,
+      queueTotal: 4,
+      currentInQueue: true,
+      currentIndex: 3,
+      currentPosition: 4,
+      currentId: secondQuestion.id,
       nextCursor: 1,
       previousCursor: 3,
       selectedId: secondQuestion.id
@@ -63,7 +73,88 @@ describe("external e-ink compatibility playlist", () => {
     });
 
     expect(payload.focus.map((entry) => entry.id)).toEqual([item.id, echoCardLocalId(card)]);
-    expect(payload.playlist).toMatchObject({ cursor: 1, nextCursor: 0, previousCursor: 0 });
+    expect(payload.playlist).toMatchObject({
+      cursor: 1,
+      currentIndex: 1,
+      currentPosition: 2,
+      currentId: item.id,
+      nextCursor: 0,
+      previousCursor: 0
+    });
+  });
+
+  it("reports canonical page progress while selected cards are promoted to cursor zero", () => {
+    const firstEcho = echo(1, "Memory");
+    const secondEcho = echo(2, "World");
+    const item = question("question-1");
+    const orderedLocalIds = [
+      echoCardLocalId(firstEcho),
+      echoCardLocalId(secondEcho),
+      item.id
+    ];
+    const at = (selectedLocalId: string) => buildExternalEinkPlaylistPayload(
+      "Vault",
+      [item],
+      [],
+      [firstEcho, secondEcho],
+      {
+        orderedLocalIds,
+        selectedLocalId,
+        cursor: 0,
+        limit: 1,
+        generatedAt: "2026-07-23T00:00:00.000Z"
+      }
+    );
+
+    expect(at(echoCardLocalId(firstEcho)).playlist).toMatchObject({
+      cursor: 0,
+      currentIndex: 0,
+      currentPosition: 1,
+      total: 3
+    });
+    expect(at(echoCardLocalId(secondEcho)).playlist).toMatchObject({
+      cursor: 0,
+      currentIndex: 1,
+      currentPosition: 2,
+      total: 3
+    });
+    expect(at(item.id).playlist).toMatchObject({
+      cursor: 0,
+      currentIndex: 2,
+      currentPosition: 3,
+      total: 3
+    });
+  });
+
+  it("keeps a manual-only card outside the stable paging count", () => {
+    const preview = echo(1, "Manual preview");
+    const item = question("question-1");
+    const payload = buildExternalEinkPlaylistPayload(
+      "Vault",
+      [item],
+      [],
+      [preview],
+      {
+        orderedLocalIds: [item.id],
+        selectedLocalId: echoCardLocalId(preview),
+        cursor: 0,
+        limit: 1,
+        generatedAt: "2026-07-23T00:00:00.000Z"
+      }
+    );
+
+    expect(payload.focus[0]).toMatchObject({
+      id: echoCardLocalId(preview),
+      displayCategory: "echo"
+    });
+    expect(payload.playlist).toMatchObject({
+      total: 2,
+      queueTotal: 1,
+      currentInQueue: false,
+      currentIndex: -1,
+      currentPosition: 0,
+      currentId: echoCardLocalId(preview)
+    });
   });
 
   it("keeps summary counts compatible and emits a stable revision", () => {

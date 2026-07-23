@@ -45,4 +45,18 @@ describe("small-screen UI feedback wiring", () => {
     expect(refreshMethod).not.toContain("getQuestions");
     expect(refreshMethod).not.toContain("getWorkflowPayload");
   });
+
+  it("separates annotation totals from the stable small-screen page position", () => {
+    expect(sidebar).toContain("pagingProgressLabel(smallScreenStatus.current)");
+    expect(sidebar).toContain("第 ${current.pageNumber}/${current.totalPages} 张");
+    expect(sidebar).toContain("批注数；不是小屏页码");
+    expect(sidebar).toContain("Echo 样板");
+
+    const playlist = main.slice(
+      main.indexOf("private buildLegacyEinkPlaylist"),
+      main.indexOf("private invalidateLegacyEinkPlaylist")
+    );
+    expect(playlist).toContain("orderedLocalIds: filteredPool");
+    expect(playlist).not.toContain("prioritizeDevicePagingPool(filteredPool");
+  });
 });

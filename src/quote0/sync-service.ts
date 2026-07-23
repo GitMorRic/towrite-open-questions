@@ -224,8 +224,8 @@ export class Quote0SyncService {
     try {
       const response = await this.client.sendTextContent(quote0.deviceId, withTaskFields({
         refreshNow: true,
-        title: "ToWrite Quote0 test",
-        message: "Connection OK. NFC opens the ToWrite capture page.",
+        title: "Quote0 connection check",
+        message: "Connection OK. Diagnostic only — not ToWrite content and not added to rotation.",
         signature: new Date().toLocaleString(),
         link: buildQuote0InputUrl(settings.externalApi.publicBaseUrl || "", quote0.nfcToken),
         styles: {
@@ -240,7 +240,7 @@ export class Quote0SyncService {
       quote0.lastError = "";
       const refreshMessage = await this.forceRefreshAfterSend(quote0);
       await this.options.saveSettings();
-      return appendRefreshMessage(response.message || "Quote0 test card sent.", refreshMessage);
+      return appendRefreshMessage(response.message || "Quote0 connection test sent.", refreshMessage);
     } catch (error) {
       quote0.lastError = sanitizeError(error);
       await this.options.saveSettings();
