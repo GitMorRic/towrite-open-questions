@@ -1,9 +1,11 @@
 import type { App } from "obsidian";
 import {
   CAPTURE_BRIDGE_PROTOCOL_VERSION,
+  CAPTURE_BRIDGE_PROTOCOL_V2,
   type CaptureBridgeConnectorConfig,
   type CaptureBridgeRuntimeStatus,
   type CapturePluginIntegrationApiV1,
+  type CapturePluginIntegrationApiV2,
   type CapturePluginWithTowriteBridge
 } from "./types";
 
@@ -46,11 +48,11 @@ export class CapturePluginBridgeClient {
       return this.getStatus(running);
     }
     try {
-      const api = plugin.getTowriteIntegrationApi("1");
-      if (!api) throw new Error("Capture plugin returned no V1 integration API.");
+      const api = preferredApi(plugin);
+      if (!api) throw new Error("Capture plugin returned no compatible integration API.");
       const capabilities = await api.getCapabilities();
-      if (capabilities.protocolVersion !== CAPTURE_BRIDGE_PROTOCOL_VERSION || !capabilities.handoffs || !capabilities.conflictDetection) {
-        throw new Error("Capture plugin does not advertise the required V1 handoff capabilities.");
+      if (!isCompatibleCapabilities(capabilities)) {
+        throw new Error("Capture plugin does not advertise the required handoff capabilities.");
       }
       this.status = { running, pluginDetected: true, compatible: true, registered: this.status.registered, capabilities };
     } catch (error) {
@@ -81,13 +83,13 @@ export class CapturePluginBridgeClient {
       };
       return this.getStatus(true);
     }
-    let api: CapturePluginIntegrationApiV1 | undefined;
+    let api: CapturePluginIntegrationApiV1 | CapturePluginIntegrationApiV2 | undefined;
     try {
-      api = plugin.getTowriteIntegrationApi("1");
-      if (!api) throw new Error("Capture plugin returned no V1 integration API.");
+      api = preferredApi(plugin);
+      if (!api) throw new Error("Capture plugin returned no compatible integration API.");
       const capabilities = await api.getCapabilities();
-      if (capabilities.protocolVersion !== CAPTURE_BRIDGE_PROTOCOL_VERSION || !capabilities.handoffs || !capabilities.conflictDetection) {
-        throw new Error("Capture plugin does not advertise the required V1 handoff capabilities.");
+      if (!isCompatibleCapabilities(capabilities)) {
+        throw new Error("Capture plugin does not advertise the required handoff capabilities.");
       }
       await api.configureConnector(config);
       this.status = { running: true, pluginDetected: true, compatible: true, registered: true, capabilities };
@@ -115,8 +117,24 @@ export class CapturePluginBridgeClient {
     this.status.registered = false;
   }
 
-  private getApi(): CapturePluginIntegrationApiV1 | undefined {
+  private getApi(): CapturePluginIntegrationApiV1 | CapturePluginIntegrationApiV2 | undefined {
     const plugin = (this.app as AppWithPluginManager).plugins?.getPlugin(CAPTURE_PLUGIN_ID) as Partial<CapturePluginWithTowriteBridge> | undefined;
-    return typeof plugin?.getTowriteIntegrationApi === "function" ? plugin.getTowriteIntegrationApi("1") : undefined;
+    return preferredApi(plugin);
   }
+}
+
+function preferredApi(
+  plugin: Partial<CapturePluginWithTowriteBridge> | undefined
+): CapturePluginIntegrationApiV1 | CapturePluginIntegrationApiV2 | undefined {
+  if (typeof plugin?.getTowriteIntegrationApi !== "function") return undefined;
+  return plugin.getTowriteIntegrationApi("2") ?? plugin.getTowriteIntegrationApi("1");
+}
+
+function isCompatibleCapabilities(
+  capabilities: Awaited<ReturnType<CapturePluginIntegrationApiV1["getCapabilities"]>>
+): boolean {
+  return (capabilities.protocolVersion === CAPTURE_BRIDGE_PROTOCOL_V2
+      || capabilities.protocolVersion === CAPTURE_BRIDGE_PROTOCOL_VERSION)
+    && capabilities.handoffs
+    && capabilities.conflictDetection;
 }

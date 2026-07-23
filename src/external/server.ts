@@ -23,12 +23,15 @@ import {
 import {
   buildDeviceGoUrl,
   buildDeviceInputUrl,
+  compareDeviceCompletionGuard,
+  completionGuardForDeviceEvent,
   deliveryIdFor,
   feedbackActionForIntent,
   normalizeDeviceButtonMappings,
   normalizeDeviceEventInput,
   sourceRefToObsidianUri,
   type DeviceActionIntent,
+  type DeviceCompletionGuard,
   type DeviceEventInput,
   type DeviceEventResult,
   type DeviceSourceRef
@@ -48,6 +51,15 @@ import {
   parseLimit,
   queryFromUrl
 } from "./payloads";
+import {
+  DailyPlanConflictError,
+  type DailyDashboardSnapshot,
+  type DailyPlanCreateInput,
+  type DailyPlanItem,
+  type DailyPlanUpdate,
+  type DailySummary,
+  type DailyTaskRevision
+} from "../daily";
 
 export interface ExternalApiRuntimeStatus {
   running: boolean;
@@ -92,6 +104,15 @@ interface ExternalApiServerOptions {
   undoCapture?(captureId: string, undoToken: string): Promise<CaptureUndoResult>;
   /** Advances the local small-screen playlist after a mapped hardware button event. */
   advanceDevicePage?(direction: "next" | "prev"): Promise<void>;
+  /** Current displayed card guard; completion is rejected unless all fields still match. */
+  getDeviceCompletionGuard?(targetId?: string): DeviceCompletionGuard | undefined;
+  /** Completes a Daily item only after the server has validated the displayed guard. */
+  completeDeviceCard?(event: DeviceEventInput): Promise<void>;
+  getDailySnapshot?(): Promise<DailyDashboardSnapshot>;
+  createDailyItem?(input: DailyPlanCreateInput): Promise<DailyPlanItem>;
+  updateDailyItem?(id: string, revision: DailyTaskRevision, patch: DailyPlanUpdate): Promise<DailyPlanItem>;
+  completeDailyItem?(id: string, revision: DailyTaskRevision, eventId?: string): Promise<DailyPlanItem>;
+  writeDailySummary?(summary: DailySummary): Promise<{ path: string; changed: boolean }>;
   /** Receives safe, in-memory connection diagnostics without credentials or Vault data. */
   onRuntimeStatusChanged?(status: ExternalApiRuntimeStatus): void;
   subscribe(listener: () => void): () => void;
@@ -389,7 +410,7 @@ export class ToWriteExternalApiServer {
       }
 
       if (method === "GET") {
-        this.handleGet(request, response, url);
+        await this.handleGet(request, response, url);
         return;
       }
 
@@ -415,7 +436,7 @@ export class ToWriteExternalApiServer {
     }
   }
 
-  private handleGet(request: HttpRequest, response: HttpResponse, url: URL): void {
+  private async handleGet(request: HttpRequest, response: HttpResponse, url: URL): Promise<void> {
     const vaultName = this.options.getVaultName();
 
     if (url.pathname === "/device/go") {
@@ -434,6 +455,23 @@ export class ToWriteExternalApiServer {
     if (url.pathname === "/api/v1/questions") {
       const questions = this.options.getQuestions(queryFromUrl(url));
       this.writeJson(response, 200, buildQuestionsPayload(vaultName, questions));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/daily/today") {
+      if (!this.options.getDailySnapshot) {
+        throw new ExternalApiError(501, "Daily Dashboard is unavailable.");
+      }
+      this.writeJson(response, 200, { data: await this.options.getDailySnapshot() });
+      return;
+    }
+
+    if (url.pathname === "/api/v1/daily/summary") {
+      if (!this.options.getDailySnapshot) {
+        throw new ExternalApiError(501, "Daily summary is unavailable.");
+      }
+      const snapshot = await this.options.getDailySnapshot();
+      this.writeJson(response, 200, { data: snapshot.summary });
       return;
     }
 
@@ -550,6 +588,61 @@ export class ToWriteExternalApiServer {
   }
 
   private async handlePost(request: HttpRequest, response: HttpResponse, url: URL): Promise<void> {
+    if (url.pathname === "/api/v1/daily/items") {
+      if (!this.options.createDailyItem) {
+        throw new ExternalApiError(501, "Daily plan writing is unavailable.");
+      }
+      const body = await readJsonBody(request);
+      const text = readOptionalText(body, "text");
+      if (!text) throw new ExternalApiError(400, "Missing daily item text.");
+      const item = await this.options.createDailyItem({
+        id: readOptionalText(body, "id"),
+        date: readOptionalText(body, "date"),
+        text,
+        kind: readDailyKind(body.kind),
+        devicePolicy: readDailyDevicePolicy(body.devicePolicy),
+        scheduledFor: readOptionalText(body, "scheduledFor"),
+        dueDate: readOptionalText(body, "dueDate"),
+        priority: readDailyPriority(body.priority),
+        tags: readStringList(body, "tags")
+      });
+      this.writeJson(response, 201, { data: item });
+      return;
+    }
+
+    const dailyCompleteMatch = /^\/api\/v1\/daily\/items\/([^/]+)\/complete$/u.exec(url.pathname);
+    if (dailyCompleteMatch) {
+      if (!this.options.completeDailyItem) {
+        throw new ExternalApiError(501, "Daily plan completion is unavailable.");
+      }
+      const body = await readJsonBody(request);
+      const revision = readDailyRevision(body);
+      const eventId = readOptionalText(body, "eventId");
+      const item = await this.options.completeDailyItem(
+        decodeURIComponent(dailyCompleteMatch[1]),
+        revision,
+        eventId
+      );
+      this.writeJson(response, 200, { data: item });
+      return;
+    }
+
+    if (url.pathname === "/api/v1/daily/summary/write-back") {
+      if (!this.options.writeDailySummary || !this.options.getDailySnapshot) {
+        throw new ExternalApiError(501, "Daily summary writing is unavailable.");
+      }
+      const body = await readJsonBody(request);
+      const current = (await this.options.getDailySnapshot()).summary;
+      const requestedDate = readOptionalText(body, "date");
+      const requestedMarkdown = readOptionalText(body, "markdown");
+      const summary = requestedMarkdown
+        ? { ...current, date: requestedDate || current.date, markdown: requestedMarkdown }
+        : current;
+      const result = await this.options.writeDailySummary(summary);
+      this.writeJson(response, 200, { data: result });
+      return;
+    }
+
     const statusMatch = /^\/api\/v1\/questions\/([^/]+)\/status$/u.exec(url.pathname);
     if (statusMatch) {
       const id = decodeURIComponent(statusMatch[1]);
@@ -755,6 +848,49 @@ export class ToWriteExternalApiServer {
   }
 
   private async handlePatch(request: HttpRequest, response: HttpResponse, url: URL): Promise<void> {
+    const dailyMatch = /^\/api\/v1\/daily\/items\/([^/]+)$/u.exec(url.pathname);
+    if (dailyMatch) {
+      if (!this.options.updateDailyItem) {
+        throw new ExternalApiError(501, "Daily plan writing is unavailable.");
+      }
+      const body = await readJsonBody(request);
+      const patch: DailyPlanUpdate = {};
+      if (Object.prototype.hasOwnProperty.call(body, "text")) {
+        const text = readOptionalText(body, "text");
+        if (!text) throw new ExternalApiError(400, "Daily item text cannot be empty.");
+        patch.text = text;
+      }
+      if (Object.prototype.hasOwnProperty.call(body, "kind")) patch.kind = readDailyKind(body.kind);
+      if (Object.prototype.hasOwnProperty.call(body, "devicePolicy")) {
+        patch.devicePolicy = readDailyDevicePolicy(body.devicePolicy);
+      }
+      if (Object.prototype.hasOwnProperty.call(body, "scheduledFor")) {
+        patch.scheduledFor = body.scheduledFor === null ? null : readOptionalText(body, "scheduledFor");
+      }
+      if (Object.prototype.hasOwnProperty.call(body, "dueDate")) {
+        patch.dueDate = readOptionalText(body, "dueDate");
+      }
+      if (Object.prototype.hasOwnProperty.call(body, "priority")) patch.priority = readDailyPriority(body.priority);
+      if (Object.prototype.hasOwnProperty.call(body, "tags")) patch.tags = readStringList(body, "tags");
+      if (Object.prototype.hasOwnProperty.call(body, "status")) {
+        const status = readOptionalText(body, "status");
+        if (status !== "todo" && status !== "in-progress") {
+          throw new ExternalApiError(400, "Daily item status must be todo or in-progress.");
+        }
+        patch.status = status;
+      }
+      if (Object.keys(patch).length === 0) {
+        throw new ExternalApiError(400, "Missing daily item patch.");
+      }
+      const item = await this.options.updateDailyItem(
+        decodeURIComponent(dailyMatch[1]),
+        readDailyRevision(body),
+        patch
+      );
+      this.writeJson(response, 200, { data: item });
+      return;
+    }
+
     const questionMatch = /^\/api\/v1\/questions\/([^/]+)$/u.exec(url.pathname);
     if (!questionMatch) {
       throw new ExternalApiError(404, "Not found.");
@@ -933,6 +1069,24 @@ export class ToWriteExternalApiServer {
     event: DeviceEventInput
   ): Promise<DeviceEventResult> {
     const result = this.resolveDeviceAction(request, url, event);
+    if (result.action === "complete") {
+      const received = completionGuardForDeviceEvent(event);
+      const current = this.options.getDeviceCompletionGuard?.(event.targetId);
+      if (!received || !current) {
+        throw new ExternalApiError(409, "The displayed card state is unavailable; refresh the device before completing it.");
+      }
+      const comparison = compareDeviceCompletionGuard(received, current);
+      if (!comparison.matches) {
+        throw new ExternalApiError(409, `The displayed card changed (${comparison.conflict}).`);
+      }
+      if (!this.options.completeDeviceCard) {
+        throw new ExternalApiError(501, "This device cannot complete Daily items.");
+      }
+      await this.options.completeDeviceCard(event);
+      result.cardId = current.cardId;
+      result.stateVersion = current.stateVersion;
+      result.playlistRevision = current.playlistRevision;
+    }
     if ((result.action === "next" || result.action === "prev") && this.options.advanceDevicePage) {
       await this.options.advanceDevicePage(result.action);
     }
@@ -1297,6 +1451,8 @@ function emptyRuntimeSessionStatus(): Pick<
 function normalizeExternalApiError(error: unknown): ExternalApiError {
   return error instanceof ExternalApiError
     ? error
+    : error instanceof DailyPlanConflictError
+      ? new ExternalApiError(error.code === "not-found" ? 404 : 409, error.message)
     : error instanceof CaptureConflictError
       ? new ExternalApiError(409, error.message)
       : error instanceof CaptureUndoTokenError
@@ -1385,6 +1541,53 @@ function readStringList(body: Record<string, unknown>, key: string): string[] {
     return splitListText(value).slice(0, 20);
   }
   return [];
+}
+
+function readDailyKind(value: unknown): DailyPlanCreateInput["kind"] {
+  if (value === undefined || value === null || value === "") return "task";
+  if (value === "task" || value === "create_note" || value === "edit_note" || value === "send_card") {
+    return value;
+  }
+  throw new ExternalApiError(400, "Unknown daily item kind.");
+}
+
+function readDailyDevicePolicy(value: unknown): DailyPlanCreateInput["devicePolicy"] {
+  if (value === undefined || value === null || value === "") return "none";
+  if (value === "none" || value === "manual" || value === "scheduled" || value === "rotation" || value === "agent") {
+    return value;
+  }
+  throw new ExternalApiError(400, "Unknown daily device policy.");
+}
+
+function readDailyPriority(value: unknown): DailyPlanCreateInput["priority"] {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (value === "highest" || value === "high" || value === "normal" || value === "low" || value === "lowest") {
+    return value;
+  }
+  throw new ExternalApiError(400, "Unknown daily item priority.");
+}
+
+function readDailyRevision(body: Record<string, unknown>): DailyTaskRevision {
+  const value = body.revision;
+  if (typeof value === "string" && value.trim()) {
+    return {
+      value: value.trim().slice(0, 200),
+      sourcePath: readOptionalText(body, "sourcePath") ?? "",
+      blockId: readOptionalText(body, "blockId") ?? ""
+    };
+  }
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    const revision = readOptionalText(record, "value");
+    if (revision) {
+      return {
+        value: revision,
+        sourcePath: readOptionalText(record, "sourcePath") ?? "",
+        blockId: readOptionalText(record, "blockId") ?? ""
+      };
+    }
+  }
+  throw new ExternalApiError(400, "A daily task revision is required.");
 }
 
 function readWritebackMetadata(body: Record<string, unknown>): DeviceWritebackMetadata | undefined {
@@ -1646,7 +1849,10 @@ function deviceEventFingerprint(event: DeviceEventInput): string {
     button: event.button,
     action: event.action,
     occurredAt: event.occurredAt,
-    note: event.note
+    note: event.note,
+    cardId: event.cardId,
+    stateVersion: event.stateVersion,
+    playlistRevision: event.playlistRevision
   });
 }
 

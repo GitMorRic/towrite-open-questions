@@ -1,5 +1,9 @@
 import type { CaptureBridgeSettings } from "./types";
-import { CAPTURE_BRIDGE_PROTOCOL_VERSION } from "./types";
+import {
+  CAPTURE_BRIDGE_PROTOCOL_V2,
+  CAPTURE_BRIDGE_PROTOCOL_VERSION,
+  type CaptureBridgeProtocolVersion
+} from "./types";
 import { CaptureBridgeCoordinator, CaptureBridgeRequestError } from "./coordinator";
 import { CaptureConflictError, CaptureUndoTokenError } from "../capture";
 
@@ -112,16 +116,34 @@ export class CaptureBridgeServer {
         });
         return;
       }
-
-      let match = /^\/api\/v1\/integrations\/capture\/v1\/taps\/(tap_[A-Za-z0-9_-]{22})\/handoffs$/u.exec(url.pathname);
-      if (method === "POST" && match?.[1]) {
-        this.writeJson(response, 201, await this.options.coordinator.createHandoff(match[1]));
+      if (method === "GET" && url.pathname === "/api/v1/integrations/capture/v2/capabilities") {
+        this.writeJson(response, 200, {
+          protocolVersion: CAPTURE_BRIDGE_PROTOCOL_V2,
+          pluginVersion: this.options.pluginVersion,
+          handoffs: true,
+          conflictDetection: true,
+          undo: true,
+          textCapture: true,
+          voiceCapture: true,
+          assetUpload: true,
+          taskComplete: true,
+          availableOperations: ["capture", "complete", "later"]
+        });
         return;
       }
 
-      match = /^\/api\/v1\/integrations\/capture\/v1\/handoffs\/(hnd_[A-Za-z0-9_-]{22})$/u.exec(url.pathname);
-      if (method === "GET" && match?.[1]) {
-        this.writeJson(response, 200, this.options.coordinator.getHandoff(match[1]));
+      let match = /^\/api\/v1\/integrations\/capture\/v([12])\/taps\/(tap_[A-Za-z0-9_-]{22})\/handoffs$/u.exec(url.pathname);
+      if (method === "POST" && match?.[1] && match[2]) {
+        const protocol = bridgeProtocolForRoute(match[1]);
+        this.writeJson(response, 201, await this.options.coordinator.createHandoff(match[2], protocol));
+        return;
+      }
+
+      match = /^\/api\/v1\/integrations\/capture\/v([12])\/handoffs\/(hnd_[A-Za-z0-9_-]{22})$/u.exec(url.pathname);
+      if (method === "GET" && match?.[1] && match[2]) {
+        const handoff = this.options.coordinator.getHandoff(match[2]);
+        requireBridgeProtocol(handoff.protocolVersion, match[1]);
+        this.writeJson(response, 200, handoff);
         return;
       }
       if (method === "POST" && match?.[1] && url.pathname.endsWith("/commit")) {
@@ -129,13 +151,29 @@ export class CaptureBridgeServer {
         throw new CaptureBridgeRequestError(404, "Capture bridge route was not found.");
       }
 
-      match = /^\/api\/v1\/integrations\/capture\/v1\/handoffs\/(hnd_[A-Za-z0-9_-]{22})\/commit$/u.exec(url.pathname);
-      if (method === "POST" && match?.[1]) {
-        this.writeJson(response, 200, await this.options.coordinator.commit(match[1], await readJson(request)));
+      match = /^\/api\/v1\/integrations\/capture\/v([12])\/handoffs\/(hnd_[A-Za-z0-9_-]{22})\/commit$/u.exec(url.pathname);
+      if (method === "POST" && match?.[1] && match[2]) {
+        const body = await readJson(request);
+        const handoff = this.options.coordinator.getHandoff(match[2]);
+        requireBridgeProtocol(handoff.protocolVersion, match[1]);
+        this.writeJson(response, 200, await this.options.coordinator.commit(match[2], body));
         return;
       }
 
-      const undoMatch = /^\/api\/v1\/integrations\/capture\/v1\/captures\/([A-Za-z0-9._:-]{1,128})\/undo$/u.exec(url.pathname);
+      match = /^\/api\/v1\/integrations\/capture\/v2\/handoffs\/(hnd_[A-Za-z0-9_-]{22})\/assets$/u.exec(url.pathname);
+      if (method === "POST" && match?.[1]) {
+        const body = await readJson(request, 35_000_000);
+        const handoff = this.options.coordinator.getHandoff(match[1]);
+        requireBridgeProtocol(handoff.protocolVersion, "2");
+        this.writeJson(
+          response,
+          201,
+          this.options.coordinator.stageAsset(match[1], body)
+        );
+        return;
+      }
+
+      const undoMatch = /^\/api\/v1\/integrations\/capture\/v[12]\/captures\/([A-Za-z0-9._:-]{1,128})\/undo$/u.exec(url.pathname);
       if (method === "POST" && undoMatch?.[1]) {
         const body = await readJson<{ undoToken?: unknown }>(request);
         if (typeof body.undoToken !== "string" || !body.undoToken) {
@@ -169,18 +207,28 @@ export class CaptureBridgeServer {
   }
 }
 
+function bridgeProtocolForRoute(version: string): CaptureBridgeProtocolVersion {
+  return version === "2" ? CAPTURE_BRIDGE_PROTOCOL_V2 : CAPTURE_BRIDGE_PROTOCOL_VERSION;
+}
+
+function requireBridgeProtocol(protocol: CaptureBridgeProtocolVersion, routeVersion: string): void {
+  if (protocol !== bridgeProtocolForRoute(routeVersion)) {
+    throw new CaptureBridgeRequestError(409, "Capture handoff protocol does not match this route.");
+  }
+}
+
 function isLoopback(value: string | undefined): boolean {
   return value === "127.0.0.1" || value === "::1" || value === "::ffff:127.0.0.1";
 }
 
-async function readJson<T = any>(request: HttpRequest): Promise<T> {
+async function readJson<T = any>(request: HttpRequest, maxBytes = 1_000_000): Promise<T> {
   const chunks: Uint8Array[] = [];
   let total = 0;
   await new Promise<void>((resolve, reject) => {
     request.on("data", (chunk) => {
       const bytes = typeof chunk === "string" ? new TextEncoder().encode(chunk) : chunk;
       total += bytes.byteLength;
-      if (total > 1_000_000) {
+      if (total > maxBytes) {
         reject(new CaptureBridgeRequestError(413, "Capture bridge request is too large."));
         return;
       }

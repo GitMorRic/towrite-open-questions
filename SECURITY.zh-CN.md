@@ -2,7 +2,7 @@
 
 [English](SECURITY.md) | 简体中文
 
-最后更新：2026-07-19
+最后更新：2026-07-23
 
 ## 安全模型
 
@@ -78,6 +78,18 @@ sender key 不共享设备凭据，也不能读取设备、ACK、笔记、Receiv
 记录预览会保存目标 revision，提交时使用 preview/candidate revision 检测过期目标。只有后续可以安全检查撤销条件时才会返回 undo token。不要绕过冲突警告，也不要手工重复使用 undo token。撤销只应移除插件自己尚未被用户继续修改的写入，不能覆盖之后的编辑。
 
 保存前请检查最终路径和 `append`/`create` 操作，特别是文件夹名、选区或 Backend 返回理由异常时。敏感笔记应放在 include 范围之外，或使用被排除的 tag/frontmatter key。
+
+## Daily 任务与设备完整性
+
+Daily Markdown 是权威状态。每条任务都有稳定 block ID，以及根据来源路径、block ID 和当前原始任务行生成的修订。Dashboard、External API、Capture、NFC 与设备写操作必须携带它们加载时的修订；如果任务行已经变化，ToWrite 会返回 `409 Conflict`，不会对过期内容执行操作。
+
+ESP32 完成事件必须包含 `eventId`、`cardId`、`stateVersion` 和 `playlistRevision`。只有卡片仍是当前精确匹配的 displayed `daily_plan_item`、状态与播放列表修订一致、且 Markdown 任务修订未变化时才会接受。重复 event ID 会幂等处理；迟到、乱序、跨卡片或翻页后的事件不能完成任务。`selected` 本身不是完成权限：当 displayed=A、selected=B 时，NFC 与完成仍针对 A。
+
+旧固件仍兼容通用卡片显示与翻页，但在实现这套完成保护契约之前，不得显示完成控件或调用完成接口。插件不会声称现有某个固件版本已经支持安全完成。
+
+DailyOps 每次操作只有一个写入者。`auto` 模式仅在 Backend 报告预期协议、Markdown 契约、可写能力和匹配的 Daily 目录/格式/区段后才委托；Backend 不可用或不兼容时回退本地插件。严格 `backend` 模式会停止操作，不会静默启用第二个写入者；`local` 从不委托。
+
+Capture Bridge v2 音频受能力协商和用户操作控制。麦克风权限由浏览器请求；原始录音先暂存，只有提交后才写入配置的附件目录。不要向不可信 Capture origin 授予麦克风权限。没有单独授权时，不得把音频发送给 AI 或转写服务。撤销只会在附件 hash 未变化且没有被其他笔记引用时删除附件。
 
 ## 学习与通知安全
 

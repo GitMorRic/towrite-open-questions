@@ -33,7 +33,8 @@ describe("HubClient", () => {
       candidates: [{
         policy_basis: "accepted_habit",
         urgency: 0.7,
-        context_states: ["desk_focus"]
+        context_states: ["desk_focus"],
+        available_at: "2026-07-19T09:30:00Z"
       }]
     });
     expect(JSON.stringify(body)).toContain("candidate_ref");
@@ -207,6 +208,88 @@ describe("HubClient", () => {
     expect(String(ackInit.body)).not.toContain("path");
     expect(ackUrl).not.toContain("Projects");
   });
+
+  it("pulls opaque device events and ACKs terminal local results idempotently", async () => {
+    const responses: unknown[] = [{
+      protocol_version: "towrite-device-hub/v1",
+      receiver_id: "recv_test",
+      items: [{
+        event_id: "evt_0123456789abcdef0123456789abcdef",
+        action: "complete",
+        device_id: "dev_0123456789abcdef0123456789abcdef",
+        selection_id: "sel_0123456789abcdef0123456789abcdef",
+        state_version: 7,
+        content_id: "cnt_0123456789abcdef0123456789abcdef",
+        revision_id: "rev_0123456789abcdef0123456789abcdef",
+        content_type: "daily_plan_item",
+        candidate_ref: "hc_opaque_candidate",
+        source_ref: "hs_opaque_source",
+        write_target_ref: "ht_opaque_target",
+        created_at: "2026-07-23T08:00:00+08:00"
+      }]
+    }, {
+      protocol_version: "towrite-device-hub/v1",
+      event_id: "evt_0123456789abcdef0123456789abcdef",
+      acknowledged: true,
+      duplicate: true,
+      status: "applied"
+    }];
+    const fetcher = vi.fn(async () => jsonResponse(responses.shift()));
+    const client = createClient(fetcher);
+
+    await expect(client.getPendingDeviceEvents("recv_test")).resolves.toEqual([
+      expect.objectContaining({
+        eventId: "evt_0123456789abcdef0123456789abcdef",
+        action: "complete",
+        stateVersion: 7,
+        contentType: "daily_plan_item",
+        writeTargetRef: "ht_opaque_target",
+        createdAt: "2026-07-23T00:00:00.000Z"
+      })
+    ]);
+    await expect(client.acknowledgeDeviceEvent(
+      "recv_test",
+      "evt_0123456789abcdef0123456789abcdef",
+      { status: "applied", resultRevision: "rev_local_9" }
+    )).resolves.toMatchObject({
+      eventId: "evt_0123456789abcdef0123456789abcdef",
+      acknowledged: true,
+      duplicate: true,
+      status: "applied"
+    });
+
+    const [pendingUrl] = fetcher.mock.calls[0] as unknown as [string, RequestInit];
+    const [ackUrl, ackInit] = fetcher.mock.calls[1] as unknown as [string, RequestInit];
+    expect(pendingUrl).toBe("https://hub.example.com/v1/hub/receivers/recv_test/device-events/pending?limit=50");
+    expect(ackUrl).toBe(
+      "https://hub.example.com/v1/hub/receivers/recv_test/device-events/evt_0123456789abcdef0123456789abcdef/ack"
+    );
+    expect(JSON.parse(String(ackInit.body))).toEqual({
+      protocol_version: "1",
+      status: "applied",
+      result_revision: "rev_local_9"
+    });
+    expect(String(ackInit.body)).not.toMatch(/[\\/]/u);
+  });
+
+  it("rejects path-shaped values in pending device event references", async () => {
+    const client = createClient(vi.fn(async () => jsonResponse({
+      items: [{
+        event_id: "evt_0123456789abcdef0123456789abcdef",
+        action: "complete",
+        device_id: "dev_0123456789abcdef0123456789abcdef",
+        selection_id: "sel_0123456789abcdef0123456789abcdef",
+        state_version: 7,
+        content_id: "cnt_0123456789abcdef0123456789abcdef",
+        revision_id: "rev_0123456789abcdef0123456789abcdef",
+        content_type: "daily_plan_item",
+        source_ref: "Daily/2026-07-23.md",
+        created_at: "2026-07-23T00:00:00Z"
+      }]
+    })));
+
+    await expect(client.getPendingDeviceEvents("recv_test")).rejects.toThrow(/non-opaque source_ref/iu);
+  });
 });
 
 function createClient(fetcher: typeof fetch | ReturnType<typeof vi.fn>) {
@@ -234,7 +317,8 @@ function candidateBatch(): HubCandidateBatch {
       score: 0.8,
       policyBasis: "accepted_habit",
       urgency: 0.7,
-      contextStates: ["desk_focus"]
+      contextStates: ["desk_focus"],
+      availableAt: "2026-07-19T09:30:00Z"
     }]
   };
 }

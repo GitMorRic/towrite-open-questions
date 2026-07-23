@@ -2,8 +2,23 @@ import type { DeviceFeedPage } from "./external/device-feed";
 import type { OpenQuestionLane } from "./core/types";
 import type { PushCandidateType, PushFeedbackAction } from "./push/types";
 
-export type DeviceActionKind = "navigate" | "open-source" | "respond" | "capture" | "feedback";
-export type DeviceActionIntent = "respond" | "capture" | "open" | "next" | "prev" | "later" | "skipped" | "useful" | "answered" | "opened" | "opened-no-write";
+export type DeviceActionKind = "navigate" | "open-source" | "respond" | "capture" | "feedback" | "complete";
+export type DeviceActionIntent = "respond" | "capture" | "open" | "next" | "prev" | "later" | "skipped" | "useful" | "answered" | "opened" | "opened-no-write" | "complete";
+
+export interface DeviceCompletionGuard {
+  cardId: string;
+  stateVersion: number;
+  playlistRevision: string;
+}
+
+export type DeviceCompletionConflict =
+  | "card-changed"
+  | "state-changed"
+  | "playlist-changed";
+
+export type DeviceCompletionGuardMatch =
+  | { matches: true }
+  | { matches: false; conflict: DeviceCompletionConflict };
 
 export interface DeviceSourceRef {
   vaultName?: string;
@@ -32,6 +47,7 @@ export interface DeviceInteractionAction {
   uri?: string;
   obsidianUri?: string;
   qrText?: string;
+  completionGuard?: DeviceCompletionGuard;
 }
 
 export interface DeviceButtonMapping {
@@ -52,7 +68,23 @@ export interface DeviceEventInput {
   action?: DeviceActionIntent;
   occurredAt?: string;
   note?: string;
+  /**
+   * Required together for `complete`. They bind the mutation to the card that
+   * was actually rendered, the authoritative selected state, and the exact
+   * local paging snapshot. Navigation events intentionally remain compatible
+   * with older firmware and do not require this guard.
+   */
+  cardId?: string;
+  stateVersion?: number;
+  playlistRevision?: string;
 }
+
+export type GuardedDeviceCompletionEvent = Omit<
+  DeviceEventInput,
+  "action" | "cardId" | "stateVersion" | "playlistRevision"
+> & DeviceCompletionGuard & {
+  action: "complete";
+};
 
 export interface DeviceEventResult {
   ok: true;
@@ -67,6 +99,9 @@ export interface DeviceEventResult {
   obsidianUri?: string;
   feedUrl?: string;
   displayMessage: string;
+  cardId?: string;
+  stateVersion?: number;
+  playlistRevision?: string;
 }
 
 export const DEFAULT_DEVICE_BUTTON_MAPPINGS: DeviceButtonMapping[] = [
@@ -122,8 +157,8 @@ export function normalizeDeviceEventInput(body: Record<string, unknown>, mapping
   }
   const candidateType = normalizeCandidateType(body.candidateType);
   const occurredAt = normalizeIso(body.occurredAt);
-  return {
-    schemaVersion: Number(body.schemaVersion) === 1 ? 1 : undefined,
+  const result: DeviceEventInput = {
+    schemaVersion: normalizeSchemaVersion(body.schemaVersion),
     eventId,
     targetId,
     deviceId: normalizeShort(body.deviceId, 120),
@@ -135,6 +170,53 @@ export function normalizeDeviceEventInput(body: Record<string, unknown>, mapping
     occurredAt,
     note: normalizeShort(body.note, 500)
   };
+  if (action === "complete") {
+    const guard = normalizeCompletionGuard(body);
+    result.cardId = guard.cardId;
+    result.stateVersion = guard.stateVersion;
+    result.playlistRevision = guard.playlistRevision;
+  }
+  return result;
+}
+
+export function isGuardedDeviceCompletionEvent(
+  event: DeviceEventInput
+): event is GuardedDeviceCompletionEvent {
+  return event.action === "complete"
+    && Boolean(event.cardId)
+    && Number.isSafeInteger(event.stateVersion)
+    && (event.stateVersion ?? 0) > 0
+    && Boolean(event.playlistRevision);
+}
+
+export function completionGuardForDeviceEvent(
+  event: DeviceEventInput
+): DeviceCompletionGuard | undefined {
+  if (!isGuardedDeviceCompletionEvent(event)) {
+    return undefined;
+  }
+  return {
+    cardId: event.cardId,
+    stateVersion: event.stateVersion,
+    playlistRevision: event.playlistRevision
+  };
+}
+
+/** Exact, side-effect-free comparison used before mutating a Markdown task. */
+export function compareDeviceCompletionGuard(
+  received: DeviceCompletionGuard,
+  current: DeviceCompletionGuard
+): DeviceCompletionGuardMatch {
+  if (received.cardId !== current.cardId) {
+    return { matches: false, conflict: "card-changed" };
+  }
+  if (received.stateVersion !== current.stateVersion) {
+    return { matches: false, conflict: "state-changed" };
+  }
+  if (received.playlistRevision !== current.playlistRevision) {
+    return { matches: false, conflict: "playlist-changed" };
+  }
+  return { matches: true };
 }
 
 export function feedbackActionForIntent(intent: DeviceActionIntent): PushFeedbackAction | undefined {
@@ -156,6 +238,9 @@ export function buildDeviceInputUrl(baseUrl: string | undefined, params: {
   intent?: DeviceActionIntent;
   sourceRef?: DeviceSourceRef;
 }): string | undefined {
+  if (params.intent === "complete") {
+    return undefined;
+  }
   const normalizedToken = params.token?.trim();
   if (!normalizedToken) {
     return undefined;
@@ -179,6 +264,9 @@ export function buildDeviceGoUrl(baseUrl: string | undefined, params: {
   deliveryId?: string;
   handoff?: string;
 }): string | undefined {
+  if (params.intent === "complete") {
+    return undefined;
+  }
   const search = new URLSearchParams();
   if (params.handoff) {
     search.set("handoff", params.handoff);
@@ -239,8 +327,44 @@ function appendOptional(search: URLSearchParams, key: string, value: string | un
 function normalizeDeviceIntent(value: unknown): DeviceActionIntent | undefined {
   return value === "respond" || value === "capture" || value === "open" || value === "next" || value === "prev"
     || value === "later" || value === "skipped" || value === "useful" || value === "answered" || value === "opened" || value === "opened-no-write"
+    || value === "complete"
     ? value
     : undefined;
+}
+
+function normalizeCompletionGuard(body: Record<string, unknown>): DeviceCompletionGuard {
+  const cardId = normalizeOpaqueIdentifier(body.cardId ?? body.card_id, 200);
+  const playlistRevision = normalizeOpaqueIdentifier(
+    body.playlistRevision ?? body.playlist_revision,
+    160
+  );
+  const stateVersion = normalizePositiveInteger(body.stateVersion ?? body.state_version);
+  if (!cardId || !playlistRevision || stateVersion === undefined) {
+    throw new Error("Complete requires cardId, stateVersion, and playlistRevision.");
+  }
+  return { cardId, stateVersion, playlistRevision };
+}
+
+function normalizeSchemaVersion(value: unknown): number | undefined {
+  const version = Number(value);
+  return version === 1 || version === 2 ? version : undefined;
+}
+
+function normalizePositiveInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
+    ? value
+    : undefined;
+}
+
+function normalizeOpaqueIdentifier(value: unknown, maxLength: number): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim();
+  if (!normalized || normalized.length > maxLength || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(normalized)) {
+    return undefined;
+  }
+  return normalized;
 }
 
 function normalizeCandidateType(value: unknown): PushCandidateType | undefined {

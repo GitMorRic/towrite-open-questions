@@ -54,6 +54,55 @@ describe("LocalTapSelectionService", () => {
     expect(validateSnapshot).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps a locally polled displayed card ahead of a newer desired selection", async () => {
+    const createSnapshot = vi.fn(async (reference: TapSelectionReference) => snapshot(reference));
+    const service = new LocalTapSelectionService({ createSnapshot, getFallbackLocalId: () => "fallback" });
+    await service.selectLocal("card-a");
+    await service.recordLocalDisplayed("card-a");
+    await service.selectLocal("card-b");
+    service.recordHubState({
+      ...hubState(),
+      displayed: undefined,
+      selected: {
+        ...hubState().selected!,
+        selectedContentId: "cnt_card_b"
+      }
+    });
+
+    expect(service.currentLocalId()).toBe("card-b");
+    expect(service.currentDisplayedLocalId()).toBe("card-a");
+    await expect(service.resolve()).resolves.toMatchObject({ source: "displayed", localId: "card-a" });
+
+    const restored = new LocalTapSelectionService({ createSnapshot, getFallbackLocalId: () => "fallback" });
+    restored.restore(service.serialize());
+    await expect(restored.resolve()).resolves.toMatchObject({ localId: "card-a" });
+  });
+
+  it("does not rebuild or persist snapshots for an identical repeated Hub poll", async () => {
+    const createSnapshot = vi.fn(async (reference: TapSelectionReference) => snapshot(reference));
+    const onStateChanged = vi.fn();
+    const service = new LocalTapSelectionService({
+      createSnapshot,
+      getFallbackLocalId: () => "fallback",
+      onStateChanged
+    });
+    const state = hubState();
+    const mappings = {
+      selectedLocalId: "selected-local",
+      displayedLocalId: "displayed-local"
+    };
+
+    await service.rememberHubStateMappings(state, mappings);
+    await service.rememberHubStateMappings(structuredClone(state), { ...mappings });
+
+    expect(createSnapshot).toHaveBeenCalledTimes(2);
+    expect(onStateChanged).toHaveBeenCalledTimes(1);
+    await expect(service.resolve()).resolves.toMatchObject({
+      source: "displayed",
+      localId: "displayed-local"
+    });
+  });
+
   it("does not resolve a selection mutation before its persistence callback completes", async () => {
     let finishPersistence: (() => void) | undefined;
     const persistenceGate = new Promise<void>((resolve) => {

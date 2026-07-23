@@ -3,6 +3,8 @@ export * from "./admin";
 export * from "./client";
 export * from "./connector";
 export * from "./crypto";
+export * from "./daily-cards";
+export * from "./device-event-writeback";
 export * from "./device-paging";
 export * from "./echo-card-selection";
 export * from "./echo-cards";

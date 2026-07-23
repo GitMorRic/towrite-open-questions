@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import type { ArticleSummary, OpenQuestion } from "../core/types";
 import type { EchoCard } from "../hub/echo-cards";
 import { echoCardLocalId } from "../hub/echo-cards";
-import { buildExternalEinkPlaylistPayload } from "./eink-playlist";
+import {
+  buildExternalEinkPlaylistPayload,
+  type DailyEinkCard
+} from "./eink-playlist";
 
 describe("external e-ink compatibility playlist", () => {
   it("keeps Echo cards before questions and prioritizes an explicit current card", () => {
@@ -172,7 +175,112 @@ describe("external e-ink compatibility playlist", () => {
     expect(first.summary).toEqual({ open: 1, candidate: 0, blockedArticles: 1 });
     expect(first.playlist?.revision).toBe(second.playlist?.revision);
   });
+
+  it("serves Daily cards through the legacy e-ink shape and binds selection to state and playlist revisions", () => {
+    const first = dailyCard("daily-plan:daily_first", "First task", "task-rev-1");
+    const second = dailyCard("daily-plan:daily_second", "Second task", "task-rev-2");
+    const orderedLocalIds = [first.localId, second.localId];
+    const selectedFirst = buildExternalEinkPlaylistPayload("Vault", [], [], [], {
+      orderedLocalIds,
+      selectedLocalId: first.localId,
+      dailyCards: [first, second],
+      stateVersion: 11,
+      limit: 2,
+      generatedAt: "2026-07-23T00:00:00.000Z"
+    });
+    const selectedSecond = buildExternalEinkPlaylistPayload("Vault", [], [], [], {
+      orderedLocalIds,
+      selectedLocalId: second.localId,
+      dailyCards: [first, second],
+      stateVersion: 12,
+      limit: 2,
+      generatedAt: "2026-07-23T00:01:00.000Z"
+    });
+
+    expect(selectedFirst.focus[0]).toMatchObject({
+      id: first.localId,
+      title: "First task",
+      body: "Body First task",
+      sourceType: "daily-plan",
+      displayCategory: "daily",
+      contentType: "daily_plan_item",
+      actions: ["capture", "complete", "later"]
+    });
+    expect(selectedFirst.playlist).toMatchObject({
+      order: "daily_then_echo_then_questions",
+      selectedId: first.localId,
+      currentId: first.localId,
+      stateVersion: 11,
+      queueTotal: 2
+    });
+    expect(selectedSecond.focus[0].id).toBe(second.localId);
+    expect(selectedSecond.playlist).toMatchObject({
+      selectedId: second.localId,
+      currentId: second.localId,
+      stateVersion: 12
+    });
+
+    // A desired-selection transition is guarded by stateVersion. The stable
+    // playlist revision changes only when the ordered queue or a task revision
+    // changes, so firmware can distinguish those two dimensions precisely.
+    expect(selectedSecond.playlist?.revision).toBe(selectedFirst.playlist?.revision);
+    const changedTask = buildExternalEinkPlaylistPayload("Vault", [], [], [], {
+      orderedLocalIds,
+      selectedLocalId: second.localId,
+      dailyCards: [first, { ...second, taskRevision: "task-rev-3" }],
+      stateVersion: 13,
+      limit: 2,
+      generatedAt: "2026-07-23T00:02:00.000Z"
+    });
+    expect(changedTask.playlist?.revision).not.toBe(selectedSecond.playlist?.revision);
+    expect(changedTask.playlist?.stateVersion).toBe(13);
+  });
+
+  it("renders an explicitly queued Daily summary as a pageable legacy card", () => {
+    const summary: DailyEinkCard = {
+      localId: "daily-summary:2026-07-23",
+      contentType: "daily_summary",
+      title: "今日总结",
+      body: "今天完成了 2 项，还有 3 项",
+      prompt: "完成 2/5 · 写作新增 420",
+      actions: ["open", "capture", "later"],
+      updatedAt: "daily-summary:stable"
+    };
+    const payload = buildExternalEinkPlaylistPayload("Vault", [], [], [], {
+      orderedLocalIds: [summary.localId],
+      selectedLocalId: summary.localId,
+      dailyCards: [summary],
+      stateVersion: 14,
+      generatedAt: "2026-07-23T23:00:00.000Z"
+    });
+
+    expect(payload.focus[0]).toMatchObject({
+      id: summary.localId,
+      article: "Daily Summary",
+      sourceType: "daily-summary",
+      contentType: "daily_summary",
+      actions: ["open", "capture", "later"]
+    });
+    expect(payload.playlist).toMatchObject({
+      queueTotal: 1,
+      currentPosition: 1,
+      selectedId: summary.localId
+    });
+  });
 });
+
+function dailyCard(localId: string, title: string, taskRevision: string): DailyEinkCard {
+  return {
+    localId,
+    contentType: "daily_plan_item",
+    title,
+    body: `Body ${title}`,
+    prompt: "Handle this today",
+    actions: ["capture", "complete", "later"],
+    taskRevision,
+    updatedAt: "2026-07-23T00:00:00.000Z"
+  };
+}
 
 function echo(index: number, content: string): EchoCard {
   const hex = index.toString(16).padStart(2, "0");

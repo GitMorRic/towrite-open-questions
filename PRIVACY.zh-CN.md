@@ -2,7 +2,7 @@
 
 [English](PRIVACY.md) | 简体中文
 
-最后更新：2026-07-19
+最后更新：2026-07-23
 
 本文只描述 ToWrite Open Questions Obsidian 插件。可选的 Device Hub、Obsidian AI Backend、OpenAI-compatible 服务、Quote0/Dot 服务、网络隧道和同步服务都是独立系统，适用各自运营方的隐私与运维政策。
 
@@ -35,6 +35,28 @@ ToWrite 可能在 Obsidian 插件数据和配置的导出目录中保存选区�
 配置 Device Hub 后，Obsidian 插件数据还可能包含 Hub Base URL、Receiver ID 与 pull token、Receiver P-256 公私钥 JWK、opaque 引用 HMAC secret、device ID、Tap URL、同步时间以及 selected/displayed 标识缓存。这些值不会进入用户可读的 ToWrite 导出文件，但 Obsidian 插件数据只是普通本地数据，不是操作系统加密密钥库，也可能被 Vault 同步或备份软件复制。
 
 Hub 引导流程的账户 access token 只存在于内存中的设置表单，不写入持久化插件设置。新建或轮换的 `device_secret` 只显示一次，供用户转移到 ESP32；ToWrite 不持久化它。关闭或清空该设置表单后无法从插件找回这次的一次性值。
+
+## 每日计划与活动数据
+
+配置的 Daily Markdown 是每日任务的数据真源。任务行可以包含复选框、用户可见任务文字、日期、`towrite-kind`、`towrite-device`、`towrite-at`、tags、链接和稳定的 `^daily_...` block ID。完成任务会修改这行 Markdown 并增加完成日期，但不会自动修改关联笔记的 Workflow 阶段。
+
+今日活动统计独立于习惯学习，可以单独关闭。启用后，只为以下内容保存不含正文的事件与聚合：
+
+- 可见文本的正向新增与净增写作单位；
+- 新建笔记和去重后的修改笔记；
+- 已完成 Daily 任务和已解决问题；
+- Capture 提交；
+- selected 与 displayed 设备卡片。
+
+一个写作单位是去除 Markdown 标记后的一个可见 CJK 字符或一个拉丁词。测量在 Vault 变化后 debounce 执行，不进入编辑器按键链。Daily 活动事件不会保留测量时的正文、逐次编辑、逐键输入、按键数、选区、剪贴板或音频。
+
+原始 Daily 活动事件默认保留 30 天，可在设置中调整为 1–365 天。事件只包含时间戳、时区偏移、本地 file key 或不透明项目 ID、数字变化量和事件类型。每日聚合与文件测量基线会保留到用户主动清空。统计从启用功能后开始，不反推之前的活动。用户可读导出与清空不会修改 Daily Markdown。
+
+Daily 设备上传只包含经过隐私过滤并获准显示的卡片快照、策略、时间、opaque 目标、任务 ID 和冲突检查所需的任务修订，不会上传完整 Daily 日记或 Vault。
+
+Capture Bridge v2 只有在用户主动开始录音并授予麦克风权限后，才会暂存浏览器原始录音。提交后的录音写入配置的 Vault 附件目录。没有单独授权时，音频不会发送给 AI 或转写服务；临时或已提交音频也不会进入 Daily 活动事件。
+
+DailyOps 使用单写入者握手。`auto` 只在可信 Backend 健康且兼容时委托 Backend；离线或不兼容时由插件本地写入。`local` 始终使用插件。`backend` 在握手失败时拒绝写入，不会静默启动第二个写入者。
 
 ## 学习数据边界
 

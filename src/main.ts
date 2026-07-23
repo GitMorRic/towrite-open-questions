@@ -10,11 +10,12 @@ import {
   TFile,
   TFolder,
   debounce,
+  normalizePath,
   type Editor
 } from "obsidian";
 import { createQuestionAnchor, lineRangeForOffsets } from "./core/anchor";
 import { DeferredKeyedQueue } from "./core/deferred-keyed-queue";
-import { makeQuestionId } from "./core/hash";
+import { makeQuestionId, shortHash } from "./core/hash";
 import { queryQuestions as filterQuestions } from "./core/query";
 import {
   DEFAULT_SETTINGS,
@@ -24,6 +25,7 @@ import {
   normalizeExternalApiBindHost,
   normalizeExternalApiPublicBaseUrl,
   normalizeArticleTypesSettings,
+  normalizeDailySettings,
   normalizeDeviceProfiles,
   normalizeInboxSettings,
   normalizePushSettings,
@@ -101,12 +103,36 @@ import {
   normalizeCaptureBridgeBaseUrl,
   normalizeCaptureBridgeSettings,
   type CaptureBridgeRuntimeStatus,
+  type CaptureBridgeStagedAsset,
   type LocalTapSelectionState,
   type TapSelectionReference,
   type TapSelectionSnapshot
 } from "./capture-bridge";
+import {
+  DailyActivityService,
+  dailyDeviceScore,
+  dailyTaskTextForBackend,
+  DailyPlanConflictError,
+  DailyPlanService,
+  dailyAiSummaryPlaceholderInstruction,
+  parseConstrainedDailyAiSummary,
+  type DailyActivityState,
+  type DailyDashboardSnapshot,
+  type DailyDevicePolicy,
+  type DailyPlanCreateInput,
+  type DailyPlanItem,
+  type DailyPlanUpdate,
+  type DailySummary,
+  type DailyTaskRevision
+} from "./daily";
 import { QuestionExporter } from "./export/exporter";
-import { ToWriteExternalApiServer, type DeviceCaptureRequest, type DeviceCaptureResult, type DeviceWritebackMetadata } from "./external/server";
+import {
+  ToWriteExternalApiServer,
+  type DeviceCaptureRequest,
+  type DeviceCaptureResult,
+  type DeviceWritebackMetadata,
+  type ExternalApiRuntimeStatus
+} from "./external/server";
 import { PushEngine } from "./push/engine";
 import { normalizePushRuntimeState, type PushAnchorInput, type PushFeedbackInput } from "./push/state";
 import type { PushCandidate, PushFeedPayload, PushRuntimeState } from "./push/types";
@@ -129,8 +155,11 @@ import {
   HubAdminClient,
   HubClient,
   HubCaptureWritebackService,
+  HubDeviceEventWritebackService,
   buildDevicePagingPool,
   buildDeviceLibrary,
+  adaptDailyPlanItemForDevice,
+  adaptDailySummaryForDevice,
   canAdvanceRotation,
   createOpaqueHubRef,
   devicePagingPosition,
@@ -148,13 +177,15 @@ import {
   type HubDeviceSecretRotation,
   type HubEmailChallenge,
   type HubFeedbackAction,
+  type HubPendingDeviceEvent,
   type HubSelectionMode,
   type HubPersonalProvisionResult,
   type HubTapRotation,
   type LocalHubCandidate,
   type Ntag213UriValidation
 } from "./hub";
-import { buildExternalEinkPlaylistPayload } from "./external/eink-playlist";
+import { buildExternalEinkPlaylistPayload, type DailyEinkCard } from "./external/eink-playlist";
+import type { DeviceCompletionGuard, DeviceEventInput } from "./device-interactions";
 import {
   resolveLocalEinkConnectionStatus,
   type SmallScreenConnectionStatus
@@ -202,6 +233,7 @@ import {
   ToWriteSidebarItemView
 } from "./obsidian/views";
 import type { ActiveLineRange, LinkSuggestion, ToWriteUiApi } from "./ui/api";
+import type { DailyDashboardAdapter, DailySummaryPresentation } from "./ui/daily-dashboard-types";
 import type { CaptureModalSubmitRequest, CaptureModalSubmitResult } from "./ui/capture-modal-types";
 import type {
   AiAssistantCatalog,
@@ -241,11 +273,30 @@ export default class ToWritePlugin extends Plugin {
   private captureBridgeCoordinator!: CaptureBridgeCoordinator;
   private captureBridgeServer!: CaptureBridgeServer;
   private capturePluginBridge!: CapturePluginBridgeClient;
+  private dailyPlanService!: DailyPlanService;
+  private dailyActivityService!: DailyActivityService;
+  private dailyPlanItems: DailyPlanItem[] = [];
+  private dailyActivityRetentionDays = 30;
+  private dailyStateSaveTimer = 0;
+  private dailyMidnightTimer = 0;
+  private dailyDeviceStateVersion = 1;
+  private dailyScheduleOccurrenceIds = new Set<string>();
+  private dailyPlanCacheInitialized = false;
+  private dailyBackendWriterCheckedAt = 0;
+  private dailyBackendWriterAvailable = false;
+  private observedExternalApiStartedAt = "";
+  private observedSuccessfulEinkPolls = 0;
+  private readonly localDeviceDisplayKeys = new Map<string, string>();
+  private readonly localDeviceCompletionGuards = new Map<string, DeviceCompletionGuard & {
+    taskRevision?: string;
+    taskDate?: string;
+  }>();
   private externalApiServer!: ToWriteExternalApiServer;
   private pushEngine!: PushEngine;
   private hubClient!: HubClient;
   private deviceHub!: DeviceHubConnector;
   private hubWriteback!: HubCaptureWritebackService;
+  private hubDeviceEventWriteback!: HubDeviceEventWritebackService;
   private quote0SyncService!: Quote0SyncService;
   private learningService!: HabitLearningService;
   private suggestionService!: SuggestionService;
@@ -273,12 +324,15 @@ export default class ToWritePlugin extends Plugin {
   private showQueryTokenMigrationNotice = false;
   private lastCaptureTargetCatalogJson = "";
   private readonly legacyEinkPlaylistCache = new Map<string, ExportEinkPayload>();
+  private readonly bridgeCaptureAssets = new Map<string, Array<{ path: string; sha256: string }>>();
 
   async onload(): Promise<void> {
     await this.loadPluginData();
 
     this.store = new OpenQuestionStore(this.savedQuestionStates);
     this.register(this.store.subscribe(() => this.invalidateLegacyEinkPlaylist()));
+    this.initializeDailyServices();
+    await this.refreshDailyPlanCache(false);
     this.learningService = new HabitLearningService(this.savedLearningState);
     this.learningService.setCollectionPaused(!this.settings.learning.enabled);
     this.learningEditQueue = new DeferredKeyedQueue(async (events) => {
@@ -330,10 +384,12 @@ export default class ToWritePlugin extends Plugin {
       isTapAllowed: (tapId) => tapId === this.settings.captureBridge.tapId,
       handoffTtlSeconds: () => this.settings.captureBridge.handoffTtlSeconds,
       commitAdapter: {
-        commit: async (snapshot, request) => {
+        commit: async (snapshot, request, assets) => {
           const draft = captureDraftFromBridgeCommit(snapshot, request);
-          return this.commitTapBridgeCapture(snapshot, draft);
+          return this.commitTapBridgeCapture(snapshot, draft, assets);
         },
+        complete: async (snapshot, request) => this.completeDailyFromBridge(snapshot, request.idempotencyKey),
+        later: async (snapshot, request) => this.snoozeDailyFromBridge(snapshot, request.idempotencyKey),
         undo: async (captureId, undoToken) => this.undoTapBridgeCapture(captureId, undoToken)
       }
     });
@@ -384,6 +440,14 @@ export default class ToWritePlugin extends Plugin {
         return this.captureService.undo(undoToken, captureId);
       },
       advanceDevicePage: (direction) => this.advanceLocalDevicePage(direction),
+      getDeviceCompletionGuard: (targetId) => this.getCurrentDeviceCompletionGuard(targetId),
+      completeDeviceCard: (event) => this.completeDailyFromDeviceEvent(event),
+      getDailySnapshot: () => this.getDailyDashboardSnapshot(),
+      createDailyItem: (input) => this.createDailyItem(input),
+      updateDailyItem: (id, revision, patch) => this.updateDailyItem(id, revision, patch),
+      completeDailyItem: (id, revision, eventId) => this.completeDailyItem(id, revision, eventId),
+      writeDailySummary: (summary) => this.writeDailySummary(summary),
+      onRuntimeStatusChanged: (status) => this.handleExternalApiRuntimeStatus(status),
       subscribe: (listener) => this.subscribe(listener)
     });
     this.pushEngine = new PushEngine({
@@ -451,6 +515,14 @@ export default class ToWritePlugin extends Plugin {
         this.settings.hub.lastError = messageForError(error).slice(0, 500);
       }
     });
+    this.hubDeviceEventWriteback = new HubDeviceEventWritebackService({
+      client: this.hubClient,
+      getReceiverId: () => this.settings.hub.receiverId,
+      apply: (event) => this.applyPendingHubDeviceEvent(event),
+      onError: (error) => {
+        this.settings.hub.lastError = messageForError(error).slice(0, 500);
+      }
+    });
     this.quote0SyncService = new Quote0SyncService({
       getSettings: () => this.settings,
       getVaultName: () => this.app.vault.getName(),
@@ -484,13 +556,22 @@ export default class ToWritePlugin extends Plugin {
     });
     this.pdfQuestionLayer.register();
 
+    const dailyDashboardApi = this.createDailyDashboardAdapter();
     this.registerView(
       TOWRITE_SIDEBAR_VIEW,
-      (leaf) => new ToWriteSidebarItemView(leaf, this.uiApi)
+      (leaf) => new ToWriteSidebarItemView(leaf, this.uiApi, {
+        dailyApi: dailyDashboardApi,
+        onOpenDashboard: () => {
+          void this.activateDashboard();
+        }
+      })
     );
     this.registerView(
       TOWRITE_DASHBOARD_VIEW,
-      (leaf) => new ToWriteDashboardItemView(leaf, this.uiApi)
+      (leaf) => new ToWriteDashboardItemView(leaf, this.uiApi, {
+        dailyApi: dailyDashboardApi,
+        getFullWorkflowPayload: () => this.workflowIndex.getPayload({ compact: true })
+      })
     );
 
     this.addRibbonIcon("circle-help", "Open ToWrite questions", () => {
@@ -516,6 +597,14 @@ export default class ToWritePlugin extends Plugin {
       name: "Open question dashboard",
       callback: () => {
         void this.activateDashboard();
+      }
+    });
+
+    this.addCommand({
+      id: "add-active-note-to-today",
+      name: "Add active note to today's plan",
+      callback: () => {
+        void this.addActiveNoteToDaily();
       }
     });
 
@@ -640,6 +729,11 @@ export default class ToWritePlugin extends Plugin {
     this.registerInterval(window.setInterval(() => {
       void this.registerCapturePluginBridge(false);
     }, 30_000));
+    this.scheduleDailyMidnightRefresh();
+    this.registerInterval(window.setInterval(() => {
+      void this.runDueDailyDeviceSchedule();
+    }, 30_000));
+    void this.runDueDailyDeviceSchedule();
 
     this.app.workspace.onLayoutReady(() => {
       void this.refreshIndex();
@@ -678,6 +772,16 @@ export default class ToWritePlugin extends Plugin {
       window.clearTimeout(this.hubCandidateSyncTimer);
       this.hubCandidateSyncTimer = 0;
     }
+    if (this.dailyStateSaveTimer) {
+      window.clearTimeout(this.dailyStateSaveTimer);
+      this.dailyStateSaveTimer = 0;
+    }
+    if (this.dailyMidnightTimer) {
+      window.clearTimeout(this.dailyMidnightTimer);
+      this.dailyMidnightTimer = 0;
+    }
+    void this.dailyActivityService?.flushMeasurements().then(() => this.savePluginData());
+    this.dailyActivityService?.dispose();
     this.learningEditQueue?.dispose();
     void this.externalApiServer?.stop();
     void this.capturePluginBridge?.remove("towrite-open-questions");
@@ -912,6 +1016,7 @@ export default class ToWritePlugin extends Plugin {
         candidate: currentCandidate,
         targetRevision
       });
+      this.dailyActivityService.recordCaptureCommitted(capture.captureId);
       this.captureCommittedCandidates.set(draft.id, currentCandidate);
       await this.recordCaptureRouteLearning(draft, currentCandidate, this.captureSelectionFor(draft, currentCandidate));
     }
@@ -1230,7 +1335,10 @@ export default class ToWritePlugin extends Plugin {
       snoozedSuggestions: this.snoozedSuggestions,
       securityMigrationVersion: this.securityMigrationVersion,
       aiAssistantState: this.aiAssistantState,
-      captureBridgeState: this.localTapSelection?.serialize() ?? this.savedCaptureBridgeState
+      captureBridgeState: this.localTapSelection?.serialize() ?? this.savedCaptureBridgeState,
+      dailyActivityState: this.dailyActivityService?.getState() ?? this.savedDailyActivityState,
+      dailyDeviceStateVersion: this.dailyDeviceStateVersion,
+      dailyScheduleOccurrenceIds: [...this.dailyScheduleOccurrenceIds].slice(-200)
     };
     await this.saveData(data);
     await this.exportCaptureTargetCatalog();
@@ -2049,10 +2157,13 @@ export default class ToWritePlugin extends Plugin {
       let state = await this.deviceHub.sync();
       state = await this.applyDeviceHubSelectionPolicy(state);
       const writeback = await this.hubWriteback.processPending();
+      const deviceEvents = await this.hubDeviceEventWriteback.processPending();
       this.settings.hub.lastSyncedAt = new Date().toISOString();
-      this.settings.hub.lastError = writeback.conflicts > 0 || writeback.failed > 0
-        ? `Device Hub writeback kept ${writeback.conflicts} conflict(s) and ${writeback.failed} failed capture(s) queued.`
-        : "";
+      this.settings.hub.lastError = writeback.conflicts > 0 || writeback.failed > 0 || deviceEvents.failed > 0
+        ? `Device Hub writeback kept ${writeback.conflicts} capture conflict(s), ${writeback.failed} capture failure(s), and ${deviceEvents.failed} device event failure(s) queued.`
+        : deviceEvents.conflicts > 0
+          ? `Device Hub acknowledged ${deviceEvents.conflicts} stale Daily completion event(s) as conflicts.`
+          : "";
       await this.savePluginData();
       if (showNotice) {
         new Notice(state ? `Device Hub synced · state v${state.selected?.stateVersion ?? 0}.` : "Device Hub is not fully configured.");
@@ -2081,6 +2192,70 @@ export default class ToWritePlugin extends Plugin {
     const eligibility = this.getInboxItemDeviceEligibility(itemId);
     if (!eligibility.eligible) throw new Error(eligibility.reason || "This Inbox note is not eligible.");
     return this.sendLocalCandidateToDeviceHub(itemId);
+  }
+
+  async addQuestionToDaily(questionId: string): Promise<void> {
+    const question = this.store.getQuestion(questionId);
+    if (!question) throw new Error("The ToWrite question no longer exists.");
+    const date = formatDailyInputDate(new Date());
+    const id = `daily_q_${shortHash(`${date}|${question.id}`)}`;
+    if (this.dailyPlanItems.some((item) => item.id === id)) {
+      new Notice(this.settings.language === "zh" ? "这个问题已经在今日计划中。" : "This question is already in today's plan.");
+      return;
+    }
+    const link = dailyWikiLink(question.source.file, question.source.blockId);
+    await this.createDailyItem({
+      id,
+      date,
+      text: `${question.lane === "write" ? "继续" : "处理"} ${link}：${question.question}`.slice(0, 600),
+      kind: question.lane === "write" ? "edit_note" : "task",
+      devicePolicy: "none",
+      tags: ["towrite/question"]
+    });
+    new Notice(this.settings.language === "zh" ? "已加入今日计划。" : "Added to today's plan.");
+  }
+
+  async addInboxItemToDaily(itemId: string): Promise<void> {
+    const item = this.inboxIndex.getSnapshot().items.find((candidate) => candidate.id === itemId);
+    if (!item) throw new Error("The Inbox note no longer exists.");
+    const date = formatDailyInputDate(new Date());
+    const id = `daily_inbox_${shortHash(`${date}|${item.filePath}`)}`;
+    if (this.dailyPlanItems.some((candidate) => candidate.id === id)) {
+      new Notice(this.settings.language === "zh" ? "这条 Inbox 笔记已经在今日计划中。" : "This Inbox note is already in today's plan.");
+      return;
+    }
+    await this.createDailyItem({
+      id,
+      date,
+      text: `${this.settings.language === "zh" ? "整理" : "Organize"} ${dailyWikiLink(item.filePath)}：${item.title}`.slice(0, 600),
+      kind: "edit_note",
+      devicePolicy: "none",
+      tags: ["towrite/inbox"]
+    });
+    new Notice(this.settings.language === "zh" ? "已加入今日计划。" : "Added to today's plan.");
+  }
+
+  private async addActiveNoteToDaily(): Promise<void> {
+    const file = this.app.workspace.getActiveFile();
+    if (!file || file.extension.toLowerCase() !== "md") {
+      new Notice(this.settings.language === "zh" ? "请先打开一个 Markdown 笔记。" : "Open a Markdown note first.");
+      return;
+    }
+    const date = formatDailyInputDate(new Date());
+    const id = `daily_note_${shortHash(`${date}|${file.path}`)}`;
+    if (this.dailyPlanItems.some((item) => item.id === id)) {
+      new Notice(this.settings.language === "zh" ? "这篇笔记已经在今日计划中。" : "This note is already in today's plan.");
+      return;
+    }
+    await this.createDailyItem({
+      id,
+      date,
+      text: `${this.settings.language === "zh" ? "继续" : "Continue"} ${dailyWikiLink(file.path)}`,
+      kind: "edit_note",
+      devicePolicy: "none",
+      tags: ["towrite/today"]
+    });
+    new Notice(this.settings.language === "zh" ? "当前笔记已加入今日计划。" : "Active note added to today's plan.");
   }
 
   getEchoCardPresets(): readonly EchoCardReferencePreset[] {
@@ -2165,9 +2340,17 @@ export default class ToWritePlugin extends Plugin {
     return this.sendLocalCandidateToDeviceHub(localId);
   }
 
+  private async selectLocalDeviceCard(localId: string): Promise<void> {
+    await this.localTapSelection.selectLocal(localId);
+    this.dailyDeviceStateVersion += 1;
+    this.dailyActivityService.recordCardSelected(localId);
+    this.invalidateLegacyEinkPlaylist();
+    this.scheduleDailyStateSave();
+  }
+
   private async sendLocalCandidateToDeviceHub(localId: string): Promise<HubDeviceState | undefined> {
     try {
-      await this.localTapSelection.selectLocal(localId);
+      await this.selectLocalDeviceCard(localId);
     } catch (error) {
       const message = messageForError(error);
       new Notice(this.settings.language === "zh"
@@ -2253,6 +2436,115 @@ export default class ToWritePlugin extends Plugin {
     return "Set as current, but the local External API is disabled, so the display will not refresh.";
   }
 
+  private dailyDeviceAdapters(preferredLocalId?: string) {
+    if (!this.settings.daily.enabled || !this.settings.daily.includeInDeviceCandidates) return [];
+    const tomorrow = new Date();
+    tomorrow.setHours(24, 0, 0, 0);
+    return this.dailyPlanItems.map((item) => {
+      const linked = item.linkedNotes[0]
+        ? this.app.metadataCache.getFirstLinkpathDest(item.linkedNotes[0], item.sourcePath)
+        : undefined;
+      const targetPath = linked?.path || this.settings.deviceCapture.inboxFile;
+      const isInbox = targetPath === this.settings.deviceCapture.inboxFile;
+      const privacy = this.hubPrivacyForPath(targetPath, item.tags, { ignoreIncludeFolders: isInbox });
+      const kindTitle = this.settings.language === "zh"
+        ? ({ task: "今日任务", create_note: "新建笔记", edit_note: "继续修改", send_card: "今日发送" } as const)[item.kind]
+        : ({ task: "Today", create_note: "Create note", edit_note: "Edit note", send_card: "Send today" } as const)[item.kind];
+      const localId = `daily-plan:${item.id}`;
+      return adaptDailyPlanItemForDevice({
+        id: item.id,
+        kind: item.kind,
+        status: item.status,
+        devicePolicy: preferredLocalId === localId && item.devicePolicy === "none"
+          ? "manual"
+          : item.devicePolicy,
+        taskRevision: item.revision.value,
+        display: {
+          title: kindTitle,
+          body: item.text,
+          prompt: item.scheduledFor
+            ? `${this.settings.language === "zh" ? "计划于" : "Scheduled"} ${formatLocalDateTime(item.scheduledFor)}`
+            : (this.settings.language === "zh" ? "记录、完成，或稍后处理" : "Capture, complete, or handle later")
+        },
+        sourceLocalId: `${item.sourcePath}#^${item.blockId}`,
+        writeTargetLocalId: targetPath,
+        allowedActions: ["capture", "complete", "later"],
+        score: dailyDeviceScore(item),
+        reasonCode: item.devicePolicy === "scheduled" ? "daily_scheduled" : `daily_${item.devicePolicy}`,
+        availableAt: item.devicePolicy === "scheduled" ? item.scheduledFor : undefined,
+        expiresAt: tomorrow.toISOString(),
+        privacy
+      });
+    });
+  }
+
+  private dailySummaryDeviceAdapter(preferredLocalId?: string) {
+    if (!this.settings.daily.enabled || !this.settings.daily.includeInDeviceCandidates) return undefined;
+    const snapshot = this.dailyActivityService.getSnapshot(new Date(), this.dailyPlanItems);
+    const localId = `daily-summary:${snapshot.date}`;
+    const sourcePath = this.dailyPlanService.pathForDate(snapshot.date);
+    const privacy = this.hubPrivacyForPath(sourcePath);
+    if (privacy.private || privacy.excluded) return undefined;
+    const configuredPolicy = this.settings.daily.summaryDevicePolicy;
+    const requestedPolicy = preferredLocalId === localId && configuredPolicy === "none"
+      ? "manual"
+      : configuredPolicy;
+    const tomorrow = new Date();
+    tomorrow.setHours(24, 0, 0, 0);
+    const metrics = snapshot.summary.metrics;
+    return adaptDailySummaryForDevice({
+      id: snapshot.date,
+      devicePolicy: requestedPolicy,
+      display: {
+        title: this.settings.language === "zh" ? "今日总结" : "Today summary",
+        body: snapshot.summary.headline,
+        prompt: this.settings.language === "zh"
+          ? `完成 ${metrics.completed}/${metrics.planned} · 写作新增 ${metrics.positiveWritingUnits}`
+          : `${metrics.completed}/${metrics.planned} complete · ${metrics.positiveWritingUnits} writing units`
+      },
+      sourceLocalId: sourcePath,
+      allowedActions: ["open", "capture", "later"],
+      reasonCode: `daily_summary_${requestedPolicy}`,
+      expiresAt: tomorrow.toISOString(),
+      privacy
+    });
+  }
+
+  private dailyEinkCards(): DailyEinkCard[] {
+    const planCards = this.dailyDeviceAdapters().map((adapter) => {
+      const item = this.dailyPlanItems.find((candidate) => candidate.id === adapter.pagingItem.id);
+      const candidate = adapter.candidate;
+      return {
+        localId: adapter.localId,
+        contentType: adapter.pagingItem.contentType,
+        title: candidate?.display.title || (this.settings.language === "zh" ? "今日计划" : "Daily plan"),
+        body: candidate?.display.body || item?.text || "",
+        prompt: candidate?.display.prompt,
+        actions: candidate?.allowedActions ?? ["capture", "complete", "later"],
+        taskRevision: adapter.taskRevision,
+        updatedAt: item?.revision.value
+      };
+    });
+    const summaryAdapter = this.dailySummaryDeviceAdapter();
+    if (!summaryAdapter) return planCards;
+    const snapshot = this.dailyActivityService.getSnapshot(new Date(), this.dailyPlanItems);
+    const candidate = summaryAdapter.candidate;
+    const stableRevision = shortHash(JSON.stringify({
+      date: snapshot.date,
+      metrics: snapshot.summary.metrics,
+      items: snapshot.plan.items.map((item) => [item.id, item.revision.value, item.status])
+    }));
+    return [...planCards, {
+      localId: summaryAdapter.localId,
+      contentType: "daily_summary",
+      title: candidate?.display.title || (this.settings.language === "zh" ? "今日总结" : "Today summary"),
+      body: candidate?.display.body || snapshot.summary.headline,
+      prompt: candidate?.display.prompt,
+      actions: candidate?.allowedActions ?? ["open", "capture", "later"],
+      updatedAt: `daily-summary:${stableRevision}`
+    }];
+  }
+
   getDeviceContentLibrary(): DeviceLibrarySnapshot {
     const hub = this.settings.hub;
     return buildDeviceLibrary(this.store?.query() ?? [], {
@@ -2273,14 +2565,25 @@ export default class ToWritePlugin extends Plugin {
 
   private getDevicePagingPool(): string[] {
     const library = this.getDeviceContentLibrary();
+    const daily = [
+      ...this.dailyDeviceAdapters(),
+      ...[this.dailySummaryDeviceAdapter()].filter(
+        (item): item is NonNullable<typeof item> => item !== undefined
+      )
+    ];
+    const dailyAvailable = new Set(daily.filter((item) => item.candidate).map((item) => item.localId));
     return buildDevicePagingPool(
       this.settings.echoCards,
       library.entries,
       (localId) => {
+        if (localId.startsWith("daily-plan:") || localId.startsWith("daily-summary:")) {
+          return dailyAvailable.has(localId);
+        }
         if (!localId.startsWith("echo-card:")) return true;
         const card = this.settings.echoCards.find((item) => echoCardLocalId(item) === localId);
         return Boolean(card && validateEchoCardLayout(card).fits && this.resolveEchoCardTarget(card));
-      }
+      },
+      daily.map((item) => item.pagingItem)
     );
   }
 
@@ -2299,12 +2602,14 @@ export default class ToWritePlugin extends Plugin {
     const normalizedQuery = { ...query };
     delete normalizedQuery.limit;
     const currentRequestedId = this.currentDevicePagingLocalId();
-    const cacheKey = `${limit}:${cursor}:${currentRequestedId ?? ""}:${JSON.stringify(normalizedQuery)}`;
+    const cacheKey = `${limit}:${cursor}:${this.dailyDeviceStateVersion}:${currentRequestedId ?? ""}:${JSON.stringify(normalizedQuery)}`;
     const cached = this.legacyEinkPlaylistCache.get(cacheKey);
     if (cached) return cached;
 
     const questions = this.store?.query(normalizedQuery) ?? [];
     const questionIds = new Set(questions.map((question) => question.id));
+    const dailyCards = this.dailyEinkCards();
+    const dailyIds = new Set(dailyCards.map((card) => card.localId));
     const filtered = Object.keys(normalizedQuery).length > 0;
     const rawPool = this.getDevicePagingPool();
     const filteredPool = filtered
@@ -2317,9 +2622,12 @@ export default class ToWritePlugin extends Plugin {
       && currentEcho !== undefined
       && validateEchoCardLayout(currentEcho).fits
       && this.resolveEchoCardTarget(currentEcho) !== undefined;
+    const currentDailyAllowed = !filtered
+      && Boolean(currentRequestedId && dailyIds.has(currentRequestedId));
     const currentLocalId = currentRequestedId && (
       questionIds.has(currentRequestedId)
       || currentEchoAllowed
+      || currentDailyAllowed
     )
       ? currentRequestedId
       : undefined;
@@ -2331,6 +2639,8 @@ export default class ToWritePlugin extends Plugin {
       {
         orderedLocalIds: filteredPool,
         selectedLocalId: currentLocalId,
+        dailyCards,
+        stateVersion: this.dailyDeviceStateVersion,
         cursor,
         limit
       }
@@ -2358,7 +2668,7 @@ export default class ToWritePlugin extends Plugin {
         ? "小屏翻页队列里没有可显示的卡片。请先保存 Echo 卡并开启“加入小屏翻页”，或加入 ToThink / ToWrite。"
         : "The small-screen paging queue is empty. Save an Echo card with paging enabled or add a ToThink / ToWrite card.");
     }
-    await this.localTapSelection.selectLocal(nextId);
+    await this.selectLocalDeviceCard(nextId);
     this.settings.hub.lastRotationCandidateId = nextId;
     this.settings.hub.rotationCursor = (pool.indexOf(nextId) + 1) % pool.length;
     await this.savePluginData();
@@ -2426,7 +2736,7 @@ export default class ToWritePlugin extends Plugin {
     this.settings.hub.manualHoldUntil = "";
     this.settings.hub.manualHoldCandidateId = "";
     this.settings.hub.manualHoldContentId = "";
-    await this.localTapSelection.selectLocal(nextId);
+    await this.selectLocalDeviceCard(nextId);
     this.settings.hub.lastRotationCandidateId = nextId;
     this.settings.hub.rotationCursor = (pool.indexOf(nextId) + 1) % pool.length;
     await this.savePluginData();
@@ -2515,14 +2825,25 @@ export default class ToWritePlugin extends Plugin {
     const library = this.getDeviceContentLibrary();
     if (hub.selectionMode === "schedule") {
       const consumedOccurrences = normalizeScheduleOccurrenceIds(hub.scheduleOccurrenceIds, hub.lastScheduleOccurrenceId);
+      const dailyChoice = this.dailyPlanItems
+        .filter((item) => !item.done
+          && item.devicePolicy === "scheduled"
+          && Boolean(item.scheduledFor)
+          && Date.parse(item.scheduledFor ?? "") <= now.getTime())
+        .map((item) => ({
+          localId: `daily-plan:${item.id}`,
+          occurrenceId: dailyScheduleOccurrenceId(item)
+        }))
+        .filter((item) => !consumedOccurrences.includes(item.occurrenceId))
+        .sort((left, right) => left.occurrenceId.localeCompare(right.occurrenceId))[0];
       const questionChoice = scheduledLibraryChoice(library.entries, now, consumedOccurrences);
       const scheduledEcho = scheduledEchoCardChoice(this.settings.echoCards, now, consumedOccurrences);
       const echoChoice = scheduledEcho
         && this.buildHubCandidates(scheduledEcho.localId).some((candidate) => candidate.localId === scheduledEcho.localId)
         ? scheduledEcho
         : undefined;
-      const choiceId = questionChoice?.entry.id ?? echoChoice?.localId;
-      const occurrenceId = questionChoice?.occurrenceId ?? echoChoice?.occurrenceId;
+      const choiceId = dailyChoice?.localId ?? questionChoice?.entry.id ?? echoChoice?.localId;
+      const occurrenceId = dailyChoice?.occurrenceId ?? questionChoice?.occurrenceId ?? echoChoice?.occurrenceId;
       if (!choiceId || !occurrenceId) return state;
       const selected = await this.deviceHub.selectLocalCandidate(choiceId, this.buildHubCandidates(choiceId, true), {
         reason: "policy",
@@ -2575,6 +2896,116 @@ export default class ToWritePlugin extends Plugin {
     } : undefined);
   }
 
+  private handleExternalApiRuntimeStatus(status: ExternalApiRuntimeStatus): void {
+    const sessionId = status.startedAt?.trim() ?? "";
+    if (sessionId !== this.observedExternalApiStartedAt) {
+      this.observedExternalApiStartedAt = sessionId;
+      this.observedSuccessfulEinkPolls = 0;
+      this.localDeviceDisplayKeys.clear();
+      this.localDeviceCompletionGuards.clear();
+    }
+    if (status.successfulPolls <= this.observedSuccessfulEinkPolls) return;
+    this.observedSuccessfulEinkPolls = status.successfulPolls;
+    const cardId = status.lastServedCardId?.trim();
+    const playlistRevision = status.lastPlaylistRevision?.trim();
+    if (!cardId || !playlistRevision) return;
+    const targetKey = localDeviceTargetKey(status.lastTargetId);
+    const dailyId = cardId.startsWith("daily-plan:") ? cardId.slice("daily-plan:".length) : "";
+    const dailyItem = dailyId
+      ? this.dailyPlanItems.find((item) => item.id === dailyId)
+      : undefined;
+    const taskRevision = dailyItem?.revision.value ?? "";
+    this.localDeviceCompletionGuards.set(targetKey, {
+      cardId,
+      stateVersion: this.dailyDeviceStateVersion,
+      playlistRevision,
+      taskRevision,
+      taskDate: dailyItem?.date
+    });
+    const displayKey = `${targetKey}:${cardId}:${this.dailyDeviceStateVersion}:${playlistRevision}`;
+    if (displayKey === this.localDeviceDisplayKeys.get(targetKey)) return;
+    this.localDeviceDisplayKeys.set(targetKey, displayKey);
+    void this.localTapSelection.recordLocalDisplayed(cardId).catch((error: unknown) => {
+      console.error("ToWrite could not freeze the locally displayed Capture target", error);
+    });
+    this.dailyActivityService.recordCardDisplayed(cardId);
+    this.notifyUi();
+  }
+
+  private getCurrentDeviceCompletionGuard(targetId?: string): DeviceCompletionGuard | undefined {
+    const exact = this.localDeviceCompletionGuards.get(localDeviceTargetKey(targetId));
+    if (!exact) return undefined;
+    return {
+      cardId: exact.cardId,
+      stateVersion: exact.stateVersion,
+      playlistRevision: exact.playlistRevision
+    };
+  }
+
+  private async completeDailyFromDeviceEvent(event: DeviceEventInput): Promise<void> {
+    const cardId = event.cardId?.trim() ?? "";
+    if (!cardId.startsWith("daily-plan:")) {
+      throw new DailyPlanConflictError("revision-changed", "Only a displayed Daily plan card can be completed.");
+    }
+    const id = cardId.slice("daily-plan:".length);
+    const served = this.localDeviceCompletionGuards.get(localDeviceTargetKey(event.targetId));
+    const item = await this.dailyPlanService.get(id, served?.taskDate);
+    if (!item) throw new DailyPlanConflictError("not-found", `Daily item does not exist: ${id}`);
+    if (!served?.taskRevision || item.revision.value !== served.taskRevision) {
+      throw new DailyPlanConflictError("revision-changed", "The Daily task changed after this card was rendered.");
+    }
+    await this.completeDailyItem(id, item.revision, event.eventId, item.date);
+    await this.advanceAfterDailyCompletion(id);
+  }
+
+  private async applyPendingHubDeviceEvent(
+    event: HubPendingDeviceEvent
+  ): Promise<{ status: "applied" | "conflict" | "ignored"; resultRevision?: string }> {
+    if (event.action !== "complete" || event.contentType !== "daily_plan_item") {
+      return { status: "ignored" };
+    }
+    if (event.deviceId !== this.settings.hub.deviceId.trim()) {
+      return { status: "ignored" };
+    }
+    try {
+      const snapshot = await this.localTapSelection.snapshotForContent(event.contentId);
+      const id = snapshot?.sourceContext?.dailyItemId;
+      const frozenRevision = snapshot?.sourceContext?.dailyTaskRevision;
+      const dailyDate = snapshot?.sourceContext?.dailyDate;
+      const localId = snapshot?.localId;
+      if (!snapshot || !id || !frozenRevision || localId !== `daily-plan:${id}`) {
+        return { status: "conflict" };
+      }
+      const item = await this.dailyPlanService.get(id, dailyDate);
+      if (!item) return { status: "conflict" };
+
+      const [candidateRef, sourceRef, writeTargetRef] = await Promise.all([
+        createOpaqueHubRef("candidate", localId, this.settings.hub.referenceSecret),
+        createOpaqueHubRef("source", `${item.sourcePath}#^${item.blockId}`, this.settings.hub.referenceSecret),
+        createOpaqueHubRef("target", snapshot.candidate.path, this.settings.hub.referenceSecret)
+      ]);
+      if (event.candidateRef !== candidateRef
+        || event.sourceRef !== sourceRef
+        || event.writeTargetRef !== writeTargetRef) {
+        return { status: "conflict" };
+      }
+      if (item.done) {
+        return { status: "applied", resultRevision: item.revision.value };
+      }
+      if (item.revision.value !== frozenRevision) {
+        return { status: "conflict", resultRevision: item.revision.value };
+      }
+      const completed = await this.completeDailyItem(id, item.revision, event.eventId, item.date);
+      await this.advanceAfterDailyCompletion(id);
+      return { status: "applied", resultRevision: completed.revision.value };
+    } catch (error) {
+      if (error instanceof DailyPlanConflictError || error instanceof CaptureBridgeRequestError) {
+        return { status: "conflict" };
+      }
+      throw error;
+    }
+  }
+
   getSmallScreenConnectionStatus(nowMs = Date.now()): SmallScreenConnectionStatus {
     const runtime = this.externalApiServer?.getRuntimeStatus();
     const lastTarget = runtime?.lastTargetId
@@ -2608,13 +3039,20 @@ export default class ToWritePlugin extends Plugin {
     const hubDisplayedId = hubState?.displayed?.contentId
       || this.settings.hub.lastDisplayedContentId
       || undefined;
-    const currentLocalId = this.localTapSelection.currentDisplayedLocalId()
+    const currentLocalId = local.lastServedCardId
+      || this.localTapSelection.currentDisplayedLocalId()
       || this.currentDevicePagingLocalId();
     const currentEcho = currentLocalId?.startsWith("echo-card:")
       ? this.settings.echoCards.find((card) => echoCardLocalId(card) === currentLocalId)
       : undefined;
     const currentQuestion = currentLocalId && !currentEcho
       ? this.store?.getQuestion(currentLocalId)
+      : undefined;
+    const currentDailyId = currentLocalId?.startsWith("daily-plan:")
+      ? currentLocalId.slice("daily-plan:".length)
+      : undefined;
+    const currentDaily = currentDailyId
+      ? this.dailyPlanItems.find((item) => item.id === currentDailyId)
       : undefined;
     const paging = devicePagingPosition(this.getDevicePagingPool(), currentLocalId);
     const hasConfiguredRoute = local.enabled || hubConfigured;
@@ -2642,12 +3080,20 @@ export default class ToWritePlugin extends Plugin {
       current: {
         localId: currentLocalId,
         title: currentEcho?.name
+          || currentDaily?.text
           || currentQuestion?.title
           || currentQuestion?.question
           || local.lastServedTitle,
         contentType: currentEcho?.contentType
+          || (currentDaily ? "daily_plan_item" : undefined)
           || (currentQuestion ? (currentQuestion.lane === "write" ? "note_continue" : "question_prompt") : undefined),
-        sourceType: currentEcho ? "echo" : currentQuestion ? "question" : paging.sourceType,
+        sourceType: currentEcho
+          ? "echo"
+          : currentDaily
+            ? "daily-plan"
+            : currentQuestion
+              ? "question"
+              : paging.dailySourceType ?? paging.sourceType,
         lane: currentQuestion?.lane,
         pageIndex: paging.pageIndex,
         pageNumber: paging.pageNumber,
@@ -3042,6 +3488,7 @@ export default class ToWritePlugin extends Plugin {
       candidate,
       targetRevision: request.targetRevision ?? candidate.targetRevision
     });
+    this.dailyActivityService.recordCaptureCommitted(result.captureId);
     this.captureCommittedCandidates.set(draft.id, candidate);
     this.captureSuggestedTargets.set(draft.id, candidates[0]?.id ?? "");
     await this.recordCaptureRouteLearning(draft, candidate, this.captureSelectionFor(draft, candidate));
@@ -3148,6 +3595,7 @@ export default class ToWritePlugin extends Plugin {
   private pushState: PushRuntimeState = normalizePushRuntimeState();
   private savedLearningState?: HabitLearningState;
   private savedCaptureBridgeState?: LocalTapSelectionState;
+  private savedDailyActivityState?: DailyActivityState;
 
   private async loadPluginData(): Promise<void> {
     const data = (await this.loadData()) as Partial<ToWriteSavedData> | null;
@@ -3172,6 +3620,472 @@ export default class ToWritePlugin extends Plugin {
       : {};
     this.aiAssistantState = normalizeAiAssistantState(data?.aiAssistantState);
     this.savedCaptureBridgeState = data?.captureBridgeState;
+    this.savedDailyActivityState = data?.dailyActivityState;
+    this.dailyDeviceStateVersion = Number.isSafeInteger(data?.dailyDeviceStateVersion)
+      ? Math.max(1, Number(data?.dailyDeviceStateVersion))
+      : 1;
+    this.dailyScheduleOccurrenceIds = new Set(
+      Array.isArray(data?.dailyScheduleOccurrenceIds)
+        ? data.dailyScheduleOccurrenceIds.filter((value): value is string => typeof value === "string" && value.length <= 240).slice(-200)
+        : []
+    );
+  }
+
+  private initializeDailyServices(state: DailyActivityState | undefined = this.savedDailyActivityState): void {
+    this.dailyPlanService = this.createDailyPlanService();
+    this.dailyActivityRetentionDays = this.settings.daily.rawEventRetentionDays;
+    this.dailyActivityService = new DailyActivityService(state, {
+      retentionDays: this.dailyActivityRetentionDays,
+      language: this.settings.language,
+      onChanged: (nextState) => {
+        this.savedDailyActivityState = nextState;
+        this.notifyUi();
+        this.scheduleDailyStateSave();
+      },
+      onError: (error) => console.error("ToWrite Daily activity failed", error)
+    });
+    this.dailyActivityService.setCollectionPaused(
+      !this.settings.daily.enabled || !this.settings.daily.activityTracking
+    );
+  }
+
+  private createDailyPlanService(): DailyPlanService {
+    return new DailyPlanService({
+      readText: async (path) => {
+        const file = this.app.vault.getAbstractFileByPath(normalizePath(path));
+        if (!file) return undefined;
+        if (!(file instanceof TFile) || file.extension.toLowerCase() !== "md") {
+          throw new Error(`${path} is not a Markdown file.`);
+        }
+        return this.app.vault.read(file);
+      },
+      writeText: async (path, content) => {
+        const normalized = normalizePath(path);
+        await this.ensureParentFolder(normalized);
+        const existing = this.app.vault.getAbstractFileByPath(normalized);
+        if (existing instanceof TFile) {
+          await this.app.vault.modify(existing, content);
+          return;
+        }
+        if (existing) throw new Error(`${normalized} already exists and is not a file.`);
+        await this.app.vault.create(normalized, content);
+      }
+    }, {
+      dailyRoot: this.settings.daily.dailyNoteRoot,
+      todoHeading: this.settings.daily.todoHeading,
+      summaryHeading: this.settings.daily.summaryHeading,
+      onChanged: async () => {
+        await this.refreshDailyPlanCache();
+        this.queueDeviceHubSync();
+      }
+    });
+  }
+
+  private scheduleDailyStateSave(): void {
+    if (this.dailyStateSaveTimer) window.clearTimeout(this.dailyStateSaveTimer);
+    this.dailyStateSaveTimer = window.setTimeout(() => {
+      this.dailyStateSaveTimer = 0;
+      void this.savePluginData();
+    }, 500);
+  }
+
+  private scheduleDailyMidnightRefresh(): void {
+    if (this.dailyMidnightTimer) window.clearTimeout(this.dailyMidnightTimer);
+    const now = new Date();
+    const next = new Date(now);
+    next.setHours(24, 0, 1, 0);
+    this.dailyMidnightTimer = window.setTimeout(() => {
+      this.dailyMidnightTimer = 0;
+      void this.refreshDailyDashboard().finally(() => this.scheduleDailyMidnightRefresh());
+    }, Math.max(1_000, next.getTime() - now.getTime()));
+  }
+
+  /**
+   * One-shot local scheduler. It only changes desired state after the exact
+   * item/time occurrence becomes due; the bounded occurrence set makes
+   * restarts and 30-second ticks idempotent.
+   */
+  private async runDueDailyDeviceSchedule(now = new Date()): Promise<void> {
+    if (!this.localTapSelection
+      || !this.settings.daily.enabled
+      || normalizeHubContextState(this.settings.hub.manualMode) === "do_not_disturb"
+      || isManualHoldActive(this.settings.hub.manualHoldUntil, now)) {
+      return;
+    }
+    const due = this.dailyPlanItems
+      .filter((item) => !item.done
+        && item.devicePolicy === "scheduled"
+        && Boolean(item.scheduledFor)
+        && Date.parse(item.scheduledFor ?? "") <= now.getTime())
+      .sort((left, right) => (left.scheduledFor ?? "").localeCompare(right.scheduledFor ?? "")
+        || left.id.localeCompare(right.id))
+      .find((item) => !this.dailyScheduleOccurrenceIds.has(dailyScheduleOccurrenceId(item)));
+    if (!due) return;
+    const occurrenceId = dailyScheduleOccurrenceId(due);
+    const localId = `daily-plan:${due.id}`;
+    await this.selectLocalDeviceCard(localId);
+    if (this.deviceHub?.isConfigured()) {
+      try {
+        const state = await this.deviceHub.selectLocalCandidate(localId, this.buildHubCandidates(localId, true), {
+          reason: "policy",
+          policyVersion: "towrite-daily-once-v1",
+          modelVersion: "deterministic-schedule"
+        });
+        await this.localTapSelection.rememberHubSelection(localId, state);
+        this.settings.hub.lastError = "";
+      } catch (error) {
+        this.settings.hub.lastError = messageForError(error).slice(0, 500);
+      }
+    }
+    this.dailyScheduleOccurrenceIds.add(occurrenceId);
+    while (this.dailyScheduleOccurrenceIds.size > 200) {
+      const oldest = this.dailyScheduleOccurrenceIds.values().next().value as string | undefined;
+      if (!oldest) break;
+      this.dailyScheduleOccurrenceIds.delete(oldest);
+    }
+    this.scheduleDailyStateSave();
+    this.queueDeviceHubSync();
+  }
+
+  private async refreshDailyPlanCache(notify = true): Promise<void> {
+    const previous = this.dailyPlanItems;
+    const next = this.settings.daily.enabled
+      ? await this.dailyPlanService.list()
+      : [];
+    if (this.dailyPlanCacheInitialized && previous[0]?.sourcePath === next[0]?.sourcePath) {
+      const previousById = new Map(previous.map((item) => [item.id, item]));
+      for (const item of next) {
+        const old = previousById.get(item.id);
+        if (old && !old.done && item.done) {
+          this.dailyActivityService.recordTaskCompleted(item.id);
+        }
+      }
+    }
+    this.dailyPlanItems = next;
+    this.dailyPlanCacheInitialized = true;
+    this.invalidateLegacyEinkPlaylist();
+    if (notify) this.notifyUi();
+    void this.runDueDailyDeviceSchedule().catch((error: unknown) => {
+      console.error("ToWrite Daily one-shot schedule failed", error);
+    });
+  }
+
+  async refreshDailyDashboard(): Promise<void> {
+    this.dailyBackendWriterCheckedAt = 0;
+    const needsActivityReconfigure = !this.dailyActivityService
+      || this.dailyActivityRetentionDays !== this.settings.daily.rawEventRetentionDays;
+    if (needsActivityReconfigure) {
+      await this.dailyActivityService?.flushMeasurements();
+      const activityState = this.dailyActivityService?.getState() ?? this.savedDailyActivityState;
+      this.dailyActivityService?.dispose();
+      this.initializeDailyServices(activityState);
+    } else {
+      this.dailyPlanService = this.createDailyPlanService();
+      this.dailyActivityService.setCollectionPaused(
+        !this.settings.daily.enabled || !this.settings.daily.activityTracking
+      );
+    }
+    await this.refreshDailyPlanCache();
+  }
+
+  private async getDailyDashboardSnapshot(): Promise<DailyDashboardSnapshot> {
+    await this.refreshDailyPlanCache(false);
+    return this.dailyActivityService.getSnapshot(new Date(), this.dailyPlanItems);
+  }
+
+  private async createDailyItem(input: DailyPlanCreateInput): Promise<DailyPlanItem> {
+    this.assertDailyEnabled();
+    if (await this.shouldUseBackendDailyWriter()) {
+      const date = input.date ? formatDailyInputDate(input.date) : formatDailyInputDate(new Date());
+      const result = await this.backendClient.createDailyTask({
+        id: input.id,
+        text: dailyTaskTextForBackend(input.text, input.priority, input.priority !== undefined),
+        date,
+        kind: input.kind ?? "task",
+        devicePolicy: input.devicePolicy ?? "none",
+        scheduledFor: input.scheduledFor,
+        dueDate: input.dueDate,
+        tags: input.tags
+      });
+      await this.refreshDailyPlanCache();
+      const created = await this.dailyPlanService.get(result.id, date);
+      if (!created) throw new Error("Backend wrote the Daily task, but the local Markdown view could not verify it.");
+      return created;
+    }
+    return this.dailyPlanService.create(input);
+  }
+
+  private async updateDailyItem(
+    id: string,
+    revision: DailyTaskRevision,
+    patch: DailyPlanUpdate,
+    value: Date | string = new Date()
+  ): Promise<DailyPlanItem> {
+    this.assertDailyEnabled();
+    if (await this.shouldUseBackendDailyWriter()) {
+      const current = await this.dailyPlanService.get(id, value);
+      if (!current) throw new DailyPlanConflictError("not-found", `Daily item does not exist: ${id}`);
+      if (current.revision.value !== revision.value) {
+        throw new DailyPlanConflictError("revision-changed", "The Daily task changed after it was loaded.");
+      }
+      await this.backendClient.updateDailyTask({
+        id,
+        rawLine: current.rawLine,
+        text: dailyTaskTextForBackend(
+          patch.text ?? current.text,
+          patch.priority ?? current.priority,
+          patch.priority !== undefined || current.priorityExplicit
+        ),
+        date: patch.dueDate ?? current.dueDate,
+        status: patch.status,
+        kind: patch.kind ?? current.kind,
+        devicePolicy: patch.devicePolicy ?? current.devicePolicy,
+        scheduledFor: patch.scheduledFor === null ? undefined : patch.scheduledFor ?? current.scheduledFor,
+        tags: patch.tags ?? current.tags
+      });
+      await this.refreshDailyPlanCache();
+      const updated = await this.dailyPlanService.get(id, value);
+      if (!updated) throw new Error("Backend updated the Daily task, but the local Markdown view could not verify it.");
+      return updated;
+    }
+    return this.dailyPlanService.update(id, revision, patch, value);
+  }
+
+  private async completeDailyItem(
+    id: string,
+    revision: DailyTaskRevision,
+    eventId?: string,
+    value: Date | string = new Date()
+  ): Promise<DailyPlanItem> {
+    this.assertDailyEnabled();
+    let item: DailyPlanItem;
+    if (await this.shouldUseBackendDailyWriter()) {
+      const current = await this.dailyPlanService.get(id, value);
+      if (!current) throw new DailyPlanConflictError("not-found", `Daily item does not exist: ${id}`);
+      if (current.revision.value !== revision.value) {
+        throw new DailyPlanConflictError("revision-changed", "The Daily task changed after it was loaded.");
+      }
+      await this.backendClient.completeDailyTask(id, current.rawLine);
+      await this.refreshDailyPlanCache();
+      item = await this.dailyPlanService.get(id, value) ?? current;
+    } else {
+      item = await this.dailyPlanService.complete(id, revision, value);
+    }
+    this.dailyActivityService.recordTaskCompleted(id, new Date(), eventId);
+    return item;
+  }
+
+  private async reopenDailyItem(id: string, revision: DailyTaskRevision): Promise<DailyPlanItem> {
+    this.assertDailyEnabled();
+    if (await this.shouldUseBackendDailyWriter()) {
+      const current = await this.dailyPlanService.get(id);
+      if (!current) throw new DailyPlanConflictError("not-found", `Daily item does not exist: ${id}`);
+      if (current.revision.value !== revision.value) {
+        throw new DailyPlanConflictError("revision-changed", "The Daily task changed after it was loaded.");
+      }
+      await this.backendClient.reopenDailyTask(id, current.rawLine);
+      await this.refreshDailyPlanCache();
+      const reopened = await this.dailyPlanService.get(id);
+      if (!reopened) throw new Error("Backend reopened the Daily task, but the local Markdown view could not verify it.");
+      return reopened;
+    }
+    return this.dailyPlanService.reopen(id, revision);
+  }
+
+  private async writeDailySummary(summary: DailySummary): Promise<{ path: string; changed: boolean }> {
+    this.assertDailyEnabled();
+    if (await this.shouldUseBackendDailyWriter()) {
+      const result = await this.backendClient.writeDailySummary(summary);
+      await this.refreshDailyPlanCache();
+      return { path: this.dailyPlanService.pathForDate(summary.date), changed: result.changed };
+    }
+    return this.dailyPlanService.writeSummary(summary);
+  }
+
+  private async shouldUseBackendDailyWriter(now = Date.now()): Promise<boolean> {
+    const mode = this.settings.daily.writerMode;
+    if (mode === "local") return false;
+    if (!this.settings.backend.enabled) {
+      if (mode === "backend") throw new Error("DailyOps Backend writer is selected, but Backend integration is disabled.");
+      return false;
+    }
+    if (now - this.dailyBackendWriterCheckedAt < 15_000) {
+      if (!this.dailyBackendWriterAvailable && mode === "backend") {
+        throw new Error("DailyOps Backend writer is unavailable or incompatible.");
+      }
+      return this.dailyBackendWriterAvailable;
+    }
+    try {
+      const status = await this.backendClient.getDailyOpsStatus();
+      const compatible = status.protocolVersion === "towrite-daily-ops/v1"
+        && status.markdownContract === "towrite-daily-plan/v1"
+        && status.enabled
+        && status.writerCapable
+        && normalizeFolderPath(status.dailyNoteRoot) === normalizeFolderPath(this.settings.daily.dailyNoteRoot)
+        && status.dailyNoteFormat === this.settings.daily.dailyNoteFormat
+        && status.todoHeading.trim().toLowerCase() === this.settings.daily.todoHeading.trim().toLowerCase();
+      this.dailyBackendWriterAvailable = compatible;
+      this.dailyBackendWriterCheckedAt = now;
+      if (!compatible && mode === "backend") {
+        throw new Error("DailyOps Backend is reachable, but its Markdown contract or Daily folder settings do not match ToWrite.");
+      }
+      return compatible;
+    } catch (error) {
+      this.dailyBackendWriterAvailable = false;
+      this.dailyBackendWriterCheckedAt = now;
+      if (mode === "backend") throw error;
+      return false;
+    }
+  }
+
+  private assertDailyEnabled(): void {
+    if (!this.settings.daily.enabled) {
+      throw new Error(this.settings.language === "zh" ? "请先在设置中启用“今日计划”。" : "Enable Daily planning in settings first.");
+    }
+  }
+
+  private async generateDailySummary(mode: "rules" | "ai"): Promise<DailySummaryPresentation> {
+    const snapshot = await this.getDailyDashboardSnapshot();
+    if (mode === "rules") return { ...snapshot.summary, source: "rules" };
+    const reply = await this.aiProvider.chat([
+      {
+        role: "system",
+        content: [
+          "Rewrite a factual daily writing summary using only the supplied structured counters and plan labels.",
+          "Never add tasks, achievements, or note contents.",
+          dailyAiSummaryPlaceholderInstruction()
+        ].join(" ")
+      },
+      {
+        role: "user",
+        content: JSON.stringify({
+          date: snapshot.date,
+          metrics: snapshot.summary.metrics,
+          items: snapshot.plan.items.map((item) => ({
+            text: item.text,
+            kind: item.kind,
+            status: item.status
+          }))
+        })
+      }
+    ], undefined, { maxTokens: 500 });
+    const parsed = parseConstrainedDailyAiSummary(reply, snapshot.summary);
+    if (!parsed) {
+      return { ...snapshot.summary, source: "rules" };
+    }
+    return {
+      ...snapshot.summary,
+      headline: parsed.headline,
+      lines: parsed.lines,
+      markdown: [`## ${this.settings.daily.summaryHeading}`, "", parsed.headline, "", ...parsed.lines.map((line) => `- ${line}`)].join("\n"),
+      source: "ai"
+    };
+  }
+
+  private createDailyDashboardAdapter(): DailyDashboardAdapter {
+    return {
+      getSnapshot: () => this.getDailyDashboardSnapshot(),
+      createItem: async (input) => { await this.createDailyItem(input); },
+      updateItem: async (id, revision, patch) => { await this.updateDailyItem(id, revision, patch); },
+      completeItem: async (id, revision) => { await this.completeDailyItem(id, revision); },
+      reopenItem: async (id, revision) => { await this.reopenDailyItem(id, revision); },
+      writeSummary: async (summary) => { await this.writeDailySummary(summary); },
+      generateSummary: (mode) => this.generateDailySummary(mode),
+      sendItemToDevice: async (id, revision) => { await this.sendDailyItemToDevice(id, revision); },
+      sendSummaryToDevice: async () => { await this.sendDailySummaryToDevice(); },
+      openItem: async (item) => { await this.openDailyItem(item); },
+      subscribe: (listener) => this.subscribe(listener)
+    };
+  }
+
+  async exportDailyActivity(): Promise<void> {
+    const bundle = this.dailyActivityService.exportBundle();
+    const root = normalizeVaultPath(this.settings.exportDirectory);
+    await writeVaultDataText(this.app, `${root}/${bundle.files.events}`, bundle.eventsJsonl);
+    await writeVaultDataText(this.app, `${root}/${bundle.files.aggregates}`, bundle.aggregatesJson);
+  }
+
+  async clearDailyActivity(): Promise<void> {
+    this.dailyActivityService.clearActivityData();
+    await this.savePluginData();
+    this.notifyUi();
+  }
+
+  private async sendDailyItemToDevice(id: string, revision: DailyTaskRevision): Promise<void> {
+    const current = await this.dailyPlanService.get(id);
+    if (!current) throw new DailyPlanConflictError("not-found", `Daily item does not exist: ${id}`);
+    if (current.revision.value !== revision.value) {
+      throw new DailyPlanConflictError("revision-changed", "The Daily item changed before it could be sent.");
+    }
+    await this.sendLocalCandidateToDeviceHub(`daily-plan:${id}`);
+  }
+
+  private async sendDailySummaryToDevice(): Promise<void> {
+    const snapshot = await this.getDailyDashboardSnapshot();
+    await this.sendLocalCandidateToDeviceHub(`daily-summary:${snapshot.date}`);
+  }
+
+  private async openDailyItem(item: DailyPlanItem): Promise<void> {
+    const linked = item.linkedNotes[0]
+      ? this.app.metadataCache.getFirstLinkpathDest(item.linkedNotes[0], item.sourcePath)
+      : undefined;
+    await this.openFile(linked?.path || item.sourcePath);
+  }
+
+  private async completeDailyFromBridge(
+    snapshot: TapSelectionSnapshot,
+    eventId: string
+  ): Promise<{ path: string; completedAt: string; idempotent?: boolean }> {
+    const id = snapshot.sourceContext?.dailyItemId;
+    const revision = snapshot.sourceContext?.dailyTaskRevision;
+    const dailyDate = snapshot.sourceContext?.dailyDate;
+    if (!id || !revision) {
+      throw new CaptureBridgeRequestError(409, "The displayed card is not a Daily plan item.");
+    }
+    const item = await this.completeDailyItem(id, {
+      value: revision,
+      sourcePath: snapshot.sourceContext?.dailySourcePath ?? "",
+      blockId: id
+    }, `bridge-complete:${eventId}`, dailyDate);
+    await this.advanceAfterDailyCompletion(id);
+    return {
+      path: item.sourcePath,
+      completedAt: new Date().toISOString(),
+      idempotent: false
+    };
+  }
+
+  private async snoozeDailyFromBridge(
+    snapshot: TapSelectionSnapshot,
+    _eventId: string
+  ): Promise<{ path: string; snoozedUntil: string; idempotent?: boolean }> {
+    const id = snapshot.sourceContext?.dailyItemId;
+    const revision = snapshot.sourceContext?.dailyTaskRevision;
+    const dailyDate = snapshot.sourceContext?.dailyDate;
+    if (!id || !revision) {
+      throw new CaptureBridgeRequestError(409, "The displayed card is not a Daily plan item.");
+    }
+    const snoozedUntil = new Date(Date.now() + 30 * 60_000).toISOString();
+    const item = await this.updateDailyItem(id, {
+      value: revision,
+      sourcePath: snapshot.sourceContext?.dailySourcePath ?? "",
+      blockId: id
+    }, {
+      devicePolicy: "scheduled",
+      scheduledFor: snoozedUntil
+    }, dailyDate);
+    return { path: item.sourcePath, snoozedUntil, idempotent: false };
+  }
+
+  private async advanceAfterDailyCompletion(completedId: string): Promise<void> {
+    const localId = `daily-plan:${completedId}`;
+    if (this.currentDevicePagingLocalId() !== localId) return;
+    const pool = this.getDevicePagingPool();
+    const nextId = nextDevicePagingItem(pool, localId);
+    if (nextId && nextId !== localId) {
+      await this.selectLocalDeviceCard(nextId);
+    }
+    this.queueDeviceHubSync();
   }
 
   private hubReceiverPrivateKey(): JsonWebKey | undefined {
@@ -3213,6 +4127,10 @@ export default class ToWritePlugin extends Plugin {
     }
     const snapshotId = generateSnapshotId();
     const question = this.store.getQuestion(localId);
+    const dailyAdapter = this.dailyDeviceAdapters().find((item) => item.localId === localId);
+    const dailyItem = dailyAdapter
+      ? this.dailyPlanItems.find((item) => item.id === dailyAdapter.pagingItem.id)
+      : undefined;
     // A custom Echo card may look like a question without being backed by an
     // OpenQuestion record. Only real question cards use the answer writeback.
     const intent: CaptureIntent = echoCardCaptureIntent(local.type, Boolean(question));
@@ -3267,7 +4185,11 @@ export default class ToWritePlugin extends Plugin {
       candidate,
       sourceContext: {
         file: question?.source.file || (targetAction === "append" ? local.writeTargetLocalId : undefined),
-        questionId: question?.id
+        questionId: question?.id,
+        dailyItemId: dailyItem?.id,
+        dailyTaskRevision: dailyItem?.revision.value,
+        dailyDate: dailyItem?.date,
+        dailySourcePath: dailyItem?.sourcePath
       }
     };
   }
@@ -3311,11 +4233,30 @@ export default class ToWritePlugin extends Plugin {
     if (!localId) {
       throw new CaptureBridgeRequestError(409, "Persisted Capture selection has no authenticated local mapping.");
     }
-    const current = this.buildHubCandidates(localId).find((candidate) => candidate.localId === localId);
-    if (!current || current.privacy?.private || current.privacy?.excluded) {
-      throw new CaptureBridgeRequestError(409, "Persisted Capture selection is no longer eligible.");
+    let expectedPath: string;
+    const dailyId = snapshot.sourceContext?.dailyItemId;
+    if (dailyId && localId === `daily-plan:${dailyId}`) {
+      const sourceDate = snapshot.sourceContext?.dailyDate
+        || dailyDateFromPath(snapshot.sourceContext?.dailySourcePath)
+        || formatDailyInputDate(new Date(snapshot.createdAt));
+      const item = await this.dailyPlanService.get(dailyId, sourceDate);
+      if (!item
+        || item.revision.value !== snapshot.sourceContext?.dailyTaskRevision
+        || (snapshot.sourceContext?.dailySourcePath
+          && item.sourcePath !== snapshot.sourceContext.dailySourcePath)) {
+        throw new CaptureBridgeRequestError(409, "The persisted Daily card changed after it was displayed.");
+      }
+      const linked = item.linkedNotes[0]
+        ? this.app.metadataCache.getFirstLinkpathDest(item.linkedNotes[0], item.sourcePath)
+        : undefined;
+      expectedPath = linked?.path || this.settings.deviceCapture.inboxFile;
+    } else {
+      const current = this.buildHubCandidates(localId).find((candidate) => candidate.localId === localId);
+      if (!current || current.privacy?.private || current.privacy?.excluded) {
+        throw new CaptureBridgeRequestError(409, "Persisted Capture selection is no longer eligible.");
+      }
+      expectedPath = current.writeTargetLocalId?.trim() || this.settings.deviceCapture.inboxFile;
     }
-    const expectedPath = current.writeTargetLocalId?.trim() || this.settings.deviceCapture.inboxFile;
     if (snapshot.candidate.path !== expectedPath) {
       throw new CaptureBridgeRequestError(409, "Persisted Capture target no longer matches the selected card.");
     }
@@ -3337,14 +4278,42 @@ export default class ToWritePlugin extends Plugin {
 
   private async commitTapBridgeCapture(
     snapshot: TapSelectionSnapshot,
-    draft: CaptureDraft
+    draft: CaptureDraft,
+    assets: readonly CaptureBridgeStagedAsset[] = []
   ): Promise<CaptureCommitResult> {
     await this.validateTapSelectionSnapshot(snapshot, draft);
+    const persistedAssets = await this.persistBridgeCaptureAssets(draft.id, assets);
+    const enrichedDraft = persistedAssets.length > 0
+      ? {
+          ...draft,
+          body: [
+            draft.body.trim() || (this.settings.language === "zh" ? "待转写录音" : "Voice note pending transcription"),
+            ...persistedAssets.map((asset) => `![[${asset.path}]]`)
+          ].join("\n\n")
+        }
+      : draft;
+    try {
+      const result = await this.commitTapBridgeCaptureCore(snapshot, enrichedDraft);
+      if (persistedAssets.length > 0) {
+        this.bridgeCaptureAssets.set(result.captureId, persistedAssets.map(({ path, sha256 }) => ({ path, sha256 })));
+      }
+      return result;
+    } catch (error) {
+      await this.removeUnreferencedBridgeAssets(persistedAssets);
+      throw error;
+    }
+  }
+
+  private async commitTapBridgeCaptureCore(
+    snapshot: TapSelectionSnapshot,
+    draft: CaptureDraft
+  ): Promise<CaptureCommitResult> {
     const capture = await this.captureService.commit({
       draft,
       candidate: snapshot.candidate,
       targetRevision: snapshot.candidate.targetRevision
     });
+    this.dailyActivityService.recordCaptureCommitted(capture.captureId);
     if (snapshot.intent !== "answer") return capture;
 
     const questionId = snapshot.sourceContext?.questionId;
@@ -3425,7 +4394,11 @@ export default class ToWritePlugin extends Plugin {
       }
     }
     const result = await this.captureService.undo(undoToken, captureId);
-    if (!result.undone || !activity) return { undone: result.undone };
+    if (!result.undone) return { undone: false };
+    const assets = this.bridgeCaptureAssets.get(captureId) ?? [];
+    await this.removeUnreferencedBridgeAssets(assets);
+    this.bridgeCaptureAssets.delete(captureId);
+    if (!activity) return { undone: true };
     this.patchQuestionState(activity.question.id, {
       notes: (activity.question.notes ?? []).filter((note) => note.id !== activity.note.id)
     });
@@ -3433,6 +4406,71 @@ export default class ToWritePlugin extends Plugin {
     this.queueDeviceHubSync();
     if (this.settings.autoExport) await this.exportNow(false);
     return { undone: true };
+  }
+
+  private async persistBridgeCaptureAssets(
+    captureId: string,
+    assets: readonly CaptureBridgeStagedAsset[]
+  ): Promise<Array<{ path: string; sha256: string }>> {
+    if (assets.length === 0) return [];
+    const day = new Date().toISOString().slice(0, 10);
+    const folder = normalizePath(`${this.settings.daily.attachmentFolder}/${day}`);
+    await this.ensureVaultFolder(folder);
+    const written: Array<{ path: string; sha256: string }> = [];
+    try {
+      for (const asset of assets) {
+        const extension = bridgeAssetExtension(asset.fileName, asset.mimeType);
+        const stem = sanitizeBridgeAssetStem(asset.fileName) || "voice";
+        const path = normalizePath(`${folder}/${stem}-${captureId.slice(-10)}-${asset.assetRef.slice(-8)}.${extension}`);
+        if (this.app.vault.getAbstractFileByPath(path)) {
+          throw new CaptureBridgeRequestError(409, "A staged audio attachment already exists.");
+        }
+        const copy = new Uint8Array(asset.bytes.byteLength);
+        copy.set(asset.bytes);
+        await this.app.vault.createBinary(path, copy.buffer);
+        written.push({ path, sha256: await sha256Hex(asset.bytes) });
+      }
+      return written;
+    } catch (error) {
+      await this.removeUnreferencedBridgeAssets(written);
+      throw error;
+    }
+  }
+
+  private async removeUnreferencedBridgeAssets(
+    assets: ReadonlyArray<{ path: string; sha256: string }>
+  ): Promise<void> {
+    if (assets.length === 0) return;
+    const markdownFiles = this.app.vault.getMarkdownFiles();
+    for (const asset of assets) {
+      const file = this.app.vault.getFileByPath(asset.path);
+      if (!file) continue;
+      const bytes = new Uint8Array(await this.app.vault.readBinary(file));
+      if (await sha256Hex(bytes) !== asset.sha256) continue;
+      let referenced = false;
+      const basename = asset.path.split("/").pop() ?? asset.path;
+      for (const note of markdownFiles) {
+        const text = await this.app.vault.cachedRead(note);
+        if (text.includes(asset.path) || text.includes(basename)) {
+          referenced = true;
+          break;
+        }
+      }
+      if (!referenced) {
+        await this.app.vault.delete(file);
+      }
+    }
+  }
+
+  private async ensureVaultFolder(path: string): Promise<void> {
+    const segments = path.split("/").filter(Boolean);
+    let current = "";
+    for (const segment of segments) {
+      current = current ? `${current}/${segment}` : segment;
+      if (!this.app.vault.getAbstractFileByPath(current)) {
+        await this.app.vault.createFolder(current);
+      }
+    }
   }
 
   private async localIdForHubRefs(candidateRef?: string, writeTargetRef?: string): Promise<string | undefined> {
@@ -3697,6 +4735,47 @@ export default class ToWritePlugin extends Plugin {
       });
     }
 
+    const dailyAdapters = this.dailyDeviceAdapters(preferredLocalId);
+    for (const adapter of dailyAdapters) {
+      const candidate = adapter.candidate;
+      if (!candidate) continue;
+      const item = this.dailyPlanItems.find((entry) => entry.id === adapter.pagingItem.id);
+      const manuallyRequested = preferredLocalId === adapter.localId;
+      const scheduledDue = item?.devicePolicy === "scheduled"
+        && Boolean(item.scheduledFor)
+        && Date.parse(item.scheduledFor ?? "") <= now.getTime();
+      const scheduledWithin24Hours = item?.devicePolicy === "scheduled"
+        && Boolean(item.scheduledFor)
+        && Date.parse(item.scheduledFor ?? "") <= now.getTime() + 24 * 60 * 60_000;
+      const eligibleForMode = manuallyRequested
+        || (includePagingPool && item?.devicePolicy === "rotation")
+        || (this.settings.hub.selectionMode === "rotation" && item?.devicePolicy === "rotation")
+        || scheduledWithin24Hours
+        || (this.settings.hub.selectionMode === "agent" && item?.devicePolicy === "agent");
+      if (!eligibleForMode) continue;
+      candidates.push({
+        ...candidate,
+        score: manuallyRequested ? 1 : scheduledDue ? 0.96 : candidate.score,
+        policyBasis: scheduledDue ? "due" : candidate.policyBasis,
+        urgency: scheduledDue ? 1 : candidate.urgency
+      });
+    }
+    const summaryAdapter = this.dailySummaryDeviceAdapter(preferredLocalId);
+    if (summaryAdapter?.candidate) {
+      const manuallyRequested = preferredLocalId === summaryAdapter.localId;
+      const policy = summaryAdapter.pagingItem.devicePolicy;
+      const eligibleForMode = manuallyRequested
+        || (includePagingPool && policy === "rotation")
+        || (this.settings.hub.selectionMode === "rotation" && policy === "rotation")
+        || (this.settings.hub.selectionMode === "agent" && policy === "agent");
+      if (eligibleForMode) {
+        candidates.push({
+          ...summaryAdapter.candidate,
+          score: manuallyRequested ? 1 : summaryAdapter.candidate.score
+        });
+      }
+    }
+
     const blankCreateFolder = this.settings.deviceCapture.targetFolders[0]?.trim();
     candidates.push({
       localId: "towrite:blank-capture",
@@ -3720,7 +4799,11 @@ export default class ToWritePlugin extends Plugin {
     const pagingPool = buildDevicePagingPool(
       this.settings.echoCards,
       library.entries,
-      (localId) => candidateByLocalId.has(localId)
+      (localId) => candidateByLocalId.has(localId),
+      [
+        ...dailyAdapters.map((item) => item.pagingItem),
+        ...(summaryAdapter ? [summaryAdapter.pagingItem] : [])
+      ]
     );
     const pagingCandidates = pagingPool.flatMap((localId) => {
       const candidate = candidateByLocalId.get(localId);
@@ -3795,6 +4878,8 @@ export default class ToWritePlugin extends Plugin {
 
   private async rememberHubState(state: HubDeviceState): Promise<void> {
     const hub = this.settings.hub;
+    const previousSelectedContentId = hub.lastSelectedContentId;
+    const previousDisplayedContentId = hub.lastDisplayedContentId;
     const selectedLocalId = await this.localIdForHubRefs(
       state.selected?.candidateRef,
       state.selected?.writeTargetRef
@@ -3810,6 +4895,12 @@ export default class ToWritePlugin extends Plugin {
     hub.lastStateVersion = state.selected?.stateVersion ?? state.displayed?.stateVersion ?? 0;
     hub.lastSelectedContentId = state.selected?.selectedContentId ?? "";
     hub.lastDisplayedContentId = state.displayed?.contentId ?? "";
+    if (hub.lastSelectedContentId && hub.lastSelectedContentId !== previousSelectedContentId) {
+      this.dailyActivityService.recordCardSelected(selectedLocalId || hub.lastSelectedContentId);
+    }
+    if (hub.lastDisplayedContentId && hub.lastDisplayedContentId !== previousDisplayedContentId) {
+      this.dailyActivityService.recordCardDisplayed(displayedLocalId || hub.lastDisplayedContentId);
+    }
     if (hub.manualHoldContentId
       && state.displayed?.contentId === hub.manualHoldContentId
       && hub.manualHoldMinutes > 0) {
@@ -3884,6 +4975,8 @@ export default class ToWritePlugin extends Plugin {
       syncDeviceHub: () => this.syncDeviceHub(false),
       sendQuestionToDeviceHub: (id) => this.sendQuestionToDeviceHub(id),
       sendInboxItemToDeviceHub: (id) => this.sendInboxItemToDeviceHub(id),
+      addQuestionToDaily: (id) => this.addQuestionToDaily(id),
+      addInboxItemToDaily: (id) => this.addInboxItemToDaily(id),
       advanceDeviceHub: () => this.advanceDeviceHub(),
       setDeviceHubSelectionMode: (mode) => this.setDeviceHubSelectionMode(mode),
       toggleQuestionInDeviceLibrary: (id) => this.toggleQuestionInDeviceLibrary(id),
@@ -3917,7 +5010,11 @@ export default class ToWritePlugin extends Plugin {
   }
 
   private patchQuestionState(id: string, patch: Omit<Partial<StoredQuestionState>, "id">): void {
+    const previous = this.store.getQuestion(id);
     this.store.patchQuestion(id, patch, false);
+    if (patch.status === "resolved" && previous && previous.status !== "resolved") {
+      this.dailyActivityService.recordQuestionResolved(id);
+    }
     this.workflowIndex.refreshQuestions();
     this.refreshEditorDecorations();
     this.store.notify();
@@ -3983,6 +5080,11 @@ export default class ToWritePlugin extends Plugin {
       this.store.notify();
       this.queueDeviceHubSync();
     }, 180, true);
+    const refreshDailyPlanAfterVaultChange = debounce(() => {
+      void this.refreshDailyPlanCache().catch((error: unknown) => {
+        console.error("ToWrite could not refresh the edited Daily plan", error);
+      });
+    }, 700, true);
 
     this.registerEvent(
       this.app.metadataCache.on("changed", (file) => {
@@ -3996,6 +5098,19 @@ export default class ToWritePlugin extends Plugin {
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
         if (file instanceof TFile && file.extension === "md") {
+          if (this.settings.daily.enabled && this.settings.daily.activityTracking) {
+            this.dailyActivityService.scheduleDocumentMeasurement({
+              filePath: file.path,
+              reason: "modified",
+              readContent: async () => {
+                const current = this.app.vault.getFileByPath(file.path);
+                return current ? this.app.vault.cachedRead(current) : undefined;
+              }
+            });
+          }
+          if (file.path === this.dailyPlanService.pathForDate()) {
+            refreshDailyPlanAfterVaultChange();
+          }
           this.recordEditPresenceLearning(file);
           this.deviceHub?.recordEditPresence();
           reindexFile(file);
@@ -4006,6 +5121,19 @@ export default class ToWritePlugin extends Plugin {
     this.registerEvent(
       this.app.vault.on("create", (file) => {
         if (file instanceof TFile && file.extension === "md") {
+          if (this.settings.daily.enabled && this.settings.daily.activityTracking) {
+            this.dailyActivityService.scheduleDocumentMeasurement({
+              filePath: file.path,
+              reason: "created",
+              readContent: async () => {
+                const current = this.app.vault.getFileByPath(file.path);
+                return current ? this.app.vault.cachedRead(current) : undefined;
+              }
+            });
+          }
+          if (file.path === this.dailyPlanService.pathForDate()) {
+            refreshDailyPlanAfterVaultChange();
+          }
           void this.autoApplyInboxMetadata(file)
             .catch((error: unknown) => console.error("ToWrite could not apply Inbox metadata", error))
             .finally(() => reindexFile(file));
@@ -4016,6 +5144,14 @@ export default class ToWritePlugin extends Plugin {
     this.registerEvent(
       this.app.vault.on("delete", (file) => {
         if (file instanceof TFolder) rebuildInboxAfterFolderChange();
+        if (file instanceof TFile) {
+          this.dailyActivityService.removeDocumentBaseline(file.path);
+          if (file.path === this.dailyPlanService.pathForDate()) {
+            this.dailyPlanItems = [];
+            this.invalidateLegacyEinkPlaylist();
+            this.notifyUi();
+          }
+        }
         this.handleDeletedFile(file);
       })
     );
@@ -4023,6 +5159,12 @@ export default class ToWritePlugin extends Plugin {
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
         if (file instanceof TFolder) rebuildInboxAfterFolderChange();
+        if (file instanceof TFile) {
+          this.dailyActivityService.renameDocumentBaseline(oldPath, file.path);
+          if (oldPath === this.dailyPlanService.pathForDate() || file.path === this.dailyPlanService.pathForDate()) {
+            refreshDailyPlanAfterVaultChange();
+          }
+        }
         void (async () => {
           const sidecarQuestions = this.store.getSidecarQuestionsForFile(oldPath);
           await this.indexer.removeFile(oldPath, false);
@@ -4571,6 +5713,34 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
+function sanitizeBridgeAssetStem(fileName: string): string {
+  const withoutExtension = fileName.replace(/\.[A-Za-z0-9]{1,8}$/u, "");
+  return withoutExtension
+    .normalize("NFKC")
+    .replace(/[^A-Za-z0-9\u3400-\u9fff_-]+/gu, "-")
+    .replace(/^-+|-+$/gu, "")
+    .slice(0, 80);
+}
+
+function bridgeAssetExtension(fileName: string, mimeType: string): string {
+  const explicit = /\.([A-Za-z0-9]{1,8})$/u.exec(fileName)?.[1]?.toLowerCase();
+  if (explicit && ["webm", "mp4", "m4a", "mp3", "ogg", "wav", "aac"].includes(explicit)) {
+    return explicit;
+  }
+  if (mimeType.includes("webm")) return "webm";
+  if (mimeType.includes("ogg")) return "ogg";
+  if (mimeType.includes("wav")) return "wav";
+  if (mimeType.includes("mpeg")) return "mp3";
+  if (mimeType.includes("aac")) return "aac";
+  return "m4a";
+}
+
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const copy = bytes.slice();
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", copy.buffer);
+  return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
+}
+
 function buildBackendContextSnippets(context: AiAssistantContextPreview) {
   const snippets: Array<{ kind: string; title: string; text: string }> = [{
     kind: "assistant_tool_contract",
@@ -4631,6 +5801,7 @@ function normalizeSettings(settings?: Partial<ToWriteSettings>): ToWriteSettings
     backend: normalizeBackendSettings(settings?.backend),
     captureBridge: normalizeCaptureBridgeSettings(settings?.captureBridge),
     inbox: normalizeInboxSettings(settings?.inbox),
+    daily: normalizeDailySettings(settings?.daily),
     echoCards: normalizeEchoCards(settings?.echoCards),
     hub: normalizeHubSettings(settings?.hub),
     deviceProfiles: normalizeDeviceProfiles(settings?.deviceProfiles),
@@ -4987,6 +6158,55 @@ function hubScoreForCandidate(candidate: PushCandidate): number {
   if (candidate.type === "question") return 0.72;
   if (candidate.stale) return 0.68;
   return 0.5;
+}
+
+function dailyScheduleOccurrenceId(item: DailyPlanItem): string {
+  return `daily:${item.id}:${item.scheduledFor ?? ""}`;
+}
+
+function localDeviceTargetKey(targetId: string | undefined): string {
+  const normalized = targetId?.trim();
+  return normalized || "__default__";
+}
+
+function formatLocalDateTime(value: string): string {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return value;
+  return new Intl.DateTimeFormat(undefined, {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(new Date(timestamp));
+}
+
+function formatDailyInputDate(value: Date | string): string {
+  if (typeof value === "string") {
+    const exact = /^(\d{4}-\d{2}-\d{2})$/u.exec(value.trim());
+    if (exact) return exact[1];
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) throw new Error("Daily date is invalid.");
+    value = parsed;
+  }
+  return [
+    value.getFullYear().toString().padStart(4, "0"),
+    (value.getMonth() + 1).toString().padStart(2, "0"),
+    value.getDate().toString().padStart(2, "0")
+  ].join("-");
+}
+
+function dailyDateFromPath(value: string | undefined): string | undefined {
+  const match = /(?:^|\/)(\d{4}-\d{2}-\d{2})\.md$/iu.exec(value?.replace(/\\/gu, "/").trim() ?? "");
+  return match?.[1];
+}
+
+function dailyWikiLink(filePath: string, blockId?: string): string {
+  const target = filePath
+    .replace(/\\/gu, "/")
+    .replace(/\.md$/iu, "")
+    .replace(/[\[\]]/gu, "");
+  const block = blockId?.trim().replace(/^\^/u, "").replace(/[^A-Za-z0-9_-]/gu, "");
+  return `[[${target}${block ? `#^${block}` : ""}]]`;
 }
 
 function frontmatterTags(frontmatter: Record<string, unknown>): string[] {

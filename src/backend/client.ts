@@ -1,6 +1,12 @@
 import type { ToWriteBackendSettings } from "../core/settings";
 import type { BackendCapabilities, CaptureDraft, CaptureTargetCandidate } from "../capture/types";
 import type { HubCandidate, HubContextState } from "../hub/types";
+import type {
+  DailyDevicePolicy,
+  DailyPlanItemKind,
+  DailyPlanStatus,
+  DailySummary
+} from "../daily";
 
 interface BackendRecommendationItem {
   id?: unknown;
@@ -125,6 +131,48 @@ export interface BackendSkillRunResult {
   runLogPath?: string;
 }
 
+export interface BackendDailyOpsStatus {
+  protocolVersion: string;
+  markdownContract: string;
+  enabled: boolean;
+  writerCapable: boolean;
+  dailyNoteRoot: string;
+  dailyNoteFormat: string;
+  todoHeading: string;
+}
+
+export interface BackendDailyTaskMutation {
+  id: string;
+  revision?: string;
+  sourcePath?: string;
+  rawLine?: string;
+  idempotent?: boolean;
+}
+
+export interface BackendDailyTaskCreateRequest {
+  /** Stable caller-generated block id used to make explicit add-to-today idempotent. */
+  id?: string;
+  text: string;
+  date: string;
+  kind: DailyPlanItemKind;
+  devicePolicy: DailyDevicePolicy;
+  scheduledFor?: string;
+  dueDate?: string;
+  tags?: string[];
+}
+
+export interface BackendDailyTaskUpdateRequest {
+  id: string;
+  rawLine: string;
+  text: string;
+  date: string;
+  status?: Exclude<DailyPlanStatus, "done">;
+  kind: DailyPlanItemKind;
+  devicePolicy: DailyDevicePolicy;
+  scheduledFor?: string;
+  tags?: string[];
+}
+
 export class BackendEnhancementClient {
   constructor(private readonly getSettings: () => ToWriteBackendSettings) {}
 
@@ -134,6 +182,102 @@ export class BackendEnhancementClient {
       method: "GET"
     }, settings);
     return normalizeCapabilities(payload);
+  }
+
+  async getDailyOpsStatus(): Promise<BackendDailyOpsStatus> {
+    const settings = this.requireEnabledSettings();
+    const payload = asBackendRecord(await this.requestJson("/tools/daily/status", {
+      method: "GET"
+    }, settings), "DailyOps status");
+    return {
+      protocolVersion: optionalString(payload.protocol_version) ?? "",
+      markdownContract: optionalString(payload.markdown_contract) ?? "",
+      enabled: payload.enabled === true,
+      writerCapable: payload.writer_capable === true,
+      dailyNoteRoot: optionalString(payload.daily_note_root) ?? "",
+      dailyNoteFormat: optionalString(payload.daily_note_format) ?? "",
+      todoHeading: optionalString(payload.daily_note_todo_section) ?? ""
+    };
+  }
+
+  async createDailyTask(request: BackendDailyTaskCreateRequest): Promise<BackendDailyTaskMutation> {
+    const settings = this.requireEnabledSettings();
+    const payload = asBackendRecord(await this.requestJson("/tools/daily/tasks", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        task_id: request.id ?? "",
+        text: request.text,
+        date: request.date,
+        target: "daily",
+        due: request.dueDate || request.date,
+        scheduled: request.date,
+        tags: request.tags ?? [],
+        towrite_kind: request.kind,
+        towrite_device: request.devicePolicy,
+        towrite_at: request.scheduledFor ?? ""
+      })
+    }, settings), "DailyOps task mutation");
+    return normalizeBackendDailyTaskMutation(payload);
+  }
+
+  async updateDailyTask(request: BackendDailyTaskUpdateRequest): Promise<BackendDailyTaskMutation> {
+    const settings = this.requireEnabledSettings();
+    const action = request.status === "in-progress"
+      ? "start"
+      : request.status === "todo"
+        ? "todo"
+        : "edit";
+    const payload = asBackendRecord(await this.requestJson(`/tools/daily/tasks/${encodeURIComponent(request.id)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        action,
+        raw_line: request.rawLine,
+        text: request.text,
+        date: request.date,
+        towrite_kind: request.kind,
+        towrite_device: request.devicePolicy,
+        towrite_at: request.scheduledFor ?? "",
+        tags: request.tags ?? []
+      })
+    }, settings), "DailyOps task mutation");
+    return normalizeBackendDailyTaskMutation(payload);
+  }
+
+  async completeDailyTask(id: string, rawLine: string): Promise<BackendDailyTaskMutation> {
+    const settings = this.requireEnabledSettings();
+    const payload = asBackendRecord(await this.requestJson(`/tools/daily/tasks/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "complete", raw_line: rawLine })
+    }, settings), "DailyOps task mutation");
+    return normalizeBackendDailyTaskMutation(payload);
+  }
+
+  async reopenDailyTask(id: string, rawLine: string): Promise<BackendDailyTaskMutation> {
+    const settings = this.requireEnabledSettings();
+    const payload = asBackendRecord(await this.requestJson(`/tools/daily/tasks/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "reopen", raw_line: rawLine })
+    }, settings), "DailyOps task mutation");
+    return normalizeBackendDailyTaskMutation(payload);
+  }
+
+  async writeDailySummary(summary: DailySummary): Promise<{ changed: boolean }> {
+    const settings = this.requireEnabledSettings();
+    const payload = asBackendRecord(await this.requestJson("/tools/daily/summary/write-back", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        date: summary.date,
+        headline: summary.headline,
+        lines: summary.lines,
+        generated_at: summary.generatedAt
+      })
+    }, settings), "DailyOps summary writeback");
+    return { changed: payload.changed === true };
   }
 
   async rerankTargets(draft: CaptureDraft, candidates: CaptureTargetCandidate[]): Promise<CaptureTargetCandidate[]> {
@@ -588,6 +732,28 @@ function normalizeBackendChatStreamEvent(value: unknown): BackendChatStreamEvent
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function asBackendRecord(value: unknown, label: string): Record<string, unknown> {
+  if (!isRecord(value)) {
+    throw new Error(`Obsidian AI Backend returned an invalid ${label}.`);
+  }
+  return value;
+}
+
+function normalizeBackendDailyTaskMutation(payload: Record<string, unknown>): BackendDailyTaskMutation {
+  const task = isRecord(payload.task) ? payload.task : {};
+  const id = optionalString(task.id);
+  if (!id) {
+    throw new Error("Obsidian AI Backend DailyOps response is missing the task id.");
+  }
+  return {
+    id,
+    revision: optionalString(task.revision),
+    sourcePath: optionalString(task.source_path),
+    rawLine: optionalString(task.raw_line),
+    idempotent: payload.idempotent === true
+  };
 }
 
 function optionalString(value: unknown): string | undefined {

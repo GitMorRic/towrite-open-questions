@@ -1,5 +1,7 @@
 # ToWrite Open Questions
 
+[今日 Dashboard 与每日计划](docs/daily-dashboard.zh-CN.md) 已把“今日”和“全部状态”明确分开：“今日”以 `Daily/YYYY-MM-DD.md` 为数据真源，显示每日计划、活动统计、定时设备卡片和确认后写回的总结；“全部状态”使用完整增量索引统计 Workflow、Article Type、Inbox、stale、ToThink 与 ToWrite。指南同时说明 Markdown 契约、30 天统计隐私边界、设备完成冲突保护、Capture Bridge v2 音频授权，以及 `auto` / `local` / `backend` 单写入者模式。
+
 [English](README.md) | 简体中文
 
 ToWrite Open Questions 是一个 Obsidian 桌面端插件，用来把还没想清楚、还要继续写、需要查证或需要补充的内容，保留在它们原本出现的位置旁边。

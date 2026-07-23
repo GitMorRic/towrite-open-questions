@@ -63,6 +63,8 @@ export interface ToWriteUiApi {
   syncDeviceHub(): Promise<HubDeviceState | undefined>;
   sendQuestionToDeviceHub(id: string): Promise<HubDeviceState | undefined>;
   sendInboxItemToDeviceHub(id: string): Promise<HubDeviceState | undefined>;
+  addQuestionToDaily(id: string): Promise<void>;
+  addInboxItemToDaily(id: string): Promise<void>;
   advanceDeviceHub(): Promise<HubDeviceState | undefined>;
   setDeviceHubSelectionMode(mode: HubSelectionMode): Promise<void>;
   toggleQuestionInDeviceLibrary(id: string): Promise<void>;

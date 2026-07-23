@@ -21,7 +21,7 @@ describe("small-screen UI feedback wiring", () => {
       main.indexOf("private async sendLocalCandidateToDeviceHub"),
       main.indexOf("private localScreenSelectionNotice")
     );
-    const selectIndex = method.indexOf("await this.localTapSelection.selectLocal(localId);");
+    const selectIndex = method.indexOf("await this.selectLocalDeviceCard(localId);");
     const hubIndex = method.indexOf("if (!this.deviceHub.isConfigured())");
     const callback = main.slice(
       main.indexOf("onStateChanged: async () =>"),
@@ -29,6 +29,7 @@ describe("small-screen UI feedback wiring", () => {
     );
     expect(selectIndex).toBeGreaterThanOrEqual(0);
     expect(hubIndex).toBeGreaterThan(selectIndex);
+    expect(main).toContain("await this.localTapSelection.selectLocal(localId);");
     expect(selection).toContain("await this.options.onStateChanged?.();");
     expect(callback).toContain("await this.savePluginData();");
   });

@@ -6,9 +6,22 @@ import { buildExternalEinkPayload } from "./payloads";
 export interface EinkPlaylistOptions {
   orderedLocalIds: readonly string[];
   selectedLocalId?: string;
+  dailyCards?: readonly DailyEinkCard[];
+  stateVersion?: number;
   cursor?: number;
   limit?: number;
   generatedAt?: string;
+}
+
+export interface DailyEinkCard {
+  localId: string;
+  contentType: "daily_plan_item" | "daily_summary";
+  title: string;
+  body: string;
+  prompt?: string;
+  actions: string[];
+  taskRevision?: string;
+  updatedAt?: string;
 }
 
 /**
@@ -26,6 +39,7 @@ export function buildExternalEinkPlaylistPayload(
   const generatedAt = options.generatedAt ?? new Date().toISOString();
   const questionById = new Map(questions.map((question) => [question.id, question]));
   const echoByLocalId = new Map(echoCards.map((card) => [echoCardLocalId(card), card]));
+  const dailyByLocalId = new Map((options.dailyCards ?? []).map((card) => [card.localId, card]));
   const base = buildExternalEinkPayload(
     vaultName,
     [...questions],
@@ -40,7 +54,7 @@ export function buildExternalEinkPlaylistPayload(
   }]));
 
   const isKnown = (localId: string): boolean =>
-    echoByLocalId.has(localId) || questionById.has(localId);
+    dailyByLocalId.has(localId) || echoByLocalId.has(localId) || questionById.has(localId);
   const canonicalIds = unique(options.orderedLocalIds).filter(isKnown);
   const requestedSelectedId = options.selectedLocalId?.trim();
   const selectedId = requestedSelectedId && isKnown(requestedSelectedId)
@@ -53,6 +67,8 @@ export function buildExternalEinkPlaylistPayload(
     ? unique([selectedId, ...canonicalIds])
     : [...canonicalIds];
   const allFocus = deliveryIds.flatMap((localId): ExportEinkPayload["focus"] => {
+    const daily = dailyByLocalId.get(localId);
+    if (daily) return [dailyFocus(daily)];
     const echo = echoByLocalId.get(localId);
     if (echo) return [echoFocus(echo)];
     const question = questionFocusById.get(localId);
@@ -69,7 +85,7 @@ export function buildExternalEinkPlaylistPayload(
     ...base,
     focus,
     playlist: {
-      order: "echo_then_questions",
+      order: dailyByLocalId.size > 0 ? "daily_then_echo_then_questions" : "echo_then_questions",
       cursor,
       total,
       queueTotal: canonicalIds.length,
@@ -80,8 +96,28 @@ export function buildExternalEinkPlaylistPayload(
       nextCursor: total > 0 ? (cursor + 1) % total : 0,
       previousCursor: total > 0 ? (cursor - 1 + total) % total : 0,
       selectedId,
-      revision: playlistRevision(canonicalIds, questionById, echoByLocalId)
+      revision: playlistRevision(canonicalIds, questionById, echoByLocalId, dailyByLocalId),
+      ...(Number.isSafeInteger(options.stateVersion) && (options.stateVersion ?? 0) > 0
+        ? { stateVersion: options.stateVersion }
+        : {})
     }
+  };
+}
+
+function dailyFocus(card: DailyEinkCard): ExportEinkPayload["focus"][number] {
+  return {
+    id: card.localId,
+    title: card.title,
+    body: card.body,
+    question: card.body,
+    article: card.contentType === "daily_summary" ? "Daily Summary" : "Daily Plan",
+    lane: "write",
+    kind: "other",
+    nextAction: card.prompt,
+    sourceType: card.contentType === "daily_summary" ? "daily-summary" : "daily-plan",
+    displayCategory: "daily",
+    contentType: card.contentType,
+    actions: [...card.actions]
   };
 }
 
@@ -127,15 +163,19 @@ function unique(values: readonly string[]): string[] {
 function playlistRevision(
   orderedIds: readonly string[],
   questions: ReadonlyMap<string, OpenQuestion>,
-  echoCards: ReadonlyMap<string, EchoCard>
+  echoCards: ReadonlyMap<string, EchoCard>,
+  dailyCards: ReadonlyMap<string, DailyEinkCard>
 ): string {
   const input = orderedIds.map((id) => {
     const question = questions.get(id);
     const echo = echoCards.get(id);
+    const daily = dailyCards.get(id);
     return question
       ? `${id}:${question.updatedAt ?? ""}:${question.status}`
       : echo
         ? `${id}:${echo.updatedAt}:${echo.content}`
+        : daily
+          ? `${id}:${daily.taskRevision ?? daily.updatedAt ?? ""}:${daily.body}`
         : id;
   }).join("\u0000");
   let hash = 0x811c9dc5;

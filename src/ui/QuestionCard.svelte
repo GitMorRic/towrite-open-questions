@@ -7,6 +7,7 @@
     Bell,
     BellOff,
     Brain,
+    CalendarPlus,
     CalendarClock,
     Check,
     CheckCircle2,
@@ -779,6 +780,15 @@
     }
   }
 
+  async function addToDaily() {
+    deviceSendError = "";
+    try {
+      await api.addQuestionToDaily(question.id);
+    } catch (error) {
+      deviceSendError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
   async function toggleDeviceLibrary() {
     await api.toggleQuestionInDeviceLibrary(question.id);
   }
@@ -1209,6 +1219,9 @@
     </button>
     <button type="button" title={copy.answerCapture} aria-label={copy.answerCapture} aria-haspopup="dialog" on:click={() => api.openCaptureForQuestion(question.id)}>
       <MessageSquarePlus size={15} />
+    </button>
+    <button type="button" title={language === "zh" ? "加入今日计划" : "Add to today's plan"} on:click={addToDaily}>
+      <CalendarPlus size={15} />
     </button>
     {#if isMarkdownSource && !["candidate", "resolved", "ignored"].includes(question.status)}
       <button type="button" class:towrite-ai-loading={hubSending} title={canManuallySendDeviceLibraryEntry(deviceLibraryEntry) ? (hubSending ? copy.sendingToScreen : copy.sendToScreen) : (deviceLibraryEntry?.exclusionReason === "privacy" ? "Excluded by Device Hub privacy rules" : copy.sendToScreen)} on:click={sendToDeviceHub} on:contextmenu={showDeviceLibraryMenu} disabled={hubSending || !canManuallySendDeviceLibraryEntry(deviceLibraryEntry)}>

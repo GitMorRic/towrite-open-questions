@@ -3,9 +3,11 @@ import type { EchoCard } from "./echo-cards";
 import type { DeviceLibraryEntry } from "./library";
 import {
   buildDevicePagingPool,
+  dailyDevicePagingLocalId,
   devicePagingPosition,
   nextDevicePagingItem,
-  prioritizeDevicePagingPool
+  prioritizeDevicePagingPool,
+  type DailyDevicePagingItem
 } from "./device-paging";
 
 describe("device paging", () => {
@@ -38,6 +40,30 @@ describe("device paging", () => {
     );
 
     expect(pool).toEqual([`echo-card:${first.id}`, "question-a"]);
+  });
+
+  it("adds only unfinished Daily rotation cards ahead of the legacy queue", () => {
+    const daily: DailyDevicePagingItem[] = [
+      dailyItem("morning"),
+      dailyItem("done", { status: "done" }),
+      dailyItem("skipped", { status: "skipped" }),
+      dailyItem("manual", { devicePolicy: "manual" }),
+      dailyItem("2026-07-23", { contentType: "daily_summary" })
+    ];
+    const pool = buildDevicePagingPool(
+      [echoCard(1)],
+      [entry("question-a")],
+      () => true,
+      daily
+    );
+
+    expect(pool).toEqual([
+      "daily-plan:morning",
+      "daily-summary:2026-07-23",
+      `echo-card:${echoId(1)}`,
+      "question-a"
+    ]);
+    expect(dailyDevicePagingLocalId(daily[0])).toBe("daily-plan:morning");
   });
 
   it("selects the item after current and wraps the final item", () => {
@@ -74,6 +100,15 @@ describe("device paging", () => {
       totalPages: 3,
       inQueue: false
     });
+    expect(devicePagingPosition(["daily-plan:a"], "daily-plan:a")).toMatchObject({
+      dailySourceType: "daily-plan",
+      pageNumber: 1,
+      inQueue: true
+    });
+    expect(devicePagingPosition([], "daily-summary:2026-07-23")).toMatchObject({
+      dailySourceType: "daily-summary",
+      inQueue: false
+    });
     expect(devicePagingPosition([], undefined)).toEqual({
       localId: undefined,
       sourceType: undefined,
@@ -103,6 +138,19 @@ describe("device paging", () => {
 
 function echoId(index: number): string {
   return `echo_${index.toString(36).padStart(22, "a")}`;
+}
+
+function dailyItem(
+  id: string,
+  patch: Partial<DailyDevicePagingItem> = {}
+): DailyDevicePagingItem {
+  return {
+    id,
+    contentType: "daily_plan_item",
+    devicePolicy: "rotation",
+    status: "open",
+    ...patch
+  };
 }
 
 function echoCard(index: number, patch: Partial<EchoCard> = {}): EchoCard {

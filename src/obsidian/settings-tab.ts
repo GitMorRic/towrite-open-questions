@@ -47,7 +47,7 @@ import {
 import type { HubContentAction, HubContentType } from "../hub/types";
 import type { SmallScreenConnectionStatus } from "../device-status";
 
-type SettingsTabId = "general" | "cards" | "capture" | "inbox" | "learning" | "workflow" | "api" | "push" | "quote0" | "ai" | "backend" | "hub" | "about";
+type SettingsTabId = "general" | "cards" | "capture" | "inbox" | "daily" | "learning" | "workflow" | "api" | "push" | "quote0" | "ai" | "backend" | "hub" | "about";
 
 const ABOUT_LINKS = {
   repository: "https://github.com/GitMorRic/towrite-open-questions",
@@ -318,6 +318,7 @@ const COPY: Record<ToWriteLanguage, SettingCopy> = {
       "cards": "卡片与编辑器",
       "capture": "记录",
       "inbox": "Inbox / 卡片",
+      "daily": "今日",
       "learning": "建议与习惯",
       "workflow": "Workflow",
       "api": "API 与设备",
@@ -560,6 +561,7 @@ const COPY: Record<ToWriteLanguage, SettingCopy> = {
       "cards": "Cards & Editor",
       "capture": "Capture",
       "inbox": "Inbox / Cards",
+      "daily": "Today",
       "learning": "Suggestions & Habits",
       "workflow": "Workflow",
       "api": "API & Device",
@@ -897,6 +899,8 @@ export class ToWriteSettingTab extends PluginSettingTab {
       this.renderCaptureSettings(panel);
     } else if (this.activeSettingsTab === "inbox") {
       this.renderInboxSettings(panel);
+    } else if (this.activeSettingsTab === "daily") {
+      this.renderDailySettings(panel);
     } else if (this.activeSettingsTab === "learning") {
       this.renderLearningSettings(panel, copy);
     } else if (this.activeSettingsTab === "workflow") {
@@ -924,6 +928,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
       { id: "cards", label: copy.tabs.cards },
       { id: "capture", label: copy.tabs.capture },
       { id: "inbox", label: copy.tabs.inbox },
+      { id: "daily", label: copy.tabs.daily },
       { id: "learning", label: copy.tabs.learning },
       { id: "workflow", label: copy.tabs.workflow },
       { id: "api", label: copy.tabs.api },
@@ -1352,6 +1357,129 @@ export class ToWriteSettingTab extends PluginSettingTab {
     }
 
     this.renderDeviceLibrarySettings(containerEl, zh);
+  }
+
+  private renderDailySettings(containerEl: HTMLElement): void {
+    const zh = this.plugin.settings.language !== "en";
+    const daily = this.plugin.settings.daily;
+
+    new Setting(containerEl)
+      .setName(zh ? "今日计划与统计" : "Daily plan and activity")
+      .setDesc(zh
+        ? "任务正文保存在 Daily Markdown；统计只保存数字和本地事件元数据，不记录按键或正文。"
+        : "Tasks remain in Daily Markdown. Activity stores counts and local event metadata, never keystrokes or note bodies.")
+      .addToggle((toggle) => toggle.setValue(daily.enabled).onChange(async (value) => {
+        daily.enabled = value;
+        await this.plugin.savePluginData();
+        await this.plugin.refreshDailyDashboard();
+        this.refreshSettingsUi();
+      }));
+
+    new Setting(containerEl)
+      .setName(zh ? "日记目录" : "Daily note folder")
+      .setDesc(zh ? "默认使用 Daily/YYYY-MM-DD.md。" : "Defaults to Daily/YYYY-MM-DD.md.")
+      .addText((text) => text.setValue(daily.dailyNoteRoot).setPlaceholder("Daily").onChange(async (value) => {
+        daily.dailyNoteRoot = value.trim().replace(/\\/gu, "/").replace(/^\/+|\/+$/gu, "") || "Daily";
+        await this.plugin.savePluginData();
+        await this.plugin.refreshDailyDashboard();
+      }));
+
+    new Setting(containerEl)
+      .setName(zh ? "计划与总结区段" : "Plan and summary headings")
+      .setDesc(zh ? "普通 Tasks 兼容复选框写入计划区；总结仅在点击确认后写回。" : "Tasks-compatible checkboxes use the plan heading; summaries are written only after confirmation.")
+      .addText((text) => text.setValue(daily.todoHeading).setPlaceholder("ToDo").onChange(async (value) => {
+        daily.todoHeading = value.replace(/^#+\s*/u, "").trim() || "ToDo";
+        await this.plugin.savePluginData();
+        await this.plugin.refreshDailyDashboard();
+      }))
+      .addText((text) => text.setValue(daily.summaryHeading).setPlaceholder(zh ? "今日总结" : "Daily Summary").onChange(async (value) => {
+        daily.summaryHeading = value.replace(/^#+\s*/u, "").trim() || (zh ? "今日总结" : "Daily Summary");
+        await this.plugin.savePluginData();
+        await this.plugin.refreshDailyDashboard();
+      }));
+
+    new Setting(containerEl)
+      .setName(zh ? "今日写作统计" : "Daily writing metrics")
+      .setDesc(zh ? "在 Vault modify 后后台计算正向新增和净增；不会在 editor-change 中读文件。" : "Calculates positive and net writing units after debounced Vault changes, never in editor-change.")
+      .addToggle((toggle) => toggle.setValue(daily.activityTracking).onChange(async (value) => {
+        daily.activityTracking = value;
+        await this.plugin.savePluginData();
+        await this.plugin.refreshDailyDashboard();
+      }));
+
+    new Setting(containerEl)
+      .setName(zh ? "原始事件保留天数" : "Raw event retention")
+      .setDesc(zh ? "每日聚合不会自动删除；原始去重事件默认保留 30 天。" : "Daily aggregates remain until cleared; raw dedupe events default to 30 days.")
+      .addText((text) => text.setValue(String(daily.rawEventRetentionDays)).onChange(async (value) => {
+        daily.rawEventRetentionDays = clampInteger(value, 1, 365, 30);
+        await this.plugin.savePluginData();
+        await this.plugin.refreshDailyDashboard();
+      }));
+
+    new Setting(containerEl)
+      .setName(zh ? "录音附件目录" : "Voice attachment folder")
+      .setDesc(zh ? "转写失败时仍保存音频，并由 Capture 写入待转写链接。" : "Audio remains available with a pending-transcription link if transcription fails.")
+      .addText((text) => text.setValue(daily.attachmentFolder).setPlaceholder("00-Raw_Materials/Voice_Captures").onChange(async (value) => {
+        daily.attachmentFolder = value.trim().replace(/\\/gu, "/").replace(/^\/+|\/+$/gu, "") || "00-Raw_Materials/Voice_Captures";
+        await this.plugin.savePluginData();
+      }));
+
+    new Setting(containerEl)
+      .setName(zh ? "DailyOps 写入者" : "DailyOps writer")
+      .setDesc(zh ? "自动模式在可信 Backend 健康时委托 Backend；离线时由插件安全回退。" : "Auto delegates to a healthy trusted Backend and safely falls back to the plugin while offline.")
+      .addDropdown((dropdown) => dropdown
+        .addOption("auto", zh ? "自动" : "Auto")
+        .addOption("local", zh ? "仅插件" : "Plugin only")
+        .addOption("backend", zh ? "仅 Backend" : "Backend only")
+        .setValue(daily.writerMode)
+        .onChange(async (value) => {
+          daily.writerMode = value === "local" || value === "backend" ? value : "auto";
+          await this.plugin.savePluginData();
+          await this.plugin.refreshDailyDashboard();
+        }));
+
+    new Setting(containerEl)
+      .setName(zh ? "允许今日任务进入设备队列" : "Include daily tasks on devices")
+      .setDesc(zh ? "只发送经过隐私过滤的显示快照；测试样板不会进入真实队列。" : "Only privacy-filtered display snapshots are sent; presets never enter the real queue.")
+      .addToggle((toggle) => toggle.setValue(daily.includeInDeviceCandidates).onChange(async (value) => {
+        daily.includeInDeviceCandidates = value;
+        await this.plugin.savePluginData();
+        await this.plugin.refreshDailyDashboard();
+        void this.plugin.syncDeviceHub(false);
+      }));
+
+    new Setting(containerEl)
+      .setName(zh ? "今日总结设备策略" : "Daily summary device policy")
+      .setDesc(zh
+        ? "默认不进入真实队列；仍可在“今日”面板手动发送。选择轮播或 Agent 后，才会自动成为设备候选。"
+        : "Defaults to no real queue entry; Today can still send it manually. Rotation or Agent explicitly enables automatic candidacy.")
+      .addDropdown((dropdown) => dropdown
+        .addOption("none", zh ? "不自动发送（默认）" : "No automatic delivery (default)")
+        .addOption("manual", zh ? "仅作为手动候选" : "Manual candidate only")
+        .addOption("rotation", zh ? "加入轮播" : "Add to rotation")
+        .addOption("agent", zh ? "允许 Agent 选择" : "Allow Agent selection")
+        .setValue(daily.summaryDevicePolicy)
+        .onChange(async (value) => {
+          daily.summaryDevicePolicy = value === "manual" || value === "rotation" || value === "agent"
+            ? value
+            : "none";
+          await this.plugin.savePluginData();
+          await this.plugin.refreshDailyDashboard();
+          void this.plugin.syncDeviceHub(false);
+        }));
+
+    new Setting(containerEl)
+      .setName(zh ? "统计数据" : "Activity data")
+      .setDesc(zh ? "可导出用户可读 JSON，或清空事件与每日聚合；不会影响 Daily Markdown 任务。" : "Export readable JSON or clear events and aggregates without changing Daily Markdown tasks.")
+      .addButton((button) => button.setButtonText(zh ? "导出" : "Export").onClick(async () => {
+        await this.plugin.exportDailyActivity();
+        new Notice(zh ? "今日统计已导出。" : "Daily activity exported.");
+      }))
+      .addButton((button) => button.setWarning().setButtonText(zh ? "清空统计" : "Clear metrics").onClick(async () => {
+        await this.plugin.clearDailyActivity();
+        new Notice(zh ? "已清空今日统计；Daily 任务未修改。" : "Daily metrics cleared; Markdown tasks were not changed.");
+        this.refreshSettingsUi();
+      }));
   }
 
   private renderDeviceLibrarySettings(containerEl: HTMLElement, zh: boolean): void {

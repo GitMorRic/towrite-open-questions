@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { App } from "obsidian";
 import {
   CAPTURE_BRIDGE_PROTOCOL_VERSION,
+  CAPTURE_BRIDGE_PROTOCOL_V2,
   CaptureBridgeCoordinator,
   CaptureBridgeServer,
   CapturePluginBridgeClient,
@@ -27,6 +28,15 @@ describe("CaptureBridgeServer", () => {
     await invoke(server, new FakeRequest("GET", "/api/v1/integrations/capture/v1/capabilities", "", "::ffff:127.0.0.1", token), allowed);
     expect(allowed.statusCode).toBe(200);
     expect(JSON.parse(allowed.body)).toMatchObject({ protocolVersion: CAPTURE_BRIDGE_PROTOCOL_VERSION, handoffs: true });
+
+    const v2 = new FakeResponse();
+    await invoke(server, new FakeRequest("GET", "/api/v1/integrations/capture/v2/capabilities", "", "127.0.0.1", token), v2);
+    expect(JSON.parse(v2.body)).toMatchObject({
+      protocolVersion: CAPTURE_BRIDGE_PROTOCOL_V2,
+      voiceCapture: true,
+      assetUpload: true,
+      taskComplete: true
+    });
   });
 
   it("returns 404 for unknown routes and 413 before parsing oversized JSON", async () => {

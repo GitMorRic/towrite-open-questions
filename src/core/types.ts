@@ -252,14 +252,14 @@ export interface ExportEinkPayload {
     relatedConcepts?: string[];
     openUri?: string;
     /** Optional V2 extension used by the local ESP32 compatibility playlist. */
-    sourceType?: "question" | "echo";
+    sourceType?: "question" | "echo" | "daily-plan" | "daily-summary";
     /**
      * Presentation category for small-screen clients. `lane` remains in the
      * payload for backwards compatibility, but Echo cards must not be
      * presented or counted as ToWrite merely because their legacy lane is
      * `write`.
      */
-    displayCategory?: "tothink" | "towrite" | "echo";
+    displayCategory?: "tothink" | "towrite" | "echo" | "daily";
     contentType?: string;
     actions?: string[];
   }>;
@@ -268,7 +268,7 @@ export interface ExportEinkPayload {
    * ignore this object and continue rendering `focus`.
    */
   playlist?: {
-    order: "echo_then_questions";
+    order: "echo_then_questions" | "daily_then_echo_then_questions";
     cursor: number;
     /** Number of cards in this compatibility response order. */
     total: number;
@@ -285,5 +285,7 @@ export interface ExportEinkPayload {
     previousCursor: number;
     selectedId?: string;
     revision: string;
+    /** Monotonic local desired-state version used by guarded device actions. */
+    stateVersion?: number;
   };
 }

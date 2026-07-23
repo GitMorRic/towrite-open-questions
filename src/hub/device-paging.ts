@@ -3,11 +3,30 @@ import { echoCardLocalId } from "./echo-cards";
 import type { DeviceLibraryEntry } from "./library";
 
 export type DevicePagingAvailability = (localId: string) => boolean;
-export type DevicePagingSourceType = "echo" | "question";
+export type DevicePagingSourceType = "daily-plan" | "daily-summary" | "echo" | "question";
+export type DevicePagingLegacySourceType = Extract<DevicePagingSourceType, "echo" | "question">;
+export type DevicePagingDailySourceType = Extract<DevicePagingSourceType, "daily-plan" | "daily-summary">;
+export type DailyDevicePolicy = "none" | "manual" | "scheduled" | "rotation" | "agent";
+export type DailyDevicePagingContentType = "daily_plan_item" | "daily_summary";
+
+export interface DailyDevicePagingItem {
+  /** DailyPlanItem id or a stable summary id such as its local date. */
+  id: string;
+  contentType: DailyDevicePagingContentType;
+  devicePolicy: DailyDevicePolicy;
+  /** Summaries may omit status; completed or skipped plan items are excluded. */
+  status?: string;
+}
+
+export const DAILY_PLAN_LOCAL_ID_PREFIX = "daily-plan:";
+export const DAILY_SUMMARY_LOCAL_ID_PREFIX = "daily-summary:";
 
 export interface DevicePagingPosition {
   localId?: string;
-  sourceType?: DevicePagingSourceType;
+  /** Legacy field consumed by existing Echo/question status surfaces. */
+  sourceType?: DevicePagingLegacySourceType;
+  /** Daily source is separate so old discriminated unions remain compatible. */
+  dailySourceType?: DevicePagingDailySourceType;
   pageIndex?: number;
   pageNumber?: number;
   totalPages: number;
@@ -17,13 +36,15 @@ export interface DevicePagingPosition {
 /**
  * Builds the stable page order used by a device's "next" action.
  *
- * Echo cards are settings-backed saved cards, so their input order is the
- * user's configured order. They intentionally precede annotation entries.
+ * Daily rotation items lead the queue, followed by settings-backed Echo cards
+ * and then annotation entries. Explicit manual/scheduled/agent Daily items are
+ * promoted by the caller when selected; they do not silently join rotation.
  */
 export function buildDevicePagingPool(
   echoCards: readonly EchoCard[],
   libraryEntries: readonly DeviceLibraryEntry[],
-  isAvailable: DevicePagingAvailability = () => true
+  isAvailable: DevicePagingAvailability = () => true,
+  dailyItems: readonly DailyDevicePagingItem[] = []
 ): string[] {
   const result: string[] = [];
   const seen = new Set<string>();
@@ -33,6 +54,10 @@ export function buildDevicePagingPool(
     result.push(localId);
   };
 
+  for (const item of dailyItems) {
+    if (item.devicePolicy !== "rotation" || isFinishedDailyItem(item)) continue;
+    append(dailyDevicePagingLocalId(item));
+  }
   for (const card of echoCards) {
     if (!card.inLibrary || !card.rotationEligible) continue;
     append(echoCardLocalId(card));
@@ -68,16 +93,37 @@ export function devicePagingPosition(
   const localId = currentId?.trim() || undefined;
   const pageIndex = localId ? pool.indexOf(localId) : -1;
   const inQueue = pageIndex >= 0;
+  const resolvedSourceType = localId ? devicePagingSourceType(localId) : undefined;
+  const source = resolvedSourceType === "daily-plan" || resolvedSourceType === "daily-summary"
+    ? { dailySourceType: resolvedSourceType }
+    : { sourceType: resolvedSourceType };
   return {
     localId,
-    sourceType: localId
-      ? (localId.startsWith("echo-card:") ? "echo" : "question")
-      : undefined,
+    ...source,
     pageIndex: inQueue ? pageIndex : undefined,
     pageNumber: inQueue ? pageIndex + 1 : undefined,
     totalPages: pool.length,
     inQueue
   };
+}
+
+export function dailyDevicePagingLocalId(
+  item: Pick<DailyDevicePagingItem, "id" | "contentType">
+): string {
+  const id = item.id.trim();
+  if (!id) return "";
+  return `${item.contentType === "daily_summary" ? DAILY_SUMMARY_LOCAL_ID_PREFIX : DAILY_PLAN_LOCAL_ID_PREFIX}${id}`;
+}
+
+export function devicePagingSourceType(localId: string): DevicePagingSourceType {
+  if (localId.startsWith(DAILY_PLAN_LOCAL_ID_PREFIX)) return "daily-plan";
+  if (localId.startsWith(DAILY_SUMMARY_LOCAL_ID_PREFIX)) return "daily-summary";
+  return localId.startsWith("echo-card:") ? "echo" : "question";
+}
+
+function isFinishedDailyItem(item: DailyDevicePagingItem): boolean {
+  return item.contentType === "daily_plan_item"
+    && (item.status === "done" || item.status === "skipped");
 }
 
 /**

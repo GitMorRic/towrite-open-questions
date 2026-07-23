@@ -54,7 +54,7 @@ export interface SmallScreenConnectionStatus {
     localId?: string;
     title?: string;
     contentType?: string;
-    sourceType?: "echo" | "question";
+    sourceType?: "echo" | "question" | "daily-plan" | "daily-summary";
     lane?: "think" | "write";
     pageIndex?: number;
     pageNumber?: number;

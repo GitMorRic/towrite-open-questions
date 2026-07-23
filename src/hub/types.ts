@@ -14,9 +14,11 @@ export type HubContentType =
   | "stale_note_nudge"
   | "character_letter"
   | "human_message"
-  | "wellbeing_reminder";
+  | "wellbeing_reminder"
+  | "daily_plan_item"
+  | "daily_summary";
 
-export type HubContentAction = "respond" | "capture" | "open" | "next" | "useful" | "later" | "skip";
+export type HubContentAction = "respond" | "capture" | "open" | "next" | "useful" | "later" | "skip" | "complete";
 export type HubPolicyBasis = "general" | "due" | "accepted_habit";
 export type HubSensitivity = "normal" | "private";
 
@@ -42,6 +44,8 @@ export interface HubCandidate {
   policyBasis?: HubPolicyBasis;
   urgency?: number;
   contextStates?: HubContextState[];
+  /** Earliest server time for automatic selection; manual sends may override it. */
+  availableAt?: string;
   expiresAt?: string;
 }
 
@@ -253,4 +257,43 @@ export interface HubPendingCapture {
 export interface HubCaptureAckReceipt {
   captureId: string;
   status: "written_to_vault";
+}
+
+export type HubDeviceEventAction = "useful" | "later" | "skip" | "complete";
+export type HubDeviceEventAckStatus = "applied" | "conflict" | "ignored";
+
+/**
+ * A device-side action awaiting local Connector processing. This contract is
+ * deliberately limited to immutable Hub identifiers and opaque Connector
+ * references: it never contains display text, note text, or a Vault path.
+ */
+export interface HubPendingDeviceEvent {
+  eventId: string;
+  action: HubDeviceEventAction;
+  deviceId: string;
+  selectionId: string;
+  stateVersion: number;
+  contentId: string;
+  revisionId: string;
+  contentType: HubContentType;
+  candidateRef?: string;
+  sourceRef?: string;
+  writeTargetRef?: string;
+  createdAt: string;
+}
+
+export interface HubDeviceEventAcknowledgement {
+  protocolVersion?: HubProtocolVersion;
+  status: HubDeviceEventAckStatus;
+  /** New local task revision after an applied transition; never a file path. */
+  resultRevision?: string;
+}
+
+export interface HubDeviceEventAckReceipt {
+  protocolVersion: string;
+  eventId: string;
+  acknowledged: boolean;
+  duplicate: boolean;
+  status: HubDeviceEventAckStatus;
+  acknowledgedAt?: string;
 }

@@ -396,12 +396,12 @@ export function echoCardActionLabel(
   locale: "zh-CN" | "en" = "zh-CN"
 ): string {
   if (locale === "en") {
-    return ({ respond: "Respond", capture: "Record", open: "Open", next: "Next", useful: "Save", later: "Later", skip: "Skip" } as const)[action];
+    return ({ respond: "Respond", capture: "Record", open: "Open", next: "Next", useful: "Save", later: "Later", skip: "Skip", complete: "Complete" } as const)[action];
   }
   if (action === "skip" && card?.disclosure === "ai_inference") return "不对";
   if (action === "skip" && card?.disclosure === "ai_perspective") return "不像她";
   if (action === "useful" && card?.disclosure === "ai_simulation") return "保留可能";
-  return ({ respond: "回答", capture: "录下", open: "打开", next: "下一条", useful: "收藏", later: "稍后", skip: "忽略" } as const)[action];
+  return ({ respond: "回答", capture: "录下", open: "打开", next: "下一条", useful: "收藏", later: "稍后", skip: "忽略", complete: "完成" } as const)[action];
 }
 
 export function echoCardActionLabels(
@@ -521,7 +521,9 @@ function defaultTypeLabel(type: HubContentType): string {
     stale_note_nudge: "久未继续",
     character_letter: "角色来信",
     human_message: "来信",
-    wellbeing_reminder: "轻提醒"
+    wellbeing_reminder: "轻提醒",
+    daily_plan_item: "今日计划",
+    daily_summary: "今日总结"
   } as const)[type];
 }
 

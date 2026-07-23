@@ -10,6 +10,7 @@ export interface LocalTapSelectionServiceOptions {
 
 export interface LocalTapSelectionState {
   localSnapshot?: TapSelectionSnapshot;
+  localDisplayedSnapshot?: TapSelectionSnapshot;
   contentSnapshots: Array<{ contentId: string; snapshot: TapSelectionSnapshot }>;
 }
 
@@ -21,6 +22,7 @@ export interface LocalTapSelectionState {
 export class LocalTapSelectionService {
   private hubState?: HubDeviceState;
   private localSnapshot?: TapSelectionSnapshot;
+  private localDisplayedSnapshot?: TapSelectionSnapshot;
   private readonly contentSnapshots = new Map<string, TapSelectionSnapshot>();
 
   constructor(private readonly options: LocalTapSelectionServiceOptions) {}
@@ -40,7 +42,22 @@ export class LocalTapSelectionService {
   /** Returns the local card that the Hub most recently acknowledged on screen. */
   currentDisplayedLocalId(): string | undefined {
     const contentId = this.hubState?.displayed?.contentId;
-    return contentId ? this.contentSnapshots.get(contentId)?.localId : undefined;
+    return (contentId ? this.contentSnapshots.get(contentId)?.localId : undefined)
+      || this.localDisplayedSnapshot?.localId;
+  }
+
+  /** Authenticated lookup for delayed Hub events; never resolves from a path supplied by the Hub. */
+  async snapshotForContent(contentId: string): Promise<TapSelectionSnapshot | undefined> {
+    const snapshot = this.contentSnapshots.get(contentId.trim());
+    if (!snapshot) return undefined;
+    await this.options.validateSnapshot?.(snapshot);
+    return clone(snapshot);
+  }
+
+  async recordLocalDisplayed(localId: string): Promise<void> {
+    const snapshot = await this.options.createSnapshot({ source: "displayed", localId });
+    this.localDisplayedSnapshot = clone(snapshot);
+    await this.options.onStateChanged?.();
   }
 
   async rememberHubSelection(localId: string, state: HubDeviceState): Promise<void> {
@@ -129,6 +146,11 @@ export class LocalTapSelectionService {
       });
     }
 
+    if (this.localDisplayedSnapshot) {
+      await this.options.validateSnapshot?.(this.localDisplayedSnapshot);
+      return { ...clone(this.localDisplayedSnapshot), source: "displayed" };
+    }
+
     const selected = this.hubState?.selected;
     if (selected) {
       const remembered = this.contentSnapshots.get(selected.selectedContentId);
@@ -157,6 +179,7 @@ export class LocalTapSelectionService {
   async clear(): Promise<void> {
     this.hubState = undefined;
     this.localSnapshot = undefined;
+    this.localDisplayedSnapshot = undefined;
     this.contentSnapshots.clear();
     await this.options.onStateChanged?.();
   }
@@ -164,6 +187,7 @@ export class LocalTapSelectionService {
   serialize(): LocalTapSelectionState {
     return {
       localSnapshot: this.localSnapshot ? clone(this.localSnapshot) : undefined,
+      localDisplayedSnapshot: this.localDisplayedSnapshot ? clone(this.localDisplayedSnapshot) : undefined,
       contentSnapshots: [...this.contentSnapshots.entries()].map(([contentId, snapshot]) => ({
         contentId,
         snapshot: clone(snapshot)
@@ -173,6 +197,9 @@ export class LocalTapSelectionService {
 
   restore(value: LocalTapSelectionState | undefined): void {
     this.localSnapshot = isSnapshot(value?.localSnapshot) ? clone(value.localSnapshot) : undefined;
+    this.localDisplayedSnapshot = isSnapshot(value?.localDisplayedSnapshot)
+      ? clone(value.localDisplayedSnapshot)
+      : undefined;
     this.contentSnapshots.clear();
     const items = Array.isArray(value?.contentSnapshots) ? value.contentSnapshots : [];
     for (const item of items) {

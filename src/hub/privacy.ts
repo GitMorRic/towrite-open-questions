@@ -38,6 +38,8 @@ export interface LocalHubCandidate {
   policyBasis?: HubPolicyBasis;
   urgency?: number;
   contextStates?: HubContextState[];
+  /** Future one-shot schedules can be uploaded early without becoming selectable. */
+  availableAt?: string;
   expiresAt?: string;
   privacy?: {
     private?: boolean;
@@ -137,6 +139,7 @@ async function sanitizeCandidate(candidate: LocalHubCandidate, secret: Uint8Arra
     policyBasis: normalizePolicyBasis(candidate.policyBasis),
     urgency: Number.isFinite(candidate.urgency) ? clamp(candidate.urgency ?? 0, 0, 1) : 0,
     contextStates: normalizeContextStates(candidate.contextStates),
+    availableAt: normalizeIsoDate(candidate.availableAt),
     expiresAt: normalizeIsoDate(candidate.expiresAt)
   };
 }

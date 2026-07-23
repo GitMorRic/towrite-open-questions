@@ -1,0 +1,45 @@
+import type {
+  DailyDashboardSnapshot,
+  DailyDevicePolicy,
+  DailyPlanCreateInput,
+  DailyPlanItem,
+  DailyPlanUpdate,
+  DailySummary,
+  DailyTaskRevision
+} from "../daily/types";
+
+export type {
+  DailyDashboardSnapshot,
+  DailyDevicePolicy,
+  DailyPlanCreateInput,
+  DailyPlanItem,
+  DailyPlanItemKind,
+  DailyPlanStatus,
+  DailyPlanUpdate,
+  DailyTaskRevision
+} from "../daily/types";
+
+/** UI-only provenance. The Markdown written by DailyPlanService remains deterministic. */
+export type DailySummaryPresentation = DailySummary & {
+  source?: "rules" | "ai";
+};
+
+/**
+ * Narrow bridge between the Svelte view and the plugin services.
+ *
+ * Keeping the methods optional lets older installations render the Today
+ * overview read-only while the global Workflow Dashboard remains available.
+ */
+export interface DailyDashboardAdapter {
+  getSnapshot(): DailyDashboardSnapshot | undefined | Promise<DailyDashboardSnapshot | undefined>;
+  createItem?(input: DailyPlanCreateInput): void | Promise<void>;
+  updateItem?(id: string, revision: DailyTaskRevision, patch: DailyPlanUpdate): void | Promise<void>;
+  completeItem?(id: string, revision: DailyTaskRevision): void | Promise<void>;
+  reopenItem?(id: string, revision: DailyTaskRevision): void | Promise<void>;
+  writeSummary?(summary: DailySummary): void | Promise<void>;
+  generateSummary?(mode: "rules" | "ai"): DailySummaryPresentation | Promise<DailySummaryPresentation>;
+  sendItemToDevice?(id: string, revision: DailyTaskRevision): void | Promise<void>;
+  sendSummaryToDevice?(): void | Promise<void>;
+  openItem?(item: DailyPlanItem): void | Promise<void>;
+  subscribe?(listener: () => void): (() => void);
+}

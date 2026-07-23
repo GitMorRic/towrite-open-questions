@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   CAPTURE_BRIDGE_PROTOCOL_VERSION,
+  CAPTURE_BRIDGE_PROTOCOL_V2,
   CaptureBridgeCoordinator,
   LocalTapSelectionService,
   generateCaptureTapId,
@@ -83,6 +84,93 @@ describe("CaptureBridgeCoordinator", () => {
 
     now = new Date("2026-07-20T02:02:00.000Z");
     await expect(() => coordinator.getHandoff(handoff.handoffId)).toThrow(/expired/iu);
+  });
+
+  it("supports v2 audio staging and guarded Daily completion without weakening v1", async () => {
+    const tapId = generateCaptureTapId();
+    const target = candidate("existingNote", "append", "Daily/2026-07-23.md");
+    const commit = vi.fn(async (snapshot: TapSelectionSnapshot, request: CaptureBridgeCommitRequest, assets = []) => ({
+      schemaVersion: 1 as const,
+      captureId: request.captureId,
+      candidateId: snapshot.candidate.id,
+      finalPath: snapshot.candidate.path,
+      action: snapshot.candidate.action,
+      createdAt: "2026-07-23T08:00:00.000Z",
+      targetRevision: "after",
+      openUri: "obsidian://open?vault=Test&file=Daily",
+      idempotent: false,
+      assetCount: assets.length
+    }));
+    const complete = vi.fn(async () => ({
+      path: "Daily/2026-07-23.md",
+      completedAt: "2026-07-23T08:01:00.000Z"
+    }));
+    const selection = new LocalTapSelectionService({
+      getFallbackLocalId: () => "daily-plan:daily_test",
+      createSnapshot: async (): Promise<TapSelectionSnapshot> => ({
+        protocolVersion: CAPTURE_BRIDGE_PROTOCOL_V2,
+        snapshotId: "snp_daily",
+        source: "local",
+        localId: "daily-plan:daily_test",
+        createdAt: "2026-07-23T08:00:00.000Z",
+        contentType: "daily_plan_item",
+        title: "Today's task",
+        prompt: "Record or complete",
+        allowedActions: ["capture", "complete", "later"],
+        intent: "new",
+        candidate: target,
+        sourceContext: {
+          file: "Daily/2026-07-23.md",
+          dailyItemId: "daily_test",
+          dailyTaskRevision: "rev_test"
+        }
+      })
+    });
+    const coordinator = new CaptureBridgeCoordinator({
+      selection,
+      commitAdapter: { commit, complete, undo: vi.fn(async () => ({ undone: true })) },
+      isTapAllowed: (value) => value === tapId,
+      handoffTtlSeconds: () => 300
+    });
+
+    const captureHandoff = await coordinator.createHandoff(tapId, CAPTURE_BRIDGE_PROTOCOL_V2);
+    expect(captureHandoff.availableOperations).toEqual(["capture", "complete", "later"]);
+    const upload = coordinator.stageAsset(captureHandoff.handoffId, {
+      idempotencyKey: "audio-1",
+      fileName: "voice.webm",
+      mimeType: "audio/webm",
+      base64: "AQID"
+    });
+    expect(coordinator.stageAsset(captureHandoff.handoffId, {
+      idempotencyKey: "audio-1",
+      fileName: "voice.webm",
+      mimeType: "audio/webm",
+      base64: "AQID"
+    })).toEqual({ ...upload, idempotent: true });
+    await coordinator.commit(captureHandoff.handoffId, {
+      protocolVersion: CAPTURE_BRIDGE_PROTOCOL_V2,
+      captureId: captureHandoff.captureId,
+      idempotencyKey: "capture-v2",
+      operation: "capture",
+      body: "Voice note",
+      assetRefs: [upload.assetRef]
+    });
+    expect(commit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      [expect.objectContaining({ assetRef: upload.assetRef, mimeType: "audio/webm" })]
+    );
+
+    const completeHandoff = await coordinator.createHandoff(tapId, CAPTURE_BRIDGE_PROTOCOL_V2);
+    const result = await coordinator.commit(completeHandoff.handoffId, {
+      protocolVersion: CAPTURE_BRIDGE_PROTOCOL_V2,
+      captureId: completeHandoff.captureId,
+      idempotencyKey: "complete-v2",
+      operation: "complete",
+      body: ""
+    });
+    expect(result).toMatchObject({ operation: "complete", completed: true });
+    expect(complete).toHaveBeenCalledTimes(1);
   });
 });
 

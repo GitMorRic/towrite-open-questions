@@ -278,6 +278,67 @@ describe("Backend enhancement contract", () => {
     });
   });
 
+  it("negotiates the DailyOps writer and sends versioned Markdown mutations without a Vault path", async () => {
+    vi.stubGlobal("window", globalThis);
+    const requests: Array<{ url: string; body?: Record<string, unknown> }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : undefined;
+      requests.push({ url, body });
+      if (url.endsWith("/tools/daily/status")) {
+        return {
+          ok: true,
+          json: async () => ({
+            protocol_version: "towrite-daily-ops/v1",
+            markdown_contract: "towrite-daily-plan/v1",
+            enabled: true,
+            writer_capable: true,
+            daily_note_root: "Daily",
+            daily_note_format: "YYYY-MM-DD.md",
+            daily_note_todo_section: "ToDo"
+          })
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          task: {
+            id: "daily_abc123",
+            revision: "dtr_server",
+            raw_line: "- [ ] Draft ^daily_abc123"
+          },
+          updated: true
+        })
+      };
+    }));
+    const client = new BackendEnhancementClient(() => backendSettings());
+
+    await expect(client.getDailyOpsStatus()).resolves.toMatchObject({
+      protocolVersion: "towrite-daily-ops/v1",
+      markdownContract: "towrite-daily-plan/v1",
+      writerCapable: true
+    });
+    await client.createDailyTask({
+      id: "daily_explicit123",
+      text: "Draft chapter",
+      date: "2026-07-23",
+      kind: "edit_note",
+      devicePolicy: "scheduled",
+      scheduledFor: "2026-07-23T09:30:00.000Z",
+      tags: ["today"]
+    });
+
+    expect(requests[1].url).toMatch(/\/tools\/daily\/tasks$/u);
+    expect(requests[1].body).toMatchObject({
+      task_id: "daily_explicit123",
+      target: "daily",
+      towrite_kind: "edit_note",
+      towrite_device: "scheduled",
+      towrite_at: "2026-07-23T09:30:00.000Z"
+    });
+    expect(JSON.stringify(requests)).not.toContain("Daily/2026-07-23.md");
+  });
+
   it("parses the Backend NDJSON context inspection stream", async () => {
     vi.stubGlobal("window", globalThis);
     const bytes = new TextEncoder().encode([

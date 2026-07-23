@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_ARTICLE_TYPES, DEFAULT_DEVICE_PROFILES, DEFAULT_REMINDER_PRESETS, DEFAULT_SETTINGS, ensureInboxWorkflowStage, normalizeArticleTypesSettings, normalizeDeviceProfiles, normalizeExternalApiBindHost, normalizeExternalApiPublicBaseUrl, normalizeInboxSettings, normalizePushSettings, normalizeQuote0Settings, normalizeReminderPresets } from "./settings";
+import { DEFAULT_ARTICLE_TYPES, DEFAULT_DEVICE_PROFILES, DEFAULT_REMINDER_PRESETS, DEFAULT_SETTINGS, ensureInboxWorkflowStage, normalizeArticleTypesSettings, normalizeDailySettings, normalizeDeviceProfiles, normalizeExternalApiBindHost, normalizeExternalApiPublicBaseUrl, normalizeInboxSettings, normalizePushSettings, normalizeQuote0Settings, normalizeReminderPresets } from "./settings";
 
 describe("settings normalization", () => {
   it("keeps private, no-ai, and no-cloud content outside default remote scope", () => {
@@ -37,6 +37,37 @@ describe("settings normalization", () => {
       maxItems: 2_000,
       includeInDeviceCandidates: false
     });
+  });
+
+  it("normalizes the Markdown-first Daily plan and activity settings", () => {
+    expect(normalizeDailySettings(undefined)).toEqual(DEFAULT_SETTINGS.daily);
+    expect(normalizeDailySettings({
+      dailyNoteRoot: " /Daily\\Writing/ ",
+      dailyNoteFormat: "YYYY-MM-DD.md",
+      todoHeading: "## Plans\n",
+      summaryHeading: "# Review",
+      rawEventRetentionDays: 999,
+      attachmentFolder: "/Assets\\Voice/",
+      writerMode: "backend",
+      activityTracking: false,
+      includeInDeviceCandidates: false,
+      summaryDevicePolicy: "rotation"
+    })).toEqual({
+      enabled: true,
+      dailyNoteRoot: "Daily/Writing",
+      dailyNoteFormat: "YYYY-MM-DD.md",
+      todoHeading: "Plans",
+      summaryHeading: "Review",
+      activityTracking: false,
+      rawEventRetentionDays: 365,
+      attachmentFolder: "Assets/Voice",
+      includeInDeviceCandidates: false,
+      summaryDevicePolicy: "rotation",
+      writerMode: "backend"
+    });
+    expect(normalizeDailySettings({
+      summaryDevicePolicy: "scheduled" as never
+    }).summaryDevicePolicy).toBe("none");
   });
 
   it("keeps Inbox as the shared core workflow stage for upgraded configurations", () => {

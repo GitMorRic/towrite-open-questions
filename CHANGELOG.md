@@ -1,5 +1,25 @@
 # Changelog / 更新日志
 
+## 0.3.0-beta.13 - 2026-07-23
+
+- Added a dedicated Today Dashboard backed by `Daily/YYYY-MM-DD.md`: plan tasks, note creation/editing, one-shot device cards, explicit completion/reopen, deterministic summaries, preview-before-write AI wording, and a compact sidebar summary all work without the optional Backend.
+- Accepted both inline and indented multiline Daily metadata/block IDs, preserved full logical-block revisions, recognized standard Obsidian Tasks priority symbols, and kept those priorities through local and Backend mutations.
+- Added content-free daily activity accounting for positive/net visible writing units, new and uniquely modified notes, completed tasks, resolved questions, Capture commits, and selected/displayed cards. Measurements run after debounced Vault changes, raw events expire after the configured retention period, and export/pause/clear controls remain local.
+- Added an exact All Status Dashboard with Workflow-stage × question-status counts, Article Type, Inbox, stale-note, ToThink, and ToWrite totals sourced from the complete incremental index instead of sidebar result limits.
+- Added `daily_plan_item` and `daily_summary` device cards, future-24-hour scheduling, displayed-card-first NFC snapshots, state/revision/playlist guarded ESP32 completion, idempotent event ACKs, and automatic queue advance after a safe completion.
+- Added the versioned Daily External API, trusted single-writer DailyOps handshake, Capture Bridge v2 voice/audio/task operations, and Hub support for persisted `available_at` candidates so scheduled cards can advance while Obsidian is closed.
+- Preserved the existing ToThink/ToWrite, Inbox, Echo, Quote0, Capture Bridge v1, legacy e-ink paging, and External API behavior; the production suite now covers more than 400 plugin tests.
+
+中文摘要：
+
+- 新增以 `Daily/YYYY-MM-DD.md` 为数据真源的“今日”Dashboard：支持当天任务、新建/修改笔记、一次性定时卡片、显式完成/重开、规则总结、AI 文案预览后写回，以及侧栏紧凑摘要；没有 Backend 也能完整使用。
+- 同时支持行内与缩进多行的 Daily 元数据/block ID，以完整逻辑任务块计算修订；识别标准 Obsidian Tasks 优先级符号，并在本地与 Backend 修改时保留优先级。
+- 新增不保存正文的今日活动统计：正向新增/净增可见写作单位、新建与去重修改笔记、完成任务、解决问题、Capture 提交和卡片 selected/displayed；全文计算只在 Vault 变化后 debounce 执行，原始事件按保留期清理，并可本地导出、暂停和清空。
+- 新增准确的“全部状态”Dashboard，展示 Workflow 阶段 × 问题状态、Article Type、Inbox、陈旧笔记、ToThink 与 ToWrite；数量来自完整增量索引，不受侧栏结果上限影响。
+- 新增 `daily_plan_item` / `daily_summary` 设备卡、未来 24 小时定时上传、displayed 优先的 NFC 冻结快照、带 state/revision/playlist 校验的 ESP32 安全完成、幂等事件 ACK，以及完成后的自动换卡。
+- 新增版本化今日 External API、可信 DailyOps 单写入者握手、Capture Bridge v2 语音/音频/任务操作，并让 Hub 持久化 `available_at` 候选，从而在 Obsidian 关闭后仍可按时推进卡片。
+- 保持 ToThink/ToWrite、Inbox、Echo、Quote0、Capture Bridge v1、旧墨水屏翻页和 External API 兼容；生产测试套件现覆盖 400 余项插件测试。
+
 ## 0.3.0-beta.12 - 2026-07-23
 
 - Separated true ToThink / ToWrite annotation counts from small-screen paging progress. Obsidian and the ESP32 compatibility payload now expose the current queued card as a stable `N / total` position even though the selected item is promoted to the front of each response; manual-only cards remain single previews.

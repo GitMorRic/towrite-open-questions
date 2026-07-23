@@ -33,13 +33,17 @@
   import type { InboxSnapshot } from "../inbox/types";
   import type { SmallScreenConnectionStatus } from "../device-status";
   import type { ActiveLineRange, ToWriteUiApi } from "./api";
+  import type { DailyDashboardAdapter } from "./daily-dashboard-types";
   import ArticleSummaryCard from "./ArticleSummaryCard.svelte";
+  import DailySidebarSummary from "./DailySidebarSummary.svelte";
   import InboxPanel from "./InboxPanel.svelte";
   import QuestionCard from "./QuestionCard.svelte";
   import { compactPath } from "./path";
   import { allSurfaceCount, shouldRenderInboxPreview, type SidebarLaneFilter } from "./sidebar-lanes";
 
   export let api: ToWriteUiApi;
+  export let dailyApi: DailyDashboardAdapter | undefined = undefined;
+  export let onOpenDashboard: (() => void) | undefined = undefined;
 
   type OtherMode = "list" | "tree";
   type ArticleFilterTab = {
@@ -612,6 +616,8 @@
       {/if}
     </button>
   </div>
+
+  <DailySidebarSummary {dailyApi} {onOpenDashboard} />
 
   <label class="towrite-search">
     <Search size={15} />

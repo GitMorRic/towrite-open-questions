@@ -8,6 +8,7 @@ import { DEFAULT_CAPTURE_BRIDGE_SETTINGS } from "../capture-bridge/settings";
 import type { CaptureBridgeSettings } from "../capture-bridge/types";
 import type { LocalTapSelectionState } from "../capture-bridge/selection";
 import type { EchoCard } from "../hub/echo-cards";
+import type { DailyActivityState } from "../daily";
 
 export type ToWriteLanguage = "zh" | "en";
 
@@ -198,6 +199,27 @@ export interface ToWriteInboxSettings {
   includeInDeviceCandidates: boolean;
 }
 
+export interface ToWriteDailySettings {
+  enabled: boolean;
+  /** Vault-relative root containing YYYY-MM-DD daily notes. */
+  dailyNoteRoot: string;
+  dailyNoteFormat: "YYYY-MM-DD.md";
+  todoHeading: string;
+  summaryHeading: string;
+  activityTracking: boolean;
+  rawEventRetentionDays: number;
+  attachmentFolder: string;
+  includeInDeviceCandidates: boolean;
+  /**
+   * Summary cards are separate from task delivery and never enter a real
+   * queue unless the user explicitly enables a policy. `none` still permits
+   * the one-shot "send now" action from the Today dashboard.
+   */
+  summaryDevicePolicy: import("../daily/types").DailySummaryDevicePolicy;
+  /** Prefer the trusted Backend DailyOps writer while its capability handshake is healthy. */
+  writerMode: "auto" | "local" | "backend";
+}
+
 export interface ToWriteSettings {
   language: ToWriteLanguage;
   exportDirectory: string;
@@ -217,6 +239,7 @@ export interface ToWriteSettings {
   backend: ToWriteBackendSettings;
   captureBridge: CaptureBridgeSettings;
   inbox: ToWriteInboxSettings;
+  daily: ToWriteDailySettings;
   /** User-authored e-ink cards. Built-in examples are immutable presets and are not persisted here. */
   echoCards: EchoCard[];
   hub: ToWriteHubSettings;
@@ -240,6 +263,10 @@ export interface ToWriteSavedData {
   securityMigrationVersion?: number;
   aiAssistantState?: AiAssistantState;
   captureBridgeState?: LocalTapSelectionState;
+  dailyActivityState?: DailyActivityState;
+  dailyDeviceStateVersion?: number;
+  /** Bounded idempotency keys for one-shot local Daily device schedules. */
+  dailyScheduleOccurrenceIds?: string[];
 }
 
 export const DEFAULT_STATUS_OPTIONS: QuestionStatusOption[] = [
@@ -554,6 +581,19 @@ export const DEFAULT_SETTINGS: ToWriteSettings = {
     maxItems: 200,
     includeInDeviceCandidates: true
   },
+  daily: {
+    enabled: true,
+    dailyNoteRoot: "Daily",
+    dailyNoteFormat: "YYYY-MM-DD.md",
+    todoHeading: "ToDo",
+    summaryHeading: "\u4eca\u65e5\u603b\u7ed3",
+    activityTracking: true,
+    rawEventRetentionDays: 30,
+    attachmentFolder: "00-Raw_Materials/Voice_Captures",
+    includeInDeviceCandidates: true,
+    summaryDevicePolicy: "none",
+    writerMode: "auto"
+  },
   echoCards: [],
   hub: {
     enabled: false,
@@ -635,6 +675,34 @@ export function normalizeInboxSettings(settings?: Partial<ToWriteInboxSettings>)
     groupBy: settings?.groupBy === "folder" ? "folder" : "project",
     maxItems: clampIntegerSetting(settings?.maxItems, 10, 2_000, DEFAULT_SETTINGS.inbox.maxItems),
     includeInDeviceCandidates: settings?.includeInDeviceCandidates !== false
+  };
+}
+
+export function normalizeDailySettings(settings?: Partial<ToWriteDailySettings>): ToWriteDailySettings {
+  const defaults = DEFAULT_SETTINGS.daily;
+  return {
+    enabled: settings?.enabled !== false,
+    dailyNoteRoot: normalizeVaultFolderSetting(settings?.dailyNoteRoot, defaults.dailyNoteRoot),
+    dailyNoteFormat: "YYYY-MM-DD.md",
+    todoHeading: normalizeHeadingSetting(settings?.todoHeading, defaults.todoHeading),
+    summaryHeading: normalizeHeadingSetting(settings?.summaryHeading, defaults.summaryHeading),
+    activityTracking: settings?.activityTracking !== false,
+    rawEventRetentionDays: clampIntegerSetting(
+      settings?.rawEventRetentionDays,
+      1,
+      365,
+      defaults.rawEventRetentionDays
+    ),
+    attachmentFolder: normalizeVaultFolderSetting(settings?.attachmentFolder, defaults.attachmentFolder),
+    includeInDeviceCandidates: settings?.includeInDeviceCandidates !== false,
+    summaryDevicePolicy: settings?.summaryDevicePolicy === "manual"
+      || settings?.summaryDevicePolicy === "rotation"
+      || settings?.summaryDevicePolicy === "agent"
+      ? settings.summaryDevicePolicy
+      : "none",
+    writerMode: settings?.writerMode === "local" || settings?.writerMode === "backend"
+      ? settings.writerMode
+      : "auto"
   };
 }
 
@@ -1045,6 +1113,23 @@ function normalizeArticleStringList(value: unknown): string[] {
     output.push(normalized);
   }
   return output;
+}
+
+function normalizeVaultFolderSetting(value: unknown, fallback: string): string {
+  const normalized = String(value ?? "")
+    .trim()
+    .replace(/\\/gu, "/")
+    .replace(/^\/+|\/+$/gu, "")
+    .replace(/(?:^|\/)\.{1,2}(?=\/|$)/gu, "");
+  return normalized.slice(0, 500) || fallback;
+}
+
+function normalizeHeadingSetting(value: unknown, fallback: string): string {
+  return String(value ?? "")
+    .replace(/^#+\s*/u, "")
+    .replace(/[\r\n]+/gu, " ")
+    .trim()
+    .slice(0, 120) || fallback;
 }
 
 function normalizeArticleTagList(value: unknown): string[] {

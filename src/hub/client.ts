@@ -7,11 +7,14 @@ import {
   type HubContentSelection,
   type HubContextObservation,
   type HubDeviceCard,
+  type HubDeviceEventAcknowledgement,
+  type HubDeviceEventAckReceipt,
   type HubDeviceState,
   type HubDisplayedState,
   type HubFeedbackReceipt,
   type HubPendingCapture,
   type HubPendingCaptureEncryption,
+  type HubPendingDeviceEvent,
   type HubSelectionFeedback,
   type HubSelectionRequest
 } from "./types";
@@ -49,7 +52,16 @@ export interface HubCaptureClientLike {
   acknowledgeCapture(captureId: string): Promise<HubCaptureAckReceipt>;
 }
 
-export class HubClient implements HubClientLike, HubCaptureClientLike {
+export interface HubDeviceEventClientLike {
+  getPendingDeviceEvents(receiverId: string, limit?: number): Promise<HubPendingDeviceEvent[]>;
+  acknowledgeDeviceEvent(
+    receiverId: string,
+    eventId: string,
+    acknowledgement: HubDeviceEventAcknowledgement
+  ): Promise<HubDeviceEventAckReceipt>;
+}
+
+export class HubClient implements HubClientLike, HubCaptureClientLike, HubDeviceEventClientLike {
   private readonly fetcher?: typeof fetch;
 
   constructor(
@@ -171,6 +183,63 @@ export class HubClient implements HubClientLike, HubCaptureClientLike {
     };
   }
 
+  async getPendingDeviceEvents(receiverId: string, limit = 50): Promise<HubPendingDeviceEvent[]> {
+    assertIdentifier(receiverId, "receiver ID");
+    const safeLimit = Math.max(1, Math.min(200, Math.floor(limit)));
+    const response = asRecord(await this.requestJson(
+      `/v1/hub/receivers/${encodeURIComponent(receiverId)}/device-events/pending?limit=${safeLimit}`,
+      { method: "GET" }
+    ), "pending device event list");
+    if (!Array.isArray(response.items)) {
+      throw new Error("Device Hub response is missing pending device event items.");
+    }
+    return response.items.map(normalizePendingDeviceEvent);
+  }
+
+  async acknowledgeDeviceEvent(
+    receiverId: string,
+    eventId: string,
+    acknowledgement: HubDeviceEventAcknowledgement
+  ): Promise<HubDeviceEventAckReceipt> {
+    assertIdentifier(receiverId, "receiver ID");
+    assertIdentifier(eventId, "event ID");
+    if (!isDeviceEventAckStatus(acknowledgement.status)) {
+      throw new Error("Device Hub event acknowledgement status is invalid.");
+    }
+    const resultRevision = acknowledgement.resultRevision?.trim();
+    if (resultRevision && !isOpaqueIdentifier(resultRevision, 120)) {
+      throw new Error("Device Hub result revision must be an opaque identifier.");
+    }
+    const response = asRecord(await this.requestJson(
+      `/v1/hub/receivers/${encodeURIComponent(receiverId)}/device-events/${encodeURIComponent(eventId)}/ack`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          protocol_version: acknowledgement.protocolVersion ?? HUB_PROTOCOL_VERSION,
+          status: acknowledgement.status,
+          result_revision: resultRevision
+        })
+      }
+    ), "device event acknowledgement");
+    const status = readRequiredString(response, "status");
+    if (!isDeviceEventAckStatus(status)) {
+      throw new Error("Device Hub returned an invalid device event acknowledgement status.");
+    }
+    const responseEventId = readRequiredString(response, "event_id", "eventId");
+    if (responseEventId !== eventId || status !== acknowledgement.status || response.acknowledged !== true) {
+      throw new Error("Device Hub returned a mismatched device event acknowledgement.");
+    }
+    return {
+      protocolVersion: readString(response, "protocol_version", "protocolVersion") || HUB_PROTOCOL_VERSION,
+      eventId: responseEventId,
+      acknowledged: true,
+      duplicate: response.duplicate === true,
+      status,
+      acknowledgedAt: readOptionalString(response, "acknowledged_at", "acknowledgedAt")
+    };
+  }
+
   private async requestJson(path: string, init: RequestInit): Promise<unknown> {
     const settings = this.getSettings();
     const baseUrl = normalizeBaseUrl(settings.baseUrl);
@@ -240,6 +309,7 @@ function candidateBatchToWire(batch: HubCandidateBatch): Record<string, unknown>
       score: candidate.score,
       urgency: candidate.urgency,
       context_states: candidate.contextStates,
+      available_at: candidate.availableAt,
       policy_basis: candidate.policyBasis,
       expires_at: candidate.expiresAt
     }))
@@ -400,6 +470,33 @@ function normalizePendingCaptureEncryption(value: unknown): HubPendingCaptureEnc
   };
 }
 
+function normalizePendingDeviceEvent(value: unknown): HubPendingDeviceEvent {
+  const record = asRecord(value, "pending device event");
+  const action = readRequiredString(record, "action");
+  if (action !== "useful" && action !== "later" && action !== "skip" && action !== "complete") {
+    throw new Error("Device Hub returned an invalid pending device event action.");
+  }
+  const contentType = readRequiredString(record, "content_type", "contentType");
+  if (!isHubContentType(contentType)) {
+    throw new Error("Device Hub returned an invalid pending device event content type.");
+  }
+  const event: HubPendingDeviceEvent = {
+    eventId: readOpaqueIdentifier(record, "event_id", "eventId"),
+    action,
+    deviceId: readOpaqueIdentifier(record, "device_id", "deviceId"),
+    selectionId: readOpaqueIdentifier(record, "selection_id", "selectionId"),
+    stateVersion: readPositiveInteger(record, "state_version", "stateVersion"),
+    contentId: readOpaqueIdentifier(record, "content_id", "contentId"),
+    revisionId: readOpaqueIdentifier(record, "revision_id", "revisionId"),
+    contentType,
+    candidateRef: readOptionalOpaqueIdentifier(record, "candidate_ref", "candidateRef"),
+    sourceRef: readOptionalOpaqueIdentifier(record, "source_ref", "sourceRef"),
+    writeTargetRef: readOptionalOpaqueIdentifier(record, "write_target_ref", "writeTargetRef"),
+    createdAt: readRequiredIso(record, "created_at", "createdAt")
+  };
+  return event;
+}
+
 function normalizeDeviceCard(value: unknown): HubDeviceCard {
   const record = asRecord(value, "device card");
   const actions = Array.isArray(record.actions)
@@ -536,6 +633,70 @@ function readOptionalNumber(record: Record<string, unknown>, ...keys: string[]):
     }
   }
   return undefined;
+}
+
+function readPositiveInteger(record: Record<string, unknown>, ...keys: string[]): number {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) {
+      return value;
+    }
+  }
+  throw new Error(`Device Hub response is missing a valid ${keys[0]}.`);
+}
+
+function readOpaqueIdentifier(record: Record<string, unknown>, ...keys: string[]): string {
+  const value = readRequiredString(record, ...keys);
+  if (!isOpaqueIdentifier(value, 160)) {
+    throw new Error(`Device Hub response contains a non-opaque ${keys[0]}.`);
+  }
+  return value;
+}
+
+function readOptionalOpaqueIdentifier(record: Record<string, unknown>, ...keys: string[]): string | undefined {
+  const value = readOptionalString(record, ...keys);
+  if (!value) {
+    return undefined;
+  }
+  if (!isOpaqueIdentifier(value, 160)) {
+    throw new Error(`Device Hub response contains a non-opaque ${keys[0]}.`);
+  }
+  return value;
+}
+
+function readRequiredIso(record: Record<string, unknown>, ...keys: string[]): string {
+  const value = readRequiredString(record, ...keys);
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) {
+    throw new Error(`Device Hub response contains an invalid ${keys[0]}.`);
+  }
+  return new Date(timestamp).toISOString();
+}
+
+function isOpaqueIdentifier(value: string, maxLength: number): boolean {
+  return value.length >= 3
+    && value.length <= maxLength
+    && /^[A-Za-z0-9][A-Za-z0-9_-]*$/u.test(value);
+}
+
+function isDeviceEventAckStatus(value: string): value is HubDeviceEventAckReceipt["status"] {
+  return value === "applied" || value === "conflict" || value === "ignored";
+}
+
+function isHubContentType(value: string): value is HubPendingDeviceEvent["contentType"] {
+  return value === "question_prompt"
+    || value === "note_continue"
+    || value === "title_only"
+    || value === "blank_capture"
+    || value === "excerpt"
+    || value === "quote"
+    || value === "on_this_day"
+    || value === "stale_note_nudge"
+    || value === "character_letter"
+    || value === "human_message"
+    || value === "wellbeing_reminder"
+    || value === "daily_plan_item"
+    || value === "daily_summary";
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {

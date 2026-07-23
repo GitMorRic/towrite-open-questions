@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ExternalLink, Inbox, MonitorUp } from "lucide-svelte";
+  import { CalendarPlus, ExternalLink, Inbox, MonitorUp } from "lucide-svelte";
   import { INBOX_ROOT_GROUP, filterInboxSnapshot } from "../inbox";
   import type { InboxItem, InboxSnapshot } from "../inbox/types";
   import type { ToWriteUiApi } from "./api";
@@ -51,6 +51,19 @@
     error = "";
     try {
       await api.sendInboxItemToDeviceHub(item.id);
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      busyId = "";
+    }
+  }
+
+  async function addToDaily(item: InboxItem): Promise<void> {
+    if (busyId) return;
+    busyId = item.id;
+    error = "";
+    try {
+      await api.addInboxItemToDaily(item.id);
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
     } finally {
@@ -112,6 +125,9 @@
                   </small>
                 </button>
                 <div class="towrite-inbox-actions">
+                  <button type="button" disabled={Boolean(busyId)} title={language === "zh" ? "加入今日计划" : "Add to today's plan"} aria-label={`${language === "zh" ? "加入今日计划" : "Add to today's plan"}: ${item.title}`} on:click={() => addToDaily(item)}>
+                    <CalendarPlus size={14} />
+                  </button>
                   <button type="button" title={language === "zh" ? "打开笔记" : "Open note"} aria-label={`${language === "zh" ? "打开" : "Open"}: ${item.title}`} on:click={() => api.openFile(item.filePath)}>
                     <ExternalLink size={14} />
                   </button>

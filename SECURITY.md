@@ -2,7 +2,7 @@
 
 [简体中文](SECURITY.zh-CN.md)
 
-Last updated: 2026-07-19
+Last updated: 2026-07-23
 
 ## Security Model
 
@@ -78,6 +78,18 @@ The optional Backend receives an allow-list of locally filtered candidates. Back
 Capture preview records a target revision. Commits use the preview/candidate revision to detect stale targets, and an undo token is returned only when a later safe undo can be checked. Do not bypass a conflict warning or manually reuse an undo token. Undo is intended to remove only the plugin's own unchanged write, not later user edits.
 
 Review the final path and action (`append` or `create`) before saving, especially when a folder name, selection, or Backend-generated reason looks unexpected. Keep sensitive notes outside the configured include scope or mark them with an excluded tag/frontmatter key.
+
+## Daily Task And Device Integrity
+
+Daily Markdown is authoritative. Each task has a stable block ID and a revision derived from its source path, block ID, and current raw line. Dashboard, External API, Capture, NFC, and device mutations must present the revision they loaded. If the line changes in the meantime, ToWrite returns `409 Conflict` instead of applying an action to stale content.
+
+An ESP32 completion event requires `eventId`, `cardId`, `stateVersion`, and `playlistRevision`. It is accepted only when the card is still the exact current `displayed` `daily_plan_item`, the state and playlist revisions match, and the Markdown task revision is unchanged. Duplicate event IDs are idempotent. Late, reordered, cross-card, or post-page events cannot complete a task. `selected` is not sufficient authority: when displayed=A and selected=B, NFC and completion still target A.
+
+Old firmware remains compatible with generic card rendering and paging. It must not show a completion control or call the completion endpoint until it implements this guarded contract. The plugin does not claim that an existing firmware version has safe completion support.
+
+DailyOps has one writer per operation. In `auto` mode, ToWrite delegates only after the Backend reports the expected protocol and Markdown contract, writer capability, and matching Daily folder/format/heading. An unavailable or incompatible Backend falls back to the local plugin. In strict `backend` mode the operation fails instead; this prevents a silent second writer. `local` never delegates.
+
+Capture Bridge v2 audio is capability-gated and user-initiated. Microphone access is requested by the browser; a raw recording is staged and then written to the configured attachment folder only on commit. Do not grant microphone access to an untrusted Capture origin. Audio must not be sent to an AI or transcription service without a separate authorization. Undo deletes an attachment only if its hash is unchanged and no other note references it.
 
 ## Learning And Notification Safety
 

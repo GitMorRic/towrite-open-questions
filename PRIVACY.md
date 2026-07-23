@@ -2,7 +2,7 @@
 
 [简体中文](PRIVACY.zh-CN.md)
 
-Last updated: 2026-07-19
+Last updated: 2026-07-23
 
 This document describes the ToWrite Open Questions Obsidian plugin. The optional Device Hub, Obsidian AI Backend, OpenAI-compatible providers, Quote0/Dot services, tunnels, and sync providers are separate systems with their own privacy terms and operator policies.
 
@@ -35,6 +35,28 @@ The plugin's local data may contain the same learning state. These files are use
 When Device Hub is configured, Obsidian plugin data can additionally contain the Hub base URL, Receiver ID and pull token, Receiver P-256 public/private JWK, opaque-reference HMAC secret, device ID, Tap URL, sync timestamps, and cached selected/displayed identifiers. These values are not written to the user-readable ToWrite export files, but Obsidian plugin data is ordinary local data rather than an encrypted operating-system keystore and may be copied by Vault sync or backup software.
 
 The Hub onboarding access token is kept only in the in-memory setup form and is not added to persisted plugin settings. A newly provisioned or rotated `device_secret` is shown once for transfer to the ESP32 and is not persisted by ToWrite. Closing or clearing the setup form loses that one-time value.
+
+## Daily Plan And Activity Data
+
+The configured Daily Markdown note is the source of truth for daily tasks. A task line can contain its checkbox, public task text, dates, `towrite-kind`, `towrite-device`, `towrite-at`, tags, links, and a stable `^daily_...` block ID. Completing a task modifies that Markdown line and adds a completion date; it does not automatically change a linked note's Workflow stage.
+
+Daily activity tracking is separate from habit learning and can be disabled independently. When enabled, it stores content-free events and aggregates for:
+
+- positive and net visible-text writing units;
+- new notes and uniquely modified notes;
+- completed Daily tasks and resolved questions;
+- Capture commits;
+- selected and displayed device cards.
+
+A writing unit is one visible CJK character or one Latin word after Markdown markup is removed. Measurements run after debounced Vault changes, not in the editor keystroke path. ToWrite does not retain the measured body, individual edits, individual keys, key counts, selections, clipboard content, or audio in Daily activity events.
+
+Raw Daily activity events retain timestamps, timezone offsets, local file keys or opaque item IDs, numeric deltas, and event kinds for 30 days by default. The setting can be changed from 1 to 365 days. Daily aggregates and file measurement baselines remain until the user clears the activity data. Tracking begins when enabled and does not reconstruct earlier activity. User-readable export and clearing do not modify Daily Markdown.
+
+Daily device uploads contain only the approved, privacy-filtered card snapshot, policy, schedule, opaque target, task ID, and task revision required for delivery and conflict checks. They do not upload the full Daily note or Vault.
+
+Capture Bridge v2 may stage a raw browser recording only after the user starts recording and grants microphone access. A committed recording is written to the configured Vault attachment folder. Audio is not sent to an AI or transcription provider without a separate authorization. Temporary or committed audio is not part of Daily activity events.
+
+DailyOps uses a single-writer handshake. In `auto` mode the plugin delegates only to a compatible, healthy trusted Backend; if it is offline or incompatible, the plugin writes locally. `local` always uses the plugin. `backend` refuses a write when the Backend cannot pass the handshake instead of silently activating a second writer.
 
 ## Learning Data Boundary
 

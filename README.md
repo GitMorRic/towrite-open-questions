@@ -2,6 +2,15 @@
 
 [简体中文](README.zh-CN.md)
 
+The Dashboard now separates **Today** from **All status**. Today uses
+`Daily/YYYY-MM-DD.md` as its source of truth for plans, activity counters,
+scheduled device cards, and a confirm-before-write daily summary. All status
+uses the complete incremental Vault index for Workflow, Article Type, Inbox,
+stale, ToThink, and ToWrite counts. See the bilingual
+[Today Dashboard and Daily Plan guide](docs/daily-dashboard.md) for the
+Markdown contract, privacy boundary, Device/Capture safeguards, and
+`auto`/`local`/`backend` single-writer modes.
+
 ToWrite Open Questions is a desktop-only Obsidian plugin for keeping unfinished thinking and unfinished writing attached to the exact notes, PDF passages, and draft fragments where they started.
 
 It is not a general TODO list. It gives your vault a ToThink / ToWrite annotation layer so missing evidence, unclear reasoning, and "continue this later" fragments stay visible without interrupting the writing flow.
@@ -17,6 +26,7 @@ It is not a general TODO list. It gives your vault a ToThink / ToWrite annotatio
 - Highlight source text in the editor, with per-card and global compact display modes.
 - Configure Workflow Stages that group Markdown files by folder prefixes, frontmatter tags, or inline `#tags`.
 - Configure Article Types that group notes by content area such as MindFlow, Tech, or Project; the sidebar and dashboard show both type and Workflow stage.
+- Plan the day in Tasks-compatible Daily Markdown, review positive/net writing units and completed work in the Today Dashboard, and inspect accurate all-vault status counts separately.
 - Export JSON for dashboards, desktop widgets, scripts, and eink devices.
 - Run an optional local desktop HTTP API for JSON, RSS, SSE events, dashboard views, mobile device previews, companion phone input, and note/status/capture writeback.
 - Run an optional Push Engine and Quote0 integration for eink overview dashboards, rotating ToThink/ToWrite cards, and NFC phone writeback.
