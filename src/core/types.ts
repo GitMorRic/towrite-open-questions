@@ -251,5 +251,22 @@ export interface ExportEinkPayload {
     }>;
     relatedConcepts?: string[];
     openUri?: string;
+    /** Optional V2 extension used by the local ESP32 compatibility playlist. */
+    sourceType?: "question" | "echo";
+    contentType?: string;
+    actions?: string[];
   }>;
+  /**
+   * Optional local-device playlist metadata. Older `/api/v1/eink` clients can
+   * ignore this object and continue rendering `focus`.
+   */
+  playlist?: {
+    order: "echo_then_questions";
+    cursor: number;
+    total: number;
+    nextCursor: number;
+    previousCursor: number;
+    selectedId?: string;
+    revision: string;
+  };
 }

@@ -1,71 +1,80 @@
-# ESP32S3 墨水屏示例
+# ESP32-S3 e-ink: template-first paging
 
-这个示例展示 ESP32S3 如何从 ToWrite External API 拉取 `/api/v1/eink`，并把 ToThink / ToWrite 卡片显示到墨水屏。
+This sketch uses ToWrite's local External API to display one shared small-screen playlist:
 
-示例不绑定具体墨水屏驱动。你可以把 `renderCard()` 中的 `Serial.println()` 替换为 GxEPD2、Waveshare、LilyGo 等屏幕库的绘制代码。
+1. saved Echo template cards with **Screen paging** enabled;
+2. eligible ToThink / ToWrite cards;
+3. wrap back to the first card.
 
-## ToWrite 设置
+The right button advances, the optional left button goes back, and a manual **Show now** action in Obsidian becomes visible within about five seconds. Unchanged polls do not redraw the e-ink panel.
 
-因为 ESP32S3 是局域网设备，需要在 Obsidian ToWrite 设置里：
+## Obsidian setup
+
+Enable the External API:
 
 ```text
 External API = on
-API bind host = 0.0.0.0
-API port = 48321
-Allow GET query token = on
+Bind host = 0.0.0.0
+Port = 48321
 ```
 
-然后找到运行 Obsidian 的电脑 IP，例如：
+Create a `local-web` Push target with `buttons` capability and mappings:
 
 ```text
-192.168.1.20
+right: next
+left: prev
 ```
 
-ESP32 会请求：
+Generate a separate token for that target. The sketch uses it in the `Authorization` header; query-token access can remain disabled. Do not put the full External API administrator token on the device.
 
-```text
-http://192.168.1.20:48321/api/v1/eink?token=你的token&limit=3
-```
+In **Inbox & device library → Echo e-ink cards**, save each card and enable **Screen paging**. A template chooser creates only a draft; it does not enter the device queue until it is saved.
 
-## Arduino 依赖
+## Sketch configuration
 
-在 Arduino IDE 或 PlatformIO 中安装：
-
-- `ArduinoJson`
-
-ESP32 core 自带：
-
-- `WiFi.h`
-- `HTTPClient.h`
-
-## 配置
-
-打开 `esp32s3-eink.ino`，修改：
+Install `ArduinoJson` plus the driver for your panel, then edit:
 
 ```cpp
-const char* WIFI_SSID = "你的 WiFi";
-const char* WIFI_PASSWORD = "你的 WiFi 密码";
-const char* API_HOST = "192.168.1.20";
-const int API_PORT = 48321;
-const char* API_TOKEN = "你的 token";
+const char* WIFI_SSID = "YOUR_WIFI";
+const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+const char* API_BASE_URL = "http://192.168.1.20:48321";
+const char* DEVICE_TARGET_ID = "local-web";
+const char* DEVICE_TOKEN = "THE_TARGET_SCOPED_TOKEN";
+
+const int NEXT_BUTTON_PIN = 4;
+const int PREVIOUS_BUTTON_PIN = 5; // or -1 when absent
 ```
 
-## 适配墨水屏
+Wire each button between its GPIO and GND. The sketch enables `INPUT_PULLUP`. Choose pins that are free on your exact ESP32-S3 board and display carrier.
 
-把这个函数替换为你的屏幕绘制代码：
+A normal ESP32 is not a Tailscale node, so a private `*.ts.net` Serve origin is usually unreachable directly. Use the same LAN, a computer hotspot, or a subnet router unless your hardware network architecture explicitly provides tailnet access.
 
-```cpp
-void renderCard(const String& title, const String& question, const String& article, const String& lane, const String& summaryText)
+## Requests
+
+The display polls:
+
+```http
+GET /api/v1/eink?targetId=local-web&limit=1&cursor=0
+Authorization: Bearer <target-token>
 ```
 
-建议墨水屏显示：
+The right button posts:
 
-- 顶部：open / candidate / blockedArticles 统计。
-- 主体：当前 focus 卡片的 title、body、article。旧字段 `question` 仍可作为兼容备用。
-- 底部：lane、kind、刷新时间。
+```http
+POST /api/v1/device/events
+Authorization: Bearer <target-token>
+Content-Type: application/json
 
-## 安全注意
+{
+  "schemaVersion": 1,
+  "eventId": "unique-per-press",
+  "targetId": "local-web",
+  "deviceId": "esp32-chip-id",
+  "button": "right"
+}
+```
 
-- 不要把真实 WiFi 密码和 token 提交到 GitHub。
-- 只在可信局域网内使用 `0.0.0.0`。
-- 如果要公网访问，建议用 Tailscale、Cloudflare Tunnel 或反向代理保护。
+ToWrite commits the shared cursor before returning `200`, and duplicate event IDs are idempotent. The device then polls cursor zero again to render the selected card.
+
+Replace `renderCard()` with your GxEPD2, Waveshare, or LilyGo drawing code. Echo cards expose `sourceType: "echo"`; annotation cards expose `sourceType: "question"`.
+
+If annotation cards work but templates do not, verify that the template was saved, **Screen paging** is enabled, the target ID matches its token, and the firmware is polling the new single-card playlist URL.

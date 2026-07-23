@@ -36,6 +36,7 @@ import {
 import { OpenQuestionStore } from "./core/store";
 import type {
   ArticleSummary,
+  ExportEinkPayload,
   OpenQuestion,
   OpenQuestionAi,
   OpenQuestionColor,
@@ -128,12 +129,15 @@ import {
   HubAdminClient,
   HubClient,
   HubCaptureWritebackService,
+  buildDevicePagingPool,
   buildDeviceLibrary,
   canAdvanceRotation,
   createOpaqueHubRef,
   generateHubCaptureKeyPair,
   isManualHoldActive,
   normalizeQuestionDeliveryPolicy,
+  nextDevicePagingItem,
+  prioritizeDevicePagingPool,
   scheduledLibraryChoice,
   validateNtag213Uri,
   type DeviceLibrarySnapshot,
@@ -149,6 +153,7 @@ import {
   type LocalHubCandidate,
   type Ntag213UriValidation
 } from "./hub";
+import { buildExternalEinkPlaylistPayload } from "./external/eink-playlist";
 import {
   ECHO_CARD_HARD_LIMITS,
   ECHO_CARD_MAX_COUNT,
@@ -260,11 +265,13 @@ export default class ToWritePlugin extends Plugin {
   private securityMigrationVersion = 0;
   private showQueryTokenMigrationNotice = false;
   private lastCaptureTargetCatalogJson = "";
+  private readonly legacyEinkPlaylistCache = new Map<string, ExportEinkPayload>();
 
   async onload(): Promise<void> {
     await this.loadPluginData();
 
     this.store = new OpenQuestionStore(this.savedQuestionStates);
+    this.register(this.store.subscribe(() => this.invalidateLegacyEinkPlaylist()));
     this.learningService = new HabitLearningService(this.savedLearningState);
     this.learningService.setCollectionPaused(!this.settings.learning.enabled);
     this.learningEditQueue = new DeferredKeyedQueue(async (events) => {
@@ -305,6 +312,7 @@ export default class ToWritePlugin extends Plugin {
       getFallbackLocalId: () => this.buildHubCandidates()[0]?.localId,
       validateSnapshot: (snapshot) => this.validatePersistedTapSelectionSnapshot(snapshot),
       onStateChanged: () => {
+        this.invalidateLegacyEinkPlaylist();
         void this.savePluginData();
       }
     });
@@ -350,6 +358,7 @@ export default class ToWritePlugin extends Plugin {
       getArticleSummaries: () => this.store.getArticleSummaries(),
       getWorkflowPayload: (query = {}) => this.workflowIndex.getPayload(query),
       getWorkflowSummary: () => this.workflowIndex.getSummary(),
+      getEinkPayload: (limit, cursor, query) => this.buildLegacyEinkPlaylist(limit, cursor, query),
       getDeviceCaptureSettings: () => this.settings.deviceCapture,
       getRestrictedAccessToken: () => this.settings.quote0.enabled ? this.settings.quote0.nfcToken : "",
       getRestrictedAccessTokens: () => this.settings.push.targets.map((target) => target.token).filter(Boolean),
@@ -366,6 +375,7 @@ export default class ToWritePlugin extends Plugin {
       undoCapture: async (captureId, undoToken) => {
         return this.captureService.undo(undoToken, captureId);
       },
+      advanceDevicePage: (direction) => this.advanceLocalDevicePage(direction),
       subscribe: (listener) => this.subscribe(listener)
     });
     this.pushEngine = new PushEngine({
@@ -2015,9 +2025,9 @@ export default class ToWritePlugin extends Plugin {
   }
 
   async syncDeviceHub(showNotice = false): Promise<HubDeviceState | undefined> {
-    if (!this.settings.hub.enabled) {
+    if (!this.deviceHub.isConfigured()) {
       if (showNotice) {
-        new Notice("Enable Device Hub first.");
+        new Notice("Enable Device Hub and complete device pairing first.");
       }
       return undefined;
     }
@@ -2149,10 +2159,14 @@ export default class ToWritePlugin extends Plugin {
 
   private async sendLocalCandidateToDeviceHub(localId: string): Promise<HubDeviceState | undefined> {
     await this.localTapSelection.selectLocal(localId);
-    if (!this.settings.hub.enabled) {
+    if (!this.deviceHub.isConfigured()) {
       new Notice(this.settings.captureBridge.flow === "local_capture"
-        ? (this.settings.language === "zh" ? "已设为本地 NFC / Capture 当前内容。" : "Set as the current local NFC / Capture card.")
-        : (this.settings.language === "zh" ? "请先在设置中启用并配对 Device Hub。" : "Enable and pair Device Hub in settings first."));
+        ? (this.settings.language === "zh"
+          ? "已设为本地 NFC / Capture 与旧版墨水屏接口的当前内容。"
+          : "Set as the current local NFC / Capture and legacy e-ink card.")
+        : (this.settings.language === "zh"
+          ? "已设为旧版墨水屏接口的当前内容；如需远程 Hub，请先启用并配对。"
+          : "Set as the current legacy e-ink card. Enable and pair Device Hub for remote delivery."));
       return undefined;
     }
     if (this.hubCandidateSyncTimer) {
@@ -2173,19 +2187,29 @@ export default class ToWritePlugin extends Plugin {
       this.settings.hub.manualHoldUntil = holdMs > 0 ? new Date(Date.now() + holdMs).toISOString() : "";
       this.settings.hub.manualHoldCandidateId = localId;
       this.settings.hub.manualHoldContentId = "";
-      const state = await this.deviceHub.selectLocalCandidate(localId, this.buildHubCandidates(localId));
+      const state = await this.deviceHub.selectLocalCandidate(localId, this.buildHubCandidates(localId, true));
       await this.localTapSelection.rememberHubSelection(localId, state);
       this.settings.hub.manualHoldContentId = state.selected?.selectedContentId ?? "";
       await this.savePluginData();
-      new Notice(this.settings.language === "zh" ? "已将这张卡设为墨水屏期望内容。" : "This card is now the desired e-ink content.");
+      new Notice(state.inSync
+        ? (this.settings.language === "zh"
+          ? "墨水屏已 ACK 显示这张卡。"
+          : "The e-ink display acknowledged this card.")
+        : (this.settings.language === "zh"
+          ? "已提交为墨水屏期望内容，等待设备拉取并 ACK；旧版 /api/v1/eink 也会优先返回它。"
+          : "Queued as desired e-ink content and waiting for the device ACK; legacy /api/v1/eink also prioritizes it."));
       return state;
     } catch (error) {
       this.settings.hub.manualHoldUntil = previousHold.until;
       this.settings.hub.manualHoldCandidateId = previousHold.candidateId;
       this.settings.hub.manualHoldContentId = previousHold.contentId;
       const message = messageForError(error);
-      new Notice(`${this.settings.language === "zh" ? "发送到墨水屏失败" : "Could not send to e-ink"}: ${message}`);
-      throw error;
+      new Notice(this.settings.language === "zh"
+        ? `已设为本地小屏当前卡；Device Hub 同步失败：${message}`
+        : `Set as the current local screen card; Device Hub sync failed: ${message}`);
+      this.settings.hub.lastError = message.slice(0, 500);
+      await this.savePluginData();
+      return undefined;
     }
   }
 
@@ -2196,8 +2220,110 @@ export default class ToWritePlugin extends Plugin {
       autoAddSelections: hub.autoAddSelections,
       rotationIntervalMinutes: hub.rotationIntervalMinutes,
       manualHoldUntil: hub.manualHoldUntil,
-      isPrivacyAllowed: (question) => this.hubPrivacyForPath(question.source.file, question.tags)?.excluded !== true
+      isPrivacyAllowed: (question) => {
+        const privacy = this.hubPrivacyForPath(question.source.file, question.tags);
+        return !privacy.private && !privacy.excluded;
+      }
     });
+  }
+
+  getDevicePagingQueue(): string[] {
+    return [...this.getDevicePagingPool()];
+  }
+
+  private getDevicePagingPool(): string[] {
+    const library = this.getDeviceContentLibrary();
+    return buildDevicePagingPool(
+      this.settings.echoCards,
+      library.entries,
+      (localId) => {
+        if (!localId.startsWith("echo-card:")) return true;
+        const card = this.settings.echoCards.find((item) => echoCardLocalId(item) === localId);
+        return Boolean(card && validateEchoCardLayout(card).fits && this.resolveEchoCardTarget(card));
+      }
+    );
+  }
+
+  private currentDevicePagingLocalId(): string | undefined {
+    return this.localTapSelection.currentLocalId()
+      || this.settings.hub.manualHoldCandidateId
+      || this.settings.hub.lastRotationCandidateId
+      || undefined;
+  }
+
+  private buildLegacyEinkPlaylist(
+    limit: number,
+    cursor: number,
+    query: OpenQuestionQuery = {}
+  ): ExportEinkPayload {
+    const normalizedQuery = { ...query };
+    delete normalizedQuery.limit;
+    const currentRequestedId = this.currentDevicePagingLocalId();
+    const cacheKey = `${limit}:${cursor}:${currentRequestedId ?? ""}:${JSON.stringify(normalizedQuery)}`;
+    const cached = this.legacyEinkPlaylistCache.get(cacheKey);
+    if (cached) return cached;
+
+    const questions = this.store?.query(normalizedQuery) ?? [];
+    const questionIds = new Set(questions.map((question) => question.id));
+    const filtered = Object.keys(normalizedQuery).length > 0;
+    const rawPool = this.getDevicePagingPool();
+    const filteredPool = filtered
+      ? rawPool.filter((localId) => questionIds.has(localId))
+      : rawPool;
+    const currentEcho = currentRequestedId?.startsWith("echo-card:")
+      ? this.settings.echoCards.find((card) => echoCardLocalId(card) === currentRequestedId)
+      : undefined;
+    const currentEchoAllowed = !filtered
+      && currentEcho !== undefined
+      && validateEchoCardLayout(currentEcho).fits
+      && this.resolveEchoCardTarget(currentEcho) !== undefined;
+    const currentLocalId = currentRequestedId && (
+      questionIds.has(currentRequestedId)
+      || currentEchoAllowed
+    )
+      ? currentRequestedId
+      : undefined;
+    const pool = prioritizeDevicePagingPool(filteredPool, currentLocalId);
+    const payload = buildExternalEinkPlaylistPayload(
+      this.app.vault.getName(),
+      questions,
+      this.store?.getArticleSummaries() ?? [],
+      this.settings.echoCards,
+      {
+        orderedLocalIds: pool,
+        selectedLocalId: currentLocalId,
+        cursor,
+        limit
+      }
+    );
+    this.legacyEinkPlaylistCache.set(cacheKey, payload);
+    if (this.legacyEinkPlaylistCache.size > 32) {
+      const oldest = this.legacyEinkPlaylistCache.keys().next().value as string | undefined;
+      if (oldest) this.legacyEinkPlaylistCache.delete(oldest);
+    }
+    return payload;
+  }
+
+  private invalidateLegacyEinkPlaylist(): void {
+    this.legacyEinkPlaylistCache.clear();
+  }
+
+  private async advanceLocalDevicePage(direction: "next" | "prev"): Promise<void> {
+    const pool = this.getDevicePagingPool();
+    const currentId = this.currentDevicePagingLocalId();
+    const nextId = direction === "next"
+      ? nextDevicePagingItem(pool, currentId)
+      : previousDevicePagingItem(pool, currentId);
+    if (!nextId) {
+      throw new Error(this.settings.language === "zh"
+        ? "小屏翻页队列里没有可显示的卡片。请先保存 Echo 卡并开启“加入小屏翻页”，或加入 ToThink / ToWrite。"
+        : "The small-screen paging queue is empty. Save an Echo card with paging enabled or add a ToThink / ToWrite card.");
+    }
+    await this.localTapSelection.selectLocal(nextId);
+    this.settings.hub.lastRotationCandidateId = nextId;
+    this.settings.hub.rotationCursor = (pool.indexOf(nextId) + 1) % pool.length;
+    await this.savePluginData();
+    this.store.notify();
   }
 
   async setDeviceHubSelectionMode(mode: HubSelectionMode): Promise<void> {
@@ -2250,42 +2376,45 @@ export default class ToWritePlugin extends Plugin {
   }
 
   async advanceDeviceHub(): Promise<HubDeviceState | undefined> {
-    const snapshot = this.getDeviceContentLibrary();
-    const questionIds = snapshot.entries
-      .filter((entry) => entry.inLibrary && entry.eligible && entry.rotationEligible)
-      .map((entry) => entry.id);
-    const echoIds = this.settings.echoCards
-      .filter((card) => card.inLibrary && card.rotationEligible)
-      .map((card) => echoCardLocalId(card))
-      .filter((localId) => this.buildHubCandidates(localId).some((candidate) => candidate.localId === localId));
-    const pool = [...new Set([...questionIds, ...echoIds])];
+    const pool = this.getDevicePagingPool();
     if (pool.length === 0) {
-      throw new Error(this.settings.language === "zh" ? "设备内容库里没有可循环的卡片。" : "The device library has no rotation-eligible cards.");
+      throw new Error(this.settings.language === "zh"
+        ? "小屏翻页队列里没有可显示的卡片。请先保存 Echo 卡并开启“加入小屏翻页”，或加入 ToThink / ToWrite。"
+        : "The small-screen paging queue has no eligible cards.");
     }
-    const currentId = this.settings.hub.lastRotationCandidateId || this.settings.hub.manualHoldCandidateId;
-    const currentIndex = pool.indexOf(currentId);
-    const nextId = pool[(currentIndex + 1 + pool.length) % pool.length] ?? pool[0];
+    const currentId = this.currentDevicePagingLocalId();
+    const nextId = nextDevicePagingItem(pool, currentId) ?? pool[0];
     this.settings.hub.manualHoldUntil = "";
     this.settings.hub.manualHoldCandidateId = "";
     this.settings.hub.manualHoldContentId = "";
     await this.localTapSelection.selectLocal(nextId);
-    if (!this.settings.hub.enabled) {
-      this.settings.hub.lastRotationCandidateId = nextId;
-      this.settings.hub.rotationCursor = (pool.indexOf(nextId) + 1) % pool.length;
-      await this.savePluginData();
-      return undefined;
-    }
-    const state = await this.deviceHub.selectLocalCandidate(nextId, this.buildHubCandidates(nextId), {
-      reason: "manual",
-      policyVersion: "towrite-user-next-v1",
-      modelVersion: "user-next"
-    });
-    await this.localTapSelection.rememberHubSelection(nextId, state);
     this.settings.hub.lastRotationCandidateId = nextId;
-    this.settings.hub.lastRotationContentId = state.selected?.selectedContentId ?? "";
     this.settings.hub.rotationCursor = (pool.indexOf(nextId) + 1) % pool.length;
     await this.savePluginData();
-    return state;
+    if (!this.deviceHub.isConfigured()) {
+      return undefined;
+    }
+    try {
+      const state = await this.deviceHub.selectLocalCandidate(nextId, this.buildHubCandidates(nextId, true), {
+        reason: "manual",
+        policyVersion: "towrite-user-next-v2",
+        modelVersion: "user-next"
+      });
+      await this.localTapSelection.rememberHubSelection(nextId, state);
+      this.settings.hub.lastRotationCandidateId = nextId;
+      this.settings.hub.lastRotationContentId = state.selected?.selectedContentId ?? "";
+      this.settings.hub.rotationCursor = (pool.indexOf(nextId) + 1) % pool.length;
+      await this.savePluginData();
+      return state;
+    } catch (error) {
+      const message = messageForError(error);
+      this.settings.hub.lastError = message.slice(0, 500);
+      await this.savePluginData();
+      new Notice(this.settings.language === "zh"
+        ? `本地小屏已翻页，Device Hub 同步失败：${message}`
+        : `Local screen advanced; Device Hub sync failed: ${message}`);
+      return undefined;
+    }
   }
 
   async refreshDeviceHubState(showNotice = true): Promise<HubDeviceState | undefined> {
@@ -2356,7 +2485,7 @@ export default class ToWritePlugin extends Plugin {
       const choiceId = questionChoice?.entry.id ?? echoChoice?.localId;
       const occurrenceId = questionChoice?.occurrenceId ?? echoChoice?.occurrenceId;
       if (!choiceId || !occurrenceId) return state;
-      const selected = await this.deviceHub.selectLocalCandidate(choiceId, this.buildHubCandidates(choiceId), {
+      const selected = await this.deviceHub.selectLocalCandidate(choiceId, this.buildHubCandidates(choiceId, true), {
         reason: "policy",
         policyVersion: "towrite-schedule-v1",
         modelVersion: "deterministic-schedule"
@@ -2369,17 +2498,10 @@ export default class ToWritePlugin extends Plugin {
     }
 
     if (!canAdvanceRotation(state, hub.lastRotationContentId, hub.rotationIntervalMinutes, now)) return state;
-    const questionIds = library.entries
-      .filter((entry) => entry.inLibrary && entry.eligible && entry.rotationEligible)
-      .map((entry) => entry.id);
-    const echoIds = this.settings.echoCards
-      .filter((card) => card.inLibrary && card.rotationEligible)
-      .map((card) => echoCardLocalId(card))
-      .filter((localId) => this.buildHubCandidates(localId).some((candidate) => candidate.localId === localId));
-    const pool = [...new Set([...questionIds, ...echoIds])];
+    const pool = this.getDevicePagingPool();
     const choiceId = pool.length > 0 ? pool[hub.rotationCursor % pool.length] : undefined;
     if (!choiceId) return state;
-    const selected = await this.deviceHub.selectLocalCandidate(choiceId, this.buildHubCandidates(choiceId), {
+    const selected = await this.deviceHub.selectLocalCandidate(choiceId, this.buildHubCandidates(choiceId, true), {
       reason: "policy",
       policyVersion: "towrite-rotation-ack-v1",
       modelVersion: "deterministic-rotation"
@@ -3276,7 +3398,40 @@ export default class ToWritePlugin extends Plugin {
     };
   }
 
-  private buildHubCandidates(preferredLocalId?: string): LocalHubCandidate[] {
+  private resolveEchoCardTarget(
+    card: EchoCard,
+    authorizedCreateFolders = new Set([
+      ...this.settings.deviceCapture.targetFolders,
+      ...this.settings.workflowStages.stages.flatMap((stage) => stage.folderPrefixes)
+    ].map((path) => normalizeFolderPath(path)).filter(Boolean))
+  ): {
+    path: string;
+    kind: "folder" | "inbox" | "existingNote";
+    action: "create" | "append";
+    privacy: NonNullable<LocalHubCandidate["privacy"]>;
+  } | undefined {
+    const targetPath = normalizeVaultPath(card.targetPath || this.settings.deviceCapture.inboxFile);
+    const target = this.app.vault.getAbstractFileByPath(targetPath);
+    const isInbox = targetPath === normalizeVaultPath(this.settings.deviceCapture.inboxFile);
+    const isMarkdown = target instanceof TFile && target.extension.toLowerCase() === "md";
+    const isCreateFolder = authorizedCreateFolders.has(normalizeFolderPath(targetPath))
+      && (!target || target instanceof TFolder);
+    if (!isInbox && !isMarkdown && !isCreateFolder) return undefined;
+
+    const action = isCreateFolder && !isInbox && !isMarkdown ? "create" : "append";
+    // Inbox is an explicit fallback and may sit outside an include scope, but
+    // explicit excludes and private metadata still apply.
+    const privacy = this.hubPrivacyForPath(targetPath, [], { ignoreIncludeFolders: isInbox });
+    if (privacy.private || privacy.excluded) return undefined;
+    return {
+      path: targetPath,
+      kind: action === "create" ? "folder" : isInbox ? "inbox" : "existingNote",
+      action,
+      privacy
+    };
+  }
+
+  private buildHubCandidates(preferredLocalId?: string, includePagingPool = false): LocalHubCandidate[] {
     const now = new Date();
     const library = this.getDeviceContentLibrary();
     const libraryById = new Map(library.entries.map((entry) => [entry.id, entry]));
@@ -3293,7 +3448,7 @@ export default class ToWritePlugin extends Plugin {
         const localId = candidate.questionId || candidate.id;
         const entry = libraryById.get(localId);
         if (!entry?.inLibrary || !entry.eligible) return false;
-        if (preferredLocalId === localId) return true;
+        if (preferredLocalId === localId || (includePagingPool && entry.rotationEligible)) return true;
         if (this.settings.hub.selectionMode === "agent") return entry.agentEligible;
         if (this.settings.hub.selectionMode === "rotation") return entry.rotationEligible;
         if (this.settings.hub.selectionMode === "schedule") return Boolean(entry.schedule?.enabled);
@@ -3365,28 +3520,20 @@ export default class ToWritePlugin extends Plugin {
     for (const card of this.settings.echoCards) {
       const localId = echoCardLocalId(card);
       const manuallyRequested = preferredLocalId === localId;
-      if (!isEchoCardEligibleForMode(card, this.settings.hub.selectionMode, manuallyRequested)) continue;
+      if (!isEchoCardEligibleForMode(card, this.settings.hub.selectionMode, manuallyRequested)
+        && !(includePagingPool && card.inLibrary && card.rotationEligible)) continue;
       if (!validateEchoCardLayout(card).fits) continue;
 
-      const targetPath = normalizeVaultPath(card.targetPath || this.settings.deviceCapture.inboxFile);
-      const target = this.app.vault.getAbstractFileByPath(targetPath);
-      const isInbox = targetPath === normalizeVaultPath(this.settings.deviceCapture.inboxFile);
-      const isMarkdown = target instanceof TFile && target.extension.toLowerCase() === "md";
-      const isCreateFolder = authorizedCreateFolders.has(normalizeFolderPath(targetPath))
-        && (!target || target instanceof TFolder);
-      if (!isInbox && !isMarkdown && !isCreateFolder) continue;
-
-      const action = isCreateFolder && !isInbox && !isMarkdown ? "create" : "append";
-      const privacy = this.hubPrivacyForPath(targetPath);
-      if (!privacy || privacy.private || privacy.excluded) continue;
+      const target = this.resolveEchoCardTarget(card, authorizedCreateFolders);
+      if (!target) continue;
       candidates.push({
         localId,
         type: card.contentType,
         display: composeEchoCardDisplay(card),
         sourceLocalId: localId,
-        writeTargetLocalId: targetPath,
-        writeTargetKind: action === "create" ? "folder" : isInbox ? "inbox" : "existingNote",
-        writeTargetAction: action,
+        writeTargetLocalId: target.path,
+        writeTargetKind: target.kind,
+        writeTargetAction: target.action,
         writeTargetHeading: this.settings.deviceCapture.appendHeading,
         allowedActions: [...new Set(card.actions)].slice(0, 3),
         reasonCode: card.disclosure === "none" ? "echo_card" : "echo_card_ai_disclosed",
@@ -3394,7 +3541,7 @@ export default class ToWritePlugin extends Plugin {
         policyBasis: "general",
         urgency: 0,
         expiresAt: leaseExpiresAt,
-        privacy
+        privacy: target.privacy
       });
     }
 
@@ -3445,18 +3592,43 @@ export default class ToWritePlugin extends Plugin {
       policyBasis: "general",
       urgency: 0
     });
-    const sorted = candidates.sort((left, right) => right.score - left.score);
-    const preferred = preferredLocalId ? sorted.find((candidate) => candidate.localId === preferredLocalId) : undefined;
-    return preferred
-      ? [preferred, ...sorted.filter((candidate) => candidate.localId !== preferred.localId)].slice(0, 20)
-      : sorted.slice(0, 20);
+    const scoreSorted = candidates.sort((left, right) => right.score - left.score);
+    const candidateByLocalId = new Map(scoreSorted.map((candidate) => [candidate.localId, candidate]));
+    const pagingPool = buildDevicePagingPool(
+      this.settings.echoCards,
+      library.entries,
+      (localId) => candidateByLocalId.has(localId)
+    );
+    const pagingCandidates = pagingPool.flatMap((localId) => {
+      const candidate = candidateByLocalId.get(localId);
+      return candidate ? [candidate] : [];
+    });
+    const ordered = [
+      ...pagingCandidates,
+      ...scoreSorted.filter((candidate) => !pagingPool.includes(candidate.localId))
+    ];
+    if (!preferredLocalId || !ordered.some((candidate) => candidate.localId === preferredLocalId)) {
+      return ordered.slice(0, 20);
+    }
+    const candidateById = new Map(ordered.map((candidate) => [candidate.localId, candidate]));
+    return prioritizeDevicePagingPool(
+      ordered.map((candidate) => candidate.localId),
+      preferredLocalId
+    ).flatMap((localId) => {
+      const candidate = candidateById.get(localId);
+      return candidate ? [candidate] : [];
+    }).slice(0, 20);
   }
 
   private hubPrivacyForCandidate(candidate: PushCandidate): NonNullable<LocalHubCandidate["privacy"]> {
     return this.hubPrivacyForPath(candidate.sourceFile || "", candidate.tags);
   }
 
-  private hubPrivacyForPath(path: string, candidateTags: readonly string[] = []): NonNullable<LocalHubCandidate["privacy"]> {
+  private hubPrivacyForPath(
+    path: string,
+    candidateTags: readonly string[] = [],
+    options: { ignoreIncludeFolders?: boolean } = {}
+  ): NonNullable<LocalHubCandidate["privacy"]> {
     if (!path) {
       return { excluded: true };
     }
@@ -3465,7 +3637,9 @@ export default class ToWritePlugin extends Plugin {
     const scope = this.settings.deviceCapture;
     const includes = scope.includeFolders.map((folder) => normalizeFolderPath(folder).toLowerCase()).filter(Boolean);
     const excludes = scope.excludeFolders.map((folder) => normalizeFolderPath(folder).toLowerCase()).filter(Boolean);
-    const excludedByPath = (includes.length > 0 && !includes.some((folder) => lowerPath === folder || lowerPath.startsWith(`${folder}/`)))
+    const excludedByPath = (!options.ignoreIncludeFolders
+      && includes.length > 0
+      && !includes.some((folder) => lowerPath === folder || lowerPath.startsWith(`${folder}/`)))
       || excludes.some((folder) => lowerPath === folder || lowerPath.startsWith(`${folder}/`));
 
     const file = this.app.vault.getAbstractFileByPath(normalizedPath);
@@ -4346,6 +4520,14 @@ function normalizeSettings(settings?: Partial<ToWriteSettings>): ToWriteSettings
     quote0,
     push: normalizePushSettings(settings?.push, quote0)
   };
+}
+
+function previousDevicePagingItem(pool: readonly string[], currentId?: string): string | undefined {
+  if (pool.length === 0) return undefined;
+  const currentIndex = currentId ? pool.indexOf(currentId) : -1;
+  return currentIndex < 0
+    ? pool[pool.length - 1]
+    : pool[(currentIndex - 1 + pool.length) % pool.length];
 }
 
 function normalizeDeviceCaptureSettings(settings?: Partial<ToWriteSettings["deviceCapture"]>): ToWriteSettings["deviceCapture"] {

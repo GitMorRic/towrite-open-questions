@@ -32,6 +32,11 @@ export class LocalTapSelectionService {
     return clone(snapshot);
   }
 
+  /** Lightweight read used by frequent device polling; does not clone history. */
+  currentLocalId(): string | undefined {
+    return this.localSnapshot?.localId;
+  }
+
   async rememberHubSelection(localId: string, state: HubDeviceState): Promise<void> {
     this.hubState = clone(state);
     const selected = state.selected;

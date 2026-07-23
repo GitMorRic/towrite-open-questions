@@ -1,5 +1,23 @@
 # Changelog / 更新日志
 
+## 0.3.0-beta.10 - 2026-07-23
+
+- Unified saved Echo templates and ToThink / ToWrite annotations into one template-first small-screen playlist, including manual current-card selection, wrapping next/previous paging, and backwards-compatible `/api/v1/eink` fields.
+- Fixed Echo “save and show” on installations whose working ESP32 still uses the local External API; an incomplete or temporarily offline Device Hub no longer prevents the local screen selection from changing.
+- Added a visible screen-paging opt-in and queue summary to the card workbench. Saved preset drafts join paging by default, while Agent selection remains explicitly opt-in.
+- Added idempotent hardware-button processing, target-bound device tokens, and header-only device authentication so concurrent retries cannot double-advance or control another target.
+- Added an ESP32-S3 example with configurable right/left GPIO buttons, five-second change detection, template-first paging, and no unnecessary e-ink redraws.
+- Cached the compatibility playlist between data changes and added a lightweight current-selection read so frequent device polls do not rebuild the full candidate set or clone handoff history.
+
+中文摘要：
+
+- 将已保存的 Echo 模板卡与 ToThink / ToWrite 划线卡统一成模板优先的小屏翻页队列，支持手动设为当前、上一张/下一张与末尾循环，同时保持旧 `/api/v1/eink` 字段兼容。
+- 修复 ESP32 仍读取本地 External API 时，Echo“保存并显示”看似无反应的问题；Device Hub 未配完整或临时离线时，本地小屏当前卡仍会正常切换。
+- 卡片工作台新增醒目的“小屏按键翻页”开关和队列统计；参考模板明确保存后默认加入翻页，但 Agent 选择仍需用户单独授权。
+- 按键事件增加并发幂等、target 与设备 token 绑定和纯请求头鉴权，避免网络重试翻两页或跨设备控制。
+- ESP32-S3 示例新增可配置左右 GPIO、5 秒变化检测、模板优先翻页，以及内容未变化时不重复刷新墨水屏。
+- 兼容播放列表只在数据变化后重建，并用轻量方式读取当前选择，避免设备频繁轮询重新扫描完整候选或复制 handoff 历史。
+
 ## 0.3.0-beta.9 - 2026-07-23
 
 - Added prominent “Create custom card” and “Open card library” shortcuts at the top of Device Hub settings, and changed the settings tabs to wrap instead of hiding the card entry in a horizontal scroller.

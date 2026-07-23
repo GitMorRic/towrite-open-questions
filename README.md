@@ -227,6 +227,8 @@ POST  /api/v1/device/handoffs
 PATCH /api/v1/questions/<id>
 ```
 
+The compatibility `/api/v1/eink` endpoint now combines saved Echo templates and ToThink / ToWrite cards in one template-first loop. An ESP32 right-button event advances the same shared selection through `/api/v1/device/events`; see the [ESP32-S3 paging example](examples/esp32s3-eink/README.md).
+
 Use `127.0.0.1` for local widgets. Use `0.0.0.0` only when you intentionally want LAN or tunnel access, and protect remote access with your own network controls such as Tailscale, Cloudflare Tunnel, a reverse proxy, HTTPS, or a firewall.
 
 ### Phone And Small-Screen Preview

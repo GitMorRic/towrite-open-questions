@@ -1366,6 +1366,25 @@ export class ToWriteSettingTab extends PluginSettingTab {
 
     this.renderEchoCardWorkbench(containerEl, zh);
 
+    const pagingQueue = this.plugin.getDevicePagingQueue();
+    const queuedEchoCount = pagingQueue.filter((localId) => localId.startsWith("echo-card:")).length;
+    const queuedQuestionCount = pagingQueue.length - queuedEchoCount;
+    new Setting(containerEl)
+      .setName(zh ? "小屏按键翻页队列" : "Small-screen button paging")
+      .setDesc(zh
+        ? `当前 ${queuedEchoCount} 张 Echo + ${queuedQuestionCount} 张 ToThink / ToWrite。顺序固定为 Echo 在前、划线卡在后，并循环返回第一张。ESP32 右键短按应发送 device event 的 right/next；旧版 /api/v1/eink 也按此顺序返回。`
+        : `${queuedEchoCount} Echo + ${queuedQuestionCount} ToThink / ToWrite cards. Echo cards come first, followed by selection cards, then the queue wraps. Map the ESP32 right short-press to the right/next device event; legacy /api/v1/eink uses the same order.`)
+      .addButton((button) => button
+        .setButtonText(zh ? "测试下一页" : "Test next page")
+        .onClick(() => {
+          button.setDisabled(true);
+          button.setButtonText(zh ? "正在切换…" : "Switching…");
+          void this.plugin.advanceDeviceHub()
+            .then(() => new Notice(zh ? "已切换到翻页队列的下一张。" : "Advanced to the next paging card."))
+            .catch((error: unknown) => new Notice(`${zh ? "切换失败" : "Could not advance"}: ${error instanceof Error ? error.message : String(error)}`))
+            .finally(() => this.refreshSettingsUi());
+        }));
+
     new Setting(containerEl)
       .setName(zh ? "内容选择方式" : "Content selection mode")
       .setDesc(zh ? "Agent 只能在本地白名单候选中重排；不会发明笔记或路径。" : "Agent may only rerank locally allowlisted candidates and cannot invent notes or paths.")
@@ -1458,8 +1477,8 @@ export class ToWriteSettingTab extends PluginSettingTab {
     headingCopy.createEl("h3", { text: zh ? "Echo 墨水屏卡片" : "Echo e-ink cards", attr: { id: "towrite-echo-heading" } });
     headingCopy.createEl("p", {
       text: zh
-        ? "一张卡只保留一个核心信息与最多三个动作。参考模板不会自动加入设备库，也不会触发 AI。"
-        : "Keep one core idea and at most three actions per card. Reference templates never enter the library or invoke AI automatically."
+        ? "一张卡只保留一个核心信息与最多三个动作。选择模板只会创建草稿；明确保存后默认加入小屏翻页队列，但不会触发 AI。"
+        : "Keep one core idea and at most three actions per card. Choosing a template only creates a draft; explicitly saving it adds it to small-screen paging by default without invoking AI."
     });
     const blank = heading.createEl("button", {
       cls: "towrite-echo-new-button",
@@ -1502,6 +1521,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
             card.typeLabel,
             card.subject,
             card.inLibrary ? (zh ? "设备库" : "In library") : (zh ? "仅手动" : "Manual only"),
+            card.inLibrary && card.rotationEligible ? (zh ? "小屏翻页" : "Screen paging") : "",
             card.schedule?.enabled ? card.schedule.localTime : ""
           ].filter(Boolean).join(" · ")
         });
@@ -1668,9 +1688,13 @@ export class ToWriteSettingTab extends PluginSettingTab {
         dirty ? (zh ? "未保存修改" : "Unsaved changes") : (zh ? "已保存" : "Saved"),
         validation.fits ? (zh ? "屏幕适配" : "Screen fit") : (zh ? "内容过长" : "Too long")
       ].join(" · "));
-      saveButton.disabled = !draft.name.trim();
-      sendButton.disabled = !draft.name.trim() || !validation.fits;
-      sendButton.title = validation.fits ? "" : (zh ? "请先精简标记出的字段" : "Shorten the highlighted fields first");
+      saveButton.disabled = this.echoCardMutationRunning || !draft.name.trim();
+      sendButton.disabled = this.echoCardMutationRunning || !draft.name.trim() || !validation.fits;
+      sendButton.title = this.echoCardMutationRunning
+        ? (zh ? "正在处理上一项操作" : "The previous operation is still running")
+        : validation.fits
+          ? ""
+          : (zh ? "请先精简标记出的字段" : "Shorten the highlighted fields first");
     };
     const mutate = (patch: Partial<EchoCard>): void => {
       Object.assign(draft, patch);
@@ -1759,6 +1783,21 @@ export class ToWriteSettingTab extends PluginSettingTab {
     };
     renderActionPicker();
 
+    new Setting(form)
+      .setName(zh ? "加入小屏按键翻页" : "Add to small-screen button paging")
+      .setDesc(zh
+        ? "保存后进入实体按键的播放列表：先翻完已保存的 Echo 卡，再显示 ToThink / ToWrite，末尾回到第一张。"
+        : "After saving, join the hardware-button playlist: saved Echo cards first, then ToThink / ToWrite, wrapping back to the first card.")
+      .addToggle((toggle) => toggle
+        .setValue(draft.inLibrary && draft.rotationEligible)
+        .onChange((value) => {
+          mutate({
+            inLibrary: value || draft.inLibrary,
+            rotationEligible: value
+          });
+          this.refreshSettingsUi();
+        }));
+
     const advanced = form.createEl("details", { cls: "towrite-echo-advanced" });
     advanced.createEl("summary", { text: zh ? "发送、目标与自动选择" : "Delivery, target, and automation" });
     const advancedBody = advanced.createDiv({ cls: "towrite-echo-advanced-body" });
@@ -1768,14 +1807,19 @@ export class ToWriteSettingTab extends PluginSettingTab {
       .addText((input) => input.setValue(draft.targetPath ?? "").setPlaceholder(zh ? "留空 = Capture Inbox" : "Blank = Capture Inbox").onChange((value) => mutate({ targetPath: value.trim() || undefined })));
     new Setting(advancedBody)
       .setName(zh ? "加入设备内容库" : "Include in device library")
-      .setDesc(zh ? "关闭时仍可手动发送；Agent、循环和定时不会自动选择。" : "Manual sending still works when off; Agent, rotation, and schedules will not select it.")
-      .addToggle((toggle) => toggle.setValue(draft.inLibrary).onChange((value) => mutate({ inLibrary: value })));
+      .setDesc(zh ? "关闭时仍可手动发送，同时会关闭 Agent、翻页和定时选择。" : "Manual sending still works when off; Agent, paging, and schedules are disabled.")
+      .addToggle((toggle) => toggle.setValue(draft.inLibrary).onChange((value) => {
+        mutate(value
+          ? { inLibrary: true }
+          : { inLibrary: false, agentEligible: false, rotationEligible: false, schedule: undefined });
+        this.refreshSettingsUi();
+      }));
     new Setting(advancedBody)
       .setName(zh ? "允许 Agent 选择" : "Allow Agent selection")
-      .addToggle((toggle) => toggle.setValue(draft.agentEligible).onChange((value) => mutate({ agentEligible: value, ...(value ? { inLibrary: true } : {}) })));
-    new Setting(advancedBody)
-      .setName(zh ? "允许循环播放" : "Allow rotation")
-      .addToggle((toggle) => toggle.setValue(draft.rotationEligible).onChange((value) => mutate({ rotationEligible: value, ...(value ? { inLibrary: true } : {}) })));
+      .addToggle((toggle) => toggle.setValue(draft.agentEligible).onChange((value) => {
+        mutate({ agentEligible: value, ...(value ? { inLibrary: true } : {}) });
+        this.refreshSettingsUi();
+      }));
     new Setting(advancedBody)
       .setName(zh ? "固定显示时间" : "Scheduled time")
       .setDesc(zh ? "使用 24 小时 HH:mm；留空关闭。V1 默认每天生效 30 分钟。" : "Use 24-hour HH:mm; leave blank to disable. V1 uses a daily 30-minute window.")
@@ -1817,19 +1861,28 @@ export class ToWriteSettingTab extends PluginSettingTab {
       });
     }
     const primary = footer.createDiv({ cls: "towrite-echo-editor-primary" });
-    const saveButton = primary.createEl("button", { text: zh ? "保存" : "Save", attr: { type: "button" } });
+    const saveButton = primary.createEl("button", {
+      text: this.echoCardMutationRunning
+        ? (zh ? "正在保存…" : "Saving…")
+        : (zh ? "保存" : "Save"),
+      attr: { type: "button" }
+    });
     saveButton.addEventListener("click", () => void this.saveEchoCardDraft(draft, zh, false));
     const hubReady = Boolean(
       this.plugin.settings.hub.enabled
       && this.plugin.settings.hub.baseUrl
       && this.plugin.settings.hub.receiverId
+      && this.plugin.settings.hub.receiverToken
       && this.plugin.settings.hub.deviceId
+      && this.plugin.settings.hub.referenceSecret.length >= 16
     );
     const sendButton = primary.createEl("button", {
       cls: "mod-cta",
-      text: hubReady
-        ? (zh ? "保存并发送到屏幕" : "Save and send to display")
-        : (zh ? "保存并设为当前卡片" : "Save as current card"),
+      text: this.echoCardMutationRunning
+        ? (zh ? "正在发送…" : "Sending…")
+        : hubReady
+          ? (zh ? "保存并发送到屏幕" : "Save and send to display")
+          : (zh ? "保存并设为当前卡片" : "Save as current card"),
       attr: { type: "button" }
     });
     sendButton.addEventListener("click", () => void this.saveEchoCardDraft(draft, zh, true));
@@ -1887,39 +1940,47 @@ export class ToWriteSettingTab extends PluginSettingTab {
   }
 
   private async saveEchoCardDraft(draft: EchoCard, zh: boolean, send: boolean): Promise<void> {
-    if (this.echoCardMutationRunning) return;
+    if (this.echoCardMutationRunning) {
+      new Notice(zh ? "上一项卡片操作仍在进行，请稍候。" : "The previous card operation is still running.");
+      return;
+    }
     this.echoCardMutationRunning = true;
+    this.refreshSettingsUi();
     try {
       const saved = await this.plugin.upsertEchoCard(cloneEchoCardForEditor(draft));
       this.echoCardDraft = cloneEchoCardForEditor(saved);
       this.echoCardDraftBaseline = echoCardFingerprint(saved);
       const hubState = send ? await this.plugin.sendEchoCardToDeviceHub(saved.id) : undefined;
-      new Notice(send
-        ? hubState
-          ? (zh ? "Echo 卡片已保存并发送到设备。" : "Echo card saved and sent to the device.")
-          : (zh ? "Echo 卡片已保存为本地当前卡片；Device Hub 尚未连接，未发送到 ESP32。" : "Echo card saved as the local current card. Device Hub is not connected, so it was not sent to the ESP32.")
-        : (zh ? "Echo 卡片已保存。" : "Echo card saved."));
-      this.refreshSettingsUi();
+      if (!send) {
+        new Notice(zh ? "Echo 卡片已保存。" : "Echo card saved.");
+      } else if (hubState?.inSync) {
+        new Notice(zh ? "Echo 卡片已保存，设备已经 ACK 显示。" : "Echo card saved and acknowledged by the display.");
+      }
     } catch (error) {
       new Notice(`${send ? (zh ? "发送失败" : "Could not send") : (zh ? "保存失败" : "Could not save")}: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       this.echoCardMutationRunning = false;
+      this.refreshSettingsUi();
     }
   }
 
   private async sendSavedEchoCard(cardId: string, zh: boolean): Promise<void> {
-    if (this.echoCardMutationRunning) return;
+    if (this.echoCardMutationRunning) {
+      new Notice(zh ? "上一项卡片操作仍在进行，请稍候。" : "The previous card operation is still running.");
+      return;
+    }
     this.echoCardMutationRunning = true;
+    this.refreshSettingsUi();
     try {
       const hubState = await this.plugin.sendEchoCardToDeviceHub(cardId);
-      new Notice(hubState
-        ? (zh ? "Echo 卡片已发送到设备。" : "Echo card sent to the device.")
-        : (zh ? "已设为本地当前卡片；Device Hub 尚未连接，未发送到 ESP32。" : "Selected as the local current card. Device Hub is not connected, so it was not sent to the ESP32."));
-      this.refreshSettingsUi();
+      if (hubState?.inSync) {
+        new Notice(zh ? "设备已经 ACK 显示这张 Echo 卡片。" : "The display acknowledged this Echo card.");
+      }
     } catch (error) {
       new Notice(`${zh ? "发送失败" : "Could not send"}: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       this.echoCardMutationRunning = false;
+      this.refreshSettingsUi();
     }
   }
 

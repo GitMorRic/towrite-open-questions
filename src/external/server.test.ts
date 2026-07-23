@@ -536,6 +536,40 @@ describe("external server", () => {
     });
   });
 
+  it("serves the compatibility e-ink playlist callback with cursor paging and legacy filters", async () => {
+    let request: { limit: number; cursor: number; lane?: string[] } | undefined;
+    const server = makeServer({
+      getEinkPayload: (limit, cursor, query) => {
+        request = { limit, cursor, lane: query.lane };
+        return {
+          schemaVersion: 2,
+          generatedAt: "2026-07-23T00:00:00.000Z",
+          summary: { open: 1, candidate: 0, blockedArticles: 0 },
+          focus: [],
+          playlist: {
+            order: "echo_then_questions",
+            cursor,
+            total: 0,
+            nextCursor: 0,
+            previousCursor: 0,
+            revision: "einkrev_test"
+          }
+        };
+      }
+    });
+    const response = new FakeResponse();
+
+    await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
+      .handleRequest(new FakeRequest("GET", "/api/v1/eink?limit=1&cursor=7&lane=write", {}), response);
+
+    expect(response.statusCode).toBe(200);
+    expect(request).toEqual({ limit: 1, cursor: 7, lane: ["write"] });
+    expect(JSON.parse(response.body).playlist).toMatchObject({
+      order: "echo_then_questions",
+      cursor: 7
+    });
+  });
+
   it("does not embed the External API token in a Bearer-authenticated device feed", async () => {
     const server = makeServer({
       getSettings: () => ({
@@ -731,23 +765,20 @@ describe("external server", () => {
       }
     });
 
+    const event = {
+      eventId: "desk-1",
+      targetId: "desk",
+      deviceId: "small-screen-01",
+      button: "center",
+      occurredAt: "2026-07-09T12:00:00+08:00"
+    };
     const first = new FakeResponse();
     await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
-      .handleRequest(new FakeRequest("POST", "/api/v1/device/events", {
-        eventId: "desk-1",
-        targetId: "desk",
-        deviceId: "small-screen-01",
-        button: "center",
-        occurredAt: "2026-07-09T12:00:00+08:00"
-      }, { authorization: "Bearer desk-token" }), first);
+      .handleRequest(new FakeRequest("POST", "/api/v1/device/events", event, { authorization: "Bearer desk-token" }), first);
 
     const duplicate = new FakeResponse();
     await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
-      .handleRequest(new FakeRequest("POST", "/api/v1/device/events", {
-        eventId: "desk-1",
-        targetId: "desk",
-        button: "center"
-      }, { authorization: "Bearer desk-token" }), duplicate);
+      .handleRequest(new FakeRequest("POST", "/api/v1/device/events", event, { authorization: "Bearer desk-token" }), duplicate);
 
     expect(first.statusCode).toBe(200);
     const body = JSON.parse(first.body);
@@ -758,8 +789,8 @@ describe("external server", () => {
       targetId: "desk",
       candidateId: "oq_one"
     });
-    expect(body.openUrl).toContain("token=desk-token");
-    expect(body.openUrl).toContain("questionId=oq_one");
+    expect(body.openUrl).toBeUndefined();
+    expect(first.body).not.toContain("desk-token");
     expect(JSON.parse(duplicate.body)).toMatchObject({ duplicate: true });
     expect(calls).toEqual([{
       targetId: "desk",
@@ -770,6 +801,165 @@ describe("external server", () => {
       clientId: "small-screen-01",
       at: "2026-07-09T04:00:00.000Z"
     }]);
+  });
+
+  it("binds scoped device tokens to their target for feeds and button events", async () => {
+    const directions: string[] = [];
+    const targets = ["desk", "wall"].map((id) => ({
+      id,
+      name: id,
+      type: "local-web" as const,
+      enabled: true,
+      profile: "eink-bw" as const,
+      width: 264,
+      height: 176,
+      inches: 2.7,
+      defaultPage: "cards" as const,
+      defaultLane: "" as const,
+      refreshSeconds: 60,
+      quietHoursStart: "",
+      quietHoursEnd: "",
+      token: `${id}-token`,
+      capabilities: ["buttons"],
+      buttonMappings: [{ button: "right", action: "next" as const, label: "Next" }]
+    }));
+    const server = makeServer({
+      getRestrictedAccessTokens: () => targets.map((target) => target.token),
+      getPushTargets: () => targets,
+      getEinkPayload: (_limit, _cursor) => ({
+        schemaVersion: 2,
+        generatedAt: "2026-07-23T00:00:00.000Z",
+        summary: { open: 0, candidate: 0, blockedArticles: 0 },
+        focus: []
+      }),
+      advanceDevicePage: async (direction) => {
+        directions.push(direction);
+      }
+    });
+
+    const allowedFeed = new FakeResponse();
+    await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
+      .handleRequest(new FakeRequest("GET", "/api/v1/eink?targetId=desk&limit=1", {}, {
+        authorization: "Bearer desk-token"
+      }), allowedFeed);
+    expect(allowedFeed.statusCode).toBe(200);
+
+    const deniedFeed = new FakeResponse();
+    await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
+      .handleRequest(new FakeRequest("GET", "/api/v1/eink?targetId=wall&limit=1", {}, {
+        authorization: "Bearer desk-token"
+      }), deniedFeed);
+    expect(deniedFeed.statusCode).toBe(401);
+
+    const deniedEvent = new FakeResponse();
+    await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
+      .handleRequest(new FakeRequest("POST", "/api/v1/device/events", {
+        eventId: "cross-target",
+        targetId: "wall",
+        button: "right"
+      }, { authorization: "Bearer desk-token" }), deniedEvent);
+    expect(deniedEvent.statusCode).toBe(401);
+    expect(directions).toEqual([]);
+  });
+
+  it("coalesces concurrent retries so one event advances only once", async () => {
+    let releaseAdvance: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseAdvance = resolve;
+    });
+    let advances = 0;
+    const target = {
+      id: "desk",
+      name: "Desk",
+      type: "local-web" as const,
+      enabled: true,
+      profile: "eink-bw" as const,
+      width: 264,
+      height: 176,
+      inches: 2.7,
+      defaultPage: "cards" as const,
+      defaultLane: "" as const,
+      refreshSeconds: 60,
+      quietHoursStart: "",
+      quietHoursEnd: "",
+      token: "desk-token",
+      capabilities: ["buttons"],
+      buttonMappings: [{ button: "right", action: "next" as const, label: "Next" }]
+    };
+    const server = makeServer({
+      getRestrictedAccessTokens: () => ["desk-token"],
+      getPushTargets: () => [target],
+      advanceDevicePage: async () => {
+        advances += 1;
+        await gate;
+      }
+    });
+    const body = { eventId: "same-event", targetId: "desk", button: "right" };
+    const first = new FakeResponse();
+    const second = new FakeResponse();
+    const handle = server as unknown as {
+      handleRequest(request: FakeRequest, response: FakeResponse): Promise<void>;
+    };
+    const firstRequest = handle.handleRequest(
+      new FakeRequest("POST", "/api/v1/device/events", body, { authorization: "Bearer desk-token" }),
+      first
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    const secondRequest = handle.handleRequest(
+      new FakeRequest("POST", "/api/v1/device/events", body, { authorization: "Bearer desk-token" }),
+      second
+    );
+    releaseAdvance?.();
+    await Promise.all([firstRequest, secondRequest]);
+
+    expect(advances).toBe(1);
+    expect([JSON.parse(first.body).duplicate, JSON.parse(second.body).duplicate].sort()).toEqual([false, true]);
+  });
+
+  it("advances the shared small-screen playlist for right and left button events", async () => {
+    const directions: string[] = [];
+    const server = makeServer({
+      getRestrictedAccessTokens: () => ["desk-token"],
+      getPushTargets: () => [{
+        id: "desk",
+        name: "Desk screen",
+        type: "local-web",
+        enabled: true,
+        profile: "eink-bw",
+        width: 264,
+        height: 176,
+        inches: 2.7,
+        defaultPage: "cards",
+        defaultLane: "",
+        refreshSeconds: 60,
+        quietHoursStart: "",
+        quietHoursEnd: "",
+        token: "desk-token",
+        capabilities: ["buttons"],
+        buttonMappings: [
+          { button: "right", action: "next", label: "Next" },
+          { button: "left", action: "prev", label: "Previous" }
+        ]
+      }],
+      getPushFeed: () => makePushFeed("desk"),
+      advanceDevicePage: async (direction) => {
+        directions.push(direction);
+      }
+    });
+
+    for (const [eventId, button] of [["page-1", "right"], ["page-2", "left"]] as const) {
+      const response = new FakeResponse();
+      await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
+        .handleRequest(new FakeRequest("POST", "/api/v1/device/events", {
+          eventId,
+          targetId: "desk",
+          button
+        }, { authorization: "Bearer desk-token" }), response);
+      expect(response.statusCode).toBe(200);
+    }
+
+    expect(directions).toEqual(["next", "prev"]);
   });
 
   it("creates short handoff links that resolve without exposing the long token", async () => {

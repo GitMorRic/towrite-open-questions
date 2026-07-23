@@ -1,4 +1,11 @@
-import type { ArticleSummary, OpenQuestion, OpenQuestionStatus, QuestionStatusOption } from "../core/types";
+import type {
+  ArticleSummary,
+  ExportEinkPayload,
+  OpenQuestion,
+  OpenQuestionQuery,
+  OpenQuestionStatus,
+  QuestionStatusOption
+} from "../core/types";
 import { enrichArticleSummariesWithWorkflow } from "../core/articles";
 import { normalizeExternalApiBindHost, type ToWriteDeviceCaptureSettings, type ToWriteExternalApiSettings } from "../core/settings";
 import type { PushAnchorInput, PushFeedbackInput } from "../push/state";
@@ -50,6 +57,8 @@ interface ExternalApiServerOptions {
   getArticleSummaries(): ArticleSummary[];
   getWorkflowPayload(query?: WorkflowQuery): WorkflowIndexPayload;
   getWorkflowSummary(): WorkflowSummaryPayload;
+  /** Optional compatibility playlist for early ESP32 `/api/v1/eink` clients. */
+  getEinkPayload?(limit: number, cursor: number, query: OpenQuestionQuery): ExportEinkPayload;
   getDeviceCaptureSettings(): ToWriteDeviceCaptureSettings;
   getRestrictedAccessToken?(): string;
   getRestrictedAccessTokens?(): string[];
@@ -64,6 +73,8 @@ interface ExternalApiServerOptions {
   recommendCapture?(draft: CaptureDraft): Promise<CaptureTargetCandidate[]>;
   createDeviceCapture(request: DeviceCaptureRequest): Promise<DeviceCaptureResult>;
   undoCapture?(captureId: string, undoToken: string): Promise<CaptureUndoResult>;
+  /** Advances the local small-screen playlist after a mapped hardware button event. */
+  advanceDevicePage?(direction: "next" | "prev"): Promise<void>;
   subscribe(listener: () => void): () => void;
 }
 
@@ -132,6 +143,12 @@ interface DeviceHandoff {
   sourceRef?: DeviceSourceRef;
 }
 
+interface DeviceEventRecord {
+  fingerprint: string;
+  pending?: Promise<DeviceEventResult>;
+  result?: DeviceEventResult;
+}
+
 interface QuestionFieldPatch {
   title?: string;
   question?: string;
@@ -187,7 +204,7 @@ export class ToWriteExternalApiServer {
   private readonly sseClients = new Set<HttpResponse>();
   private readonly pushSseClients = new Map<HttpResponse, string | undefined>();
   private readonly handoffs = new Map<string, DeviceHandoff>();
-  private readonly deviceEventResults = new Map<string, DeviceEventResult>();
+  private readonly deviceEventRecords = new Map<string, DeviceEventRecord>();
 
   constructor(private readonly options: ExternalApiServerOptions) {}
 
@@ -397,6 +414,19 @@ export class ToWriteExternalApiServer {
 
     if (url.pathname === "/api/v1/eink") {
       const limit = parseLimit(url.searchParams.get("limit"), 12);
+      const cursor = readNonNegativeInteger(url.searchParams.get("cursor"));
+      const targetId = url.searchParams.get("targetId")?.trim();
+      if (targetId) {
+        this.assertDeviceTargetAuthorization(request, url, "GET", targetId);
+      } else if (!this.isMasterAuthorized(request, url, "GET")) {
+        throw new ExternalApiError(401, "A target-bound token requires targetId.");
+      }
+      if (this.options.getEinkPayload) {
+        const query = queryFromUrl(url);
+        delete query.limit;
+        this.writeJson(response, 200, this.options.getEinkPayload(limit, cursor, query));
+        return;
+      }
       const questions = this.options.getQuestions(queryFromUrl(url));
       this.writeJson(response, 200, buildExternalEinkPayload(vaultName, questions, this.options.getArticleSummaries(), limit));
       return;
@@ -550,15 +580,35 @@ export class ToWriteExternalApiServer {
     if (url.pathname === "/api/v1/device/events") {
       const body = await readJsonBody(request);
       const event = this.readDeviceEvent(body);
-      const cached = this.deviceEventResults.get(event.eventId);
+      this.assertDeviceTargetAuthorization(request, url, "POST", event.targetId);
+      const fingerprint = deviceEventFingerprint(event);
+      const cached = this.deviceEventRecords.get(event.eventId);
       if (cached) {
-        this.writeJson(response, 200, { ...cached, duplicate: true });
+        if (cached.fingerprint !== fingerprint) {
+          throw new ExternalApiError(409, "The event id was already used with different data.");
+        }
+        const cachedResult = cached.result ?? await cached.pending;
+        if (!cachedResult) {
+          throw new ExternalApiError(409, "The event is already being processed.");
+        }
+        this.writeJson(response, 200, { ...cachedResult, duplicate: true });
         return;
       }
-      const result = this.resolveDeviceAction(request, url, event);
-      await this.recordDeviceEventFeedback(event, result);
-      this.rememberDeviceEventResult(result);
-      this.writeJson(response, 200, result);
+      const record: DeviceEventRecord = { fingerprint };
+      record.pending = this.processDeviceEvent(request, url, event);
+      this.deviceEventRecords.set(event.eventId, record);
+      try {
+        const result = await record.pending;
+        record.result = result;
+        record.pending = undefined;
+        this.trimDeviceEventRecords();
+        this.writeJson(response, 200, result);
+      } catch (error) {
+        if (this.deviceEventRecords.get(event.eventId) === record) {
+          this.deviceEventRecords.delete(event.eventId);
+        }
+        throw error;
+      }
       return;
     }
 
@@ -724,14 +774,18 @@ export class ToWriteExternalApiServer {
     const sourceRef = handoff?.sourceRef || candidate?.sourceRef || sourceRefFromUrl(url, this.options.getVaultName());
     const token = this.deviceTokenForRequest(request, url, targetId);
     const baseUrl = this.baseUrlForRequest(request);
-    const openUrl = this.openUrlForIntent(intent, baseUrl, token, {
+    // A hardware event response must never reflect its long-lived Bearer token
+    // into a URL. Phone input uses the separate one-time handoff endpoint.
+    const openUrl = event ? undefined : this.openUrlForIntent(intent, baseUrl, token, {
       questionId,
       targetId,
       candidateId,
       deliveryId,
       sourceRef
     });
-    const obsidianUri = candidate?.openUri || sourceRefToObsidianUri(sourceRef, this.options.getVaultName());
+    const obsidianUri = event
+      ? undefined
+      : candidate?.openUri || sourceRefToObsidianUri(sourceRef, this.options.getVaultName());
     const feedUrl = `${baseUrl}/api/v1/push/feed?targetId=${encodeURIComponent(targetId)}`;
 
     return {
@@ -790,6 +844,19 @@ export class ToWriteExternalApiServer {
     }
   }
 
+  private async processDeviceEvent(
+    request: HttpRequest,
+    url: URL,
+    event: DeviceEventInput
+  ): Promise<DeviceEventResult> {
+    const result = this.resolveDeviceAction(request, url, event);
+    if ((result.action === "next" || result.action === "prev") && this.options.advanceDevicePage) {
+      await this.options.advanceDevicePage(result.action);
+    }
+    await this.recordDeviceEventFeedback(event, result);
+    return result;
+  }
+
   private async recordDeviceEventFeedback(event: DeviceEventInput, result: DeviceEventResult): Promise<void> {
     const action = feedbackActionForIntent(result.action);
     const candidateId = result.candidateId || event.candidateId;
@@ -807,14 +874,13 @@ export class ToWriteExternalApiServer {
     });
   }
 
-  private rememberDeviceEventResult(result: DeviceEventResult): void {
-    this.deviceEventResults.set(result.eventId, result);
-    if (this.deviceEventResults.size <= 300) {
+  private trimDeviceEventRecords(): void {
+    if (this.deviceEventRecords.size <= 300) {
       return;
     }
-    const firstKey = this.deviceEventResults.keys().next().value as string | undefined;
+    const firstKey = this.deviceEventRecords.keys().next().value as string | undefined;
     if (firstKey) {
-      this.deviceEventResults.delete(firstKey);
+      this.deviceEventRecords.delete(firstKey);
     }
   }
 
@@ -962,13 +1028,7 @@ export class ToWriteExternalApiServer {
   }
 
   private isAuthorized(request: HttpRequest, url: URL, method: string): boolean {
-    const settings = this.options.getSettings();
-    const token = settings.token.trim();
-    const authorization = headerValue(request, "authorization");
-    if (authorization === `Bearer ${token}`) {
-      return true;
-    }
-    if (method === "GET" && settings.allowQueryTokenForRead && url.searchParams.get("token") === token) {
+    if (this.isMasterAuthorized(request, url, method)) {
       return true;
     }
     if (method === "GET" && url.pathname === "/device/go" && this.resolveDeviceHandoff(url.searchParams.get("handoff"))) {
@@ -978,12 +1038,43 @@ export class ToWriteExternalApiServer {
     if (restrictedTokens.length === 0 || !this.isRestrictedRoute(method, url.pathname)) {
       return false;
     }
+    const authorization = headerValue(request, "authorization");
     const bearer = authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length).trim() : "";
     if (bearer && restrictedTokens.includes(bearer)) {
       return true;
     }
     const queryToken = url.searchParams.get("token")?.trim();
     return method === "GET" && Boolean(queryToken && restrictedTokens.includes(queryToken));
+  }
+
+  private isMasterAuthorized(request: HttpRequest, url: URL, method: string): boolean {
+    const settings = this.options.getSettings();
+    const token = settings.token.trim();
+    const authorization = headerValue(request, "authorization");
+    return authorization === `Bearer ${token}`
+      || (method === "GET" && settings.allowQueryTokenForRead && url.searchParams.get("token") === token);
+  }
+
+  private assertDeviceTargetAuthorization(
+    request: HttpRequest,
+    url: URL,
+    method: string,
+    targetId: string
+  ): void {
+    if (this.isMasterAuthorized(request, url, method)) {
+      return;
+    }
+    const authorization = headerValue(request, "authorization");
+    const bearer = authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length).trim() : "";
+    const targetToken = this.options.getPushTargets?.()
+      .find((target) => target.id === targetId)?.token?.trim();
+    const quote0Token = targetId === "quote0"
+      ? this.options.getRestrictedAccessToken?.()?.trim()
+      : "";
+    if (bearer && (bearer === targetToken || bearer === quote0Token)) {
+      return;
+    }
+    throw new ExternalApiError(401, "The device token is not bound to this target.");
   }
 
   private restrictedTokens(): string[] {
@@ -1006,7 +1097,10 @@ export class ToWriteExternalApiServer {
 
   private isRestrictedRoute(method: string, pathname: string): boolean {
     if (method === "GET") {
-      return pathname === "/device/input" || pathname === "/device/go" || pathname === "/api/v1/device-input-context";
+      return pathname === "/device/input"
+        || pathname === "/device/go"
+        || pathname === "/api/v1/device-input-context"
+        || pathname === "/api/v1/eink";
     }
     if (method === "POST") {
       return pathname === "/api/v1/captures"
@@ -1340,6 +1434,27 @@ function readPreciseLocation(body: Record<string, unknown>): PushAnchorInput["pr
 function readPositiveInteger(body: Record<string, unknown>, key: string): number | undefined {
   const value = Number(body[key]);
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
+}
+
+function readNonNegativeInteger(value: string | null): number {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric >= 0 ? Math.floor(numeric) : 0;
+}
+
+function deviceEventFingerprint(event: DeviceEventInput): string {
+  return JSON.stringify({
+    schemaVersion: event.schemaVersion,
+    eventId: event.eventId,
+    targetId: event.targetId,
+    deviceId: event.deviceId,
+    deliveryId: event.deliveryId,
+    candidateId: event.candidateId,
+    candidateType: event.candidateType,
+    button: event.button,
+    action: event.action,
+    occurredAt: event.occurredAt,
+    note: event.note
+  });
 }
 
 function readPatchString(body: Record<string, unknown>, key: string, maxLength: number): { present: boolean; value?: string } {

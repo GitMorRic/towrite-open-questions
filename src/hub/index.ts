@@ -3,6 +3,7 @@ export * from "./admin";
 export * from "./client";
 export * from "./connector";
 export * from "./crypto";
+export * from "./device-paging";
 export * from "./echo-card-selection";
 export * from "./echo-cards";
 export * from "./esp32-config";

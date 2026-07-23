@@ -7,6 +7,7 @@ describe("LocalTapSelectionService", () => {
     const createSnapshot = vi.fn(async (reference: TapSelectionReference) => snapshot(reference));
     const service = new LocalTapSelectionService({ createSnapshot, getFallbackLocalId: () => "fallback" });
     await service.selectLocal("local");
+    expect(service.currentLocalId()).toBe("local");
     await service.rememberHubStateMappings(hubState(), {
       selectedLocalId: "selected-local",
       displayedLocalId: "displayed-local"

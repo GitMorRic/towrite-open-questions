@@ -216,7 +216,22 @@ http://127.0.0.1:48321/device?token=填你的token
 
 ### `GET /api/v1/eink`
 
-返回墨水屏友好的紧凑 payload。默认最多 12 张，可用 `limit` 控制。
+返回墨水屏友好的兼容 payload。现在 Echo 模板卡与 ToThink / ToWrite 共用一个队列：已保存且开启小屏翻页的 Echo 卡在前，划线卡在后，末尾循环。默认最多 12 张，可用 `limit` 和 `cursor` 控制。
+
+建议 ESP32 使用 target 绑定的 token，而不是 External API 主 token：
+
+```http
+GET /api/v1/eink?targetId=desk-eink&limit=1&cursor=0
+Authorization: Bearer <target-token>
+```
+
+响应继续保留旧 `focus[].title/body/question/article/lane` 字段，并增加：
+
+- `focus[].sourceType`：`echo` 或 `question`。
+- `focus[].contentType` 与 `focus[].actions`：模板卡的内容类型和屏幕操作。
+- `playlist.cursor/nextCursor/previousCursor/total/revision`：共享翻页状态。
+
+`lane`、`status`、`kind`、`filePath`、`folderPath` 和 `search` 过滤仍用于问题卡；使用这些过滤时不混入 Echo 卡。
 
 ### `GET /api/v1/deck`
 
@@ -449,7 +464,7 @@ Content-Type: application/json
 }
 ```
 
-`eventId` 幂等；离线设备可以缓存事件，恢复网络后补交，重复提交不会重复记录 feedback。
+`eventId` 幂等；离线设备可以缓存事件，恢复网络后补交，完全相同的重复提交不会重复记录 feedback 或重复翻页。相同 `eventId` 携带不同内容会返回 `409`。target token 与 `targetId` 强绑定，不能控制另一块屏幕。
 
 响应：
 
@@ -461,12 +476,12 @@ Content-Type: application/json
   "targetId": "desk-eink",
   "candidateId": "oq_xxx",
   "deliveryId": "delivery_abc",
-  "openUrl": "http://192.168.1.20:48321/device/input?...",
-  "obsidianUri": "obsidian://open?vault=Capture&file=note.md",
   "feedUrl": "http://192.168.1.20:48321/api/v1/push/feed?targetId=desk-eink",
   "displayMessage": "Open phone input"
 }
 ```
+
+硬件事件响应不会把 Bearer token 回显到 `openUrl`。需要手机输入时，先通过 `/api/v1/device/handoffs` 创建短时 handoff，而不是把长期 token 放进 URL。`right → next` 与 `left → prev` 会切换和 `/api/v1/eink` 相同的共享队列。
 
 每个 Push target 可以在设置页编辑按键映射，默认：
 

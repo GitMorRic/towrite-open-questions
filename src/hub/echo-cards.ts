@@ -308,7 +308,9 @@ export function clonePreset(
   return {
     id,
     name: preset.name,
-    inLibrary: false,
+    // Choosing a preset only creates an in-memory draft. If the user then
+    // explicitly saves it, it joins the small-screen paging queue by default.
+    inLibrary: true,
     contentType: preset.contentType,
     typeLabel: preset.typeLabel,
     subject: preset.subject,
@@ -319,7 +321,7 @@ export function clonePreset(
     disclosure: preset.disclosure,
     actions: [...preset.actions],
     agentEligible: false,
-    rotationEligible: false,
+    rotationEligible: true,
     createdAt: timestamp,
     updatedAt: timestamp
   };

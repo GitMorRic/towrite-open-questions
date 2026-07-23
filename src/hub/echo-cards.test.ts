@@ -40,7 +40,7 @@ describe("Echo card model", () => {
     expect(ECHO_CARD_REFERENCE_PRESETS.every((preset) => validateEchoCardLayout(preset).fits)).toBe(true);
   });
 
-  it("clones a reference into a manual-only independent card", () => {
+  it("clones a reference into an independent saved-paging draft without enabling Agent", () => {
     const cloned = clonePreset("character", {
       id: validId(1),
       now: "2026-07-23T01:02:03.000Z"
@@ -49,9 +49,9 @@ describe("Echo card model", () => {
       id: validId(1),
       contentType: "character_letter",
       disclosure: "ai_perspective",
-      inLibrary: false,
+      inLibrary: true,
       agentEligible: false,
-      rotationEligible: false,
+      rotationEligible: true,
       createdAt: "2026-07-23T01:02:03.000Z",
       updatedAt: "2026-07-23T01:02:03.000Z"
     });
