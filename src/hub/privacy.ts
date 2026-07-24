@@ -59,6 +59,23 @@ export interface PrivateCandidateBatchOptions {
   crypto?: Crypto;
 }
 
+export type HubCandidatePrivacy = NonNullable<LocalHubCandidate["privacy"]>;
+
+/**
+ * A candidate is eligible only when both its source plan and its resolved
+ * write target are eligible. Keeping this merge fail-closed prevents a public
+ * target (for example Inbox) from laundering a private Daily source.
+ */
+export function combineHubCandidatePrivacy(
+  ...scopes: readonly (HubCandidatePrivacy | undefined)[]
+): HubCandidatePrivacy {
+  return {
+    private: scopes.some((scope) => scope?.private === true) || undefined,
+    noAi: scopes.some((scope) => scope?.noAi === true) || undefined,
+    excluded: scopes.some((scope) => scope?.excluded === true) || undefined
+  };
+}
+
 export async function buildPrivateCandidateBatch(
   candidates: readonly LocalHubCandidate[],
   options: PrivateCandidateBatchOptions

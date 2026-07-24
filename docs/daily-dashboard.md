@@ -51,18 +51,45 @@ The configured plan heading defaults to `## 今日计划`, with a Tasks-compatib
 | `towrite-goal` | Free text | The result or reason for doing the item. |
 | `towrite-next` | Free text | The smallest concrete next step shown on the overview and task card. |
 | `towrite-estimate` | A duration such as `15m` | An estimate, not tracked keystroke time. |
-| `towrite-target` | A wikilink | The note to open. If absent, the first wikilink in the task text is used. |
-| `towrite-started` | Local ISO date-time | Written when the item becomes current. |
+| `towrite-target` | A wikilink or safe local Markdown link | The explicit note to open. If absent, target inheritance is resolved as described below. |
 | Tasks priority | `🔺`, `⏫`, `🔼`, `🔽`, `⏬` | Highest, high, normal, low, or lowest. Priority affects only items already opted into device/Agent selection. |
 | `⏳` / `📅` | `YYYY-MM-DD` | Scheduled and due dates compatible with common Tasks syntax. |
 | `✅` | `YYYY-MM-DD` | Written when the item is explicitly completed. |
 | Block ID | `^daily_<random>` | Stable identity used for idempotency and conflict checks. |
 
-Markdown order is device order. Starting an item atomically changes it to `[/]`, restores every other `[/]` item in that day to `[ ]`, and writes `towrite-started`. Completing an item changes it to `[x]` and writes `✅ YYYY-MM-DD`. Completion never advances a linked note’s Workflow stage.
+Markdown order is device order. Starting an item atomically changes it to `[/]` and restores every other `[/]` item in that day to `[ ]`. Completing an item changes it to `[x]`. Runtime start, pause, resume, and completion timestamps are not written into the task body; completion never advances a linked note’s Workflow stage.
 
 Users may edit the Markdown directly. Metadata and the block ID may be inline or use indented continuation lines. ToWrite preserves unknown descriptions, nested lists, and user-authored text beneath a task; it changes only the checkbox and fields it owns. Every mutation uses a revision derived from the source, block ID, and the **complete logical task block**. If any part changed after the Dashboard, NFC page, or device card loaded it, ToWrite returns a conflict rather than rewriting a newer task.
 
 A missing or duplicated `^daily_*` block ID is reported as a diagnostic and that task is not mutated. ToWrite never silently chooses a matching-looking line. Unfinished items are not automatically carried into the next day; the user explicitly moves them, returns them to the project pool, or stops tracking them.
+
+## Hierarchical lists, normalization, and targets
+
+Inside the configured `## ToDo` scope, a numbered or bulleted item with children is a group/category and does not count as a task. A leaf list item is a task candidate. A checkbox item is always a task, including a checkbox nested under another checkbox. Indented prose without a list marker remains an explanation of the preceding task.
+
+The target resolver is shared by the Dashboard, desktop buttons, e-ink cards, Hub commands, NFC, and Capture:
+
+1. explicit `towrite-target`;
+2. a safe note link on the task itself;
+3. the nearest ancestor group’s note link;
+4. the task’s own `^daily_*` block in the plan source;
+5. the Today Dashboard.
+
+Wikilinks may include aliases, headings, and blocks. Safe relative `.md` links support spaces, commas, and CJK names. Web URLs, attachments, and unsafe paths are never treated as writable task targets. Every task also carries a `lineageRevision`; changing an inherited parent target after a card or NFC page was loaded therefore returns `409` instead of silently opening a different note.
+
+“Normalize this plan” first shows the detected groups and leaf tasks, inherited targets, broken links, and the exact Markdown diff. Only explicit confirmation converts leaf items to checkboxes and gives them 128-bit random `^daily_*` IDs. Groups, indentation, links, explanations, and unknown content remain intact. A full-document revision protects apply and undo. Legacy timing-looking text is only shown as a suggestion and is never deleted or interpreted without confirmation.
+
+## Task timing ledger
+
+Optional task timing is recorded in the user-readable, content-free ledger:
+
+```text
+.obsidian-open-questions/daily/task-timer-events.jsonl
+```
+
+Each transition stores opaque task/session/event IDs, `start` / `pause` / `resume` / `complete` / `reopen` / `correct` / `reset`, an absolute timestamp with timezone, and its source. It stores no task body or Vault path. Only transitions write the ledger; the UI can refresh an in-memory elapsed time without writing every second.
+
+Only one task may run at a time. Starting or resuming another task atomically pauses the previous one. The Dashboard shows active time, total span, interruption count, and estimate variance, and exposes session history plus explicit timestamp correction. Open sessions crossing midnight or exceeding the configured review threshold (four hours by default) require confirmation instead of accumulating indefinitely. The ledger is independent of the 30-day activity log and can be viewed, exported, archived, or cleared after confirmation.
 
 ToThink, ToWrite, Inbox, and stale/Echo entries appear as planning candidates. Adding one to Today or Tomorrow is always an explicit user action. Optional AI may reorder that candidate list but cannot make a commitment on the user’s behalf.
 
@@ -94,6 +121,7 @@ The default physical controls are:
 
 - left/right short press: move among Overview, Task, and Result;
 - left/right double press: previous/next task while on a Task page;
+- left long press: start an unstarted task, resume a paused task, or pause a running task;
 - right long press: safely complete the displayed task, only from a Task page;
 - main single press: on Overview, atomically start the current item and open its target in desktop Obsidian; on Task, open that task target; on Result, open the plan source;
 - main double press: open a create-only Capture modal with the displayed context. Cancelling it creates no empty file;
@@ -146,11 +174,17 @@ When the authenticated External API is enabled, the Daily V2 surface includes:
 GET   /api/v1/daily/today
 GET   /api/v1/daily/plans/{date}
 PATCH /api/v1/daily/plans/{date}
+POST  /api/v1/daily/plans/{date}/normalization-preview
+POST  /api/v1/daily/plans/{date}/normalize
 GET   /api/v1/daily/summary
 POST  /api/v1/daily/items
 PATCH /api/v1/daily/items/{id}
 POST  /api/v1/daily/items/{id}/start
+POST  /api/v1/daily/items/{id}/pause
+POST  /api/v1/daily/items/{id}/resume
 POST  /api/v1/daily/items/{id}/complete
+GET   /api/v1/daily/items/{id}/timing
+PATCH /api/v1/daily/items/{id}/timing
 POST  /api/v1/daily/summary/write-back
 POST  /api/v1/device/display-acks
 POST  /api/v1/device/events
@@ -163,9 +197,9 @@ Mutation requests use the current full logical task-block revision. Device gestu
 Release testing covers:
 
 - both daily-note and fixed-document sources, Today/Tomorrow editing, date rollover, ordering, primary/minimum selection, and no automatic carryover;
-- local create, edit, start, complete, reopen, summary preview/writeback, export, and clear;
-- preservation of unknown task-block content, duplicate/missing block-ID diagnostics, and atomic unique `[/]`;
-- manual Markdown edits and stale full-block-revision `409` behavior;
+- local create, edit, start, pause, resume, complete, reopen, correction, summary preview/writeback, export, archive, and clear;
+- hierarchical grouping, target inheritance, normalization preview/undo, preservation of unknown task-block content, duplicate/missing block-ID diagnostics, and atomic unique `[/]`;
+- manual Markdown edits and stale full-block/lineage/timing revision `409` behavior;
 - positive/net writing units without synchronous editor-path I/O;
 - the three-page snapshot and legacy generic-card rendering;
 - click/double-click/long-press disambiguation, debounce, and right-long completion guards;

@@ -61,10 +61,22 @@ import {
   type DailyPlanDocument,
   type DailyPlanItem,
   type DailyPlanMetadataUpdate,
+  type DailyPlanNormalizationPreview,
+  type DailyPlanNormalizationResult,
   type DailyPlanUpdate,
   type DailySummary,
   type DailyTaskRevision
 } from "../daily";
+import {
+  DailyTimerIdempotencyConflictError,
+  DailyTimerTransitionError,
+  DailyTimerValidationError
+} from "../daily/task-timer-service";
+import type {
+  DailyTaskTimingSnapshot,
+  DailyTimerCorrectionOptions,
+  DailyTimerTransitionOptions
+} from "../daily/task-timer-types";
 
 export interface ExternalApiRuntimeStatus {
   running: boolean;
@@ -89,6 +101,7 @@ export interface DeviceCommandExecutionResult {
   /** The locally resolved command may be more specific than open_current. */
   action?: DeviceActionIntent;
   resultRevision?: string;
+  timingRevision?: string;
 }
 
 interface ExternalApiServerOptions {
@@ -141,6 +154,11 @@ interface ExternalApiServerOptions {
   ): DeviceCommandExecutionResult | undefined | Promise<DeviceCommandExecutionResult | undefined>;
   getDailySnapshot?(): Promise<DailyDashboardSnapshot>;
   getDailyPlan?(date: string): Promise<DailyPlanDocument>;
+  previewDailyPlanNormalization?(date: string): Promise<DailyPlanNormalizationPreview>;
+  normalizeDailyPlan?(
+    date: string,
+    preview: DailyPlanNormalizationPreview
+  ): Promise<DailyPlanNormalizationResult>;
   updateDailyPlanMetadata?(
     date: string,
     expectedPlanRevision: string,
@@ -153,13 +171,47 @@ interface ExternalApiServerOptions {
     patch: DailyPlanUpdate,
     date?: string
   ): Promise<DailyPlanItem>;
-  startDailyItem?(id: string, revision: DailyTaskRevision, date?: string): Promise<DailyPlanItem>;
+  startDailyItem?(
+    id: string,
+    revision: DailyTaskRevision,
+    eventId?: string,
+    date?: string,
+    timingRevision?: string,
+    lineageRevision?: string
+  ): Promise<DailyPlanItem>;
+  pauseDailyItem?(
+    id: string,
+    revision: DailyTaskRevision,
+    eventId?: string,
+    date?: string,
+    timingRevision?: string,
+    lineageRevision?: string
+  ): Promise<DailyPlanItem>;
+  resumeDailyItem?(
+    id: string,
+    revision: DailyTaskRevision,
+    eventId?: string,
+    date?: string,
+    timingRevision?: string,
+    lineageRevision?: string
+  ): Promise<DailyPlanItem>;
   completeDailyItem?(
     id: string,
     revision: DailyTaskRevision,
     eventId?: string,
-    date?: string
+    date?: string,
+    timingRevision?: string,
+    lineageRevision?: string
   ): Promise<DailyPlanItem>;
+  getDailyItemTiming?(id: string, date?: string): Promise<DailyTaskTimingSnapshot>;
+  correctDailyItemTiming?(
+    id: string,
+    expectedTimingRevision: string,
+    patch:
+      | ({ operation: "correct"; targetEventId: string } & DailyTimerCorrectionOptions)
+      | { operation: "reset"; options?: DailyTimerTransitionOptions },
+    date?: string
+  ): Promise<DailyTaskTimingSnapshot>;
   writeDailySummary?(summary: DailySummary): Promise<{ path: string; changed: boolean }>;
   /** Receives safe, in-memory connection diagnostics without credentials or Vault data. */
   onRuntimeStatusChanged?(status: ExternalApiRuntimeStatus): void;
@@ -519,6 +571,17 @@ export class ToWriteExternalApiServer {
       return;
     }
 
+    const dailyTimingMatch = /^\/api\/v1\/daily\/items\/([^/]+)\/timing$/u.exec(url.pathname);
+    if (dailyTimingMatch) {
+      if (!this.options.getDailyItemTiming) {
+        throw new ExternalApiError(501, "Daily task timing is unavailable.");
+      }
+      const id = decodeURIComponent(dailyTimingMatch[1]);
+      const date = url.searchParams.get("date")?.trim() || undefined;
+      this.writeJson(response, 200, { data: await this.options.getDailyItemTiming(id, date) });
+      return;
+    }
+
     if (url.pathname === "/api/v1/daily/today") {
       if (!this.options.getDailySnapshot) {
         throw new ExternalApiError(501, "Daily Dashboard is unavailable.");
@@ -651,6 +714,34 @@ export class ToWriteExternalApiServer {
   }
 
   private async handlePost(request: HttpRequest, response: HttpResponse, url: URL): Promise<void> {
+    const normalizationPreviewMatch =
+      /^\/api\/v1\/daily\/plans\/(\d{4}-\d{2}-\d{2})\/normalization-preview$/u.exec(url.pathname);
+    if (normalizationPreviewMatch) {
+      if (!this.options.previewDailyPlanNormalization) {
+        throw new ExternalApiError(501, "Daily plan normalization is unavailable.");
+      }
+      const preview = await this.options.previewDailyPlanNormalization(normalizationPreviewMatch[1]);
+      this.writeJson(response, 200, { data: preview });
+      return;
+    }
+
+    const normalizeMatch =
+      /^\/api\/v1\/daily\/plans\/(\d{4}-\d{2}-\d{2})\/normalize$/u.exec(url.pathname);
+    if (normalizeMatch) {
+      if (!this.options.normalizeDailyPlan) {
+        throw new ExternalApiError(501, "Daily plan normalization is unavailable.");
+      }
+      const body = await readJsonBody(request);
+      const preview = readDailyNormalizationPreview(body.preview ?? body);
+      if (preview.date !== normalizeMatch[1]) {
+        throw new ExternalApiError(409, "Normalization preview date does not match the request path.");
+      }
+      this.writeJson(response, 200, {
+        data: await this.options.normalizeDailyPlan(normalizeMatch[1], preview)
+      });
+      return;
+    }
+
     if (url.pathname === "/api/v1/daily/items") {
       if (!this.options.createDailyItem) {
         throw new ExternalApiError(501, "Daily plan writing is unavailable.");
@@ -688,7 +779,10 @@ export class ToWriteExternalApiServer {
       const item = await this.options.startDailyItem(
         decodeURIComponent(dailyStartMatch[1]),
         readDailyRevision(body),
-        readOptionalText(body, "date")
+        readOptionalText(body, "eventId"),
+        readOptionalText(body, "date"),
+        readOptionalText(body, "timingRevision"),
+        readOptionalText(body, "lineageRevision")
       );
       this.writeJson(response, 200, { data: item });
       return;
@@ -706,7 +800,45 @@ export class ToWriteExternalApiServer {
         decodeURIComponent(dailyCompleteMatch[1]),
         revision,
         eventId,
-        readOptionalText(body, "date")
+        readOptionalText(body, "date"),
+        readOptionalText(body, "timingRevision"),
+        readOptionalText(body, "lineageRevision")
+      );
+      this.writeJson(response, 200, { data: item });
+      return;
+    }
+
+    const dailyPauseMatch = /^\/api\/v1\/daily\/items\/([^/]+)\/pause$/u.exec(url.pathname);
+    if (dailyPauseMatch) {
+      if (!this.options.pauseDailyItem) {
+        throw new ExternalApiError(501, "Daily task pause is unavailable.");
+      }
+      const body = await readJsonBody(request);
+      const item = await this.options.pauseDailyItem(
+        decodeURIComponent(dailyPauseMatch[1]),
+        readDailyRevision(body),
+        readOptionalText(body, "eventId"),
+        readOptionalText(body, "date"),
+        readOptionalText(body, "timingRevision"),
+        readOptionalText(body, "lineageRevision")
+      );
+      this.writeJson(response, 200, { data: item });
+      return;
+    }
+
+    const dailyResumeMatch = /^\/api\/v1\/daily\/items\/([^/]+)\/resume$/u.exec(url.pathname);
+    if (dailyResumeMatch) {
+      if (!this.options.resumeDailyItem) {
+        throw new ExternalApiError(501, "Daily task resume is unavailable.");
+      }
+      const body = await readJsonBody(request);
+      const item = await this.options.resumeDailyItem(
+        decodeURIComponent(dailyResumeMatch[1]),
+        readDailyRevision(body),
+        readOptionalText(body, "eventId"),
+        readOptionalText(body, "date"),
+        readOptionalText(body, "timingRevision"),
+        readOptionalText(body, "lineageRevision")
       );
       this.writeJson(response, 200, { data: item });
       return;
@@ -972,6 +1104,67 @@ export class ToWriteExternalApiServer {
   }
 
   private async handlePatch(request: HttpRequest, response: HttpResponse, url: URL): Promise<void> {
+    const dailyTimingMatch = /^\/api\/v1\/daily\/items\/([^/]+)\/timing$/u.exec(url.pathname);
+    if (dailyTimingMatch) {
+      if (!this.options.correctDailyItemTiming) {
+        throw new ExternalApiError(501, "Daily task timing correction is unavailable.");
+      }
+      const body = await readJsonBody(request);
+      const expectedTimingRevision = readOptionalText(body, "timingRevision");
+      if (!expectedTimingRevision) {
+        throw new ExternalApiError(400, "A timing revision is required.");
+      }
+      const operation = readOptionalText(body, "operation");
+      const id = decodeURIComponent(dailyTimingMatch[1]);
+      if (operation === "reset") {
+        const result = await this.options.correctDailyItemTiming(
+          id,
+          expectedTimingRevision,
+          {
+            operation: "reset",
+            options: {
+              eventId: readOptionalText(body, "eventId"),
+              at: readOptionalText(body, "at"),
+              source: "obsidian"
+            }
+          },
+          readOptionalText(body, "date")
+        );
+        this.writeJson(response, 200, { data: result });
+        return;
+      }
+      if (operation !== "correct") {
+        throw new ExternalApiError(400, "Timing operation must be correct or reset.");
+      }
+      const targetEventId = readOptionalText(body, "targetEventId");
+      const reason = readOptionalText(body, "reason");
+      if (!targetEventId || !reason) {
+        throw new ExternalApiError(400, "Timing correction requires targetEventId and reason.");
+      }
+      const replacementAt = readOptionalText(body, "replacementAt");
+      const invalidateTarget = body.invalidateTarget === true;
+      if (!replacementAt && !invalidateTarget) {
+        throw new ExternalApiError(400, "Timing correction must replace a timestamp or invalidate its target.");
+      }
+      const result = await this.options.correctDailyItemTiming(
+        id,
+        expectedTimingRevision,
+        {
+          operation: "correct",
+          eventId: readOptionalText(body, "eventId"),
+          at: readOptionalText(body, "at"),
+          source: "obsidian",
+          targetEventId,
+          replacementAt,
+          invalidateTarget,
+          reason
+        },
+        readOptionalText(body, "date")
+      );
+      this.writeJson(response, 200, { data: result });
+      return;
+    }
+
     const dailyPlanMatch = /^\/api\/v1\/daily\/plans\/(\d{4}-\d{2}-\d{2})$/u.exec(url.pathname);
     if (dailyPlanMatch) {
       if (!this.options.updateDailyPlanMetadata) {
@@ -1251,6 +1444,8 @@ export class ToWriteExternalApiServer {
         result.cardId = event.cardId;
         result.stateVersion = event.stateVersion;
         result.playlistRevision = event.playlistRevision;
+        result.resultRevision = replay.resultRevision;
+        result.timingRevision = replay.timingRevision;
         return result;
       }
       const received = displayedTupleForEvent(event);
@@ -1273,6 +1468,8 @@ export class ToWriteExternalApiServer {
       result.cardId = current.cardId;
       result.stateVersion = current.stateVersion;
       result.playlistRevision = current.playlistRevision;
+      result.resultRevision = outcome.resultRevision;
+      result.timingRevision = outcome.timingRevision;
     } else if (result.action === "complete") {
       const received = completionGuardForDeviceEvent(event);
       const current = this.options.getDeviceCompletionGuard?.(event.targetId);
@@ -1706,6 +1903,11 @@ function normalizeExternalApiError(error: unknown): ExternalApiError {
     ? error
     : error instanceof DailyPlanConflictError
       ? new ExternalApiError(error.code === "not-found" ? 404 : 409, error.message)
+      : error instanceof DailyTimerTransitionError
+        || error instanceof DailyTimerIdempotencyConflictError
+        ? new ExternalApiError(409, error.message)
+      : error instanceof DailyTimerValidationError
+        ? new ExternalApiError(400, error.message)
     : error instanceof CaptureConflictError
       ? new ExternalApiError(409, error.message)
       : error instanceof CaptureUndoTokenError
@@ -1841,6 +2043,26 @@ function readDailyRevision(body: Record<string, unknown>): DailyTaskRevision {
     }
   }
   throw new ExternalApiError(400, "A daily task revision is required.");
+}
+
+function readDailyNormalizationPreview(value: unknown): DailyPlanNormalizationPreview {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new ExternalApiError(400, "A normalization preview is required.");
+  }
+  const record = value as Record<string, unknown>;
+  if (record.schemaVersion !== 1
+    || typeof record.date !== "string"
+    || !/^\d{4}-\d{2}-\d{2}$/u.test(record.date)
+    || typeof record.sourcePath !== "string"
+    || typeof record.expectedRevision !== "string"
+    || !Array.isArray(record.groups)
+    || !Array.isArray(record.tasks)
+    || !Array.isArray(record.diagnostics)
+    || !Array.isArray(record.edits)
+    || typeof record.diff !== "string") {
+    throw new ExternalApiError(400, "The normalization preview payload is invalid.");
+  }
+  return record as unknown as DailyPlanNormalizationPreview;
 }
 
 function readWritebackMetadata(body: Record<string, unknown>): DeviceWritebackMetadata | undefined {

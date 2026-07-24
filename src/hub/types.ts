@@ -270,7 +270,9 @@ export type HubDeviceEventAction =
   | "open_current"
   | "start_open"
   | "create_note"
-  | "record_reserved";
+  | "record_reserved"
+  | "pause_task"
+  | "resume_task";
 export type HubDeviceEventAckStatus = "applied" | "conflict" | "ignored";
 
 /**
@@ -299,6 +301,8 @@ export interface HubDeviceEventAcknowledgement {
   status: HubDeviceEventAckStatus;
   /** New local task revision after an applied transition; never a file path. */
   resultRevision?: string;
+  /** New content-free timer ledger revision after an applied transition. */
+  timingRevision?: string;
   /** Short device-safe outcome; never include a Vault path or note content. */
   message?: string;
 }

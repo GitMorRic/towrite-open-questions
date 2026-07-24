@@ -1,5 +1,15 @@
 import { normalizePath, type App } from "obsidian";
 
+/** Read plugin-owned data, including dot-prefixed directories hidden from the Vault tree. */
+export async function readVaultDataText(app: App, path: string): Promise<string | undefined> {
+  const normalized = normalizePath(path.replace(/\\/gu, "/").replace(/^\/+|\/+$/gu, ""));
+  if (!normalized) throw new Error("Vault data path is empty.");
+  const stat = await app.vault.adapter.stat(normalized);
+  if (!stat) return undefined;
+  if (stat.type !== "file") throw new Error(`${normalized} exists and is not a file.`);
+  return app.vault.adapter.read(normalized);
+}
+
 /** Write plugin-owned, user-readable data that may live in a dot-prefixed directory. */
 export async function writeVaultDataText(app: App, path: string, content: string): Promise<void> {
   const normalized = normalizePath(path.replace(/\\/gu, "/").replace(/^\/+|\/+$/gu, ""));

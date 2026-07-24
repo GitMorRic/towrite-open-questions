@@ -9,6 +9,8 @@ export interface HubDeviceEventApplyResult {
   status: HubDeviceEventAckStatus;
   /** New local task revision, if the transition changed Markdown. */
   resultRevision?: string;
+  /** New timer-ledger revision, if the transition changed task timing. */
+  timingRevision?: string;
   message?: string;
 }
 
@@ -29,6 +31,7 @@ export interface HubDeviceEventWritebackItemResult {
   acknowledged: boolean;
   duplicate?: boolean;
   resultRevision?: string;
+  timingRevision?: string;
   error?: string;
 }
 
@@ -107,6 +110,7 @@ export class HubDeviceEventWritebackService {
       const acknowledgement: HubDeviceEventAcknowledgement = {
         status: outcome.status,
         resultRevision: outcome.resultRevision,
+        timingRevision: outcome.timingRevision,
         message: outcome.message
       };
       const receipt = await this.options.client.acknowledgeDeviceEvent(
@@ -120,7 +124,8 @@ export class HubDeviceEventWritebackService {
         status: outcome.status,
         acknowledged: receipt.acknowledged,
         duplicate: receipt.duplicate,
-        resultRevision: outcome.resultRevision
+        resultRevision: outcome.resultRevision,
+        timingRevision: outcome.timingRevision
       };
     } catch (error) {
       this.options.onError?.(error, event.eventId);
@@ -129,6 +134,7 @@ export class HubDeviceEventWritebackService {
         status: "failed",
         acknowledged: false,
         resultRevision: outcome?.resultRevision,
+        timingRevision: outcome?.timingRevision,
         error: errorMessage(error)
       };
     }
@@ -144,7 +150,11 @@ function normalizeApplyResult(result: HubDeviceEventApplyResult): HubDeviceEvent
     throw new Error("Device event apply returned an invalid result revision.");
   }
   const message = result.message?.trim().slice(0, 120);
-  return { status: result.status, resultRevision, message };
+  const timingRevision = result.timingRevision?.trim();
+  if (timingRevision && !/^[A-Za-z0-9][A-Za-z0-9._:-]{2,119}$/u.test(timingRevision)) {
+    throw new Error("Device event apply returned an invalid timing revision.");
+  }
+  return { status: result.status, resultRevision, timingRevision, message };
 }
 
 function summarize(

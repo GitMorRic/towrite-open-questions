@@ -1,4 +1,4 @@
-import { shortHash } from "../core/hash";
+import { contentHash128 } from "../core/hash";
 import {
   DAILY_PLAN_SCHEMA_VERSION,
   DAILY_SCHEMA_VERSION,
@@ -6,6 +6,7 @@ import {
   type DailyPlanCreateInput,
   type DailyPlanDiagnostic,
   type DailyPlanDocument,
+  type DailyPlanHierarchy,
   type DailyPlanItem,
   type DailyPlanItemKind,
   type DailyPlanMetadataUpdate,
@@ -16,6 +17,7 @@ import {
   type DailySummary,
   type DailyTaskRevision
 } from "./types";
+import { parseDailyPlanHierarchy } from "./hierarchy";
 
 export interface DailyPlanStorage {
   readText(path: string): Promise<string | undefined>;
@@ -59,6 +61,8 @@ export const DAILY_SUMMARY_START_MARKER = "<!-- towrite:daily-summary:start -->"
 export const DAILY_SUMMARY_END_MARKER = "<!-- towrite:daily-summary:end -->";
 
 const TASK_RE = /^(?<indent>\s*)-\s+\[(?<mark>[^\]]*)\]\s+(?<body>.*)$/u;
+const ANY_TASK_RE = /^(?<indent>\s*)(?:[-+*]|\d+[.)])(?<spacing>\s+)(?<checkbox>\[[^\]]*\]\s+.*)$/u;
+const LIST_NODE_RE = /^(?<indent>[ \t]*)(?:[-+*]|\d+[.)])[ \t]+.*$/u;
 const INLINE_BLOCK_RE = /(?:^|\s)\^(?<id>[A-Za-z0-9_-]+)\s*$/u;
 const STANDALONE_BLOCK_RE = /^(?<indent>\s+)\^(?<id>[A-Za-z0-9_-]+)\s*$/u;
 const OWNED_FIELD_RE = /\[towrite-(?<key>kind|device|at|primary|minimum|goal|next|estimate|target|started)::\s*(?<value>\[\[[^\]]+\]\]|[^\]]*)\]/giu;
@@ -138,8 +142,9 @@ export class DailyPlanService {
   async read(value: Date | string = this.now()): Promise<DailyPlanDocument> {
     const date = normalizeDate(value);
     const path = this.pathForDate(date);
-    return parseDailyPlanDocumentWithDiagnostics(
-      await this.storage.readText(path) ?? "",
+    const markdown = await this.storage.readText(path) ?? "";
+    const document = parseDailyPlanDocumentWithDiagnostics(
+      markdown,
       path,
       date,
       this.todoHeading,
@@ -149,6 +154,20 @@ export class DailyPlanService {
         summaryHeading: this.summaryHeading
       }
     );
+    const hierarchy = parseDailyPlanHierarchy(markdown, path, date, {
+      source: this.planSource,
+      todoHeading: this.todoHeading
+    });
+    return mergeHierarchyIntoPlanDocument(document, hierarchy, markdown);
+  }
+
+  async readHierarchy(value: Date | string = this.now()): Promise<DailyPlanHierarchy> {
+    const date = normalizeDate(value);
+    const path = this.pathForDate(date);
+    return parseDailyPlanHierarchy(await this.storage.readText(path) ?? "", path, date, {
+      source: this.planSource,
+      todoHeading: this.todoHeading
+    });
   }
 
   async list(value: Date | string = this.now()): Promise<DailyPlanItem[]> {
@@ -259,7 +278,6 @@ export class DailyPlanService {
         throw new DailyPlanConflictError("invalid-state", "A completed daily task cannot be started.");
       }
       const onlyCurrent = target.status === "in-progress"
-        && Boolean(target.startedAt)
         && items.every((item) => item.id === target.id || item.status !== "in-progress");
       if (onlyCurrent) return new Map<string, DailyPlanItem>();
       const replacements = new Map<string, DailyPlanItem>();
@@ -269,8 +287,7 @@ export class DailyPlanService {
             ...item,
             status: "in-progress",
             done: false,
-            completionDate: undefined,
-            startedAt: this.now().toISOString()
+            completionDate: undefined
           });
         } else if (item.status === "in-progress") {
           replacements.set(item.id, { ...item, status: "todo", done: false });
@@ -285,7 +302,6 @@ export class DailyPlanService {
     expectedRevision: string | DailyTaskRevision,
     value: Date | string = this.now()
   ): Promise<DailyPlanItem> {
-    const completedAt = normalizeDate(this.now());
     return this.mutateItems(id, expectedRevision, value, (target) => {
       if (target.status === "done") return new Map<string, DailyPlanItem>();
       return new Map([[
@@ -293,8 +309,7 @@ export class DailyPlanService {
         {
           ...target,
           status: "done",
-          done: true,
-          completionDate: completedAt
+          done: true
         }
       ]]);
     });
@@ -337,12 +352,31 @@ export class DailyPlanService {
       const index = document.items.findIndex((item) => item.id === id);
       if (index < 0) throw new DailyPlanConflictError("not-found", `Daily plan item does not exist: ${id}`);
       assertRevision(document.items[index], expectedRevision);
-      const targetIndex = direction === "up" ? index - 1 : index + 1;
-      if (targetIndex < 0 || targetIndex >= document.items.length) return document.items[index];
+      const item = document.items[index];
+      const nodes = parseMovableListNodes(current);
+      const node = nodes.find((entry) => entry.line === item.line);
+      if (!node) {
+        throw new DailyPlanConflictError(
+          "invalid-document",
+          `Daily plan item is not backed by a movable list node: ${id}`
+        );
+      }
+      const siblings = nodes.filter((entry) =>
+        entry.parentLine === node.parentLine && entry.indent === node.indent
+      );
+      const siblingIndex = siblings.findIndex((entry) => entry.line === node.line);
+      const adjacentNode = siblings[siblingIndex + (direction === "up" ? -1 : 1)];
+      if (!adjacentNode) return item;
 
-      const blocks = document.items.map((item) => item.rawBlock ?? item.rawLine);
-      [blocks[index], blocks[targetIndex]] = [blocks[targetIndex], blocks[index]];
-      const next = replaceTaskSlots(current, document.items, blocks);
+      const adjacentItem = document.items.find((entry) => entry.line === adjacentNode.line);
+      if (
+        !adjacentItem
+        || nearestGroupId(adjacentItem) !== nearestGroupId(item)
+      ) {
+        return item;
+      }
+
+      const next = swapAdjacentListSubtrees(current, node, adjacentNode);
       await this.storage.writeText(path, next);
       await this.notify(path);
       const moved = this.parse(next, path, date).items.find((item) => item.id === id);
@@ -473,11 +507,16 @@ export class DailyPlanService {
   }
 
   private parse(markdown: string, path: string, date: string): DailyPlanDocument {
-    return parseDailyPlanDocumentWithDiagnostics(markdown, path, date, this.todoHeading, {
+    const document = parseDailyPlanDocumentWithDiagnostics(markdown, path, date, this.todoHeading, {
       source: this.planSource,
       planHeading: this.planHeading,
       summaryHeading: this.summaryHeading
     });
+    const hierarchy = parseDailyPlanHierarchy(markdown, path, date, {
+      source: this.planSource,
+      todoHeading: this.todoHeading
+    });
+    return mergeHierarchyIntoPlanDocument(document, hierarchy, markdown);
   }
 
   private resolveSource(date: string): ResolvedSource {
@@ -547,6 +586,18 @@ export function parseDailyPlanDocumentWithDiagnostics(
 
   const diagnostics = entries.flatMap((entry) => entry.diagnostic ? [entry.diagnostic] : []);
   const items = entries.flatMap((entry) => entry.item ? [entry.item] : []);
+  const hierarchyTasks = parseDailyPlanHierarchy(markdown, sourcePath, normalizedDate, {
+    source,
+    todoHeading
+  }).tasks;
+  for (const item of items) {
+    const task = hierarchyTasks.find((entry) => entry.blockId === item.id);
+    if (!task) continue;
+    item.revision = {
+      ...item.revision,
+      value: dailyTaskRevisionValue(sourcePath, normalizedDate, item.id, task.rawBlock)
+    };
+  }
   const duplicateScopeItems = resolved.nestedDate
     ? parseAllFixedDocumentItems(lines, todoHeading, sourcePath)
     : items;
@@ -613,8 +664,87 @@ export function parseDailyPlanDocumentWithDiagnostics(
     },
     items,
     diagnostics,
-    revision: `dpr_${shortHash(`${sourcePath}\n${normalizedDate}\n${scopedRaw}`)}`
+    revision: `dpr_${contentHash128(`${sourcePath}\n${normalizedDate}\n${scopedRaw}`)}`
   };
+}
+
+/**
+ * Predicts the exact revision produced by a status-only managed update. It
+ * uses the same formatter as the write path, so crash recovery verifies the
+ * complete logical task block rather than its checkbox alone.
+ */
+export function predictDailyPlanItemStatusRevision(
+  item: DailyPlanItem,
+  status: DailyPlanItem["status"]
+): DailyTaskRevision {
+  const updated = status === "done"
+    ? { ...item, status, done: true }
+    : applyUpdate(item, { status });
+  const rawBlock = formatTaskBlock(updated, item.rawBlock);
+  return {
+    ...item.revision,
+    value: dailyTaskRevisionValue(item.sourcePath, item.date, item.id, rawBlock)
+  };
+}
+
+function mergeHierarchyIntoPlanDocument(
+  document: DailyPlanDocument,
+  hierarchy: DailyPlanHierarchy,
+  _markdown: string
+): DailyPlanDocument {
+  const merged: DailyPlanItem[] = [];
+  for (const task of hierarchy.tasks) {
+    if (!task.blockId || task.normalizationRequired) continue;
+    const taskLines = task.rawBlock.split(/\r?\n/u);
+    const anyTask = ANY_TASK_RE.exec(taskLines[0] ?? "");
+    if (!anyTask?.groups) continue;
+    taskLines[0] = `${anyTask.groups.indent}-${anyTask.groups.spacing}${anyTask.groups.checkbox}`;
+    const match = TASK_RE.exec(taskLines[0]);
+    if (!match?.groups) continue;
+    const parsed = parseTaskEntry(
+      taskLines,
+      0,
+      taskLines.length,
+      match.groups.indent.length,
+      document.sourcePath,
+      document.date
+    );
+    let item = parsed.item;
+    if (item) {
+      item = {
+        ...item,
+        revision: {
+          ...item.revision,
+          value: dailyTaskRevisionValue(
+            document.sourcePath,
+            document.date,
+            task.blockId,
+            task.rawBlock
+          )
+        }
+      };
+    }
+    if (!item) continue;
+    merged.push({
+      ...item,
+      line: task.line,
+      endLine: task.endLine,
+      rawLine: task.rawLine,
+      rawBlock: task.rawBlock,
+      detachedOwnedLines: task.detachedOwnedLines,
+      groupId: task.lineage.groups[task.lineage.groups.length - 1]?.id,
+      lineage: task.lineage,
+      lineageRevision: task.lineageRevision,
+      targetResolution: task.targetResolution
+    });
+  }
+  // Preserve V1 compatibility for a malformed item that the hierarchy parser
+  // intentionally excludes, so existing diagnostics and repair UI still see it.
+  for (const item of document.items) {
+    if (!merged.some((entry) => entry.id === item.id)) merged.push(item);
+  }
+  merged.sort((left, right) => left.line - right.line);
+  return { ...document, items: merged };
 }
 
 function parseTaskEntry(
@@ -652,13 +782,17 @@ function parseTaskEntry(
 
   const blockIds: string[] = [];
   const inline = INLINE_BLOCK_RE.exec(body)?.groups?.id;
-  if (inline) blockIds.push(inline);
+  if (inline && normalizeBlockId(inline)) blockIds.push(inline);
   const directIndent = continuation
     .filter((line) => line.trim())
     .reduce((lowest, line) => Math.min(lowest, indentation(line)), Number.POSITIVE_INFINITY);
   for (const line of continuation) {
     const standalone = STANDALONE_BLOCK_RE.exec(line);
-    if (standalone?.groups?.id && indentation(line) === directIndent) blockIds.push(standalone.groups.id);
+    if (standalone?.groups?.id
+      && normalizeBlockId(standalone.groups.id)
+      && indentation(line) === directIndent) {
+      blockIds.push(standalone.groups.id);
+    }
   }
   const lineNumber = index + 1;
   if (blockIds.length === 0) {
@@ -697,7 +831,7 @@ function parseTaskEntry(
   const target = normalizeOptionalTarget(fields.target);
   const linkedSource = `${cleanTaskText(body)} ${target ?? ""}`;
   const revision: DailyTaskRevision = {
-    value: `dtr_${shortHash(`${sourcePath}\n${date}\n${blockId}\n${rawBlock}`)}`,
+    value: dailyTaskRevisionValue(sourcePath, date, blockId, rawBlock),
     sourcePath,
     blockId
   };
@@ -810,7 +944,9 @@ function applyUpdate(item: DailyPlanItem, patch: DailyPlanUpdate): DailyPlanItem
       ? item.estimateMinutes
       : normalizeEstimateMinutes(patch.estimateMinutes),
     target,
-    startedAt: patch.startedAt === undefined ? item.startedAt : normalizeScheduledFor(patch.startedAt),
+    // Legacy compatibility is read-only. Runtime timing transitions belong to
+    // the JSONL timer ledger and must never be authored through plan updates.
+    startedAt: item.startedAt,
     linkedNotes: unique([...`${text} ${target ?? ""}`.matchAll(LINK_RE)].map((link) => link[1].trim()))
   };
 }
@@ -833,7 +969,13 @@ function formatTaskBlock(item: DailyPlanItem, existingRawBlock?: string): string
     ...optionalFieldLine(childIndent, "next", item.nextStep),
     ...optionalFieldLine(childIndent, "estimate", item.estimateMinutes ? `${item.estimateMinutes}m` : undefined),
     ...optionalFieldLine(childIndent, "target", item.target),
-    ...optionalFieldLine(childIndent, "started", item.startedAt)
+    // `towrite-started` is a legacy, read-only field. Preserve it when it
+    // already exists, but never synthesize runtime timing into plan Markdown.
+    ...optionalFieldLine(
+      childIndent,
+      "started",
+      hasOwnedField(existingRawBlock, "started") ? item.startedAt : undefined
+    )
   ];
   const unknown = extractUnknownContinuation(existingRawBlock, item.id);
   return [checkbox, ...controlLines, ...unknown, `${childIndent}^${item.id}`].join("\n");
@@ -842,6 +984,12 @@ function formatTaskBlock(item: DailyPlanItem, existingRawBlock?: string): string
 function optionalFieldLine(indent: string, key: string, value: string | undefined): string[] {
   if (!value) return [];
   return [`${indent}[towrite-${key}:: ${safeFieldValue(value, key === "target")}]`];
+}
+
+function hasOwnedField(rawBlock: string | undefined, key: string): boolean {
+  if (!rawBlock) return false;
+  return [...rawBlock.matchAll(OWNED_FIELD_RE)]
+    .some((match) => match.groups?.key.toLowerCase() === key);
 }
 
 function extractUnknownContinuation(rawBlock: string | undefined, parentBlockId: string): string[] {
@@ -877,27 +1025,138 @@ function replaceTaskBlocks(
   const affected = items
     .filter((item) => replacements.has(item.line))
     .sort((left, right) => right.line - left.line);
-  for (const item of affected) {
-    lines.splice(
-      item.line - 1,
-      Math.max(1, (item.endLine ?? item.line) - item.line + 1),
-      ...replacements.get(item.line)!.split("\n")
-    );
+  const detachedLines = [...new Set(affected.flatMap((item) => item.detachedOwnedLines ?? []))]
+    .sort((left, right) => right - left);
+  const affectedByLine = new Map(affected.map((item) => [item.line, item]));
+  const operationLines = [...new Set([...affectedByLine.keys(), ...detachedLines])]
+    .sort((left, right) => right - left);
+  for (const line of operationLines) {
+    const item = affectedByLine.get(line);
+    if (item) {
+      lines.splice(
+        item.line - 1,
+        Math.max(1, (item.endLine ?? item.line) - item.line + 1),
+        ...replacements.get(item.line)!.split("\n")
+      );
+    } else {
+      lines.splice(line - 1, 1);
+    }
   }
   return ensureTrailingNewline(lines.join("\n"));
 }
 
-function replaceTaskSlots(markdown: string, items: DailyPlanItem[], blocks: string[]): string {
+interface MovableListNode {
+  /** One-based source line, matching DailyPlanItem.line. */
+  line: number;
+  /** Zero-based inclusive source index. */
+  start: number;
+  /** Zero-based exclusive end of this list node, including its descendants. */
+  end: number;
+  indent: number;
+  /** Source line of the structural list parent, not merely the nearest category. */
+  parentLine?: number;
+}
+
+function parseMovableListNodes(markdown: string): MovableListNode[] {
   const lines = markdown.split(/\r?\n/u);
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    const item = items[index];
-    lines.splice(
-      item.line - 1,
-      Math.max(1, (item.endLine ?? item.line) - item.line + 1),
-      ...blocks[index].split("\n")
+  const nodes: MovableListNode[] = [];
+  const stack: MovableListNode[] = [];
+  const closeThrough = (indent: number, end: number): void => {
+    while (stack.length && stack[stack.length - 1].indent >= indent) {
+      stack.pop()!.end = end;
+    }
+  };
+  const closeAll = (end: number): void => {
+    while (stack.length) stack.pop()!.end = end;
+  };
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const list = LIST_NODE_RE.exec(lines[index]);
+    if (list?.groups) {
+      const indent = markdownIndentationWidth(list.groups.indent);
+      closeThrough(indent, index);
+      const node: MovableListNode = {
+        line: index + 1,
+        start: index,
+        end: lines.length,
+        indent,
+        parentLine: stack[stack.length - 1]?.line
+      };
+      nodes.push(node);
+      stack.push(node);
+      continue;
+    }
+
+    if (!lines[index].trim()) continue;
+    if (headingLevel(lines[index]) > 0) {
+      closeAll(index);
+      continue;
+    }
+    closeThrough(
+      markdownIndentationWidth(/^[ \t]*/u.exec(lines[index])?.[0] ?? ""),
+      index
     );
   }
+  closeAll(lines.length);
+  return nodes;
+}
+
+function swapAdjacentListSubtrees(
+  markdown: string,
+  left: MovableListNode,
+  right: MovableListNode
+): string {
+  const lines = markdown.split(/\r?\n/u);
+  const [first, second] = left.start < right.start ? [left, right] : [right, left];
+  if (first.end !== second.start) {
+    throw new DailyPlanConflictError(
+      "invalid-document",
+      "Daily plan sibling nodes are no longer adjacent."
+    );
+  }
+
+  const firstContentEnd = trimTrailingBlankLines(lines, first.start, first.end);
+  const secondContentEnd = trimTrailingBlankLines(lines, second.start, second.end);
+  const firstBlock = lines.slice(first.start, firstContentEnd);
+  const separator = lines.slice(firstContentEnd, second.start);
+  const secondBlock = lines.slice(second.start, secondContentEnd);
+  const trailing = lines.slice(secondContentEnd, second.end);
+  lines.splice(
+    first.start,
+    second.end - first.start,
+    ...secondBlock,
+    ...separator,
+    ...firstBlock,
+    ...trailing
+  );
   return ensureTrailingNewline(lines.join("\n"));
+}
+
+function trimTrailingBlankLines(lines: string[], start: number, end: number): number {
+  let result = end;
+  while (result > start + 1 && !lines[result - 1].trim()) result -= 1;
+  return result;
+}
+
+function markdownIndentationWidth(value: string): number {
+  let width = 0;
+  for (const character of value) {
+    width = character === "\t" ? width + (4 - (width % 4)) : width + 1;
+  }
+  return width;
+}
+
+function nearestGroupId(item: DailyPlanItem): string | undefined {
+  return item.groupId ?? item.lineage?.groups[item.lineage.groups.length - 1]?.id;
+}
+
+function dailyTaskRevisionValue(
+  sourcePath: string,
+  date: string,
+  blockId: string,
+  rawBlock: string
+): string {
+  return `dtr_${contentHash128(`${sourcePath}\n${date}\n${blockId}\n${rawBlock}`)}`;
 }
 
 function appendToTodoSection(

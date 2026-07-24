@@ -5470,3 +5470,41 @@
   border-color: var(--text-error) !important;
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--text-error) 35%, transparent);
 }
+
+.towrite-daily-line-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-inline-start: 0.5rem;
+  padding: 0.1rem 0.25rem;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  vertical-align: middle;
+}
+
+.towrite-daily-line-controls[data-state="running"] {
+  border-color: var(--interactive-accent);
+  color: var(--text-normal);
+}
+
+.towrite-daily-line-controls button {
+  min-width: 1.6rem;
+  min-height: 1.45rem;
+  padding: 0 0.3rem;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: inherit;
+  box-shadow: none;
+}
+
+.towrite-daily-line-controls button:hover {
+  background: var(--background-modifier-hover);
+}
+
+.towrite-daily-line-state {
+  white-space: nowrap;
+}

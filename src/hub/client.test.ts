@@ -250,7 +250,11 @@ describe("HubClient", () => {
     await expect(client.acknowledgeDeviceEvent(
       "recv_test",
       "evt_0123456789abcdef0123456789abcdef",
-      { status: "applied", resultRevision: "rev_local_9" }
+      {
+        status: "applied",
+        resultRevision: "rev_local_9",
+        timingRevision: "timer_revision_9"
+      }
     )).resolves.toMatchObject({
       eventId: "evt_0123456789abcdef0123456789abcdef",
       acknowledged: true,
@@ -267,10 +271,65 @@ describe("HubClient", () => {
     expect(JSON.parse(String(ackInit.body))).toEqual({
       protocol_version: "towrite-device-hub/v2",
       status: "applied",
-      result_revision: "rev_local_9"
+      result_revision: "rev_local_9",
+      timing_revision: "timer_revision_9"
     });
     expect(String(ackInit.body)).not.toContain("\\");
     expect(String(ackInit.body)).not.toContain("Daily/");
+  });
+
+  it("accepts pause/resume Hub events and rejects path-shaped timing revisions before ACK", async () => {
+    const fetcher = vi.fn(async () => jsonResponse({
+      protocol_version: "towrite-device-hub/v2",
+      receiver_id: "recv_test",
+      items: [
+        {
+          event_id: "evt_0123456789abcdef0123456789abcdea",
+          action: "pause_task",
+          device_id: "dev_0123456789abcdef0123456789abcdef",
+          selection_id: "sel_0123456789abcdef0123456789abcdef",
+          state_version: 8,
+          content_id: "cnt_0123456789abcdef0123456789abcdef",
+          revision_id: "rev_0123456789abcdef0123456789abcdef",
+          content_type: "daily_plan_item",
+          candidate_ref: "hc_pause",
+          source_ref: "hs_pause",
+          write_target_ref: "ht_pause",
+          created_at: "2026-07-24T08:00:00+08:00"
+        },
+        {
+          event_id: "evt_0123456789abcdef0123456789abcdeb",
+          action: "resume_task",
+          device_id: "dev_0123456789abcdef0123456789abcdef",
+          selection_id: "sel_0123456789abcdef0123456789abcdef",
+          state_version: 8,
+          content_id: "cnt_0123456789abcdef0123456789abcdef",
+          revision_id: "rev_0123456789abcdef0123456789abcdef",
+          content_type: "daily_plan_item",
+          candidate_ref: "hc_resume",
+          source_ref: "hs_resume",
+          write_target_ref: "ht_resume",
+          created_at: "2026-07-24T08:01:00+08:00"
+        }
+      ]
+    }));
+    const client = createClient(fetcher);
+
+    await expect(client.getPendingDeviceEvents("recv_test")).resolves.toEqual([
+      expect.objectContaining({ action: "pause_task", candidateRef: "hc_pause" }),
+      expect.objectContaining({ action: "resume_task", candidateRef: "hc_resume" })
+    ]);
+
+    await expect(client.acknowledgeDeviceEvent(
+      "recv_test",
+      "evt_0123456789abcdef0123456789abcdea",
+      {
+        status: "applied",
+        resultRevision: "task_revision_1",
+        timingRevision: "Daily/2026-07-24.md"
+      }
+    )).rejects.toThrow(/timing revision must be an opaque identifier/iu);
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
   it("rejects path-shaped values in pending device event references", async () => {

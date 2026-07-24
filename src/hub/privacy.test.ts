@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { buildPrivateCandidateBatch, createOpaqueHubRef, MAX_HUB_CANDIDATES, type LocalHubCandidate } from "./privacy";
+import {
+  buildPrivateCandidateBatch,
+  combineHubCandidatePrivacy,
+  createOpaqueHubRef,
+  MAX_HUB_CANDIDATES,
+  type LocalHubCandidate
+} from "./privacy";
 
 const SECRET = "0123456789abcdef0123456789abcdef";
 
@@ -55,6 +61,33 @@ describe("Device Hub candidate privacy", () => {
 
     expect(batch.candidates).toHaveLength(MAX_HUB_CANDIDATES);
     expect(batch.candidates.every((item) => item.sensitivity === "normal")).toBe(true);
+  });
+
+  it("fails closed when either a Daily source plan or its resolved target is private", async () => {
+    const sourceExcluded = candidate("source-excluded", combineHubCandidatePrivacy(
+      { excluded: true },
+      {}
+    ));
+    const sourcePrivate = candidate("source-private", combineHubCandidatePrivacy(
+      { private: true },
+      {}
+    ));
+    const targetPrivate = candidate("target-private", combineHubCandidatePrivacy(
+      {},
+      { private: true }
+    ));
+    const safe = candidate("safe", combineHubCandidatePrivacy({}, {}));
+
+    const batch = await buildPrivateCandidateBatch(
+      [sourceExcluded, sourcePrivate, targetPrivate, safe],
+      { referenceSecret: SECRET }
+    );
+
+    expect(batch.candidates).toHaveLength(1);
+    expect(batch.candidates[0]?.display.title).toBe("Title safe");
+    expect(JSON.stringify(batch)).not.toContain("source-excluded");
+    expect(JSON.stringify(batch)).not.toContain("source-private");
+    expect(JSON.stringify(batch)).not.toContain("target-private");
   });
 
   it("creates stable, kind-separated HMAC references", async () => {

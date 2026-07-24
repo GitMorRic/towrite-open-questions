@@ -1,6 +1,6 @@
 # ToWrite Open Questions
 
-[今日 Dashboard 与每日计划](docs/daily-dashboard.zh-CN.md) 已把“今日”和“全部状态”明确分开：“今日”以 `Daily/YYYY-MM-DD.md` 为数据真源，显示每日计划、活动统计、定时设备卡片和确认后写回的总结；“全部状态”使用完整增量索引统计 Workflow、Article Type、Inbox、stale、ToThink 与 ToWrite。指南同时说明 Markdown 契约、30 天统计隐私边界、设备完成冲突保护、Capture Bridge v2 音频授权，以及 `auto` / `local` / `backend` 单写入者模式。
+[今日 Dashboard 与每日计划](docs/daily-dashboard.zh-CN.md) 已把“今日”和“全部状态”明确分开：“今日”以 `Daily/YYYY-MM-DD.md` 为数据真源，原生理解项目/任务层级和父级目标继承，并把开始、暂停、继续、完成计时保存在不含正文的 JSONL 账本；“全部状态”使用完整增量索引统计 Workflow、Article Type、Inbox、stale、ToThink 与 ToWrite。指南同时说明规范化预览、30 天活动统计隐私边界、设备/NFC 冲突保护，以及 `auto` / `local` / `backend` 单写入者模式。
 
 [English](README.md) | 简体中文
 
@@ -19,6 +19,7 @@ ToWrite Open Questions 是一个 Obsidian 桌面端插件，用来把还没想�
 - 编辑器原文支持整行浅色高亮，也支持单条或全局切换成“只保留左侧竖线”。
 - Workflow Stages 可按文件夹、frontmatter tags 或正文 `#tag` 把 Markdown 文件分组成 Raw、Sparks、Processing 等自定义状态。
 - Article Types 可按文件夹或 tag 把笔记归为 MindFlow、Tech、Project 等内容类型；右侧栏和 dashboard 会同时显示分类与 Workflow 阶段。
+- 每日计划支持可直接手改的层级 Markdown：父分类不计入进度，叶子任务可继承最近父级笔记；批量规范化先显示 diff，任务计时不会写进待办正文。
 - 导出 JSON，供 dashboard、桌面小组件、脚本和墨水屏设备读取。
 - 可选桌面端 External API，支持 JSON、RSS、SSE、内置 dashboard、手机小屏预览、手机 companion 输入页，以及状态、批注和新想法写回。
 - 可选通用 Push Engine 和 Quote0 接入，把首页总览或下一张卡片推送到墨水屏；NFC 碰一碰可打开受限的手机写回页面。

@@ -128,7 +128,7 @@ export class CaptureBridgeServer {
           assetUpload: true,
           taskComplete: true,
           createOnlyCapture: true,
-          availableOperations: ["capture", "complete", "later"]
+          availableOperations: ["capture", "start", "pause", "resume", "complete", "later"]
         });
         return;
       }

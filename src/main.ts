@@ -68,7 +68,10 @@ import {
   parseDirectInteraction
 } from "./ai/interaction";
 import { AiQuestionService } from "./ai/service";
-import { BackendEnhancementClient } from "./backend/client";
+import {
+  BackendEnhancementClient,
+  type BackendDailyTimerTransitionRequest
+} from "./backend/client";
 import {
   CAPTURE_SCHEMA_VERSION,
   CaptureConflictError,
@@ -111,9 +114,20 @@ import {
 } from "./capture-bridge";
 import {
   DailyActivityService,
+  DailyPlanNormalizationService,
+  DailyTaskTimerService,
+  DailyTimerTransitionCoordinator,
+  JsonDailyTimerTransitionJournal,
+  PersistentDailyTaskTimer,
+  predictDailyPlanItemStatusRevision,
+  resolveDailyTarget,
   dailyDeviceScore,
   dailyCreateOnlyTitle,
   dailyPlanCacheInvalidationForPath,
+  changedDailyMarkdownTimerTaskIds,
+  dailyMarkdownTimerEventId,
+  dailyMarkdownTimerOperations,
+  dailyMarkdownTimerTransactionId,
   dailyTaskTextForBackend,
   dailyWikiLink,
   DailyPlanConflictError,
@@ -123,13 +137,29 @@ import {
   type DailyActivityState,
   type DailyDashboardSnapshot,
   type DailyDevicePolicy,
+  type DailyMarkdownTarget,
+  type DailyMarkdownTimerOperation,
   type DailyPlanCreateInput,
   type DailyPlanDocument,
+  type DailyPlanGroup,
   type DailyPlanItem,
   type DailyPlanMetadata,
   type DailyPlanMetadataUpdate,
+  type DailyPlanNormalizationPreview,
+  type DailyPlanNormalizationResult,
+  type DailyPlanNormalizationUndoResult,
+  type DailyPlanStorage,
   type DailyPlanUpdate,
   type DailySummary,
+  type DailyTaskTimingSnapshot,
+  type DailyTimerCorrectionOptions,
+  type DailyTimerEvent,
+  type DailyTimerEventLog,
+  type DailyTimerEventSource,
+  type DailyTimerTransitionAdapter,
+  type DailyTimerTransitionJournalEntry,
+  type DailyTimerTransition,
+  type DailyTimerTransitionOptions,
   type DailyTaskRevision
 } from "./daily";
 import { QuestionExporter } from "./export/exporter";
@@ -170,6 +200,7 @@ import {
   adaptDailySummaryForDevice,
   buildDailyDeckSnapshot,
   canAdvanceRotation,
+  combineHubCandidatePrivacy,
   createOpaqueHubRef,
   devicePagingPosition,
   generateHubCaptureKeyPair,
@@ -233,6 +264,7 @@ import { applyInboxStageMetadata, materializeInboxStageMetadata, type InboxMetad
 import type { InboxDeviceEligibility, InboxSnapshot } from "./inbox/types";
 import { yieldToEventLoop } from "./core/async-batch";
 import { createQuestionDecorations, refreshQuestionDecorations } from "./obsidian/decorations";
+import { createDailyTaskControls, refreshDailyTaskControls } from "./obsidian/daily-task-controls";
 import { OpenQuestionIndexer } from "./obsidian/indexer";
 import { jumpToQuestion as jumpToQuestionInWorkspace } from "./obsidian/jump";
 import { AddQuestionModal } from "./obsidian/modal";
@@ -242,7 +274,7 @@ import { PdfQuestionLayer, pdfAnchorFromCurrentSelection } from "./obsidian/pdf-
 import { SelectionQuestionToolbar } from "./obsidian/selection-toolbar";
 import { ToWriteSettingTab } from "./obsidian/settings-tab";
 import { QuestionSidecarRepository } from "./obsidian/sidecar";
-import { writeVaultDataText } from "./obsidian/vault-data";
+import { readVaultDataText, writeVaultDataText } from "./obsidian/vault-data";
 import {
   TOWRITE_DASHBOARD_VIEW,
   TOWRITE_SIDEBAR_VIEW,
@@ -280,6 +312,8 @@ interface CaptureLaunchOptions {
 interface FrozenDisplayedDailyContext {
   dailyItemId?: string;
   dailyTaskRevision?: string;
+  dailyLineageRevision?: string;
+  dailyTimingRevision?: string;
   dailyDate?: string;
   dailySourcePath?: string;
 }
@@ -305,23 +339,48 @@ export default class ToWritePlugin extends Plugin {
   private captureBridgeServer!: CaptureBridgeServer;
   private capturePluginBridge!: CapturePluginBridgeClient;
   private dailyPlanService!: DailyPlanService;
+  private dailyPlanNormalizationService!: DailyPlanNormalizationService;
   private dailyActivityService!: DailyActivityService;
+  private dailyTaskTimer?: PersistentDailyTaskTimer;
+  private dailyTimerCoordinator?: DailyTimerTransitionCoordinator;
+  private dailyTimerLedgerPath = "";
+  private dailyTimerLoadError = "";
+  private dailyTimerTransitionTail: Promise<void> = Promise.resolve();
+  private dailyTimerManagedMarkdownWriteDepth = 0;
   private dailyPlanItems: DailyPlanItem[] = [];
   private dailyPlanDocument?: DailyPlanDocument;
   private dailyActivityRetentionDays = 30;
   private dailyStateSaveTimer = 0;
   private dailyMidnightTimer = 0;
+  private dailyTimerDisplayRefreshTimer = 0;
   private dailyDeviceStateVersion = 1;
   private dailyScheduleOccurrenceIds = new Set<string>();
   private dailyPlanCacheInitialized = false;
   private dailyBackendWriterCheckedAt = 0;
   private dailyBackendWriterAvailable = false;
+  private readonly dailyBackendTimingCache = new Map<string, {
+    taskRevision: string;
+    lineageRevision?: string;
+    timing: DailyTaskTimingSnapshot;
+    events: DailyTimerEvent[];
+    fetchedAtMs: number;
+  }>();
+  private readonly dailyBackendTransitionRequests = new Map<string, {
+    action: "start" | "pause" | "resume" | "complete" | "reopen";
+    taskId: string;
+    request: Required<Pick<
+      BackendDailyTimerTransitionRequest,
+      "eventId" | "source" | "rawBlock" | "taskRevision" | "lineageRevision" | "expectedTimingRevision"
+    >> & Pick<BackendDailyTimerTransitionRequest, "at">;
+  }>();
   private observedExternalApiStartedAt = "";
   private observedSuccessfulEinkPolls = 0;
   private readonly localDeviceDisplayKeys = new Map<string, string>();
   private readonly localDeviceServedTaskRevisions = new Map<string, {
     dailyItemId?: string;
     taskRevision?: string;
+    lineageRevision?: string;
+    timingRevision?: string;
     taskDate: string;
     taskSourcePath?: string;
     tapSnapshot?: TapSelectionSnapshot;
@@ -334,6 +393,8 @@ export default class ToWritePlugin extends Plugin {
     revisionId?: string;
     dailyItemId?: string;
     taskRevision?: string;
+    lineageRevision?: string;
+    timingRevision?: string;
     taskDate?: string;
     taskSourcePath?: string;
   }>();
@@ -344,6 +405,7 @@ export default class ToWritePlugin extends Plugin {
     processedAt: string;
     action: string;
     resultRevision?: string;
+    timingRevision?: string;
     displayMessage?: string;
   }>();
   private externalApiServer!: ToWriteExternalApiServer;
@@ -385,9 +447,11 @@ export default class ToWritePlugin extends Plugin {
   async onload(): Promise<void> {
     await this.loadPluginData();
 
+    this.backendClient = new BackendEnhancementClient(() => this.settings.backend);
     this.store = new OpenQuestionStore(this.savedQuestionStates);
     this.register(this.store.subscribe(() => this.invalidateLegacyEinkPlaylist()));
     this.initializeDailyServices();
+    await this.initializeDailyTaskTimer();
     await this.refreshDailyPlanCache(false);
     this.learningService = new HabitLearningService(this.savedLearningState);
     this.learningService.setCollectionPaused(!this.settings.learning.enabled);
@@ -412,7 +476,6 @@ export default class ToWritePlugin extends Plugin {
     this.inboxIndex = new InboxIndex(this.app, () => this.settings.inbox);
     this.exporter = new QuestionExporter(this.app, this.store, () => this.settings, () => this.workflowIndex.getPayload());
     this.localKnowledgeIndex = new LocalKnowledgeIndex();
-    this.backendClient = new BackendEnhancementClient(() => this.settings.backend);
     this.captureRecommender = new CaptureTargetRecommender(
       this.app,
       this.captureRecommendationSettings(),
@@ -447,6 +510,13 @@ export default class ToWritePlugin extends Plugin {
         },
         complete: async (snapshot, request) => this.completeDailyFromBridge(snapshot, request.idempotencyKey),
         later: async (snapshot, request) => this.snoozeDailyFromBridge(snapshot, request.idempotencyKey),
+        transitionTiming: async (snapshot, request, operation) => {
+          return this.transitionDailyTimingFromBridge(
+            snapshot,
+            operation,
+            `bridge-timing:${request.idempotencyKey}`
+          );
+        },
         undo: async (captureId, undoToken) => this.undoTapBridgeCapture(captureId, undoToken)
       }
     });
@@ -505,11 +575,22 @@ export default class ToWritePlugin extends Plugin {
       handleDeviceGesture: (event) => this.handleLocalDeviceGesture(event),
       getDailySnapshot: () => this.getDailyDashboardSnapshot(),
       getDailyPlan: (date) => this.dailyPlanService.read(date),
+      previewDailyPlanNormalization: (date) => this.previewDailyPlanNormalization(date),
+      normalizeDailyPlan: (date, preview) => this.normalizeDailyPlan(date, preview),
       updateDailyPlanMetadata: (date, revision, patch) => this.updateDailyPlanMetadata(date, revision, patch),
       createDailyItem: (input) => this.createDailyItem(input),
       updateDailyItem: (id, revision, patch, date) => this.updateDailyItem(id, revision, patch, date),
-      startDailyItem: (id, revision, date) => this.startDailyItem(id, revision, date),
-      completeDailyItem: (id, revision, eventId, date) => this.completeDailyItem(id, revision, eventId, date),
+      startDailyItem: (id, revision, eventId, date, timingRevision, lineageRevision) =>
+        this.startDailyItem(id, revision, date, eventId, "obsidian", timingRevision, lineageRevision),
+      pauseDailyItem: (id, revision, eventId, date, timingRevision, lineageRevision) =>
+        this.pauseDailyItem(id, revision, eventId, date, "obsidian", timingRevision, lineageRevision),
+      resumeDailyItem: (id, revision, eventId, date, timingRevision, lineageRevision) =>
+        this.resumeDailyItem(id, revision, eventId, date, "obsidian", timingRevision, lineageRevision),
+      completeDailyItem: (id, revision, eventId, date, timingRevision, lineageRevision) =>
+        this.completeDailyItem(id, revision, eventId, date, "obsidian", timingRevision, lineageRevision),
+      getDailyItemTiming: (id, date) => this.getDailyItemTiming(id, date),
+      correctDailyItemTiming: (id, timingRevision, patch, date) =>
+        this.correctDailyItemTiming(id, timingRevision, patch, date),
       writeDailySummary: (summary) => this.writeDailySummary(summary),
       onRuntimeStatusChanged: (status) => this.handleExternalApiRuntimeStatus(status),
       subscribe: (listener) => this.subscribe(listener)
@@ -780,6 +861,48 @@ export default class ToWritePlugin extends Plugin {
         })
       );
     }
+    this.registerEditorExtension(createDailyTaskControls({
+      isEnabled: () => this.settings.daily.enabled && this.settings.daily.editorTaskControls,
+      getActiveFilePath: () => this.getActiveFile() ?? undefined,
+      getItems: () => this.dailyPlanItems,
+      getTiming: (item) => this.dailyTimingSnapshotForItem(item),
+      onToggle: async (item) => {
+        try {
+          const timing = this.dailyTimingSnapshotForItem(item);
+          if (timing.status === "running") {
+            await this.pauseDailyItem(
+              item.id,
+              item.revision,
+              undefined,
+              item.date,
+              "obsidian",
+              timing.timingRevision
+            );
+          } else if (timing.status === "paused") {
+            await this.resumeDailyItem(
+              item.id,
+              item.revision,
+              undefined,
+              item.date,
+              "obsidian",
+              timing.timingRevision
+            );
+          } else if (timing.status !== "completed") {
+            await this.startDailyItem(item.id, item.revision, item.date);
+          }
+        } catch (error) {
+          new Notice(messageForError(error));
+        }
+      },
+      onComplete: async (item) => {
+        try {
+          await this.completeDailyItem(item.id, item.revision, undefined, item.date);
+          await this.refreshDailyPlanCache();
+        } catch (error) {
+          new Notice(messageForError(error));
+        }
+      }
+    }));
 
     this.addSettingTab(new ToWriteSettingTab(this.app, this));
     this.registerEvents();
@@ -847,6 +970,10 @@ export default class ToWritePlugin extends Plugin {
     if (this.dailyMidnightTimer) {
       window.clearTimeout(this.dailyMidnightTimer);
       this.dailyMidnightTimer = 0;
+    }
+    if (this.dailyTimerDisplayRefreshTimer) {
+      window.clearTimeout(this.dailyTimerDisplayRefreshTimer);
+      this.dailyTimerDisplayRefreshTimer = 0;
     }
     void this.dailyActivityService?.flushMeasurements().then(() => this.savePluginData());
     this.dailyActivityService?.dispose();
@@ -2552,15 +2679,22 @@ export default class ToWritePlugin extends Plugin {
     const tomorrow = new Date();
     tomorrow.setHours(24, 0, 0, 0);
     return this.dailyPlanItems.map((item) => {
-      const targetLink = item.target
-        ? item.target.replace(/^\[\[/u, "").replace(/\]\]$/u, "").split("|")[0].trim()
-        : item.linkedNotes[0];
-      const linked = targetLink
-        ? this.app.metadataCache.getFirstLinkpathDest(targetLink.split("#")[0], item.sourcePath)
-        : undefined;
-      const targetPath = linked?.path || this.settings.deviceCapture.inboxFile;
+      const resolution = item.targetResolution ?? resolveDailyTarget({
+        sourcePath: item.sourcePath,
+        taskText: item.text,
+        rawBlock: item.rawBlock,
+        blockId: item.blockId,
+        explicitTarget: item.target,
+        lineage: item.lineage
+      });
+      const targetPath = this.dailyCaptureTargetPath(item);
       const isInbox = targetPath === this.settings.deviceCapture.inboxFile;
-      const privacy = this.hubPrivacyForPath(targetPath, item.tags, { ignoreIncludeFolders: isInbox });
+      const privacy = combineHubCandidatePrivacy(
+        this.hubPrivacyForPath(item.sourcePath, item.tags),
+        this.hubPrivacyForPath(targetPath, [], { ignoreIncludeFolders: isInbox })
+      );
+      const groupLabel = dailyGroupDisplayLabel(item.lineage?.groups.at(-1));
+      const timing = this.dailyTimingSnapshotForItem(item);
       const kindTitle = this.settings.language === "zh"
         ? ({ task: "今日任务", create_note: "新建笔记", edit_note: "继续修改", send_card: "今日发送" } as const)[item.kind]
         : ({ task: "Today", create_note: "Create note", edit_note: "Edit note", send_card: "Send today" } as const)[item.kind];
@@ -2575,10 +2709,10 @@ export default class ToWritePlugin extends Plugin {
         taskRevision: item.revision.value,
         display: {
           title: kindTitle,
-          body: item.text,
+          body: [groupLabel, item.text].filter(Boolean).join("\n"),
           prompt: item.scheduledFor
             ? `${this.settings.language === "zh" ? "计划于" : "Scheduled"} ${formatLocalDateTime(item.scheduledFor)}`
-            : (this.settings.language === "zh" ? "记录、完成，或稍后处理" : "Capture, complete, or handle later")
+            : `${resolution.displayLabel} · ${dailyTimingStatusLabel(timing.status, this.settings.language)}`
         },
         sourceLocalId: `${item.sourcePath}#^${item.blockId}`,
         writeTargetLocalId: targetPath,
@@ -2650,7 +2784,16 @@ export default class ToWritePlugin extends Plugin {
         ? (zh ? "正在推进" : "In progress")
         : (zh ? "今日任务" : "Today task"),
       body: [
-        card.item.text,
+        card.item.groupLabel ? `${zh ? "分类" : "Group"} · ${card.item.groupLabel}` : "",
+        `${card.position}/${card.total} · ${card.item.text}`,
+        card.item.targetLabel ? `${zh ? "目标" : "Target"} · ${card.item.targetLabel}` : "",
+        card.item.timing
+          ? `${dailyDeckTimingStatusLabel(card.item.timing.state, this.settings.language)} · ${
+            Math.floor(card.item.timing.activeSeconds / 60)
+          }${zh ? " 分钟" : " min"}${
+            card.item.estimateMinutes ? ` / ${card.item.estimateMinutes}` : ""
+          }`
+          : "",
         card.item.goal ? `${zh ? "目标" : "Goal"} · ${card.item.goal}` : "",
         card.item.nextStep ? `${zh ? "下一步" : "Next"} · ${card.item.nextStep}` : ""
       ].filter(Boolean).join("\n\n"),
@@ -2710,7 +2853,12 @@ export default class ToWritePlugin extends Plugin {
         nextStep: item.nextStep,
         estimateMinutes: item.estimateMinutes,
         target: item.target,
-        startedAt: item.startedAt
+        startedAt: item.startedAt,
+        groupLabel: dailyGroupDisplayLabel(item.lineage?.groups.at(-1)),
+        targetLabel: item.targetResolution?.displayLabel,
+        targetProvenance: item.targetResolution?.source,
+        lineageRevision: item.lineageRevision,
+        timing: dailyDeckTiming(this.dailyTimingSnapshotForItem(item))
       }))
     });
   }
@@ -2838,6 +2986,7 @@ export default class ToWritePlugin extends Plugin {
       const servedItem = taskId
         ? this.dailyPlanItems.find((item) => item.id === taskId)
         : undefined;
+      const servedTiming = servedItem ? this.dailyTimingSnapshotForItem(servedItem) : undefined;
       const dailyDate = servedItem?.date
         || (/^daily-(?:overview|result|summary):(\d{4}-\d{2}-\d{2})$/u.exec(servedCardId)?.[1]);
       if (dailyDate) {
@@ -2849,12 +2998,15 @@ export default class ToWritePlugin extends Plugin {
         ].find((snapshot) => snapshot?.localId === servedCardId
           && (!servedItem
             || snapshot?.sourceContext?.dailyItemId === servedItem.id
-            && snapshot.sourceContext.dailyTaskRevision === servedItem.revision.value));
+            && snapshot.sourceContext.dailyTaskRevision === servedItem.revision.value
+            && snapshot.sourceContext.lineageRevision === servedItem.lineageRevision));
         this.localDeviceServedTaskRevisions.set(
           `${servedRevision}:${servedCardId}`,
           {
             dailyItemId: servedItem?.id,
             taskRevision: servedItem?.revision.value,
+            lineageRevision: servedItem?.lineageRevision,
+            timingRevision: servedTiming?.timingRevision,
             taskDate: dailyDate,
             taskSourcePath: servedItem?.sourcePath,
             tapSnapshot,
@@ -3154,6 +3306,8 @@ export default class ToWritePlugin extends Plugin {
       playlistRevision: acknowledgement.playlistRevision,
       dailyItemId: servedTask?.dailyItemId,
       taskRevision: servedTask?.taskRevision,
+      lineageRevision: servedTask?.lineageRevision,
+      timingRevision: servedTask?.timingRevision,
       taskDate: servedTask?.taskDate,
       taskSourcePath: servedTask?.taskSourcePath
     });
@@ -3177,6 +3331,8 @@ export default class ToWritePlugin extends Plugin {
           ? {
               dailyItemId: servedTask.dailyItemId,
               dailyTaskRevision: servedTask.taskRevision,
+              lineageRevision: servedTask.lineageRevision,
+              timingRevision: servedTask.timingRevision,
               dailyDate: servedTask.taskDate,
               dailySourcePath: servedTask.taskSourcePath
             }
@@ -3279,6 +3435,7 @@ export default class ToWritePlugin extends Plugin {
           : "conflict",
       action: existing.action as DeviceActionIntent,
       resultRevision: existing.resultRevision,
+      timingRevision: existing.timingRevision,
       displayMessage: existing.displayMessage || deviceCommandMessage(existing.action as DeviceActionIntent)
     };
   }
@@ -3296,6 +3453,8 @@ export default class ToWritePlugin extends Plugin {
       ? {
           dailyItemId: displayed.dailyItemId,
           dailyTaskRevision: displayed.taskRevision,
+          dailyLineageRevision: displayed.lineageRevision,
+          dailyTimingRevision: displayed.timingRevision,
           dailyDate: displayed.taskDate,
           dailySourcePath: displayed.taskSourcePath
         }
@@ -3317,6 +3476,8 @@ export default class ToWritePlugin extends Plugin {
             : existing.status === "conflict"
               ? "conflict" as const
               : "conflict" as const,
+        resultRevision: existing.resultRevision,
+        timingRevision: existing.timingRevision,
         displayMessage: existing.status === "indeterminate"
           ? (this.settings.language === "zh" ? "命令已处理" : "Command already handled")
           : deviceCommandMessage(action)
@@ -3340,6 +3501,7 @@ export default class ToWritePlugin extends Plugin {
 
     try {
       let resultRevision: string | undefined;
+      let timingRevision: string | undefined;
       let resolvedAction = action;
       let displayMessage = deviceCommandMessage(action);
       let status: "executed" | "unsupported" | "conflict" = "executed";
@@ -3362,6 +3524,16 @@ export default class ToWritePlugin extends Plugin {
       } else if (action === "complete") {
         await this.completeDailyFromDeviceEvent(event);
         displayMessage = this.settings.language === "zh" ? "已完成" : "Completed";
+      } else if (action === "toggle_timer" || action === "pause_task" || action === "resume_task") {
+        const transitioned = await this.transitionDisplayedDailyTimer(
+          event.cardId,
+          frozenDaily,
+          event.eventId,
+          action
+        );
+        resultRevision = transitioned.item.revision.value;
+        timingRevision = transitioned.timing.timingRevision;
+        displayMessage = dailyTimingStatusLabel(transitioned.timing.status, this.settings.language);
       } else if (action === "create_note") {
         await this.openCreateOnlyCaptureForDisplayed(event.cardId, frozenDaily);
         displayMessage = this.settings.language === "zh" ? "已打开新建记录" : "New capture opened";
@@ -3369,7 +3541,8 @@ export default class ToWritePlugin extends Plugin {
         const opened = await this.openDisplayedCard(
           event.cardId,
           action === "open_current",
-          frozenDaily
+          frozenDaily,
+          event.eventId
         );
         resolvedAction = opened.started ? "start_open" : "open_current";
         resultRevision = opened.resultRevision;
@@ -3386,10 +3559,11 @@ export default class ToWritePlugin extends Plugin {
         processedAt: new Date().toISOString(),
         action: resolvedAction,
         resultRevision,
+        timingRevision,
         displayMessage
       });
       await this.savePluginData();
-      return { status, displayMessage, action: resolvedAction, resultRevision };
+      return { status, displayMessage, action: resolvedAction, resultRevision, timingRevision };
     } catch (error) {
       const message = messageForError(error);
       this.deviceCommandJournal.set(event.eventId, {
@@ -3463,10 +3637,84 @@ export default class ToWritePlugin extends Plugin {
     await this.selectLocalDeviceCard(cards[nextIndex].localId);
   }
 
+  private async transitionDisplayedDailyTimer(
+    displayedCardId: string | undefined,
+    frozen: FrozenDisplayedDailyContext | undefined,
+    eventId: string,
+    requested: "toggle_timer" | "pause_task" | "resume_task"
+  ): Promise<{ item: DailyPlanItem; timing: DailyTaskTimingSnapshot }> {
+    const cardId = displayedCardId?.trim() ?? "";
+    const id = cardId.startsWith("daily-plan:")
+      ? cardId.slice("daily-plan:".length)
+      : cardId.startsWith("daily-overview:")
+        ? frozen?.dailyItemId
+        : undefined;
+    if (!id) {
+      throw new DailyPlanConflictError(
+        "invalid-state",
+        "Task timing is available only for the displayed Daily overview or task."
+      );
+    }
+    const current = await this.resolveFrozenDailyItem(frozen, id);
+    const timing = this.dailyTimingSnapshotForItem(current);
+    if (frozen?.dailyTimingRevision && frozen.dailyTimingRevision !== timing.timingRevision) {
+      throw new DailyPlanConflictError(
+        "revision-changed",
+        "The task timer changed after this card was displayed."
+      );
+    }
+    const operation = requested === "toggle_timer"
+      ? timing.status === "running"
+        ? "pause"
+        : timing.status === "paused"
+          ? "resume"
+          : timing.status === "not-started"
+            ? "start"
+            : undefined
+      : requested === "pause_task" ? "pause" : "resume";
+    if (!operation) {
+      throw new DailyPlanConflictError("invalid-state", "A completed task must be reopened in Obsidian.");
+    }
+    const transitioned = operation === "pause"
+      ? await this.pauseDailyItem(
+        id,
+        current.revision,
+        eventId,
+        current.date,
+        "device",
+        frozen?.dailyTimingRevision,
+        frozen?.dailyLineageRevision
+      )
+      : operation === "resume"
+        ? await this.resumeDailyItem(
+          id,
+          current.revision,
+          eventId,
+          current.date,
+          "device",
+          frozen?.dailyTimingRevision,
+          frozen?.dailyLineageRevision
+        )
+        : await this.startDailyItem(
+          id,
+          current.revision,
+          current.date,
+          eventId,
+          "device",
+          frozen?.dailyTimingRevision,
+          frozen?.dailyLineageRevision
+        );
+    return {
+      item: transitioned,
+      timing: this.dailyTimingSnapshotForItem(transitioned)
+    };
+  }
+
   private async openDisplayedCard(
     displayedCardId: string | undefined,
     startOverview: boolean,
-    frozenDaily?: FrozenDisplayedDailyContext
+    frozenDaily?: FrozenDisplayedDailyContext,
+    deviceEventId?: string
   ): Promise<{ started: boolean; resultRevision?: string; displayMessage: string }> {
     const cardId = displayedCardId?.trim() ?? "";
     const deck = this.currentDailyDeck();
@@ -3488,7 +3736,15 @@ export default class ToWritePlugin extends Plugin {
         };
       }
       const started = startOverview
-        ? await this.startDailyItem(current.id, current.revision, current.date)
+        ? await this.startDailyItem(
+          current.id,
+          current.revision,
+          current.date,
+          deviceEventId ? `${deviceEventId}:start` : undefined,
+          deviceEventId ? "device" : "obsidian",
+          frozenDaily?.dailyTimingRevision,
+          frozenDaily?.dailyLineageRevision
+        )
         : current;
       await this.refreshDailyPlanCache(false);
       try {
@@ -3586,6 +3842,7 @@ export default class ToWritePlugin extends Plugin {
     const item = await this.dailyPlanService.get(expectedId, frozen.dailyDate);
     if (!item
       || item.revision.value !== frozen.dailyTaskRevision
+      || (frozen.dailyLineageRevision && item.lineageRevision !== frozen.dailyLineageRevision)
       || (frozen.dailySourcePath && item.sourcePath !== frozen.dailySourcePath)) {
       throw new DailyPlanConflictError(
         "revision-changed",
@@ -3596,32 +3853,58 @@ export default class ToWritePlugin extends Plugin {
   }
 
   private async openDailyItemTarget(item: DailyPlanItem): Promise<boolean> {
-    const rawTarget = item.target?.trim();
-    const linkText = rawTarget
-      ? rawTarget.replace(/^\[\[/u, "").replace(/\]\]$/u, "").split("|")[0].trim()
-      : item.linkedNotes[0];
-    const linked = linkText
-      ? this.app.metadataCache.getFirstLinkpathDest(linkText.split("#")[0], item.sourcePath)
-      : undefined;
-    if (linked) {
-      await this.app.workspace.openLinkText(linkText, item.sourcePath, false);
+    const resolution = item.targetResolution ?? resolveDailyTarget({
+      sourcePath: item.sourcePath,
+      taskText: item.text,
+      rawBlock: item.rawBlock,
+      blockId: item.blockId,
+      explicitTarget: item.target,
+      lineage: item.lineage
+    });
+    const target = resolution?.target;
+    const linked = target ? this.resolveDailyMarkdownTargetFile(target, item.sourcePath) : undefined;
+    if (linked && target) {
+      await this.app.workspace.openLinkText(this.dailyTargetLinkText(target), item.sourcePath, false);
       return bestEffortFocusObsidian();
     }
     if (item.kind === "create_note") {
       this.openCaptureModal({
         entryPoint: "device-primary",
         createOnly: true,
-        title: dailyCreateOnlyTitle(item),
+        title: target?.label || dailyCreateOnlyTitle(item),
         sourceFile: item.sourcePath
       });
       return bestEffortFocusObsidian();
     }
-    await this.app.workspace.openLinkText(
-      `${item.sourcePath}#^${item.blockId}`,
-      item.sourcePath,
-      false
-    );
+    if (resolution?.source === "dashboard") {
+      await this.activateDashboard();
+      return bestEffortFocusObsidian();
+    }
+    const sourcePath = resolution?.sourcePath || item.sourcePath;
+    const blockId = resolution?.blockId || item.blockId;
+    if (sourcePath && blockId) {
+      await this.app.workspace.openLinkText(`${sourcePath}#^${blockId}`, item.sourcePath, false);
+      return bestEffortFocusObsidian();
+    }
+    await this.activateDashboard();
     return bestEffortFocusObsidian();
+  }
+
+  private resolveDailyMarkdownTargetFile(
+    target: DailyMarkdownTarget,
+    sourcePath = ""
+  ): TFile | undefined {
+    const directPath = target.path ? normalizePath(target.path) : "";
+    const direct = directPath ? this.app.vault.getFileByPath(directPath) : undefined;
+    if (direct) return direct;
+    return this.app.metadataCache.getFirstLinkpathDest(target.linkText, sourcePath) ?? undefined;
+  }
+
+  private dailyTargetLinkText(target: DailyMarkdownTarget): string {
+    const base = target.path || target.linkText;
+    if (target.blockId) return `${base}#^${target.blockId}`;
+    if (target.heading) return `${base}#${target.heading}`;
+    return base;
   }
 
   private async openDailyPlanSource(date: string): Promise<boolean> {
@@ -3632,6 +3915,21 @@ export default class ToWritePlugin extends Plugin {
     } else {
       await this.activateDashboard();
     }
+    return bestEffortFocusObsidian();
+  }
+
+  private async openDailyGroupTarget(group: import("./daily").DailyPlanGroup): Promise<boolean> {
+    const target = group.links[0];
+    if (target && this.resolveDailyMarkdownTargetFile(target, group.sourcePath)) {
+      await this.app.workspace.openLinkText(this.dailyTargetLinkText(target), group.sourcePath, false);
+      return bestEffortFocusObsidian();
+    }
+    const source = this.app.vault.getFileByPath(group.sourcePath);
+    if (source) {
+      await this.openFile(source.path);
+      return bestEffortFocusObsidian();
+    }
+    await this.activateDashboard();
     return bestEffortFocusObsidian();
   }
 
@@ -3681,7 +3979,21 @@ export default class ToWritePlugin extends Plugin {
     if (!served?.taskRevision || item.revision.value !== served.taskRevision) {
       throw new DailyPlanConflictError("revision-changed", "The Daily task changed after this card was rendered.");
     }
-    await this.completeDailyItem(id, item.revision, event.eventId, item.date);
+    if (served.lineageRevision && item.lineageRevision !== served.lineageRevision) {
+      throw new DailyPlanConflictError(
+        "revision-changed",
+        "The Daily task inherited target changed after this card was rendered."
+      );
+    }
+    await this.completeDailyItem(
+      id,
+      item.revision,
+      event.eventId,
+      item.date,
+      "device",
+      served.timingRevision,
+      served.lineageRevision
+    );
     await this.advanceAfterDailyCompletion(id);
   }
 
@@ -3690,6 +4002,7 @@ export default class ToWritePlugin extends Plugin {
   ): Promise<{
     status: "applied" | "conflict" | "ignored";
     resultRevision?: string;
+    timingRevision?: string;
     message?: string;
   }> {
     if (event.deviceId !== this.settings.hub.deviceId.trim()) {
@@ -3726,6 +4039,7 @@ export default class ToWritePlugin extends Plugin {
             ? "ignored"
             : "conflict",
         resultRevision: concurrentlyReserved.resultRevision,
+        timingRevision: concurrentlyReserved.timingRevision,
         message: concurrentlyReserved.displayMessage || deviceCommandMessage(event.action)
       };
     }
@@ -3822,6 +4136,7 @@ export default class ToWritePlugin extends Plugin {
         return {
           status: existing.status === "executed" ? "applied" : existing.status === "unsupported" ? "ignored" : "conflict",
           resultRevision: existing.resultRevision,
+          timingRevision: existing.timingRevision,
           message: existing.status === "indeterminate"
             ? (this.settings.language === "zh" ? "命令已处理" : "Command already handled")
             : deviceCommandMessage(event.action)
@@ -3844,6 +4159,7 @@ export default class ToWritePlugin extends Plugin {
 
     try {
       let resultRevision: string | undefined;
+      let timingRevision: string | undefined;
       let message = deviceCommandMessage(event.action);
       let journalStatus: "executed" | "unsupported" = "executed";
 
@@ -3854,6 +4170,8 @@ export default class ToWritePlugin extends Plugin {
         await this.openCreateOnlyCaptureForDisplayed(localId, {
           dailyItemId: storedSnapshot?.sourceContext?.dailyItemId,
           dailyTaskRevision: storedSnapshot?.sourceContext?.dailyTaskRevision,
+          dailyLineageRevision: storedSnapshot?.sourceContext?.lineageRevision,
+          dailyTimingRevision: storedSnapshot?.sourceContext?.timingRevision,
           dailyDate: storedSnapshot?.sourceContext?.dailyDate,
           dailySourcePath: storedSnapshot?.sourceContext?.dailySourcePath
         });
@@ -3865,12 +4183,32 @@ export default class ToWritePlugin extends Plugin {
           {
             dailyItemId: storedSnapshot?.sourceContext?.dailyItemId,
             dailyTaskRevision: storedSnapshot?.sourceContext?.dailyTaskRevision,
+            dailyLineageRevision: storedSnapshot?.sourceContext?.lineageRevision,
+            dailyTimingRevision: storedSnapshot?.sourceContext?.timingRevision,
             dailyDate: storedSnapshot?.sourceContext?.dailyDate,
             dailySourcePath: storedSnapshot?.sourceContext?.dailySourcePath
-          }
+          },
+          event.eventId
         );
         resultRevision = opened.resultRevision;
         message = opened.displayMessage;
+      } else if (event.action === "pause_task" || event.action === "resume_task") {
+        const transitioned = await this.transitionDisplayedDailyTimer(
+          localId,
+          {
+            dailyItemId: storedSnapshot?.sourceContext?.dailyItemId,
+            dailyTaskRevision: storedSnapshot?.sourceContext?.dailyTaskRevision,
+            dailyLineageRevision: storedSnapshot?.sourceContext?.lineageRevision,
+            dailyTimingRevision: storedSnapshot?.sourceContext?.timingRevision,
+            dailyDate: storedSnapshot?.sourceContext?.dailyDate,
+            dailySourcePath: storedSnapshot?.sourceContext?.dailySourcePath
+          },
+          event.eventId,
+          event.action
+        );
+        resultRevision = transitioned.item.revision.value;
+        timingRevision = transitioned.timing.timingRevision;
+        message = dailyTimingStatusLabel(transitioned.timing.status, this.settings.language);
       } else if (event.action === "complete") {
         if (event.contentType !== "daily_plan_item" || !localId.startsWith("daily-plan:")) {
           throw new DailyPlanConflictError(
@@ -3881,6 +4219,7 @@ export default class ToWritePlugin extends Plugin {
         const snapshot = storedSnapshot ?? await this.localTapSelection.snapshotForContent(event.contentId);
         const id = snapshot?.sourceContext?.dailyItemId;
         const frozenRevision = snapshot?.sourceContext?.dailyTaskRevision;
+        const frozenLineageRevision = snapshot?.sourceContext?.lineageRevision;
         const dailyDate = snapshot?.sourceContext?.dailyDate;
         if (!snapshot || !id || !frozenRevision || localId !== `daily-plan:${id}`) {
           throw new DailyPlanConflictError("revision-changed", "The displayed task mapping is stale.");
@@ -3895,10 +4234,24 @@ export default class ToWritePlugin extends Plugin {
             "The Daily task changed after this card was displayed."
           );
         }
+        if (frozenLineageRevision && item.lineageRevision !== frozenLineageRevision) {
+          throw new DailyPlanConflictError(
+            "revision-changed",
+            "The Daily task inherited target changed after this card was displayed."
+          );
+        }
         if (item.done) {
           resultRevision = item.revision.value;
         } else {
-          const completed = await this.completeDailyItem(id, item.revision, event.eventId, item.date);
+          const completed = await this.completeDailyItem(
+            id,
+            item.revision,
+            event.eventId,
+            item.date,
+            "device",
+            snapshot.sourceContext?.timingRevision,
+            snapshot.sourceContext?.lineageRevision
+          );
           await this.advanceAfterDailyCompletion(id);
           resultRevision = completed.revision.value;
         }
@@ -3915,12 +4268,14 @@ export default class ToWritePlugin extends Plugin {
         processedAt: new Date().toISOString(),
         action: event.action,
         resultRevision,
+        timingRevision,
         displayMessage: message
       });
       await this.savePluginData();
       return {
         status: journalStatus === "executed" ? "applied" : "ignored",
         resultRevision,
+        timingRevision,
         message
       };
     } catch (error) {
@@ -4581,6 +4936,9 @@ export default class ToWritePlugin extends Plugin {
         resultRevision: typeof entry.resultRevision === "string"
           ? entry.resultRevision.slice(0, 160)
           : undefined,
+        timingRevision: typeof entry.timingRevision === "string"
+          ? entry.timingRevision.slice(0, 160)
+          : undefined,
         displayMessage: typeof entry.displayMessage === "string"
           ? entry.displayMessage.slice(0, 160)
           : undefined
@@ -4590,6 +4948,7 @@ export default class ToWritePlugin extends Plugin {
 
   private initializeDailyServices(state: DailyActivityState | undefined = this.savedDailyActivityState): void {
     this.dailyPlanService = this.createDailyPlanService();
+    this.dailyPlanNormalizationService = this.createDailyPlanNormalizationService();
     this.dailyActivityRetentionDays = this.settings.daily.rawEventRetentionDays;
     this.dailyActivityService = new DailyActivityService(state, {
       retentionDays: this.dailyActivityRetentionDays,
@@ -4607,7 +4966,42 @@ export default class ToWritePlugin extends Plugin {
   }
 
   private createDailyPlanService(): DailyPlanService {
-    return new DailyPlanService({
+    return new DailyPlanService(this.createDailyPlanStorage(), {
+      source: this.dailyPlanSourceSetting(),
+      dailyRoot: this.settings.daily.dailyNoteRoot,
+      planHeading: this.settings.daily.planHeading,
+      todoHeading: this.settings.daily.todoHeading,
+      summaryHeading: this.settings.daily.summaryHeading,
+      onChanged: async () => {
+        await this.refreshDailyPlanCache();
+        this.queueDeviceHubSync();
+      }
+    });
+  }
+
+  private createDailyPlanNormalizationService(): DailyPlanNormalizationService {
+    return new DailyPlanNormalizationService(this.createDailyPlanStorage(), {
+      source: this.dailyPlanSourceSetting(),
+      dailyRoot: this.settings.daily.dailyNoteRoot,
+      planHeading: this.settings.daily.planHeading,
+      todoHeading: this.settings.daily.todoHeading,
+      summaryHeading: this.settings.daily.summaryHeading,
+      targetExists: (target) => Boolean(this.resolveDailyMarkdownTargetFile(target)),
+      onChanged: async () => {
+        await this.refreshDailyPlanCache();
+        this.queueDeviceHubSync();
+      }
+    });
+  }
+
+  private dailyPlanSourceSetting() {
+    return this.settings.daily.planSourceMode === "fixed-document"
+      ? { kind: "fixed-document" as const, path: this.settings.daily.fixedPlanPath }
+      : { kind: "daily-note" as const, dailyRoot: this.settings.daily.dailyNoteRoot };
+  }
+
+  private createDailyPlanStorage(): DailyPlanStorage {
+    return {
       readText: async (path) => {
         const file = this.app.vault.getAbstractFileByPath(normalizePath(path));
         if (!file) return undefined;
@@ -4627,19 +5021,54 @@ export default class ToWritePlugin extends Plugin {
         if (existing) throw new Error(`${normalized} already exists and is not a file.`);
         await this.app.vault.create(normalized, content);
       }
-    }, {
-      source: this.settings.daily.planSourceMode === "fixed-document"
-        ? { kind: "fixed-document", path: this.settings.daily.fixedPlanPath }
-        : { kind: "daily-note", dailyRoot: this.settings.daily.dailyNoteRoot },
-      dailyRoot: this.settings.daily.dailyNoteRoot,
-      planHeading: this.settings.daily.planHeading,
-      todoHeading: this.settings.daily.todoHeading,
-      summaryHeading: this.settings.daily.summaryHeading,
-      onChanged: async () => {
-        await this.refreshDailyPlanCache();
-        this.queueDeviceHubSync();
+    };
+  }
+
+  private async initializeDailyTaskTimer(): Promise<void> {
+    const root = normalizeVaultPath(this.settings.exportDirectory);
+    this.dailyTimerLedgerPath = `${root}/daily/task-timer-events.jsonl`;
+    const log: DailyTimerEventLog = {
+      readJsonl: async () => await readVaultDataText(this.app, this.dailyTimerLedgerPath) ?? "",
+      appendJsonl: async (jsonl) => {
+        if (!jsonl) return;
+        const existing = await readVaultDataText(this.app, this.dailyTimerLedgerPath) ?? "";
+        const separator = existing && !existing.endsWith("\n") ? "\n" : "";
+        await writeVaultDataText(this.app, this.dailyTimerLedgerPath, `${existing}${separator}${jsonl}`);
+      },
+      archive: async (name, jsonl) => {
+        const safeName = name.replace(/[^A-Za-z0-9_.-]/gu, "_");
+        await writeVaultDataText(this.app, `${root}/daily/archive/${safeName}`, jsonl);
+      },
+      clear: async () => {
+        await writeVaultDataText(this.app, this.dailyTimerLedgerPath, "");
       }
-    });
+    };
+    try {
+      this.dailyTaskTimer = await PersistentDailyTaskTimer.load(log, {
+        maxOpenSessionMs: this.settings.daily.taskTimingReviewHours * 60 * 60_000
+      });
+      const journalPath = `${root}/daily/task-timer-transactions.json`;
+      const journal = new JsonDailyTimerTransitionJournal({
+        readText: () => readVaultDataText(this.app, journalPath),
+        writeText: (value) => writeVaultDataText(this.app, journalPath, value)
+      });
+      this.dailyTimerCoordinator = new DailyTimerTransitionCoordinator(
+        journal,
+        this.createDailyTimerTransitionAdapter()
+      );
+      const reconciled = await this.dailyTimerCoordinator.reconcilePending();
+      const conflicts = reconciled.filter((result) => result.status === "conflict");
+      if (conflicts.length > 0) {
+        this.dailyTimerLoadError = `${conflicts.length} task timer transaction(s) require review.`;
+      } else {
+        this.dailyTimerLoadError = "";
+      }
+    } catch (error) {
+      this.dailyTaskTimer = undefined;
+      this.dailyTimerCoordinator = undefined;
+      this.dailyTimerLoadError = messageForError(error);
+      console.error("ToWrite task timer ledger could not be loaded", error);
+    }
   }
 
   private scheduleDailyStateSave(): void {
@@ -4711,9 +5140,17 @@ export default class ToWritePlugin extends Plugin {
   private async refreshDailyPlanCache(notify = true): Promise<void> {
     const previous = this.dailyPlanItems;
     const previousRevision = this.dailyPlanDocument?.revision;
-    const document = this.settings.daily.enabled
+    let document = this.settings.daily.enabled
       ? await this.dailyPlanService.read()
       : undefined;
+    if (document
+      && this.dailyPlanCacheInitialized
+      && await this.synchronizeDailyMarkdownTimerState(document, previous)) {
+      // Starting a manually selected task can atomically pause another `[/]`
+      // task. Re-read after the journal commit so the cache never publishes
+      // the pre-normalized two-running-task document.
+      document = await this.dailyPlanService.read();
+    }
     const next = document?.items ?? [];
     if (this.dailyPlanCacheInitialized && previous[0]?.sourcePath === next[0]?.sourcePath) {
       const previousById = new Map(previous.map((item) => [item.id, item]));
@@ -4726,16 +5163,294 @@ export default class ToWritePlugin extends Plugin {
     }
     this.dailyPlanItems = next;
     this.dailyPlanDocument = document;
+    await this.refreshDailyBackendTimingCache(next);
     if (this.dailyPlanCacheInitialized && previousRevision && document?.revision !== previousRevision) {
       this.dailyDeviceStateVersion += 1;
       this.scheduleDailyStateSave();
     }
     this.dailyPlanCacheInitialized = true;
     this.invalidateLegacyEinkPlaylist();
+    this.scheduleRunningDailyCardRefresh();
+    this.refreshDailyEditorTaskControls();
     if (notify) this.notifyUi();
     void this.runDueDailyDeviceSchedule().catch((error: unknown) => {
       console.error("ToWrite Daily one-shot schedule failed", error);
     });
+  }
+
+  /**
+   * Reconciles direct Markdown checkbox edits after the existing Vault debounce
+   * has fired. This never runs from the editor key handler itself.
+   *
+   * The currently parsed task and lineage revisions form the CAS boundary.
+   * Markdown already contains the desired state, so the journal adapter makes
+   * the target write idempotent while still applying an automatic pause to any
+   * other running task in the same transaction.
+   */
+  private async synchronizeDailyMarkdownTimerState(
+    document: DailyPlanDocument,
+    previousItems: readonly DailyPlanItem[]
+  ): Promise<boolean> {
+    if (!this.settings.daily.taskTimingEnabled
+      || this.dailyTimerManagedMarkdownWriteDepth > 0) {
+      return false;
+    }
+    const sourceFile = this.app.vault.getFileByPath(document.sourcePath);
+    const observedAt = new Date(sourceFile?.stat.mtime ?? Date.now()).toISOString();
+    const manuallyChangedIds = changedDailyMarkdownTimerTaskIds(previousItems, document.items);
+    if (manuallyChangedIds.size === 0) return false;
+    const previousById = new Map(previousItems
+      .filter((item) => item.sourcePath === document.sourcePath && item.date === document.date)
+      .map((item) => [item.id, item]));
+    if (await this.shouldUseBackendDailyWriter()) {
+      return this.synchronizeBackendDailyMarkdownTimerState(
+        document,
+        manuallyChangedIds,
+        previousById,
+        observedAt
+      );
+    }
+    if (!this.dailyTaskTimer || !this.dailyTimerCoordinator) return false;
+    let reconciled = false;
+
+    await this.withDailyTimerLock(async () => {
+      for (const observed of document.items) {
+        if (!manuallyChangedIds.has(observed.id)) continue;
+        // A prior item can have auto-paused this one, so always resolve the
+        // latest full task block instead of acting on the stale loop snapshot.
+        const current = await this.dailyPlanService.get(observed.id, document.date);
+        if (!current?.lineageRevision) continue;
+        const timing = this.dailyTaskTimer!.core.getSnapshot(current.id, current.estimateMinutes);
+        const operations = dailyMarkdownTimerOperations(current.status, timing.status);
+        if (operations.length === 0) continue;
+        await this.reconcileDailyMarkdownTimerOperations(current, operations, observedAt);
+        reconciled = true;
+      }
+    });
+    return reconciled;
+  }
+
+  private async synchronizeBackendDailyMarkdownTimerState(
+    document: DailyPlanDocument,
+    manuallyChangedIds: ReadonlySet<string>,
+    previousById: ReadonlyMap<string, DailyPlanItem>,
+    observedAt: string
+  ): Promise<boolean> {
+    let reconciled = false;
+    await this.withDailyTimerLock(async () => {
+      this.dailyTimerManagedMarkdownWriteDepth += 1;
+      try {
+        for (const observed of document.items) {
+          if (!manuallyChangedIds.has(observed.id)) continue;
+          const previous = previousById.get(observed.id);
+          const current = await this.dailyPlanService.get(observed.id, document.date);
+          if (!previous || !current?.lineageRevision
+            || previous.lineageRevision !== current.lineageRevision) {
+            throw new DailyPlanConflictError(
+              "revision-changed",
+              "The task or inherited target changed together with its checkbox; timer synchronization was refused."
+            );
+          }
+          const before = await this.backendClient.getDailyTaskTiming(current.id, {
+            taskRevision: current.revision.value,
+            lineageRevision: current.lineageRevision,
+            includeEvents: false
+          });
+          const operations = dailyMarkdownTimerOperations(current.status, before.timing.status);
+          if (operations.length === 0) continue;
+          if (operations.length > 1) {
+            throw new DailyPlanConflictError(
+              "invalid-state",
+              "Changing a completed task directly to [/] requires reopening it first; use [ ] or the ToWrite controls."
+            );
+          }
+          const operation = operations[0];
+          const transitionAt = safeDailyMarkdownTransitionAt(observedAt, before.timing.lastTransitionAt);
+          if (operation === "start" || operation === "resume") {
+            await this.pauseBackendRunningPeerBeforeManualStart(
+              current,
+              [...previousById.values()],
+              transitionAt
+            );
+          }
+          const eventId = dailyMarkdownTimerEventId({
+            date: current.date,
+            taskId: current.id,
+            operation,
+            taskRevision: previous.revision.value,
+            lineageRevision: current.lineageRevision,
+            timingRevision: before.timing.timingRevision
+          });
+          const request: BackendDailyTimerTransitionRequest = {
+            eventId,
+            at: transitionAt,
+            source: "obsidian",
+            // Backend recovery verifies that applying the requested checkbox
+            // action to this exact old block byte-for-byte produces `current`.
+            rawBlock: previous.rawBlock ?? previous.rawLine,
+            taskRevision: previous.revision.value,
+            lineageRevision: current.lineageRevision,
+            expectedTimingRevision: before.timing.timingRevision
+          };
+          const result = operation === "start"
+            ? await this.backendClient.startDailyTask(current.id, request)
+            : operation === "pause"
+              ? await this.backendClient.pauseDailyTask(current.id, request)
+              : operation === "resume"
+                ? await this.backendClient.resumeDailyTask(current.id, request)
+                : operation === "complete"
+                  ? await this.backendClient.completeDailyTask(current.id, request)
+                  : await this.backendClient.reopenDailyTask(current.id, request);
+          this.rememberBackendDailyTiming(current, result.timing);
+          reconciled = true;
+        }
+      } finally {
+        this.dailyTimerManagedMarkdownWriteDepth -= 1;
+      }
+    });
+    return reconciled;
+  }
+
+  private async pauseBackendRunningPeerBeforeManualStart(
+    target: DailyPlanItem,
+    candidates: readonly DailyPlanItem[],
+    at: string
+  ): Promise<void> {
+    for (const candidate of candidates) {
+      if (candidate.id === target.id) continue;
+      const current = await this.dailyPlanService.get(candidate.id, candidate.date);
+      if (!current?.lineageRevision) continue;
+      const timing = await this.backendClient.getDailyTaskTiming(current.id, {
+        taskRevision: current.revision.value,
+        lineageRevision: current.lineageRevision,
+        includeEvents: false
+      });
+      if (timing.timing.status !== "running") continue;
+      const eventId = dailyMarkdownTimerEventId({
+        date: current.date,
+        taskId: current.id,
+        operation: "pause",
+        taskRevision: current.revision.value,
+        lineageRevision: current.lineageRevision,
+        timingRevision: timing.timing.timingRevision
+      });
+      const result = await this.backendClient.pauseDailyTask(current.id, {
+        eventId,
+        at: safeDailyMarkdownTransitionAt(at, timing.timing.lastTransitionAt),
+        source: "obsidian",
+        rawBlock: current.rawBlock ?? current.rawLine,
+        taskRevision: current.revision.value,
+        lineageRevision: current.lineageRevision,
+        expectedTimingRevision: timing.timing.timingRevision
+      });
+      this.rememberBackendDailyTiming(current, result.timing);
+    }
+  }
+
+  private rememberBackendDailyTiming(
+    item: DailyPlanItem,
+    timing: DailyTaskTimingSnapshot
+  ): void {
+    this.dailyBackendTimingCache.set(item.id, {
+      taskRevision: item.revision.value,
+      lineageRevision: item.lineageRevision,
+      timing,
+      events: [],
+      fetchedAtMs: Date.now()
+    });
+  }
+
+  private async reconcileDailyMarkdownTimerOperations(
+    current: DailyPlanItem,
+    operations: readonly DailyMarkdownTimerOperation[],
+    observedAt: string
+  ): Promise<void> {
+    const timer = this.requireDailyTaskTimer();
+    const latestLedgerMs = timer.core.getEvents().reduce(
+      (latest, event) => Math.max(latest, Date.parse(event.at)),
+      Number.NEGATIVE_INFINITY
+    );
+    const observedMs = Date.parse(observedAt);
+    const transitionAt = new Date(
+      Number.isFinite(latestLedgerMs) && latestLedgerMs >= observedMs
+        ? latestLedgerMs + 1
+        : observedMs
+    ).toISOString();
+    const draft = new DailyTaskTimerService(timer.core.getEvents(), {
+      maxOpenSessionMs: this.settings.daily.taskTimingReviewHours * 60 * 60_000
+    });
+    const events: DailyTimerEvent[] = [];
+    const affectedTaskIds: string[] = [];
+
+    for (const operation of operations) {
+      const timingBefore = draft.getSnapshot(current.id, current.estimateMinutes, transitionAt);
+      const eventId = dailyMarkdownTimerEventId({
+        date: current.date,
+        taskId: current.id,
+        operation,
+        taskRevision: current.revision.value,
+        lineageRevision: current.lineageRevision!,
+        timingRevision: timingBefore.timingRevision
+      });
+      const options: DailyTimerTransitionOptions = {
+        eventId,
+        at: transitionAt,
+        source: "obsidian",
+        sessionId: operation === "start" || operation === "resume"
+          ? `ses_markdown:${eventId}`
+          : undefined
+      };
+      const transition = operation === "start"
+        ? draft.start(current.id, options)
+        : operation === "pause"
+          ? draft.pause(current.id, options)
+          : operation === "resume"
+            ? draft.resume(current.id, options)
+            : operation === "complete"
+              ? draft.complete(current.id, options)
+              : draft.reopen(current.id, options);
+      if (transition.idempotent) continue;
+      events.push(...transition.events);
+      for (const affectedId of transition.affectedTaskIds) {
+        if (!affectedTaskIds.includes(affectedId)) affectedTaskIds.push(affectedId);
+      }
+    }
+    if (events.length === 0) return;
+
+    const expected: Record<string, string> = {};
+    for (const affectedId of affectedTaskIds) {
+      const affected = affectedId === current.id
+        ? await this.dailyPlanService.get(current.id, current.date)
+        : await this.findDailyItem(affectedId);
+      if (!affected?.lineageRevision) {
+        throw new DailyPlanConflictError(
+          "not-found",
+          `The active Daily task ${affectedId} cannot be safely coordinated with the Markdown edit.`
+        );
+      }
+      expected[dailyTimerTaskKey(affected)] = dailyTimerExpectedRevision(affected);
+    }
+    const coordinator = this.dailyTimerCoordinator;
+    if (!coordinator) {
+      throw new DailyPlanConflictError("invalid-state", "Task timer transaction journal is unavailable.");
+    }
+    const entry = await coordinator.prepare(
+      events,
+      expected,
+      dailyMarkdownTimerTransactionId(events.map((event) => event.eventId))
+    );
+    this.dailyTimerManagedMarkdownWriteDepth += 1;
+    try {
+      const result = await coordinator.execute(entry);
+      if (result.status !== "committed") {
+        throw new DailyPlanConflictError(
+          "revision-changed",
+          "Daily Markdown changed again while its checkbox state was being synchronized."
+        );
+      }
+    } finally {
+      this.dailyTimerManagedMarkdownWriteDepth -= 1;
+    }
   }
 
   async refreshDailyDashboard(): Promise<void> {
@@ -4749,10 +5464,12 @@ export default class ToWritePlugin extends Plugin {
       this.initializeDailyServices(activityState);
     } else {
       this.dailyPlanService = this.createDailyPlanService();
+      this.dailyPlanNormalizationService = this.createDailyPlanNormalizationService();
       this.dailyActivityService.setCollectionPaused(
         !this.settings.daily.enabled || !this.settings.daily.activityTracking
       );
     }
+    await this.initializeDailyTaskTimer();
     await this.refreshDailyPlanCache();
   }
 
@@ -4761,10 +5478,120 @@ export default class ToWritePlugin extends Plugin {
     const today = formatDailyInputDate(new Date());
     if (date === today) {
       await this.refreshDailyPlanCache(false);
-      return this.dailyActivityService.getSnapshot(date, this.dailyPlanItems);
+      return this.withDailyTimingSnapshots(
+        this.dailyActivityService.getSnapshot(date, this.dailyPlanItems)
+      );
     }
     const items = this.settings.daily.enabled ? await this.dailyPlanService.list(date) : [];
-    return this.dailyActivityService.getSnapshot(date, items);
+    return this.withDailyTimingSnapshots(this.dailyActivityService.getSnapshot(date, items));
+  }
+
+  private withDailyTimingSnapshots(snapshot: DailyDashboardSnapshot): DailyDashboardSnapshot {
+    return {
+      ...snapshot,
+      plan: {
+        ...snapshot.plan,
+        items: snapshot.plan.items.map((item) => ({
+          ...item,
+          timing: this.dailyTimingSnapshotForItem(item)
+        }))
+      }
+    };
+  }
+
+  private dailyTimingSnapshotForItem(item: Pick<DailyPlanItem, "id" | "estimateMinutes">): DailyTaskTimingSnapshot {
+    const backend = this.dailyBackendTimingCache.get(item.id);
+    if (backend) return projectCachedDailyTiming(
+      backend.timing,
+      backend.fetchedAtMs,
+      item.estimateMinutes,
+      this.settings.daily.taskTimingReviewHours
+    );
+    return this.dailyTaskTimer?.core.getSnapshot(item.id, item.estimateMinutes)
+      ?? new DailyTaskTimerService().getSnapshot(item.id, item.estimateMinutes);
+  }
+
+  private scheduleRunningDailyCardRefresh(): void {
+    if (this.dailyTimerDisplayRefreshTimer) {
+      window.clearTimeout(this.dailyTimerDisplayRefreshTimer);
+      this.dailyTimerDisplayRefreshTimer = 0;
+    }
+    const minutes = this.settings.daily.runningCardRefreshMinutes;
+    if (!this.settings.daily.enabled
+      || !this.settings.daily.taskTimingEnabled
+      || minutes === 0
+      || !this.dailyPlanItems.some((item) => this.dailyTimingSnapshotForItem(item).status === "running")) {
+      return;
+    }
+    this.dailyTimerDisplayRefreshTimer = window.setTimeout(() => {
+      this.dailyTimerDisplayRefreshTimer = 0;
+      this.dailyDeviceStateVersion += 1;
+      this.invalidateLegacyEinkPlaylist();
+      this.notifyUi();
+      this.queueDeviceHubSync();
+      this.scheduleRunningDailyCardRefresh();
+    }, minutes * 60_000);
+  }
+
+  private async refreshDailyBackendTimingCache(items: readonly DailyPlanItem[]): Promise<void> {
+    if (!this.settings.daily.taskTimingEnabled || !(await this.shouldUseBackendDailyWriter())) {
+      this.dailyBackendTimingCache.clear();
+      return;
+    }
+    const liveIds = new Set(items.map((item) => item.id));
+    for (const id of this.dailyBackendTimingCache.keys()) {
+      if (!liveIds.has(id)) this.dailyBackendTimingCache.delete(id);
+    }
+    await Promise.all(items.map(async (item) => {
+      const cached = this.dailyBackendTimingCache.get(item.id);
+      if (cached
+        && cached.taskRevision === item.revision.value
+        && cached.lineageRevision === item.lineageRevision) {
+        return;
+      }
+      const result = await this.backendClient.getDailyTaskTiming(item.id, {
+        taskRevision: item.revision.value,
+        lineageRevision: item.lineageRevision,
+        includeEvents: false
+      });
+      this.dailyBackendTimingCache.set(item.id, {
+        taskRevision: item.revision.value,
+        lineageRevision: item.lineageRevision,
+        timing: result.timing,
+        events: [],
+        fetchedAtMs: Date.now()
+      });
+    }));
+  }
+
+  private async previewDailyPlanNormalization(date: string): Promise<DailyPlanNormalizationPreview> {
+    this.assertDailyEnabled();
+    return this.dailyPlanNormalizationService.preview(date);
+  }
+
+  private async normalizeDailyPlan(
+    date: string,
+    preview: DailyPlanNormalizationPreview
+  ): Promise<DailyPlanNormalizationResult> {
+    this.assertDailyEnabled();
+    if (preview.date !== date) {
+      throw new DailyPlanConflictError("invalid-document", "Normalization preview date does not match.");
+    }
+    if (await this.shouldUseBackendDailyWriter()) {
+      throw new DailyPlanConflictError(
+        "invalid-state",
+        "Normalization must be run by the configured DailyOps writer. Switch the Daily writer to local or upgrade Backend."
+      );
+    }
+    const result = await this.dailyPlanNormalizationService.normalize(preview);
+    await this.refreshDailyPlanCache();
+    return result;
+  }
+
+  private async undoDailyPlanNormalization(token: string): Promise<DailyPlanNormalizationUndoResult> {
+    const result = await this.dailyPlanNormalizationService.undo(token);
+    await this.refreshDailyPlanCache();
+    return result;
   }
 
   private async createDailyItem(input: DailyPlanCreateInput): Promise<DailyPlanItem> {
@@ -4891,59 +5718,804 @@ export default class ToWritePlugin extends Plugin {
   private async startDailyItem(
     id: string,
     revision: DailyTaskRevision,
-    value: Date | string = new Date()
+    value: Date | string = new Date(),
+    eventId?: string,
+    source: DailyTimerEventSource = "obsidian",
+    expectedTimingRevision?: string,
+    expectedLineageRevision?: string
   ): Promise<DailyPlanItem> {
     this.assertDailyEnabled();
+    const useBackendWriter = await this.shouldUseBackendDailyWriter();
+    if (!useBackendWriter) {
+      const replay = await this.replayLocalDailyTimerTransition(
+        id,
+        eventId,
+        ["start", "resume"],
+        source,
+        value,
+        expectedLineageRevision
+      );
+      if (replay) return replay;
+    }
     let started: DailyPlanItem;
-    if (await this.shouldUseBackendDailyWriter()) {
+    if (useBackendWriter) {
       const current = await this.dailyPlanService.get(id, value);
       if (!current) throw new DailyPlanConflictError("not-found", `Daily item does not exist: ${id}`);
-      if (current.revision.value !== revision.value) {
+      if (expectedLineageRevision && current.lineageRevision !== expectedLineageRevision) {
+        throw new DailyPlanConflictError("revision-changed", "The Daily task inherited target changed after it was loaded.");
+      }
+      if (current.revision.value !== revision.value && !(eventId && expectedTimingRevision)) {
         throw new DailyPlanConflictError("revision-changed", "The Daily task changed after it was loaded.");
       }
-      await this.backendClient.updateDailyTask({
-        id,
-        rawLine: current.rawLine,
-        rawBlock: current.rawBlock,
-        text: current.text,
-        date: current.dueDate,
-        status: "in-progress",
-        kind: current.kind,
-        devicePolicy: current.devicePolicy,
-        scheduledFor: current.scheduledFor,
-        tags: current.tags
+      const before = await this.backendClient.getDailyTaskTiming(id, {
+        taskRevision: current.revision.value,
+        lineageRevision: current.lineageRevision,
+        includeEvents: false
       });
+      if (before.timing.status === "completed") {
+        throw new DailyPlanConflictError("invalid-state", "A completed Daily task must be reopened before it can continue.");
+      }
+      if (before.timing.status !== "running" || current.revision.value !== revision.value) {
+        await this.backendClient.startDailyTask(id, this.prepareBackendDailyTransitionRequest(
+          "start",
+          id,
+          current,
+          revision.value,
+          eventId,
+          source,
+          expectedTimingRevision ?? before.timing.timingRevision
+        ));
+      }
       await this.refreshDailyPlanCache();
       const verified = await this.dailyPlanService.get(id, value);
       if (!verified) throw new Error("Backend started the Daily task, but the local Markdown view could not verify it.");
       started = verified;
     } else {
-      started = await this.dailyPlanService.start(id, revision, value);
+      started = await this.withDailyTimerLock(async () => {
+        const current = await this.requireDailyItemAtRevision(id, revision, value);
+        if (expectedLineageRevision && current.lineageRevision !== expectedLineageRevision) {
+          throw new DailyPlanConflictError("revision-changed", "The Daily task inherited target changed after it was loaded.");
+        }
+        const timing = this.dailyTimingSnapshotForItem(current);
+        if (expectedTimingRevision && timing.timingRevision !== expectedTimingRevision) {
+          throw new DailyPlanConflictError("revision-changed", "Task timing changed after it was loaded.");
+        }
+        if (timing.status === "completed") {
+          throw new DailyPlanConflictError("invalid-state", "A completed Daily task must be reopened before it can continue.");
+        }
+        const operation = !this.settings.daily.taskTimingEnabled
+          ? undefined
+          : timing.status === "paused" ? "resume" : timing.status === "not-started" ? "start" : undefined;
+        const options = operation
+          ? this.dailyTimerTransitionOptions(eventId, source, true)
+          : undefined;
+        return operation && options
+          ? this.executeLocalDailyTimerTransition(id, revision, value, operation, options)
+          : this.dailyPlanService.start(id, revision, value);
+      });
     }
     await this.refreshDailyPlanCache();
     this.queueDeviceHubSync();
     return started;
   }
 
+  private async pauseDailyItem(
+    id: string,
+    revision: DailyTaskRevision,
+    eventId?: string,
+    value: Date | string = new Date(),
+    source: DailyTimerEventSource = "obsidian",
+    expectedTimingRevision?: string,
+    expectedLineageRevision?: string
+  ): Promise<DailyPlanItem> {
+    this.assertDailyEnabled();
+    const useBackendWriter = await this.shouldUseBackendDailyWriter();
+    if (!useBackendWriter) {
+      const replay = await this.replayLocalDailyTimerTransition(
+        id,
+        eventId,
+        ["pause"],
+        source,
+        value,
+        expectedLineageRevision
+      );
+      if (replay) return replay;
+    }
+    if (useBackendWriter) {
+      const current = await this.dailyPlanService.get(id, value);
+      if (!current) throw new DailyPlanConflictError("not-found", `Daily item does not exist: ${id}`);
+      if (expectedLineageRevision && current.lineageRevision !== expectedLineageRevision) {
+        throw new DailyPlanConflictError("revision-changed", "The Daily task inherited target changed after it was loaded.");
+      }
+      if (current.revision.value !== revision.value && !(eventId && expectedTimingRevision)) {
+        throw new DailyPlanConflictError("revision-changed", "The Daily task changed after it was loaded.");
+      }
+      const before = await this.backendClient.getDailyTaskTiming(id, {
+        taskRevision: current.revision.value,
+        lineageRevision: current.lineageRevision,
+        includeEvents: false
+      });
+      await this.backendClient.pauseDailyTask(id, this.prepareBackendDailyTransitionRequest(
+        "pause",
+        id,
+        current,
+        revision.value,
+        eventId,
+        source,
+        expectedTimingRevision ?? before.timing.timingRevision
+      ));
+      await this.refreshDailyPlanCache();
+      return await this.dailyPlanService.get(id, value) ?? current;
+    }
+    return this.withDailyTimerLock(async () => {
+      const current = await this.requireDailyItemAtRevision(id, revision, value);
+      if (expectedLineageRevision && current.lineageRevision !== expectedLineageRevision) {
+        throw new DailyPlanConflictError("revision-changed", "The Daily task inherited target changed after it was loaded.");
+      }
+      const timing = this.dailyTimingSnapshotForItem(current);
+      if (expectedTimingRevision && timing.timingRevision !== expectedTimingRevision) {
+        throw new DailyPlanConflictError("revision-changed", "Task timing changed after it was loaded.");
+      }
+      if (timing.status !== "running") {
+        throw new DailyPlanConflictError("invalid-state", "Only a running Daily task can be paused.");
+      }
+      const paused = await this.executeLocalDailyTimerTransition(
+        id,
+        revision,
+        value,
+        "pause",
+        this.dailyTimerTransitionOptions(eventId, source, false)
+      );
+      await this.refreshDailyPlanCache();
+      this.queueDeviceHubSync();
+      return paused;
+    });
+  }
+
+  private async resumeDailyItem(
+    id: string,
+    revision: DailyTaskRevision,
+    eventId?: string,
+    value: Date | string = new Date(),
+    source: DailyTimerEventSource = "obsidian",
+    expectedTimingRevision?: string,
+    expectedLineageRevision?: string
+  ): Promise<DailyPlanItem> {
+    const useBackendWriter = await this.shouldUseBackendDailyWriter();
+    if (!useBackendWriter) {
+      const replay = await this.replayLocalDailyTimerTransition(
+        id,
+        eventId,
+        ["resume"],
+        source,
+        value,
+        expectedLineageRevision
+      );
+      if (replay) return replay;
+    } else if (eventId && expectedTimingRevision) {
+      return this.startDailyItem(
+        id,
+        revision,
+        value,
+        eventId,
+        source,
+        expectedTimingRevision,
+        expectedLineageRevision
+      );
+    }
+    const current = await this.requireDailyItemAtRevision(id, revision, value);
+    if (expectedLineageRevision && current.lineageRevision !== expectedLineageRevision) {
+      throw new DailyPlanConflictError("revision-changed", "The Daily task inherited target changed after it was loaded.");
+    }
+    const timing = await this.getDailyItemTiming(id, formatDailyInputDate(value));
+    if (expectedTimingRevision && timing.timingRevision !== expectedTimingRevision) {
+      throw new DailyPlanConflictError("revision-changed", "Task timing changed after it was loaded.");
+    }
+    if (timing.status !== "paused") {
+      throw new DailyPlanConflictError("invalid-state", "Only a paused Daily task can be resumed.");
+    }
+    return this.startDailyItem(
+      id,
+      revision,
+      value,
+      eventId,
+      source,
+      expectedTimingRevision,
+      expectedLineageRevision
+    );
+  }
+
+  private async getDailyItemTiming(id: string, date?: string): Promise<DailyTaskTimingSnapshot> {
+    const item = await this.findDailyItem(id, date);
+    if (!item) throw new DailyPlanConflictError("not-found", `Daily item does not exist: ${id}`);
+    if (await this.shouldUseBackendDailyWriter()) {
+      const result = await this.backendClient.getDailyTaskTiming(id, {
+        taskRevision: item.revision.value,
+        lineageRevision: item.lineageRevision,
+        includeEvents: false
+      });
+      this.dailyBackendTimingCache.set(id, {
+        taskRevision: item.revision.value,
+        lineageRevision: item.lineageRevision,
+        timing: result.timing,
+        events: result.events,
+        fetchedAtMs: Date.now()
+      });
+      return this.dailyTimingSnapshotForItem(item);
+    }
+    return this.dailyTimingSnapshotForItem(item);
+  }
+
+  private async correctDailyItemTiming(
+    id: string,
+    expectedTimingRevision: string,
+    patch:
+      | ({ operation: "correct"; targetEventId: string } & DailyTimerCorrectionOptions)
+      | { operation: "reset"; options?: DailyTimerTransitionOptions },
+    date?: string
+  ): Promise<DailyTaskTimingSnapshot> {
+    const item = await this.findDailyItem(id, date);
+    if (!item) throw new DailyPlanConflictError("not-found", `Daily item does not exist: ${id}`);
+    if (await this.shouldUseBackendDailyWriter()) {
+      const result = await this.backendClient.correctDailyTaskTiming(id, patch.operation === "reset"
+        ? {
+            eventId: patch.options?.eventId ?? `evt_reset_${randomTokenFragment()}`,
+            operation: "reset",
+            expectedTimingRevision,
+            source: patch.options?.source ?? "obsidian",
+            taskRevision: item.revision.value,
+            lineageRevision: item.lineageRevision
+          }
+        : {
+            eventId: patch.eventId ?? `evt_correct_${randomTokenFragment()}`,
+            operation: "correct",
+            expectedTimingRevision,
+            targetEventId: patch.targetEventId,
+            replacementAt: patch.replacementAt instanceof Date
+              ? patch.replacementAt.toISOString()
+              : patch.replacementAt,
+            reason: patch.reason,
+            source: patch.source ?? "obsidian",
+            taskRevision: item.revision.value,
+            lineageRevision: item.lineageRevision
+          });
+      this.dailyBackendTimingCache.set(id, {
+        taskRevision: item.revision.value,
+        lineageRevision: item.lineageRevision,
+        timing: result.timing,
+        events: result.events,
+        fetchedAtMs: Date.now()
+      });
+      return result.timing;
+    }
+    return this.withDailyTimerLock(async () => {
+      const timer = this.requireDailyTaskTimer();
+      const before = timer.core.getSnapshot(id, item.estimateMinutes);
+      if (before.timingRevision !== expectedTimingRevision) {
+        throw new DailyPlanConflictError("revision-changed", "Task timing changed after it was loaded.");
+      }
+      if (patch.operation === "reset") {
+        await timer.transition((draft) => draft.reset(id, {
+          eventId: patch.options?.eventId ?? `evt_reset_${randomTokenFragment()}`,
+          at: patch.options?.at ?? new Date().toISOString(),
+          source: patch.options?.source ?? "obsidian"
+        }));
+      } else {
+        await timer.transition((draft) => draft.correct(patch.targetEventId, {
+          eventId: patch.eventId ?? `evt_correct_${randomTokenFragment()}`,
+          at: patch.at ?? new Date().toISOString(),
+          source: patch.source ?? "obsidian",
+          replacementAt: patch.replacementAt,
+          invalidateTarget: patch.invalidateTarget,
+          reason: patch.reason
+        }));
+      }
+      this.dailyDeviceStateVersion += 1;
+      this.invalidateLegacyEinkPlaylist();
+      this.notifyUi();
+      this.queueDeviceHubSync();
+      return timer.core.getSnapshot(id, item.estimateMinutes);
+    });
+  }
+
+  private async requireDailyItemAtRevision(
+    id: string,
+    revision: DailyTaskRevision,
+    value: Date | string
+  ): Promise<DailyPlanItem> {
+    const current = await this.dailyPlanService.get(id, value);
+    if (!current) throw new DailyPlanConflictError("not-found", `Daily item does not exist: ${id}`);
+    if (current.revision.value !== revision.value) {
+      throw new DailyPlanConflictError("revision-changed", "The Daily task changed after it was loaded.");
+    }
+    return current;
+  }
+
+  private async findDailyItem(id: string, date?: string): Promise<DailyPlanItem | undefined> {
+    if (date) return this.dailyPlanService.get(id, date);
+    for (const offset of [0, 1, -1, -2, -3, -4, -5, -6, -7]) {
+      const value = new Date();
+      value.setDate(value.getDate() + offset);
+      const item = await this.dailyPlanService.get(id, value);
+      if (item) return item;
+    }
+    return undefined;
+  }
+
+  private dailyTimerTransitionOptions(
+    eventId: string | undefined,
+    source: DailyTimerEventSource,
+    createSession: boolean
+  ): DailyTimerTransitionOptions {
+    const stableEventId = eventId?.trim() || `evt_${randomTokenFragment()}`;
+    return {
+      eventId: stableEventId,
+      sessionId: createSession ? `ses_${shortHash(stableEventId).slice(0, 32)}` : undefined,
+      source
+    };
+  }
+
+  private prepareBackendDailyTransitionRequest(
+    action: "start" | "pause" | "resume" | "complete" | "reopen",
+    taskId: string,
+    current: DailyPlanItem,
+    requestedTaskRevision: string,
+    eventId: string | undefined,
+    source: DailyTimerEventSource,
+    expectedTimingRevision: string,
+    at?: string
+  ): BackendDailyTimerTransitionRequest {
+    const stableEventId = eventId?.trim() || `evt_${randomTokenFragment()}`;
+    const existing = this.dailyBackendTransitionRequests.get(stableEventId);
+    if (existing) {
+      const same = existing.action === action
+        && existing.taskId === taskId
+        && existing.request.source === source
+        && existing.request.taskRevision === requestedTaskRevision
+        && existing.request.lineageRevision === (current.lineageRevision ?? "")
+        && existing.request.expectedTimingRevision === expectedTimingRevision;
+      if (!same) {
+        throw new DailyPlanConflictError(
+          "revision-changed",
+          "Backend timer event ID was already used with another frozen request."
+        );
+      }
+      return { ...existing.request };
+    }
+    if (current.revision.value !== requestedTaskRevision) {
+      throw new DailyPlanConflictError(
+        "revision-changed",
+        "The Daily task changed after it was loaded and no exact Backend replay is available."
+      );
+    }
+    const request = {
+      eventId: stableEventId,
+      source,
+      rawBlock: current.rawBlock ?? current.rawLine,
+      taskRevision: requestedTaskRevision,
+      lineageRevision: current.lineageRevision ?? "",
+      expectedTimingRevision,
+      ...(at ? { at } : {})
+    } satisfies Required<Pick<
+      BackendDailyTimerTransitionRequest,
+      "eventId" | "source" | "rawBlock" | "taskRevision" | "lineageRevision" | "expectedTimingRevision"
+    >>;
+    this.dailyBackendTransitionRequests.set(stableEventId, {
+      action,
+      taskId,
+      request
+    });
+    while (this.dailyBackendTransitionRequests.size > 500) {
+      const oldest = this.dailyBackendTransitionRequests.keys().next().value as string | undefined;
+      if (!oldest) break;
+      this.dailyBackendTransitionRequests.delete(oldest);
+    }
+    return { ...request };
+  }
+
+  private createDailyTimerTransitionAdapter(): DailyTimerTransitionAdapter {
+    return {
+      predictMarkdownRevisions: async (entry) => {
+        const revisions: Record<string, string> = {};
+        for (const [key, expected] of Object.entries(entry.expectedMarkdownRevisions)) {
+          const identity = parseDailyTimerTaskKey(key);
+          const item = await this.dailyPlanService.get(identity.id, identity.date);
+          if (!item?.lineageRevision) {
+            throw new DailyPlanConflictError(
+              "not-found",
+              `Timer transaction task cannot be predicted: ${identity.id}`
+            );
+          }
+          const before = parseDailyTimerExpectedRevision(expected);
+          if (item.revision.value !== before.taskRevision
+            || item.lineageRevision !== before.lineageRevision) {
+            throw new DailyPlanConflictError(
+              "revision-changed",
+              "Daily task or inherited target changed before timer after-state prediction."
+            );
+          }
+          const desired = desiredDailyStatusForTimerEvents(entry.events, identity.id);
+          if (!desired) {
+            throw new DailyPlanConflictError(
+              "invalid-state",
+              `Timer transaction has no Markdown state for task ${identity.id}.`
+            );
+          }
+          const predicted = predictDailyPlanItemStatusRevision(item, desired);
+          revisions[key] = `${predicted.value}\u0000${item.lineageRevision}`;
+        }
+        return revisions;
+      },
+      inspectMarkdown: async (entry) => {
+        let before = 0;
+        let after = 0;
+        for (const [key, expected] of Object.entries(entry.expectedMarkdownRevisions)) {
+          const identity = parseDailyTimerTaskKey(key);
+          const item = await this.dailyPlanService.get(identity.id, identity.date);
+          if (!item) return "conflict";
+          const expectedRevision = parseDailyTimerExpectedRevision(expected);
+          if (item.lineageRevision !== expectedRevision.lineageRevision) return "conflict";
+          if (item.revision.value === expectedRevision.taskRevision) {
+            before += 1;
+            continue;
+          }
+          const appliedRevision = entry.appliedMarkdownRevisions?.[key];
+          const intendedAfterRevision = appliedRevision
+            ?? entry.expectedAfterMarkdownRevisions?.[key];
+          if (intendedAfterRevision
+            && dailyTimerExpectedRevision(item) === intendedAfterRevision) {
+            after += 1;
+            continue;
+          }
+          return "conflict";
+        }
+        if (before > 0 && after > 0) return "conflict";
+        return after > 0 ? "after" : "before";
+      },
+      applyMarkdown: async (entry) => {
+        const affectedTaskIds = [...new Set(entry.events
+          .filter((event) => event.kind !== "correct" && event.kind !== "reset")
+          .map((event) => event.taskId))]
+          .sort((left, right) =>
+            dailyTimerMarkdownApplyOrder(desiredDailyStatusForTimerEvents(entry.events, left))
+            - dailyTimerMarkdownApplyOrder(desiredDailyStatusForTimerEvents(entry.events, right))
+          );
+        for (const taskId of affectedTaskIds) {
+          const keyed = Object.entries(entry.expectedMarkdownRevisions)
+            .find(([key]) => parseDailyTimerTaskKey(key).id === taskId);
+          if (!keyed) {
+            throw new DailyPlanConflictError("not-found", `Timer transaction task is missing: ${taskId}`);
+          }
+          const identity = parseDailyTimerTaskKey(keyed[0]);
+          const current = await this.dailyPlanService.get(identity.id, identity.date);
+          if (!current) {
+            throw new DailyPlanConflictError("not-found", `Daily item does not exist: ${identity.id}`);
+          }
+          const expected = parseDailyTimerExpectedRevision(keyed[1]);
+          if (current.revision.value !== expected.taskRevision
+            || current.lineageRevision !== expected.lineageRevision) {
+            throw new DailyPlanConflictError("revision-changed", "Daily task or inherited target changed during timer transition.");
+          }
+          const desired = desiredDailyStatusForTimerEvents(entry.events, taskId);
+          if (desired === "in-progress") {
+            await this.dailyPlanService.start(current.id, current.revision, identity.date);
+          } else if (desired === "todo" && current.status === "done") {
+            await this.dailyPlanService.reopen(current.id, current.revision, identity.date);
+          } else if (desired === "todo") {
+            await this.dailyPlanService.update(current.id, current.revision, { status: "todo" }, identity.date);
+          } else if (desired === "done") {
+            await this.dailyPlanService.complete(current.id, current.revision, identity.date);
+          }
+        }
+      },
+      captureMarkdownRevisions: async (entry) => {
+        const revisions: Record<string, string> = {};
+        for (const key of Object.keys(entry.expectedMarkdownRevisions)) {
+          const identity = parseDailyTimerTaskKey(key);
+          const item = await this.dailyPlanService.get(identity.id, identity.date);
+          if (!item?.lineageRevision) {
+            throw new DailyPlanConflictError(
+              "not-found",
+              `Timer transaction task cannot be verified after writing: ${identity.id}`
+            );
+          }
+          revisions[key] = dailyTimerExpectedRevision(item);
+        }
+        return revisions;
+      },
+      hasTimerEvents: async (eventIds) => {
+        const existing = new Set(this.requireDailyTaskTimer().core.getEvents().map((event) => event.eventId));
+        return eventIds.every((eventId) => existing.has(eventId));
+      },
+      appendTimerEvents: async (events) => {
+        await this.requireDailyTaskTimer().appendEvents(events);
+      }
+    };
+  }
+
+  private async replayLocalDailyTimerTransition(
+    id: string,
+    eventId: string | undefined,
+    allowedKinds: readonly ("start" | "pause" | "resume" | "complete" | "reopen")[],
+    source: DailyTimerEventSource,
+    value: Date | string,
+    expectedLineageRevision?: string
+  ): Promise<DailyPlanItem | undefined> {
+    const stableEventId = eventId?.trim();
+    if (!stableEventId || !this.settings.daily.taskTimingEnabled || !this.dailyTaskTimer) {
+      return undefined;
+    }
+    const existing = this.dailyTaskTimer.core.getEvents()
+      .find((event) => event.eventId === stableEventId);
+    if (!existing) return undefined;
+    if (!allowedKinds.includes(existing.kind as typeof allowedKinds[number])) {
+      throw new DailyPlanConflictError(
+        "revision-changed",
+        "Timer event ID was already used for another transition."
+      );
+    }
+    const draft = new DailyTaskTimerService(this.dailyTaskTimer.core.getEvents(), {
+      maxOpenSessionMs: this.settings.daily.taskTimingReviewHours * 60 * 60_000
+    });
+    const options: DailyTimerTransitionOptions = { eventId: stableEventId, source };
+    const replay = existing.kind === "start"
+      ? draft.start(id, options)
+      : existing.kind === "pause"
+        ? draft.pause(id, options)
+        : existing.kind === "resume"
+          ? draft.resume(id, options)
+          : existing.kind === "complete"
+            ? draft.complete(id, options)
+            : draft.reopen(id, options);
+    if (!replay.idempotent) return undefined;
+    const item = await this.findDailyItem(id, formatDailyInputDate(value));
+    if (!item) throw new DailyPlanConflictError("not-found", `Daily item does not exist: ${id}`);
+    if (expectedLineageRevision && item.lineageRevision !== expectedLineageRevision) {
+      throw new DailyPlanConflictError(
+        "revision-changed",
+        "The Daily task inherited target changed after it was loaded."
+      );
+    }
+    return item;
+  }
+
+  private async executeLocalDailyTimerTransition(
+    id: string,
+    revision: DailyTaskRevision,
+    value: Date | string,
+    operation: "start" | "pause" | "resume" | "complete" | "reopen" | "start-and-complete",
+    options: DailyTimerTransitionOptions
+  ): Promise<DailyPlanItem> {
+    const current = await this.requireDailyItemAtRevision(id, revision, value);
+    const timer = this.requireDailyTaskTimer();
+    const draft = new DailyTaskTimerService(timer.core.getEvents(), {
+      maxOpenSessionMs: this.settings.daily.taskTimingReviewHours * 60 * 60_000
+    });
+    const transition = operation === "start"
+      ? draft.start(id, options)
+      : operation === "pause"
+        ? draft.pause(id, options)
+        : operation === "resume"
+          ? draft.resume(id, options)
+          : operation === "complete"
+            ? draft.complete(id, options)
+            : operation === "start-and-complete"
+              ? draft.startAndComplete(id, options)
+              : draft.reopen(id, options);
+    if (transition.idempotent) {
+      const replayed = await this.dailyPlanService.get(id, value);
+      if (!replayed) throw new DailyPlanConflictError("not-found", `Daily item does not exist: ${id}`);
+      return replayed;
+    }
+    const expected: Record<string, string> = {};
+    for (const affectedId of transition.affectedTaskIds) {
+      const affected = affectedId === current.id
+        ? current
+        : await this.findDailyItem(affectedId);
+      if (!affected || !affected.lineageRevision) {
+        throw new DailyPlanConflictError(
+          "not-found",
+          `The active Daily task ${affectedId} cannot be safely coordinated with this transition.`
+        );
+      }
+      expected[dailyTimerTaskKey(affected)] = dailyTimerExpectedRevision(affected);
+    }
+    const coordinator = this.dailyTimerCoordinator;
+    if (!coordinator) throw new DailyPlanConflictError("invalid-state", "Task timer transaction journal is unavailable.");
+    const transactionId = `txn_${transition.commandEventId.replace(/[^A-Za-z0-9._:-]/gu, "_")}`;
+    const entry = await coordinator.prepare(transition.events, expected, transactionId);
+    const result = await (async () => {
+      this.dailyTimerManagedMarkdownWriteDepth += 1;
+      try {
+        return await coordinator.execute(entry);
+      } finally {
+        this.dailyTimerManagedMarkdownWriteDepth -= 1;
+      }
+    })();
+    if (result.status !== "committed") {
+      throw new DailyPlanConflictError(
+        "revision-changed",
+        "Daily Markdown changed during the timer transition; the journal retained the conflict for review."
+      );
+    }
+    const updated = await this.dailyPlanService.get(id, value);
+    if (!updated) throw new DailyPlanConflictError("not-found", `Daily item does not exist: ${id}`);
+    return updated;
+  }
+
+  private requireDailyTaskTimer(): PersistentDailyTaskTimer {
+    if (!this.settings.daily.taskTimingEnabled) {
+      throw new DailyPlanConflictError("invalid-state", "Daily task timing is disabled.");
+    }
+    if (!this.dailyTaskTimer) {
+      throw new DailyPlanConflictError(
+        "invalid-state",
+        this.dailyTimerLoadError
+          ? `Task timer ledger is unavailable: ${this.dailyTimerLoadError}`
+          : "Task timer ledger is unavailable."
+      );
+    }
+    return this.dailyTaskTimer;
+  }
+
+  private async withDailyTimerLock<T>(action: () => Promise<T>): Promise<T> {
+    const previous = this.dailyTimerTransitionTail;
+    let release: (() => void) | undefined;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.dailyTimerTransitionTail = previous.then(() => current);
+    await previous;
+    try {
+      return await action();
+    } finally {
+      release?.();
+    }
+  }
+
   private async completeDailyItem(
     id: string,
     revision: DailyTaskRevision,
     eventId?: string,
-    value: Date | string = new Date()
+    value: Date | string = new Date(),
+    source: DailyTimerEventSource = "obsidian",
+    expectedTimingRevision?: string,
+    expectedLineageRevision?: string
   ): Promise<DailyPlanItem> {
     this.assertDailyEnabled();
+    const useBackendWriter = await this.shouldUseBackendDailyWriter();
+    if (!useBackendWriter) {
+      const replay = await this.replayLocalDailyTimerTransition(
+        id,
+        eventId,
+        ["complete"],
+        source,
+        value,
+        expectedLineageRevision
+      );
+      if (replay) return replay;
+    }
     let item: DailyPlanItem;
-    if (await this.shouldUseBackendDailyWriter()) {
+    if (useBackendWriter) {
       const current = await this.dailyPlanService.get(id, value);
       if (!current) throw new DailyPlanConflictError("not-found", `Daily item does not exist: ${id}`);
-      if (current.revision.value !== revision.value) {
+      if (expectedLineageRevision && current.lineageRevision !== expectedLineageRevision) {
+        throw new DailyPlanConflictError("revision-changed", "The Daily task inherited target changed after it was loaded.");
+      }
+      if (current.revision.value !== revision.value && !(eventId && expectedTimingRevision)) {
         throw new DailyPlanConflictError("revision-changed", "The Daily task changed after it was loaded.");
       }
-      await this.backendClient.completeDailyTask(id, current.rawBlock ?? current.rawLine);
+      if (!this.settings.daily.taskTimingEnabled) {
+        if (current.revision.value !== revision.value) {
+          throw new DailyPlanConflictError("revision-changed", "The Daily task changed after it was loaded.");
+        }
+        await this.backendClient.setDailyTaskCompletionWithoutTiming(
+          id,
+          "complete",
+          current.rawBlock ?? current.rawLine
+        );
+      } else {
+        const before = await this.backendClient.getDailyTaskTiming(id, {
+          taskRevision: current.revision.value,
+          lineageRevision: current.lineageRevision,
+          includeEvents: false
+        });
+        const commandEventId = eventId?.trim() || `evt_${randomTokenFragment()}`;
+        const priorIdleStart = eventId?.trim()
+          ? this.dailyBackendTransitionRequests.get(`${commandEventId}:start`)
+          : undefined;
+        const recoveringIdleCompletion = before.timing.status === "running"
+          && priorIdleStart?.action === "start"
+          && priorIdleStart.taskId === id;
+        if (before.timing.status === "not-started") {
+          const at = new Date().toISOString();
+          this.dailyTimerManagedMarkdownWriteDepth += 1;
+          try {
+            await this.backendClient.startDailyTask(id, this.prepareBackendDailyTransitionRequest(
+              "start",
+              id,
+              current,
+              revision.value,
+              `${commandEventId}:start`,
+              source,
+              expectedTimingRevision ?? before.timing.timingRevision,
+              at
+            ));
+            await this.refreshDailyPlanCache();
+            const started = await this.dailyPlanService.get(id, value);
+            if (!started) {
+              throw new DailyPlanConflictError(
+                "not-found",
+                "Backend started the Daily task, but its completion could not be verified."
+              );
+            }
+            const startedTiming = await this.backendClient.getDailyTaskTiming(id, {
+              taskRevision: started.revision.value,
+              lineageRevision: started.lineageRevision,
+              includeEvents: false
+            });
+            await this.backendClient.completeDailyTask(id, this.prepareBackendDailyTransitionRequest(
+              "complete",
+              id,
+              started,
+              started.revision.value,
+              commandEventId,
+              source,
+              startedTiming.timing.timingRevision,
+              at
+            ));
+          } finally {
+            this.dailyTimerManagedMarkdownWriteDepth -= 1;
+          }
+        } else if (recoveringIdleCompletion) {
+          // The first half of the zero-time transition may have committed
+          // before the request was interrupted. Resume only when this process
+          // still holds the exact frozen start request; otherwise a fresh
+          // user action is required instead of guessing across a restart.
+          await this.backendClient.completeDailyTask(id, this.prepareBackendDailyTransitionRequest(
+            "complete",
+            id,
+            current,
+            current.revision.value,
+            commandEventId,
+            source,
+            before.timing.timingRevision,
+            priorIdleStart.request.at
+          ));
+        } else {
+          await this.backendClient.completeDailyTask(id, this.prepareBackendDailyTransitionRequest(
+            "complete",
+            id,
+            current,
+            revision.value,
+            eventId,
+            source,
+            expectedTimingRevision ?? before.timing.timingRevision
+          ));
+        }
+      }
       await this.refreshDailyPlanCache();
       item = await this.dailyPlanService.get(id, value) ?? current;
     } else {
-      item = await this.dailyPlanService.complete(id, revision, value);
+      item = await this.withDailyTimerLock(async () => {
+        const current = await this.requireDailyItemAtRevision(id, revision, value);
+        if (expectedLineageRevision && current.lineageRevision !== expectedLineageRevision) {
+          throw new DailyPlanConflictError("revision-changed", "The Daily task inherited target changed after it was loaded.");
+        }
+        const timing = this.dailyTimingSnapshotForItem(current);
+        const options = !this.settings.daily.taskTimingEnabled || timing.status === "completed"
+          ? undefined
+          : this.dailyTimerTransitionOptions(eventId, source, timing.status === "not-started");
+        return options
+          ? this.executeLocalDailyTimerTransition(
+            id,
+            revision,
+            value,
+            timing.status === "not-started" ? "start-and-complete" : "complete",
+            options
+          )
+          : this.dailyPlanService.complete(id, revision, value);
+      });
     }
     this.dailyActivityService.recordTaskCompleted(id, new Date(), eventId);
     return item;
@@ -4952,22 +6524,90 @@ export default class ToWritePlugin extends Plugin {
   private async reopenDailyItem(
     id: string,
     revision: DailyTaskRevision,
-    value: Date | string = new Date()
+    value: Date | string = new Date(),
+    eventId?: string,
+    source: DailyTimerEventSource = "obsidian",
+    expectedTimingRevision?: string,
+    expectedLineageRevision?: string
   ): Promise<DailyPlanItem> {
     this.assertDailyEnabled();
-    if (await this.shouldUseBackendDailyWriter()) {
+    const useBackendWriter = await this.shouldUseBackendDailyWriter();
+    if (!useBackendWriter) {
+      const replay = await this.replayLocalDailyTimerTransition(
+        id,
+        eventId,
+        ["reopen"],
+        source,
+        value,
+        expectedLineageRevision
+      );
+      if (replay) return replay;
+    }
+    if (useBackendWriter) {
       const current = await this.dailyPlanService.get(id, value);
       if (!current) throw new DailyPlanConflictError("not-found", `Daily item does not exist: ${id}`);
-      if (current.revision.value !== revision.value) {
+      if (expectedLineageRevision && current.lineageRevision !== expectedLineageRevision) {
+        throw new DailyPlanConflictError("revision-changed", "The Daily task inherited target changed after it was loaded.");
+      }
+      if (current.revision.value !== revision.value && !(eventId && expectedTimingRevision)) {
         throw new DailyPlanConflictError("revision-changed", "The Daily task changed after it was loaded.");
       }
-      await this.backendClient.reopenDailyTask(id, current.rawBlock ?? current.rawLine);
+      const before = await this.backendClient.getDailyTaskTiming(id, {
+        taskRevision: current.revision.value,
+        lineageRevision: current.lineageRevision,
+        includeEvents: false
+      });
+      const hasReplay = Boolean(
+        eventId?.trim()
+        && this.dailyBackendTransitionRequests.get(eventId.trim())?.action === "reopen"
+      );
+      if (!this.settings.daily.taskTimingEnabled || (before.timing.status !== "completed" && !hasReplay)) {
+        if (current.revision.value !== revision.value) {
+          throw new DailyPlanConflictError("revision-changed", "The Daily task changed after it was loaded.");
+        }
+        await this.backendClient.setDailyTaskCompletionWithoutTiming(
+          id,
+          "reopen",
+          current.rawBlock ?? current.rawLine
+        );
+      } else {
+        if (expectedTimingRevision
+          && before.timing.timingRevision !== expectedTimingRevision
+          && !hasReplay) {
+          throw new DailyPlanConflictError("revision-changed", "Task timing changed after it was loaded.");
+        }
+        await this.backendClient.reopenDailyTask(id, this.prepareBackendDailyTransitionRequest(
+          "reopen",
+          id,
+          current,
+          revision.value,
+          eventId ?? `evt_reopen_${randomTokenFragment()}`,
+          source,
+          expectedTimingRevision ?? before.timing.timingRevision
+        ));
+      }
       await this.refreshDailyPlanCache();
       const reopened = await this.dailyPlanService.get(id, value);
       if (!reopened) throw new Error("Backend reopened the Daily task, but the local Markdown view could not verify it.");
       return reopened;
     }
-    return this.dailyPlanService.reopen(id, revision, value);
+    return this.withDailyTimerLock(async () => {
+      const current = await this.requireDailyItemAtRevision(id, revision, value);
+      if (expectedLineageRevision && current.lineageRevision !== expectedLineageRevision) {
+        throw new DailyPlanConflictError("revision-changed", "The Daily task inherited target changed after it was loaded.");
+      }
+      const timing = this.dailyTimingSnapshotForItem(current);
+      if (this.settings.daily.taskTimingEnabled && timing.status === "completed") {
+        return this.executeLocalDailyTimerTransition(
+          id,
+          revision,
+          value,
+          "reopen",
+          this.dailyTimerTransitionOptions(eventId, source, false)
+        );
+      }
+      return this.dailyPlanService.reopen(id, revision, value);
+    });
   }
 
   private async writeDailySummary(summary: DailySummary): Promise<{ path: string; changed: boolean }> {
@@ -5069,6 +6709,10 @@ export default class ToWritePlugin extends Plugin {
   private createDailyDashboardAdapter(): DailyDashboardAdapter {
     return {
       getSnapshot: (date) => this.getDailyDashboardSnapshot(date ?? new Date()),
+      getPlanHierarchy: (date) => this.dailyPlanService.readHierarchy(date),
+      getNormalizationPreview: (date) => this.previewDailyPlanNormalization(date),
+      normalizePlan: (preview) => this.normalizeDailyPlan(preview.date, preview),
+      undoNormalization: (token) => this.undoDailyPlanNormalization(token),
       getPlanMetadata: async (date) => {
         const document = await this.dailyPlanService.read(date);
         return {
@@ -5135,11 +6779,52 @@ export default class ToWritePlugin extends Plugin {
         const date = await this.dateForDailyItem(id, revision);
         await this.startDailyItem(id, revision, date);
       },
+      pauseItem: async (id, revision, timingRevision) => {
+        const date = await this.dateForDailyItem(id, revision);
+        await this.pauseDailyItem(id, revision, undefined, date, "obsidian", timingRevision);
+      },
+      resumeItem: async (id, revision, timingRevision) => {
+        const date = await this.dateForDailyItem(id, revision);
+        await this.resumeDailyItem(id, revision, undefined, date, "obsidian", timingRevision);
+      },
       completeItem: async (id, revision) => {
         await this.completeDailyItem(id, revision, undefined, await this.dateForDailyItem(id, revision));
       },
       reopenItem: async (id, revision) => {
         await this.reopenDailyItem(id, revision, await this.dateForDailyItem(id, revision));
+      },
+      getItemTiming: (id) => this.getDailyItemTiming(id),
+      listItemTimerEvents: async (id) => {
+        const item = await this.findDailyItem(id);
+        if (!item) throw new DailyPlanConflictError("not-found", `Daily item does not exist: ${id}`);
+        if (await this.shouldUseBackendDailyWriter()) {
+          const result = await this.backendClient.getDailyTaskTiming(id, {
+            taskRevision: item.revision.value,
+            lineageRevision: item.lineageRevision,
+            includeEvents: true
+          });
+          this.dailyBackendTimingCache.set(id, {
+            taskRevision: item.revision.value,
+            lineageRevision: item.lineageRevision,
+            timing: result.timing,
+            events: result.events,
+            fetchedAtMs: Date.now()
+          });
+          return result.events;
+        }
+        return this.requireDailyTaskTimer().core.getEvents().filter((event) => event.taskId === id);
+      },
+      correctItemTiming: async (id, correction) => {
+        if (!correction.expectedTimingRevision) {
+          throw new DailyPlanConflictError("revision-changed", "Task timing revision is required.");
+        }
+        await this.correctDailyItemTiming(id, correction.expectedTimingRevision, {
+          operation: "correct",
+          targetEventId: correction.targetEventId,
+          replacementAt: correction.replacementAt,
+          reason: correction.reason,
+          source: "obsidian"
+        });
       },
       writeSummary: async (summary) => { await this.writeDailySummary(summary); },
       generateSummary: (mode) => this.generateDailySummary(mode),
@@ -5148,6 +6833,7 @@ export default class ToWritePlugin extends Plugin {
       },
       sendSummaryToDevice: async () => { await this.sendDailySummaryToDevice(); },
       openItem: async (item) => { await this.openDailyItemTarget(item); },
+      openGroup: async (group) => { await this.openDailyGroupTarget(group); },
       openPlanSource: async (date) => { await this.openDailyPlanSource(date); },
       listPlanningCandidates: (date) => this.listDailyPlanningCandidates(date),
       addPlanningCandidate: async (date, candidate) => {
@@ -5242,6 +6928,56 @@ export default class ToWritePlugin extends Plugin {
     this.notifyUi();
   }
 
+  async openDailyTimerLedger(): Promise<string> {
+    const file = this.app.vault.getFileByPath(this.dailyTimerLedgerPath);
+    if (file) await this.openFile(file.path);
+    return this.dailyTimerLedgerPath;
+  }
+
+  async exportDailyTimerLedger(): Promise<string> {
+    const timer = this.requireDailyTaskTimer();
+    const suffix = new Date().toISOString().replace(/[:.]/gu, "-");
+    const path = `${normalizeVaultPath(this.settings.exportDirectory)}/daily/exports/task-timer-events-${suffix}.jsonl`;
+    await writeVaultDataText(this.app, path, timer.exportJsonl());
+    return path;
+  }
+
+  async archiveDailyTimerLedger(): Promise<string> {
+    const name = `task-timer-events-${new Date().toISOString().replace(/[:.]/gu, "-")}.jsonl`;
+    await this.withDailyTimerLock(async () => {
+      const timer = this.requireDailyTaskTimer();
+      const coordinator = this.dailyTimerCoordinator;
+      if (!coordinator) {
+        throw new DailyPlanConflictError(
+          "invalid-state",
+          "Task timer transaction journal is unavailable."
+        );
+      }
+      await coordinator.assertNoPendingTransactions();
+      await timer.archive(name);
+    });
+    return `${normalizeVaultPath(this.settings.exportDirectory)}/daily/archive/${name}`;
+  }
+
+  async clearDailyTimerLedger(): Promise<string> {
+    const name = `task-timer-events-${new Date().toISOString().replace(/[:.]/gu, "-")}.jsonl`;
+    await this.withDailyTimerLock(async () => {
+      const timer = this.requireDailyTaskTimer();
+      const coordinator = this.dailyTimerCoordinator;
+      if (!coordinator) {
+        throw new DailyPlanConflictError(
+          "invalid-state",
+          "Task timer transaction journal is unavailable."
+        );
+      }
+      await coordinator.assertNoPendingTransactions();
+      await timer.archiveAndClear("CLEAR", name);
+    });
+    this.dailyBackendTimingCache.clear();
+    await this.refreshDailyPlanCache();
+    return `${normalizeVaultPath(this.settings.exportDirectory)}/daily/archive/${name}`;
+  }
+
   private async sendDailyItemToDevice(
     id: string,
     revision: DailyTaskRevision,
@@ -5270,15 +7006,115 @@ export default class ToWritePlugin extends Plugin {
     if (!id || !revision) {
       throw new CaptureBridgeRequestError(409, "The displayed card is not a Daily plan item.");
     }
+    const current = await this.dailyPlanService.get(id, dailyDate);
+    if (!current
+      || current.revision.value !== revision
+      || (snapshot.sourceContext?.lineageRevision
+        && current.lineageRevision !== snapshot.sourceContext.lineageRevision)) {
+      throw new CaptureBridgeRequestError(
+        409,
+        "The task or its inherited target changed after this NFC page was opened."
+      );
+    }
     const item = await this.completeDailyItem(id, {
       value: revision,
       sourcePath: snapshot.sourceContext?.dailySourcePath ?? "",
       blockId: id
-    }, `bridge-complete:${eventId}`, dailyDate);
+    }, `bridge-complete:${eventId}`, dailyDate, "nfc",
+    snapshot.sourceContext?.timingRevision, snapshot.sourceContext?.lineageRevision);
     await this.advanceAfterDailyCompletion(id);
     return {
       path: item.sourcePath,
       completedAt: new Date().toISOString(),
+      idempotent: false
+    };
+  }
+
+  private async transitionDailyTimingFromBridge(
+    snapshot: TapSelectionSnapshot,
+    operation: "start" | "pause" | "resume",
+    eventId: string
+  ): Promise<{
+    path: string;
+    transitionedAt: string;
+    timingState: "idle" | "running" | "paused" | "completed" | "needs-review";
+    timingRevision: string;
+    taskRevision: string;
+    lineageRevision: string;
+    idempotent?: boolean;
+  }> {
+    const id = snapshot.sourceContext?.dailyItemId;
+    const revision = snapshot.sourceContext?.dailyTaskRevision;
+    const lineageRevision = snapshot.sourceContext?.lineageRevision;
+    const expectedTimingRevision = snapshot.sourceContext?.timingRevision;
+    const date = snapshot.sourceContext?.dailyDate;
+    if (!id || !revision || !date) {
+      throw new CaptureBridgeRequestError(409, "The displayed card is not a Daily plan item.");
+    }
+    const current = await this.dailyPlanService.get(id, date);
+    if (!current
+      || current.revision.value !== revision
+      || (lineageRevision && current.lineageRevision !== lineageRevision)) {
+      throw new CaptureBridgeRequestError(
+        409,
+        "The task or its inherited target changed after this NFC page was opened."
+      );
+    }
+    const timing = this.dailyTimingSnapshotForItem(current);
+    if (expectedTimingRevision && expectedTimingRevision !== timing.timingRevision) {
+      throw new CaptureBridgeRequestError(
+        409,
+        "The task timer changed after this NFC page was opened."
+      );
+    }
+    const transitionEventId = `${eventId}:${operation}`;
+    const updated = operation === "pause"
+      ? await this.pauseDailyItem(
+        id,
+        current.revision,
+        transitionEventId,
+        date,
+        "nfc",
+        expectedTimingRevision,
+        lineageRevision
+      )
+      : operation === "resume"
+        ? await this.resumeDailyItem(
+          id,
+          current.revision,
+          transitionEventId,
+          date,
+          "nfc",
+          expectedTimingRevision,
+          lineageRevision
+        )
+        : await this.startDailyItem(
+          id,
+          current.revision,
+          date,
+          transitionEventId,
+          "nfc",
+          expectedTimingRevision,
+          lineageRevision
+        );
+    const after = await this.getDailyItemTiming(id, date);
+    const updatedLineageRevision = updated.lineageRevision
+      ?? updated.targetResolution?.lineageRevision
+      ?? resolveDailyTarget({
+        sourcePath: updated.sourcePath,
+        taskText: updated.text,
+        rawBlock: updated.rawBlock,
+        blockId: updated.blockId,
+        explicitTarget: updated.target,
+        lineage: updated.lineage
+      }).lineageRevision;
+    return {
+      path: updated.sourcePath,
+      transitionedAt: after.lastTransitionAt ?? new Date().toISOString(),
+      timingState: dailyBridgeTimingState(after),
+      timingRevision: after.timingRevision,
+      taskRevision: updated.revision.value,
+      lineageRevision: updatedLineageRevision,
       idempotent: false
     };
   }
@@ -5403,6 +7239,10 @@ export default class ToWritePlugin extends Plugin {
     const preview = await this.captureService.preview(previewDraft, candidate);
     candidate.targetRevision = preview.targetRevision;
     const card = reference.card;
+    const dailyTiming = dailyItem
+      ? this.dailyTimingSnapshotForItem(dailyItem)
+      : undefined;
+    const dailyGroup = dailyItem?.lineage?.groups.at(-1);
     return {
       protocolVersion: CAPTURE_BRIDGE_PROTOCOL_VERSION,
       snapshotId,
@@ -5422,6 +7262,15 @@ export default class ToWritePlugin extends Plugin {
         questionId: question?.id,
         dailyItemId: dailyItem?.id,
         dailyTaskRevision: dailyItem?.revision.value,
+        lineageRevision: dailyItem?.lineageRevision,
+        timingState: dailyTiming ? dailyBridgeTimingState(dailyTiming) : undefined,
+        timingRevision: dailyTiming?.timingRevision,
+        groupId: dailyGroup?.id,
+        groupLabel: dailyGroupDisplayLabel(dailyGroup),
+        targetSource: dailyItem?.targetResolution?.source,
+        activeMinutes: dailyTiming ? Math.floor(dailyTiming.activeMs / 60_000) : undefined,
+        estimateMinutes: dailyItem?.estimateMinutes,
+        interruptionCount: dailyTiming?.interruptionCount,
         dailyDate: dailyItem?.date,
         dailySourcePath: dailyItem?.sourcePath
       }
@@ -5477,21 +7326,18 @@ export default class ToWritePlugin extends Plugin {
     const current = deck.currentItemId
       ? this.dailyPlanItems.find((item) => item.id === deck.currentItemId)
       : undefined;
-    const targetLink = current?.target
-      ? current.target.replace(/^\[\[/u, "").replace(/\]\]$/u, "").split("|")[0].trim()
-      : current?.linkedNotes[0];
-    const linked = current && targetLink
-      ? this.app.metadataCache.getFirstLinkpathDest(targetLink.split("#")[0], current.sourcePath)
-      : undefined;
     const targetPath = isOverview
-      ? linked?.path || current?.sourcePath || this.dailyPlanService.pathForDate(deck.date)
+      ? (current ? this.dailyCaptureTargetPath(current) : this.dailyPlanService.pathForDate(deck.date))
       : this.dailyPlanService.pathForDate(deck.date);
     const planPath = this.dailyPlanService.pathForDate(deck.date);
     const writableTargetPath = this.app.vault.getFileByPath(targetPath)
       ? targetPath
       : this.settings.deviceCapture.inboxFile;
     const isInbox = writableTargetPath === this.settings.deviceCapture.inboxFile;
-    const privacy = this.hubPrivacyForPath(writableTargetPath, [], { ignoreIncludeFolders: isInbox });
+    const privacy = combineHubCandidatePrivacy(
+      this.hubPrivacyForPath(planPath),
+      this.hubPrivacyForPath(writableTargetPath, [], { ignoreIncludeFolders: isInbox })
+    );
     if (privacy.private || privacy.excluded) return undefined;
     return {
       localId,
@@ -5519,6 +7365,29 @@ export default class ToWritePlugin extends Plugin {
 
   private async validateTapSelectionSnapshot(snapshot: TapSelectionSnapshot, draft: CaptureDraft): Promise<void> {
     const candidate = snapshot.candidate;
+    const dailyId = snapshot.sourceContext?.dailyItemId;
+    if (dailyId) {
+      const sourceDate = snapshot.sourceContext?.dailyDate
+        || dailyDateFromPath(snapshot.sourceContext?.dailySourcePath)
+        || formatDailyInputDate(new Date(snapshot.createdAt));
+      const item = await this.dailyPlanService.get(dailyId, sourceDate);
+      if (!item
+        || item.revision.value !== snapshot.sourceContext?.dailyTaskRevision
+        || item.lineageRevision !== snapshot.sourceContext?.lineageRevision
+        || (snapshot.sourceContext?.dailySourcePath
+          && item.sourcePath !== snapshot.sourceContext.dailySourcePath)) {
+        throw new CaptureBridgeRequestError(
+          409,
+          "The Daily task or its inherited target changed after this NFC page was opened."
+        );
+      }
+      if (candidate.path !== this.dailyCaptureTargetPath(item)) {
+        throw new CaptureBridgeRequestError(
+          409,
+          "The frozen Capture target no longer matches the Daily task target."
+        );
+      }
+    }
     if (candidate.action === "append") {
       const inbox = candidate.path === this.settings.deviceCapture.inboxFile;
       if (!inbox && candidate.path !== snapshot.sourceContext?.file) {
@@ -5568,14 +7437,12 @@ export default class ToWritePlugin extends Plugin {
       const item = await this.dailyPlanService.get(dailyId, sourceDate);
       if (!item
         || item.revision.value !== snapshot.sourceContext?.dailyTaskRevision
+        || item.lineageRevision !== snapshot.sourceContext?.lineageRevision
         || (snapshot.sourceContext?.dailySourcePath
           && item.sourcePath !== snapshot.sourceContext.dailySourcePath)) {
         throw new CaptureBridgeRequestError(409, "The persisted Daily card changed after it was displayed.");
       }
-      const linked = item.linkedNotes[0]
-        ? this.app.metadataCache.getFirstLinkpathDest(item.linkedNotes[0], item.sourcePath)
-        : undefined;
-      expectedPath = linked?.path || this.settings.deviceCapture.inboxFile;
+      expectedPath = this.dailyCaptureTargetPath(item);
     } else {
       const current = this.buildHubCandidates(localId).find((candidate) => candidate.localId === localId);
       if (!current || current.privacy?.private || current.privacy?.excluded) {
@@ -5600,6 +7467,22 @@ export default class ToWritePlugin extends Plugin {
       }
     };
     await this.validateTapSelectionSnapshot(snapshot, draft);
+  }
+
+  private dailyCaptureTargetPath(item: DailyPlanItem): string {
+    const resolution = item.targetResolution ?? resolveDailyTarget({
+      sourcePath: item.sourcePath,
+      taskText: item.text,
+      rawBlock: item.rawBlock,
+      blockId: item.blockId,
+      explicitTarget: item.target,
+      lineage: item.lineage
+    });
+    const linked = resolution.target
+      ? this.resolveDailyMarkdownTargetFile(resolution.target, item.sourcePath)
+      : undefined;
+    return linked?.path
+      || (resolution.source === "task-block" ? item.sourcePath : this.settings.deviceCapture.inboxFile);
   }
 
   private async commitTapBridgeCapture(
@@ -6351,6 +8234,18 @@ export default class ToWritePlugin extends Plugin {
     this.app.workspace.updateOptions();
   }
 
+  refreshDailyEditorTaskControls(): void {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const codeMirror = (view?.editor as unknown as {
+      cm?: { dispatch: (spec: { effects: ReturnType<typeof refreshDailyTaskControls.of> }) => void };
+    } | undefined)?.cm;
+    if (codeMirror) {
+      codeMirror.dispatch({ effects: refreshDailyTaskControls.of(undefined) });
+      return;
+    }
+    this.app.workspace.updateOptions();
+  }
+
   private patchQuestionState(id: string, patch: Omit<Partial<StoredQuestionState>, "id">): void {
     const previous = this.store.getQuestion(id);
     this.store.patchQuestion(id, patch, false);
@@ -6425,6 +8320,7 @@ export default class ToWritePlugin extends Plugin {
     const refreshDailyPlanAfterVaultChange = debounce(() => {
       void this.refreshDailyPlanCache().catch((error: unknown) => {
         console.error("ToWrite could not refresh the edited Daily plan", error);
+        new Notice(messageForError(error));
       });
     }, 700, true);
 
@@ -7448,6 +9344,125 @@ function randomTokenFragment(): string {
   return activeWindow.crypto?.randomUUID?.().replace(/-/gu, "") ?? `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
 }
 
+function dailyTimerTaskKey(item: Pick<DailyPlanItem, "id" | "date">): string {
+  return `${item.id}\u0000${item.date}`;
+}
+
+function safeDailyMarkdownTransitionAt(observedAt: string, lastTransitionAt?: string): string {
+  const observedMs = Date.parse(observedAt);
+  const lastMs = lastTransitionAt ? Date.parse(lastTransitionAt) : Number.NEGATIVE_INFINITY;
+  return new Date(
+    Number.isFinite(lastMs) && lastMs >= observedMs ? lastMs + 1 : observedMs
+  ).toISOString();
+}
+
+function dailyGroupDisplayLabel(group: DailyPlanGroup | undefined): string | undefined {
+  if (!group) return undefined;
+  return group.text
+    .replace(
+      /\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]/gu,
+      (_match, target: string, alias?: string) => alias?.trim() || target.trim()
+    )
+    .replace(/\[([^\]]+)\]\([^)]+\)/gu, "$1")
+    .trim()
+    || group.links[0]?.label
+    || group.links[0]?.linkText
+    || undefined;
+}
+
+function parseDailyTimerTaskKey(value: string): { id: string; date: string } {
+  const [id, date] = value.split("\u0000", 2);
+  if (!id || !/^\d{4}-\d{2}-\d{2}$/u.test(date ?? "")) {
+    throw new DailyPlanConflictError("invalid-document", "Task timer transaction identity is invalid.");
+  }
+  return { id, date };
+}
+
+function dailyTimerExpectedRevision(
+  item: Pick<DailyPlanItem, "revision" | "lineageRevision">
+): string {
+  if (!item.lineageRevision) {
+    throw new DailyPlanConflictError("invalid-document", "Daily task lineage revision is missing.");
+  }
+  return `${item.revision.value}\u0000${item.lineageRevision}`;
+}
+
+function parseDailyTimerExpectedRevision(value: string): {
+  taskRevision: string;
+  lineageRevision: string;
+} {
+  const [taskRevision, lineageRevision] = value.split("\u0000", 2);
+  if (!taskRevision || !lineageRevision) {
+    throw new DailyPlanConflictError("invalid-document", "Task timer transaction revision is invalid.");
+  }
+  return { taskRevision, lineageRevision };
+}
+
+function desiredDailyStatusForTimerEvents(
+  events: readonly DailyTimerEvent[],
+  taskId: string
+): DailyPlanItem["status"] | undefined {
+  const event = [...events].reverse().find((candidate) =>
+    candidate.taskId === taskId && candidate.kind !== "correct" && candidate.kind !== "reset"
+  );
+  if (!event) return undefined;
+  if (event.kind === "start" || event.kind === "resume") return "in-progress";
+  if (event.kind === "complete") return "done";
+  return "todo";
+}
+
+function dailyTimerMarkdownApplyOrder(status: DailyPlanItem["status"] | undefined): number {
+  // Auto-paused peers must be written before the newly active task. Otherwise
+  // DailyPlanService.start would already change the peer revision and make the
+  // transaction's later peer CAS look stale.
+  if (status === "todo") return 0;
+  if (status === "done") return 1;
+  if (status === "in-progress") return 2;
+  return 3;
+}
+
+function projectCachedDailyTiming(
+  snapshot: DailyTaskTimingSnapshot,
+  fetchedAtMs: number,
+  estimateMinutes: number | undefined,
+  reviewHours: number
+): DailyTaskTimingSnapshot {
+  if (snapshot.status !== "running" || !snapshot.activeSince || snapshot.needsReview) {
+    return { ...snapshot, estimateMinutes };
+  }
+  const now = Date.now();
+  const activeSinceMs = Date.parse(snapshot.activeSince);
+  if (!Number.isFinite(activeSinceMs) || now <= fetchedAtMs) {
+    return { ...snapshot, estimateMinutes };
+  }
+  const midnight = new Date(activeSinceMs);
+  midnight.setHours(24, 0, 0, 0);
+  const reviewLimit = activeSinceMs + Math.max(1, reviewHours) * 60 * 60_000;
+  const effectiveEnd = Math.min(now, midnight.getTime(), reviewLimit);
+  const delta = Math.max(0, effectiveEnd - Math.max(fetchedAtMs, activeSinceMs));
+  const activeMs = snapshot.activeMs + delta;
+  const reviewReasons = new Set(snapshot.reviewReasons);
+  if (now > reviewLimit) reviewReasons.add("open-session-over-4h");
+  if (now >= midnight.getTime()) reviewReasons.add("open-session-crossed-midnight");
+  const dateKey = formatDailyInputDate(new Date(Math.max(fetchedAtMs, activeSinceMs)));
+  const dailyActiveMs = {
+    ...snapshot.dailyActiveMs,
+    [dateKey]: (snapshot.dailyActiveMs[dateKey] ?? 0) + delta
+  };
+  return {
+    ...snapshot,
+    activeMs,
+    wallMs: snapshot.wallMs + delta,
+    estimateMinutes,
+    estimateDeltaMinutes: estimateMinutes === undefined
+      ? undefined
+      : Math.round(activeMs / 60_000) - estimateMinutes,
+    dailyActiveMs,
+    needsReview: reviewReasons.size > 0,
+    reviewReasons: [...reviewReasons]
+  };
+}
+
 function messageForError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -7532,6 +9547,52 @@ function formatLocalDateTime(value: string): string {
     hour: "2-digit",
     minute: "2-digit"
   }).format(new Date(timestamp));
+}
+
+function dailyDeckTiming(snapshot: DailyTaskTimingSnapshot) {
+  const state = snapshot.needsReview
+    ? "needs-review" as const
+    : snapshot.status === "not-started"
+      ? "idle" as const
+      : snapshot.status;
+  return {
+    state,
+    activeSeconds: Math.floor(snapshot.activeMs / 1_000),
+    wallClockSeconds: Math.floor(snapshot.wallMs / 1_000),
+    interruptionCount: snapshot.interruptionCount,
+    firstStartedAt: snapshot.firstStartedAt,
+    activeSince: snapshot.activeSince,
+    completedAt: snapshot.completedAt,
+    timingRevision: snapshot.timingRevision
+  };
+}
+
+function dailyBridgeTimingState(snapshot: DailyTaskTimingSnapshot) {
+  if (snapshot.needsReview) return "needs-review" as const;
+  if (snapshot.status === "not-started") return "idle" as const;
+  return snapshot.status;
+}
+
+function dailyTimingStatusLabel(
+  status: DailyTaskTimingSnapshot["status"],
+  language: ToWriteSettings["language"]
+): string {
+  const zh = language === "zh";
+  if (status === "running") return zh ? "进行中" : "Running";
+  if (status === "paused") return zh ? "已暂停" : "Paused";
+  if (status === "completed") return zh ? "已完成" : "Completed";
+  return zh ? "未开始" : "Not started";
+}
+
+function dailyDeckTimingStatusLabel(
+  status: ReturnType<typeof dailyDeckTiming>["state"],
+  language: ToWriteSettings["language"]
+): string {
+  if (status === "needs-review") return language === "zh" ? "待确认" : "Needs review";
+  return dailyTimingStatusLabel(
+    status === "idle" ? "not-started" : status,
+    language
+  );
 }
 
 function formatDailyInputDate(value: Date | string): string {
@@ -7762,6 +9823,9 @@ function deviceCommandMessage(action: string): string {
   if (action === "create_note") return "New capture opened";
   if (action === "open_current" || action === "start_open") return "Opened";
   if (action === "complete") return "Completed";
+  if (action === "toggle_timer") return "Timer updated";
+  if (action === "pause_task") return "Paused";
+  if (action === "resume_task") return "Resumed";
   if (action === "page_prev" || action === "page_next") return "Page queued";
   if (action === "task_prev" || action === "task_next") return "Task queued";
   return "Command handled";

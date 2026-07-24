@@ -225,7 +225,7 @@ describe("DailyPlanService v2", () => {
     expect(storage.files.get("Daily/2026-07-23.md")).toContain("^daily_child001");
   });
 
-  it("starts exactly one task atomically and records the current start time", async () => {
+  it("starts exactly one task atomically without writing runtime timing into Markdown", async () => {
     const storage = new MemoryDailyStorage();
     storage.files.set("Daily/2026-07-23.md", [
       "# 2026-07-23",
@@ -240,15 +240,48 @@ describe("DailyPlanService v2", () => {
 
     const started = await service.start(target.id, target.revision);
     expect(started).toMatchObject({
-      status: "in-progress",
-      startedAt: "2026-07-23T01:15:00.000Z"
+      status: "in-progress"
     });
+    expect(started.startedAt).toBeUndefined();
     const items = await service.list();
     expect(items.map((item) => item.status)).toEqual(["todo", "in-progress"]);
-    expect(storage.files.get(target.sourcePath)?.match(/- \[\/\]/gu)).toHaveLength(1);
+    const written = storage.files.get(target.sourcePath)!;
+    expect(written.match(/- \[\/\]/gu)).toHaveLength(1);
+    expect(written).not.toContain("[towrite-started::");
 
     const idempotent = await service.start(started.id, started.revision);
     expect(idempotent.revision.value).toBe(started.revision.value);
+  });
+
+  it("reads and preserves a legacy started field without creating or changing it", async () => {
+    const path = "Daily/2026-07-23.md";
+    const legacyStarted = "2026-07-22T23:15:00.000Z";
+    const markdown = [
+      "# 2026-07-23",
+      "## ToDo",
+      "- [ ] Legacy timing",
+      `  [towrite-started:: ${legacyStarted}]`,
+      "  User note that ToWrite does not own",
+      "  ^daily_legacy_started"
+    ].join("\n");
+    const storage = new MemoryDailyStorage();
+    storage.files.set(path, markdown);
+    const service = new DailyPlanService(storage, {
+      now: () => new Date("2026-07-23T09:15:00+08:00")
+    });
+    const target = (await service.list("2026-07-23"))[0];
+
+    expect(target.startedAt).toBe(legacyStarted);
+    const started = await service.start(target.id, target.revision, target.date);
+    const updated = await service.update(started.id, started.revision, {
+      startedAt: "2026-07-23T01:15:00.000Z"
+    }, started.date);
+
+    const written = storage.files.get(path)!;
+    expect(updated.startedAt).toBe(legacyStarted);
+    expect(written).toContain(`[towrite-started:: ${legacyStarted}]`);
+    expect(written).toContain("User note that ToWrite does not own");
+    expect(written).not.toContain("2026-07-23T01:15:00.000Z");
   });
 
   it("keeps primary and minimum selections unique through plugin updates", async () => {

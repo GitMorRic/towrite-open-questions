@@ -51,18 +51,45 @@ ToWrite 把每日计划与全库状态索引明确分开：
 | `towrite-goal` | 自由文本 | 任务要得到的结果或这样做的原因。 |
 | `towrite-next` | 自由文本 | 显示在概要页和任务卡上的最小下一步。 |
 | `towrite-estimate` | 例如 `15m` | 预计时长，不代表逐键统计的工作时间。 |
-| `towrite-target` | wikilink | 要打开的笔记；缺失时使用任务正文中的第一个 wikilink。 |
-| `towrite-started` | 本地 ISO 日期时间 | 任务成为当前任务时写入。 |
+| `towrite-target` | wikilink 或安全的本地 Markdown 链接 | 要打开的显式目标；缺失时按下文的继承规则解析。 |
 | Tasks 优先级 | `🔺`、`⏫`、`🔼`、`🔽`、`⏬` | 最高、高、普通、低、最低；只有允许设备/Agent 选择的任务才参与相应排序。 |
 | `⏳` / `📅` | `YYYY-MM-DD` | 与常见 Tasks 写法兼容的计划日和截止日。 |
 | `✅` | `YYYY-MM-DD` | 用户明确完成后写入的完成日期。 |
 | Block ID | `^daily_<random>` | 用于幂等和冲突检查的稳定标识。 |
 
-Markdown 顺序就是设备顺序。开始任务时，ToWrite 会原子地把它改为 `[/]`，将当天其他 `[/]` 恢复为 `[ ]`，并写入 `towrite-started`。完成时改为 `[x]` 并写入 `✅ YYYY-MM-DD`。完成计划项不会自动推进关联笔记的 Workflow 阶段。
+Markdown 顺序就是设备顺序。开始任务时，ToWrite 会原子地把它改为 `[/]`，并将当天其他 `[/]` 恢复为 `[ ]`；完成时只改为 `[x]`。开始、暂停、继续和完成时间不会写进任务正文；完成计划项也不会自动推进关联笔记的 Workflow 阶段。
 
 用户可以直接修改 Markdown。元数据和 block ID 既可与复选框同行，也可写在缩进续行中。ToWrite 会保留任务下方未知的说明、嵌套列表和用户文本，只修改复选框和自己拥有的字段。每次写操作都使用来源、block ID 与**完整逻辑任务块**生成的修订。Dashboard、NFC 页面或设备卡片加载后，只要任务块的任意部分发生变化，ToWrite 就返回冲突，不会覆盖更新后的任务。
 
 缺失或重复的 `^daily_*` block ID 会显示诊断，并拒绝修改对应任务。ToWrite 不会根据相似文字静默猜测目标。未完成任务不会自动迁移到第二天；用户需要明确选择移到明天、放回项目池或不再追踪。
+
+## 层级清单、规范化与目标继承
+
+在配置的 `## ToDo` 范围内，带子项的编号或普通列表项是分类/项目，不计入任务数；普通叶子项是待规范化任务；checkbox 节点始终是任务，包括嵌套在另一个 checkbox 下的子任务。没有列表标记的缩进段落继续作为上一任务的说明。
+
+Dashboard、桌面按键、墨水屏、Hub、NFC 和 Capture 共用同一个目标解析顺序：
+
+1. 显式 `towrite-target`；
+2. 子任务自身的安全笔记链接；
+3. 最近父分类的笔记链接；
+4. 计划原文中的任务 `^daily_*` block；
+5. 今日 Dashboard。
+
+Wikilink 支持 alias、heading 和 block；安全的相对 `.md` 链接支持空格、逗号和 CJK 文件名。HTTP 链接、附件和不安全路径不会成为可写目标。每个任务还携带 `lineageRevision`：卡片或 NFC 页面加载后若父分类目标变化，后续动作返回 `409`，不会悄悄打开另一个笔记。
+
+“规范化这份清单”会先预览识别出的分类、叶子任务、继承目标、破损链接和实际 Markdown diff。只有用户确认后，叶子项才会转成 checkbox，并获得 128-bit 随机 `^daily_*` ID；分类、链接、缩进、说明和未知内容保持原样。应用和撤销均使用完整文档 revision。旧式时间文本只作为可能建议显示，未经确认不会删除或解释。
+
+## 任务计时账本
+
+可选任务计时写入用户可读、且不含正文的账本：
+
+```text
+.obsidian-open-questions/daily/task-timer-events.jsonl
+```
+
+每次状态转换只保存不透明的任务/会话/事件 ID、`start` / `pause` / `resume` / `complete` / `reopen` / `correct` / `reset`、带时区的绝对时间和来源，不保存任务正文或 Vault 路径。只有状态转换才写账本；界面可以在内存中更新耗时，不会每秒写文件。
+
+同一时间只允许一项任务进行。开始或继续另一项时，原进行中任务会在同一时间点自动暂停。Dashboard 显示实际投入、总跨度、中断次数及预计差值，并提供会话列表和显式时间修正。跨午夜或超过配置阈值（默认四小时）的未关闭会话进入待确认，不会无限累计。计时账本独立于 30 天活动事件，可查看、导出、归档，或在确认后清空。
 
 ToThink、ToWrite、Inbox 和 stale/Echo 内容只作为编排候选出现。加入今日或明日必须由用户明确操作。可选 AI 可以调整候选顺序，但不能替用户作出承诺。
 
@@ -94,6 +121,7 @@ ToThink、ToWrite、Inbox 和 stale/Echo 内容只作为编排候选出现。加
 
 - 左/右短按：在概要、任务、结果三类页面之间切换；
 - 左/右双击：在任务页切换上一条/下一条任务；
+- 左键长按：未开始则开始、已暂停则继续、进行中则暂停；
 - 右键长按：仅在任务页安全完成当前 displayed 任务；
 - 主键单击：概要页先原子设置当前任务，再打开电脑版 Obsidian 里的目标；任务页打开当前任务目标；结果页打开计划原文；
 - 主键双击：带入当前卡片上下文，打开 create-only Capture 弹窗；用户取消时不会产生空文件；
@@ -146,11 +174,17 @@ V2 握手同时支持按日期拆分的每日笔记与按日期分区的固定�
 GET   /api/v1/daily/today
 GET   /api/v1/daily/plans/{date}
 PATCH /api/v1/daily/plans/{date}
+POST  /api/v1/daily/plans/{date}/normalization-preview
+POST  /api/v1/daily/plans/{date}/normalize
 GET   /api/v1/daily/summary
 POST  /api/v1/daily/items
 PATCH /api/v1/daily/items/{id}
 POST  /api/v1/daily/items/{id}/start
+POST  /api/v1/daily/items/{id}/pause
+POST  /api/v1/daily/items/{id}/resume
 POST  /api/v1/daily/items/{id}/complete
+GET   /api/v1/daily/items/{id}/timing
+PATCH /api/v1/daily/items/{id}/timing
 POST  /api/v1/daily/summary/write-back
 POST  /api/v1/device/display-acks
 POST  /api/v1/device/events
@@ -163,9 +197,9 @@ POST  /api/v1/device/events
 发布测试覆盖：
 
 - 每日笔记与固定规划文档两种来源、今日/明日编辑、跨日、排序、主任务/最低承诺，以及不自动迁移；
-- 本地创建、编辑、开始、完成、重新打开、总结预览/写回、导出和清空；
-- 保留未知任务块内容、缺失/重复 block ID 诊断，以及原子的唯一 `[/]`；
-- 手工修改 Markdown 与完整块过期修订 `409`；
+- 本地创建、编辑、开始、暂停、继续、完成、重新打开、时间修正、总结预览/写回、导出、归档和清空；
+- 层级分类、目标继承、规范化预览/撤销、保留未知任务块内容、缺失/重复 block ID 诊断，以及原子的唯一 `[/]`；
+- 手工修改 Markdown 与完整任务块、lineage、timing 过期修订 `409`；
 - 正向新增/净增统计，且编辑器同步链不执行全文 I/O；
 - 三页设备快照与旧固件通用卡渲染；
 - 单击/双击/长按消歧、防抖与右长按完成保护；

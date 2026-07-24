@@ -7,6 +7,7 @@ import {
   type CaptureBridgeCommitAdapter,
   type CaptureBridgeCommitRequest,
   type CaptureBridgeCommitResult,
+  type CaptureBridgeTimingOperation,
   type CaptureBridgeAssetUploadRequest,
   type CaptureBridgeHandoffResponse,
   type CaptureBridgeStagedAsset,
@@ -73,7 +74,10 @@ export class CaptureBridgeCoordinator {
         contentType: snapshot.contentType,
         title: snapshot.title,
         prompt: snapshot.prompt,
-        ...(snapshot.body ? { body: snapshot.body } : {})
+        ...(snapshot.body ? { body: snapshot.body } : {}),
+        ...(protocolVersion === CAPTURE_BRIDGE_PROTOCOL_V2
+          ? handoffDailyContext(snapshot)
+          : {})
       },
       target: {
         kind: snapshot.candidate.kind,
@@ -88,7 +92,15 @@ export class CaptureBridgeCoordinator {
               ? ["capture" as const]
               : [
                   "capture" as const,
-                  ...(snapshot.sourceContext?.dailyItemId ? ["complete" as const, "later" as const] : [])
+                  ...(hasFrozenDailyTask(snapshot)
+                    ? [
+                        ...(snapshot.sourceContext?.timingRevision
+                          ? timingOperationsForState(snapshot.sourceContext.timingState)
+                          : []),
+                        "complete" as const,
+                        "later" as const
+                      ]
+                    : [])
                 ],
             ...(createOnly ? { createOnly: true } : {})
           }
@@ -194,6 +206,30 @@ export class CaptureBridgeCoordinator {
       };
       return this.rememberCommit(handoff, request.idempotencyKey, result);
     }
+    if (operation === "start" || operation === "pause" || operation === "resume") {
+      if (!handoff.response.availableOperations?.includes(operation)
+        || !this.options.commitAdapter.transitionTiming) {
+        throw new CaptureBridgeRequestError(409, `This handoff cannot ${operation} the displayed item.`);
+      }
+      const transitioned = await this.options.commitAdapter.transitionTiming(
+        handoff.snapshot,
+        request,
+        operation
+      );
+      const result: CaptureBridgeCommitResult = {
+        captureId: request.captureId,
+        path: transitioned.path,
+        action: handoff.snapshot.candidate.action,
+        committedAt: transitioned.transitionedAt,
+        idempotent: transitioned.idempotent,
+        operation,
+        timingState: transitioned.timingState,
+        timingRevision: transitioned.timingRevision,
+        taskRevision: transitioned.taskRevision,
+        lineageRevision: transitioned.lineageRevision
+      };
+      return this.rememberTimingTransition(handoff, request.idempotencyKey, result);
+    }
 
     const assets = (request.assetRefs ?? []).map((assetRef) => {
       const asset = handoff.assets.get(assetRef);
@@ -231,6 +267,33 @@ export class CaptureBridgeCoordinator {
       expiresAt: this.now().getTime() + 60 * 60_000
     });
     this.trimCaptureResults();
+    return result;
+  }
+
+  private rememberTimingTransition(
+    handoff: CaptureBridgeHandoff,
+    idempotencyKey: string,
+    result: CaptureBridgeCommitResult
+  ): CaptureBridgeCommitResult {
+    handoff.commits.set(idempotencyKey, clone(result));
+    if (handoff.snapshot.sourceContext) {
+      handoff.snapshot.sourceContext.timingState = result.timingState;
+      handoff.snapshot.sourceContext.timingRevision = result.timingRevision;
+      handoff.snapshot.sourceContext.dailyTaskRevision = result.taskRevision;
+      handoff.snapshot.sourceContext.lineageRevision = result.lineageRevision;
+    }
+    if (result.taskRevision) handoff.response.context.taskRevision = result.taskRevision;
+    if (result.lineageRevision) handoff.response.context.lineageRevision = result.lineageRevision;
+    if (result.timingRevision) handoff.response.context.timingRevision = result.timingRevision;
+    const timingStatus = bridgeTimingStatus(result.timingState);
+    if (timingStatus) handoff.response.context.timingStatus = timingStatus;
+    else delete handoff.response.context.timingStatus;
+    handoff.response.availableOperations = [
+      "capture",
+      ...timingOperationsForState(result.timingState),
+      "complete",
+      "later"
+    ];
     return result;
   }
 
@@ -286,6 +349,44 @@ export class CaptureBridgeCoordinator {
   }
 }
 
+function handoffDailyContext(
+  snapshot: TapSelectionSnapshot
+): Partial<CaptureBridgeHandoffResponse["context"]> {
+  const source = snapshot.sourceContext;
+  if (!source?.dailyItemId) return {};
+  const timingStatus = bridgeTimingStatus(source.timingState);
+  return {
+    taskId: source.dailyItemId,
+    ...(source.dailyTaskRevision ? { taskRevision: source.dailyTaskRevision } : {}),
+    ...(source.lineageRevision ? { lineageRevision: source.lineageRevision } : {}),
+    ...(source.timingRevision ? { timingRevision: source.timingRevision } : {}),
+    ...(source.groupId ? { groupId: source.groupId } : {}),
+    ...(source.groupLabel ? { groupLabel: source.groupLabel } : {}),
+    ...(source.targetSource ? { targetSource: source.targetSource } : {}),
+    ...(timingStatus ? { timingStatus } : {}),
+    ...(source.activeMinutes !== undefined ? { activeMinutes: source.activeMinutes } : {}),
+    ...(source.estimateMinutes !== undefined ? { estimateMinutes: source.estimateMinutes } : {}),
+    ...(source.interruptionCount !== undefined ? { interruptionCount: source.interruptionCount } : {})
+  };
+}
+
+function hasFrozenDailyTask(snapshot: TapSelectionSnapshot): boolean {
+  const source = snapshot.sourceContext;
+  return Boolean(
+    source?.dailyItemId
+    && source.dailyTaskRevision
+    && source.lineageRevision
+  );
+}
+
+function bridgeTimingStatus(
+  value: NonNullable<TapSelectionSnapshot["sourceContext"]>["timingState"]
+): CaptureBridgeHandoffResponse["context"]["timingStatus"] | undefined {
+  if (value === "idle") return "not_started";
+  if (value === "running" || value === "paused" || value === "completed") return value;
+  return undefined;
+}
+
 export class CaptureBridgeRequestError extends Error {
   constructor(public readonly statusCode: number, message: string) {
     super(message);
@@ -329,7 +430,8 @@ function validateCommitRequest(
     throw new CaptureBridgeRequestError(400, "A valid idempotency key is required.");
   }
   const operation = request.operation ?? "capture";
-  if (operation !== "capture" && operation !== "complete" && operation !== "later") {
+  if (operation !== "capture" && operation !== "complete" && operation !== "later"
+    && operation !== "start" && operation !== "pause" && operation !== "resume") {
     throw new CaptureBridgeRequestError(400, "Unsupported Capture bridge operation.");
   }
   if (operation === "capture"
@@ -354,6 +456,15 @@ function validateCommitRequest(
   )) {
     throw new CaptureBridgeRequestError(400, "Capture asset references are invalid.");
   }
+}
+
+function timingOperationsForState(
+  state: NonNullable<TapSelectionSnapshot["sourceContext"]>["timingState"]
+): CaptureBridgeTimingOperation[] {
+  if (state === "running") return ["pause"];
+  if (state === "paused") return ["resume"];
+  if (state === "completed" || state === "needs-review") return [];
+  return ["start"];
 }
 
 function normalizeTags(tags: string[] | undefined): string[] {

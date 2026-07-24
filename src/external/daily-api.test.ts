@@ -80,9 +80,9 @@ describe("External Daily API", () => {
     expect(completedResponse.statusCode).toBe(200);
     expect(completedResponse.json().data).toMatchObject({
       id: "daily_api123",
-      status: "done",
-      completionDate: TODAY
+      status: "done"
     });
+    expect(completedResponse.json().data).not.toHaveProperty("completionDate");
 
     const today = await invoke(server, "GET", "/api/v1/daily/today");
     expect(today.json().data).toMatchObject({

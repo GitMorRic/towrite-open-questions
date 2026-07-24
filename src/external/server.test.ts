@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   CaptureConflictError,
   CaptureUndoTokenError,
@@ -7,6 +7,16 @@ import {
   type CaptureUndoResult
 } from "../capture";
 import type { OpenQuestion } from "../core/types";
+import {
+  DailyPlanConflictError,
+  type DailyPlanItem,
+  type DailyPlanNormalizationPreview
+} from "../daily";
+import {
+  DailyTimerTransitionError,
+  DailyTimerValidationError
+} from "../daily/task-timer-service";
+import type { DailyTaskTimingSnapshot } from "../daily/task-timer-types";
 import type { PushFeedPayload } from "../push/types";
 import { ToWriteExternalApiServer } from "./server";
 
@@ -29,6 +39,302 @@ const question: OpenQuestion = {
 };
 
 describe("external server", () => {
+  it("previews and applies a date-bound Daily normalization contract", async () => {
+    const preview = makeNormalizationPreview();
+    const calls: Array<{ date: string; preview?: DailyPlanNormalizationPreview }> = [];
+    const server = makeServer({
+      previewDailyPlanNormalization: async (date) => {
+        calls.push({ date });
+        return preview;
+      },
+      normalizeDailyPlan: async (date, received) => {
+        calls.push({ date, preview: received });
+        return {
+          preview: { ...received, changed: false, edits: [], diff: "" },
+          revision: "plan_revision_after",
+          undoToken: "undo_normalize_1"
+        };
+      }
+    });
+    const handle = server as unknown as {
+      handleRequest(request: FakeRequest, response: FakeResponse): Promise<void>;
+    };
+
+    const previewResponse = new FakeResponse();
+    await handle.handleRequest(
+      new FakeRequest("POST", "/api/v1/daily/plans/2026-07-24/normalization-preview", {}),
+      previewResponse
+    );
+    expect(previewResponse.statusCode).toBe(200);
+    expect(JSON.parse(previewResponse.body).data).toMatchObject({
+      date: "2026-07-24",
+      expectedRevision: "plan_revision_before",
+      changed: true
+    });
+
+    const normalizeResponse = new FakeResponse();
+    await handle.handleRequest(
+      new FakeRequest("POST", "/api/v1/daily/plans/2026-07-24/normalize", {
+        preview
+      }),
+      normalizeResponse
+    );
+    expect(normalizeResponse.statusCode).toBe(200);
+    expect(JSON.parse(normalizeResponse.body).data).toMatchObject({
+      revision: "plan_revision_after",
+      undoToken: "undo_normalize_1"
+    });
+    expect(calls).toEqual([
+      { date: "2026-07-24" },
+      { date: "2026-07-24", preview }
+    ]);
+  });
+
+  it("rejects invalid, cross-date, and stale Daily normalization requests", async () => {
+    const normalizeDailyPlan = vi.fn(async () => {
+      throw new DailyPlanConflictError(
+        "revision-changed",
+        "The plan changed after normalization preview."
+      );
+    });
+    const server = makeServer({ normalizeDailyPlan });
+    const handle = server as unknown as {
+      handleRequest(request: FakeRequest, response: FakeResponse): Promise<void>;
+    };
+
+    const invalid = new FakeResponse();
+    await handle.handleRequest(
+      new FakeRequest("POST", "/api/v1/daily/plans/2026-07-24/normalize", {
+        preview: { schemaVersion: 1, date: "2026-07-24" }
+      }),
+      invalid
+    );
+    expect(invalid.statusCode).toBe(400);
+
+    const crossDate = new FakeResponse();
+    await handle.handleRequest(
+      new FakeRequest("POST", "/api/v1/daily/plans/2026-07-25/normalize", {
+        preview: makeNormalizationPreview()
+      }),
+      crossDate
+    );
+    expect(crossDate.statusCode).toBe(409);
+
+    const stale = new FakeResponse();
+    await handle.handleRequest(
+      new FakeRequest("POST", "/api/v1/daily/plans/2026-07-24/normalize", {
+        preview: makeNormalizationPreview()
+      }),
+      stale
+    );
+    expect(stale.statusCode).toBe(409);
+    expect(JSON.parse(stale.body).error).toContain("changed");
+    expect(normalizeDailyPlan).toHaveBeenCalledTimes(1);
+  });
+
+  it("serves timing and forwards idempotent start/pause/resume event IDs", async () => {
+    const calls: unknown[] = [];
+    const startedItem = makeDailyItem("in-progress");
+    const pausedItem = makeDailyItem("todo");
+    const resumedItem = makeDailyItem("in-progress");
+    const timing = makeTimingSnapshot("paused");
+    const server = makeServer({
+      getDailyItemTiming: async (id, date) => {
+        calls.push(["get", id, date]);
+        return timing;
+      },
+      startDailyItem: async (id, revision, eventId, date, timingRevision, lineageRevision) => {
+        calls.push(["start", id, revision, eventId, date, timingRevision, lineageRevision]);
+        return startedItem;
+      },
+      pauseDailyItem: async (id, revision, eventId, date, timingRevision, lineageRevision) => {
+        calls.push(["pause", id, revision, eventId, date, timingRevision, lineageRevision]);
+        return pausedItem;
+      },
+      resumeDailyItem: async (id, revision, eventId, date, timingRevision, lineageRevision) => {
+        calls.push(["resume", id, revision, eventId, date, timingRevision, lineageRevision]);
+        return resumedItem;
+      }
+    });
+    const handle = server as unknown as {
+      handleRequest(request: FakeRequest, response: FakeResponse): Promise<void>;
+    };
+
+    const get = new FakeResponse();
+    await handle.handleRequest(
+      new FakeRequest("GET", "/api/v1/daily/items/daily%5Fone/timing?date=2026-07-24", {}),
+      get
+    );
+    expect(get.statusCode).toBe(200);
+    expect(JSON.parse(get.body).data).toMatchObject({
+      taskId: "daily_one",
+      status: "paused",
+      timingRevision: "timer_revision_1"
+    });
+
+    const revision = {
+      value: "task_revision_1",
+      sourcePath: "Daily/2026-07-24.md",
+      blockId: "daily_one"
+    };
+    const start = new FakeResponse();
+    await handle.handleRequest(
+      new FakeRequest("POST", "/api/v1/daily/items/daily_one/start", {
+        revision,
+        eventId: "evt_start_once",
+        date: "2026-07-24",
+        timingRevision: "timer_revision_1",
+        lineageRevision: "lineage_revision_1"
+      }),
+      start
+    );
+    expect(start.statusCode).toBe(200);
+
+    const pause = new FakeResponse();
+    await handle.handleRequest(
+      new FakeRequest("POST", "/api/v1/daily/items/daily_one/pause", {
+        revision,
+        eventId: "evt_pause_once",
+        date: "2026-07-24",
+        timingRevision: "timer_revision_2",
+        lineageRevision: "lineage_revision_1"
+      }),
+      pause
+    );
+    expect(pause.statusCode).toBe(200);
+
+    const resume = new FakeResponse();
+    await handle.handleRequest(
+      new FakeRequest("POST", "/api/v1/daily/items/daily_one/resume", {
+        revision,
+        eventId: "evt_resume_once",
+        date: "2026-07-24",
+        timingRevision: "timer_revision_3",
+        lineageRevision: "lineage_revision_1"
+      }),
+      resume
+    );
+    expect(resume.statusCode).toBe(200);
+    expect(calls).toEqual([
+      ["get", "daily_one", "2026-07-24"],
+      ["start", "daily_one", revision, "evt_start_once", "2026-07-24", "timer_revision_1", "lineage_revision_1"],
+      ["pause", "daily_one", revision, "evt_pause_once", "2026-07-24", "timer_revision_2", "lineage_revision_1"],
+      ["resume", "daily_one", revision, "evt_resume_once", "2026-07-24", "timer_revision_3", "lineage_revision_1"]
+    ]);
+  });
+
+  it("validates timing correction/reset payloads and maps timer conflicts to 409", async () => {
+    const calls: unknown[] = [];
+    const correctDailyItemTiming = vi.fn(async (
+      id: string,
+      revision: string,
+      patch: unknown,
+      date?: string
+    ) => {
+      calls.push([id, revision, patch, date]);
+      return makeTimingSnapshot("paused", `timer_revision_${calls.length + 1}`);
+    });
+    const server = makeServer({ correctDailyItemTiming });
+    const handle = server as unknown as {
+      handleRequest(request: FakeRequest, response: FakeResponse): Promise<void>;
+    };
+
+    const correct = new FakeResponse();
+    await handle.handleRequest(
+      new FakeRequest("PATCH", "/api/v1/daily/items/daily_one/timing", {
+        operation: "correct",
+        timingRevision: "timer_revision_1",
+        eventId: "evt_correct_once",
+        at: "2026-07-24T11:01:00+08:00",
+        targetEventId: "evt_pause_once",
+        replacementAt: "2026-07-24T10:55:00+08:00",
+        reason: "Corrected from the task timing panel",
+        date: "2026-07-24"
+      }),
+      correct
+    );
+    expect(correct.statusCode).toBe(200);
+
+    const reset = new FakeResponse();
+    await handle.handleRequest(
+      new FakeRequest("PATCH", "/api/v1/daily/items/daily_one/timing", {
+        operation: "reset",
+        timingRevision: "timer_revision_2",
+        eventId: "evt_reset_once",
+        at: "2026-07-24T11:02:00+08:00",
+        date: "2026-07-24"
+      }),
+      reset
+    );
+    expect(reset.statusCode).toBe(200);
+    expect(calls).toEqual([
+      ["daily_one", "timer_revision_1", {
+        operation: "correct",
+        eventId: "evt_correct_once",
+        at: "2026-07-24T11:01:00+08:00",
+        source: "obsidian",
+        targetEventId: "evt_pause_once",
+        replacementAt: "2026-07-24T10:55:00+08:00",
+        invalidateTarget: false,
+        reason: "Corrected from the task timing panel"
+      }, "2026-07-24"],
+      ["daily_one", "timer_revision_2", {
+        operation: "reset",
+        options: {
+          eventId: "evt_reset_once",
+          at: "2026-07-24T11:02:00+08:00",
+          source: "obsidian"
+        }
+      }, "2026-07-24"]
+    ]);
+
+    for (const body of [
+      { operation: "correct", targetEventId: "evt_one", reason: "missing revision" },
+      { operation: "correct", timingRevision: "timer_revision_2", targetEventId: "evt_one", reason: "missing change" },
+      { operation: "unknown", timingRevision: "timer_revision_2" }
+    ]) {
+      const invalid = new FakeResponse();
+      await handle.handleRequest(
+        new FakeRequest("PATCH", "/api/v1/daily/items/daily_one/timing", body),
+        invalid
+      );
+      expect(invalid.statusCode).toBe(400);
+    }
+
+    const conflictServer = makeServer({
+      pauseDailyItem: async () => {
+        throw new DailyTimerTransitionError("Task is not currently running.");
+      },
+      correctDailyItemTiming: async () => {
+        throw new DailyTimerValidationError("Correction target does not exist.");
+      }
+    });
+    const conflictHandle = conflictServer as unknown as {
+      handleRequest(request: FakeRequest, response: FakeResponse): Promise<void>;
+    };
+    const transitionConflict = new FakeResponse();
+    await conflictHandle.handleRequest(
+      new FakeRequest("POST", "/api/v1/daily/items/daily_one/pause", {
+        revision: "task_revision_1"
+      }),
+      transitionConflict
+    );
+    expect(transitionConflict.statusCode).toBe(409);
+
+    const invalidCorrection = new FakeResponse();
+    await conflictHandle.handleRequest(
+      new FakeRequest("PATCH", "/api/v1/daily/items/daily_one/timing", {
+        operation: "correct",
+        timingRevision: "timer_revision_2",
+        targetEventId: "evt_missing",
+        replacementAt: "2026-07-24T11:00:00+08:00",
+        reason: "Fix"
+      }),
+      invalidCorrection
+    );
+    expect(invalidCorrection.statusCode).toBe(400);
+  });
+
   it("patches question title and body", async () => {
     let patch: { title?: string; question?: string; reminderAt?: string; reminderNote?: string } | undefined;
     const server = makeServer({
@@ -1649,6 +1955,88 @@ function makeServer(overrides: Partial<ConstructorParameters<typeof ToWriteExter
     subscribe: () => () => undefined,
     ...overrides
   });
+}
+
+function makeNormalizationPreview(date = "2026-07-24"): DailyPlanNormalizationPreview {
+  return {
+    schemaVersion: 1,
+    date,
+    source: { kind: "daily-note", dailyRoot: "Daily" },
+    sourcePath: `Daily/${date}.md`,
+    expectedRevision: "plan_revision_before",
+    groups: [],
+    tasks: [],
+    diagnostics: [],
+    edits: [{
+      line: 5,
+      kind: "plain-leaf",
+      before: "   - 记录结构问题",
+      after: "   - [ ] 记录结构问题 ^daily_0123456789abcdef0123456789abcdef",
+      proposedBlockId: "daily_0123456789abcdef0123456789abcdef",
+      taskText: "记录结构问题",
+      lineageRevision: "lineage_revision_1",
+      targetResolution: {
+        source: "ancestor-link",
+        target: {
+          kind: "wikilink",
+          raw: "[[创作辅助工具电子屏幕硬件-软硬件系统设计]]",
+          linkText: "创作辅助工具电子屏幕硬件-软硬件系统设计"
+        },
+        displayLabel: "创作辅助工具电子屏幕硬件-软硬件系统设计",
+        lineageRevision: "lineage_revision_1"
+      }
+    }],
+    changed: true,
+    diff: "-   - 记录结构问题\n+   - [ ] 记录结构问题 ^daily_0123456789abcdef0123456789abcdef"
+  };
+}
+
+function makeDailyItem(status: DailyPlanItem["status"]): DailyPlanItem {
+  return {
+    schemaVersion: 1,
+    id: "daily_one",
+    blockId: "daily_one",
+    date: "2026-07-24",
+    text: "记录结构问题",
+    kind: "edit_note",
+    status,
+    done: status === "done",
+    sourcePath: "Daily/2026-07-24.md",
+    line: 5,
+    rawLine: `- [${status === "done" ? "x" : status === "in-progress" ? "/" : " "}] 记录结构问题 ^daily_one`,
+    revision: {
+      value: status === "in-progress" ? "task_revision_running" : "task_revision_paused",
+      sourcePath: "Daily/2026-07-24.md",
+      blockId: "daily_one"
+    },
+    scheduledDate: "2026-07-24",
+    dueDate: "2026-07-24",
+    devicePolicy: "rotation",
+    tags: [],
+    linkedNotes: []
+  };
+}
+
+function makeTimingSnapshot(
+  status: DailyTaskTimingSnapshot["status"],
+  timingRevision = "timer_revision_1"
+): DailyTaskTimingSnapshot {
+  return {
+    schemaVersion: 1,
+    taskId: "daily_one",
+    status,
+    activeMs: 15 * 60_000,
+    wallMs: 30 * 60_000,
+    interruptionCount: 1,
+    firstStartedAt: "2026-07-24T09:00:00.000+08:00",
+    lastTransitionAt: "2026-07-24T09:30:00.000+08:00",
+    estimateMinutes: 20,
+    estimateDeltaMinutes: -5,
+    dailyActiveMs: { "2026-07-24": 15 * 60_000 },
+    needsReview: false,
+    reviewReasons: [],
+    timingRevision
+  };
 }
 
 class FakeRequest {

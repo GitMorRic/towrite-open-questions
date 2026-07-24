@@ -1,3 +1,5 @@
+import type { DailyTaskTimingSnapshot } from "./task-timer-types";
+
 export const DAILY_SCHEMA_VERSION = 1 as const;
 /** Markdown contract version. Activity/summary JSON remains schema v1. */
 export const DAILY_PLAN_SCHEMA_VERSION = 2 as const;
@@ -98,6 +100,168 @@ export interface DailyPlanItem {
   /** Raw user-facing target, normally an Obsidian wikilink. */
   target?: string;
   startedAt?: string;
+  /**
+   * Opaque revision of the task's inherited group chain. Hierarchy-aware
+   * callers must compare it in addition to the task revision before acting.
+   */
+  lineageRevision?: string;
+  /** Nearest containing plain-list category, when the source uses groups. */
+  groupId?: string;
+  /** Full local-only group chain used to explain target inheritance. */
+  lineage?: DailyPlanLineage;
+  /** Unified open target used by Dashboard, device, NFC and Capture callers. */
+  targetResolution?: DailyTargetResolution;
+  /** Runtime-only timer projection; never serialized into task Markdown. */
+  timing?: DailyTaskTimingSnapshot;
+  /** Direct continuation lines physically placed after a nested child block. */
+  detachedOwnedLines?: number[];
+}
+
+export type DailyTargetSource =
+  | "explicit"
+  | "task-link"
+  | "ancestor-link"
+  | "task-block"
+  | "dashboard";
+
+export interface DailyMarkdownTarget {
+  kind: "wikilink" | "markdown";
+  raw: string;
+  /** Obsidian link text for wikilinks, or a safe vault-relative Markdown path. */
+  linkText: string;
+  /** Populated for relative Markdown links, including the `.md` suffix. */
+  path?: string;
+  label?: string;
+  heading?: string;
+  blockId?: string;
+}
+
+export interface DailyPlanGroup {
+  id: string;
+  text: string;
+  /** Exact list line used by the cross-runtime lineage CAS contract. */
+  rawLine?: string;
+  sourcePath: string;
+  line: number;
+  endLine: number;
+  depth: number;
+  parentGroupId?: string;
+  links: DailyMarkdownTarget[];
+}
+
+export interface DailyPlanLineage {
+  /** Root-to-leaf group order. */
+  groups: DailyPlanGroup[];
+  /** Changes whenever a containing group line, link, or nesting changes. */
+  revision: string;
+}
+
+export interface DailyTargetResolution {
+  source: DailyTargetSource;
+  target?: DailyMarkdownTarget;
+  /** Source-note block fallback. */
+  sourcePath?: string;
+  blockId?: string;
+  displayLabel: string;
+  lineageRevision: string;
+}
+
+export interface DailyPlanHierarchyTask {
+  /** Present for normalized checkbox tasks. */
+  id?: string;
+  blockId?: string;
+  /** One-based line for a standalone id owned by this task. */
+  blockIdLine?: number;
+  /** Direct continuation lines physically placed after a nested child block. */
+  detachedOwnedLines: number[];
+  text: string;
+  sourcePath: string;
+  line: number;
+  endLine: number;
+  depth: number;
+  status: DailyPlanStatus;
+  checkbox: boolean;
+  rawLine: string;
+  rawBlock: string;
+  explicitTarget?: string;
+  links: DailyMarkdownTarget[];
+  lineage: DailyPlanLineage;
+  lineageRevision: string;
+  targetResolution: DailyTargetResolution;
+  normalizationRequired: boolean;
+}
+
+export type DailyPlanHierarchyDiagnosticCode =
+  | "multiple-block-ids"
+  | "duplicate-block-id"
+  | "unsafe-target"
+  | "broken-target";
+
+export interface DailyPlanHierarchyDiagnostic {
+  code: DailyPlanHierarchyDiagnosticCode;
+  severity: "error" | "warning";
+  message: string;
+  sourcePath: string;
+  line: number;
+  blockId?: string;
+  target?: string;
+}
+
+export interface DailyPlanHierarchy {
+  schemaVersion: 1;
+  date: string;
+  source: DailyPlanSource;
+  sourcePath: string;
+  groups: DailyPlanGroup[];
+  tasks: DailyPlanHierarchyTask[];
+  diagnostics: DailyPlanHierarchyDiagnostic[];
+  /** Revision of the complete date-scoped plan, including unknown user text. */
+  revision: string;
+}
+
+export type DailyPlanNormalizationKind = "plain-leaf" | "missing-block-id";
+
+export interface DailyPlanNormalizationEdit {
+  line: number;
+  kind: DailyPlanNormalizationKind;
+  before: string;
+  after: string;
+  proposedBlockId: string;
+  taskText: string;
+  lineageRevision: string;
+  targetResolution: DailyTargetResolution;
+  /** Read-only hint from legacy inline timing prose; never applied implicitly. */
+  legacyTimingSuggestion?: {
+    estimateMinutes?: number;
+    observedTimes: string[];
+    confidence: "low";
+  };
+}
+
+export interface DailyPlanNormalizationPreview {
+  schemaVersion: 1;
+  date: string;
+  source: DailyPlanSource;
+  sourcePath: string;
+  expectedRevision: string;
+  groups: DailyPlanGroup[];
+  tasks: DailyPlanHierarchyTask[];
+  diagnostics: DailyPlanHierarchyDiagnostic[];
+  edits: DailyPlanNormalizationEdit[];
+  changed: boolean;
+  /** A compact unified-style diff containing only lines the plugin will edit. */
+  diff: string;
+}
+
+export interface DailyPlanNormalizationResult {
+  preview: DailyPlanNormalizationPreview;
+  revision: string;
+  undoToken?: string;
+}
+
+export interface DailyPlanNormalizationUndoResult {
+  restored: boolean;
+  revision: string;
 }
 
 export interface DailyPlanCreateInput {

@@ -133,6 +133,90 @@ describe("HubDeviceEventWritebackService", () => {
     expect(onError).toHaveBeenCalledWith(expect.any(Error));
     expect(client.acknowledgements).toEqual([]);
   });
+
+  it("ACKs pause/resume transitions with both task and timing revisions", async () => {
+    const client = new FakeDeviceEventClient([
+      event("evt_00000000000000000000000000000011", "pause_task"),
+      event("evt_00000000000000000000000000000012", "resume_task")
+    ]);
+    const apply = vi.fn(async (item: HubPendingDeviceEvent): Promise<HubDeviceEventApplyResult> => (
+      item.action === "pause_task"
+        ? {
+            status: "applied",
+            resultRevision: "task_revision_paused",
+            timingRevision: "timer_revision_paused"
+          }
+        : {
+            status: "conflict",
+            resultRevision: "task_revision_current",
+            timingRevision: "timer_revision_current",
+            message: "The displayed task timing changed."
+          }
+    ));
+    const service = createService(client, apply);
+
+    await expect(service.processPending()).resolves.toMatchObject({
+      pending: 2,
+      acknowledged: 2,
+      applied: 1,
+      conflicts: 1,
+      items: [
+        {
+          eventId: "evt_00000000000000000000000000000011",
+          status: "applied",
+          resultRevision: "task_revision_paused",
+          timingRevision: "timer_revision_paused"
+        },
+        {
+          eventId: "evt_00000000000000000000000000000012",
+          status: "conflict",
+          resultRevision: "task_revision_current",
+          timingRevision: "timer_revision_current"
+        }
+      ]
+    });
+    expect(apply.mock.calls.map(([item]) => item.action)).toEqual(["pause_task", "resume_task"]);
+    expect(client.acknowledgements).toEqual([
+      expect.objectContaining({
+        eventId: "evt_00000000000000000000000000000011",
+        status: "applied",
+        resultRevision: "task_revision_paused",
+        timingRevision: "timer_revision_paused"
+      }),
+      expect.objectContaining({
+        eventId: "evt_00000000000000000000000000000012",
+        status: "conflict",
+        resultRevision: "task_revision_current",
+        timingRevision: "timer_revision_current",
+        message: "The displayed task timing changed."
+      })
+    ]);
+  });
+
+  it("does not ACK a malformed timing revision and retries the local apply", async () => {
+    const client = new FakeDeviceEventClient([
+      event("evt_00000000000000000000000000000013", "pause_task")
+    ]);
+    const apply = vi.fn(async () => ({
+      status: "applied" as const,
+      resultRevision: "task_revision_valid",
+      timingRevision: "Daily/2026-07-24.md"
+    }));
+    const service = createService(client, apply);
+
+    await expect(service.processPending()).resolves.toMatchObject({
+      pending: 1,
+      acknowledged: 0,
+      failed: 1
+    });
+    await expect(service.processPending()).resolves.toMatchObject({
+      pending: 1,
+      acknowledged: 0,
+      failed: 1
+    });
+    expect(apply).toHaveBeenCalledTimes(2);
+    expect(client.acknowledgements).toEqual([]);
+  });
 });
 
 class FakeDeviceEventClient implements HubDeviceEventClientLike {

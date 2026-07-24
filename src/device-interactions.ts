@@ -8,6 +8,9 @@ export type DeviceCommandAction =
   | "start_open"
   | "create_note"
   | "record_reserved"
+  | "toggle_timer"
+  | "pause_task"
+  | "resume_task"
   | "page_prev"
   | "page_next"
   | "task_prev"
@@ -58,6 +61,7 @@ export interface DeviceCommandAcknowledgement {
   action: DeviceCommandAction | "complete";
   message: string;
   resultRevision?: string;
+  timingRevision?: string;
 }
 
 export interface DeviceDisplayAcknowledgement extends DeviceDisplayedTuple {
@@ -168,6 +172,8 @@ export interface DeviceEventResult {
   stateVersion?: number;
   playlistRevision?: string;
   commandStatus?: "executed" | "waiting" | "unsupported" | "conflict";
+  resultRevision?: string;
+  timingRevision?: string;
 }
 
 export const DEFAULT_DEVICE_BUTTON_MAPPINGS: DeviceButtonMapping[] = [
@@ -175,6 +181,7 @@ export const DEFAULT_DEVICE_BUTTON_MAPPINGS: DeviceButtonMapping[] = [
   { button: "center-long", action: "capture", label: "快速记录" },
   { button: "center-double", action: "open", label: "打开原笔记" },
   { button: "left", action: "prev", label: "上一条" },
+  { button: "left-long", action: "toggle_timer", label: "开始 / 暂停 / 继续" },
   { button: "right", action: "next", label: "下一条" },
   { button: "right-long", action: "later", label: "稍后" }
 ];
@@ -273,6 +280,9 @@ export function isDeviceGestureEvent(event: DeviceEventInput): event is DeviceGe
       || event.action === "start_open"
       || event.action === "create_note"
       || event.action === "record_reserved"
+      || event.action === "toggle_timer"
+      || event.action === "pause_task"
+      || event.action === "resume_task"
       || event.action === "page_prev"
       || event.action === "page_next"
       || event.action === "task_prev"
@@ -315,6 +325,7 @@ export function resolveDeviceGestureAction(
   if (button === "left") {
     if (gesture === "single") return "page_prev";
     if (gesture === "double") return "task_prev";
+    if (gesture === "long") return "toggle_timer";
   }
   if (button === "right") {
     if (gesture === "single") return "page_next";
@@ -474,6 +485,7 @@ function normalizeDeviceIntent(value: unknown): DeviceActionIntent | undefined {
     || value === "later" || value === "skipped" || value === "useful" || value === "answered" || value === "opened" || value === "opened-no-write"
     || value === "complete" || value === "open_current" || value === "start_open"
     || value === "create_note" || value === "record_reserved"
+    || value === "toggle_timer" || value === "pause_task" || value === "resume_task"
     || value === "page_prev" || value === "page_next"
     || value === "task_prev" || value === "task_next"
     ? value

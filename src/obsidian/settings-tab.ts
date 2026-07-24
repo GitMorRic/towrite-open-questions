@@ -1464,6 +1464,90 @@ export class ToWriteSettingTab extends PluginSettingTab {
       }));
 
     new Setting(containerEl)
+      .setName(zh ? "任务计时" : "Task timing")
+      .setDesc(zh
+        ? "开始、暂停、继续和完成会写入不含正文的可读 JSONL 账本；不会把时间追加进任务标题。"
+        : "Start, pause, resume, and complete write to a readable content-free JSONL ledger, never into task titles.")
+      .addToggle((toggle) => toggle.setValue(daily.taskTimingEnabled).onChange(async (value) => {
+        daily.taskTimingEnabled = value;
+        await this.plugin.savePluginData();
+        await this.plugin.refreshDailyDashboard();
+        this.refreshSettingsUi();
+      }));
+
+    if (daily.taskTimingEnabled) {
+      new Setting(containerEl)
+        .setName(zh ? "异常会话确认阈值" : "Stale session review threshold")
+        .setDesc(zh
+          ? "未关闭会话超过该小时数或跨午夜后进入待确认，不会无限累计。"
+          : "Unclosed sessions older than this, or crossing midnight, require confirmation instead of accumulating forever.")
+        .addText((text) => text.setValue(String(daily.taskTimingReviewHours)).onChange(async (value) => {
+          daily.taskTimingReviewHours = clampInteger(value, 1, 24, 4);
+          await this.plugin.savePluginData();
+          await this.plugin.refreshDailyDashboard();
+        }));
+
+      new Setting(containerEl)
+        .setName(zh ? "进行中卡片刷新" : "Running-card refresh")
+        .setDesc(zh
+          ? "墨水屏只按粗粒度刷新已投入分钟；任务状态变化仍会立即刷新。"
+          : "Refreshes elapsed minutes coarsely on e-ink; task transitions still refresh immediately.")
+        .addDropdown((dropdown) => dropdown
+          .addOption("0", zh ? "关闭" : "Off")
+          .addOption("5", zh ? "每 5 分钟" : "Every 5 minutes")
+          .addOption("15", zh ? "每 15 分钟" : "Every 15 minutes")
+          .addOption("30", zh ? "每 30 分钟" : "Every 30 minutes")
+          .setValue(String(daily.runningCardRefreshMinutes))
+          .onChange(async (value) => {
+            daily.runningCardRefreshMinutes = value === "0" || value === "5" || value === "30"
+              ? Number(value) as 0 | 5 | 30
+              : 15;
+            await this.plugin.savePluginData();
+          }));
+
+      new Setting(containerEl)
+        .setName(zh ? "计划文档行尾控件" : "Plan editor task controls")
+        .setDesc(zh
+          ? "仅在配置的计划来源显示轻量状态控件；输入处理链不读取文件或访问网络。"
+          : "Shows lightweight controls only in configured plan sources; the typing path performs no file or network I/O.")
+        .addToggle((toggle) => toggle.setValue(daily.editorTaskControls).onChange(async (value) => {
+          daily.editorTaskControls = value;
+          await this.plugin.savePluginData();
+          this.plugin.refreshDailyEditorTaskControls();
+        }));
+
+      new Setting(containerEl)
+        .setName(zh ? "任务计时账本" : "Task timer ledger")
+        .setDesc(zh
+          ? "JSONL 只包含任务 ID、会话和时间事件，不包含任务正文。可查看原文件、导出副本、归档，或在确认后归档并清空。"
+          : "The JSONL contains task IDs, sessions, and timing events—not task text. View, export, archive, or archive and clear it explicitly.")
+        .addButton((button) => button.setButtonText(zh ? "查看" : "View").onClick(async () => {
+          const path = await this.plugin.openDailyTimerLedger();
+          new Notice(zh ? `计时账本：${path}` : `Timer ledger: ${path}`);
+        }))
+        .addButton((button) => button.setButtonText(zh ? "导出副本" : "Export copy").onClick(async () => {
+          const path = await this.plugin.exportDailyTimerLedger();
+          new Notice(zh ? `已导出到 ${path}` : `Exported to ${path}`);
+        }))
+        .addButton((button) => button.setButtonText(zh ? "归档" : "Archive").onClick(async () => {
+          const path = await this.plugin.archiveDailyTimerLedger();
+          new Notice(zh ? `已归档到 ${path}` : `Archived to ${path}`);
+        }))
+        .addButton((button) => button
+          .setWarning()
+          .setButtonText(zh ? "归档并清空" : "Archive & clear")
+          .onClick(async () => {
+            if (!window.confirm(zh
+              ? "确认归档并清空任务计时账本？计划 Markdown 不会被修改。"
+              : "Archive and clear the task timer ledger? Daily Markdown will not be changed.")) {
+              return;
+            }
+            const path = await this.plugin.clearDailyTimerLedger();
+            new Notice(zh ? `计时账本已清空；归档位于 ${path}` : `Timer ledger cleared; archive saved to ${path}`);
+          }));
+    }
+
+    new Setting(containerEl)
       .setName(zh ? "录音附件目录" : "Voice attachment folder")
       .setDesc(zh ? "转写失败时仍保存音频，并由 Capture 写入待转写链接。" : "Audio remains available with a pending-transcription link if transcription fails.")
       .addText((text) => text.setValue(daily.attachmentFolder).setPlaceholder("00-Raw_Materials/Voice_Captures").onChange(async (value) => {

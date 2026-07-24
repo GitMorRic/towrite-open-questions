@@ -213,6 +213,10 @@ export class HubClient implements HubClientLike, HubCaptureClientLike, HubDevice
     if (resultRevision && !isOpaqueIdentifier(resultRevision, 120)) {
       throw new Error("Device Hub result revision must be an opaque identifier.");
     }
+    const timingRevision = acknowledgement.timingRevision?.trim();
+    if (timingRevision && !isOpaqueIdentifier(timingRevision, 120)) {
+      throw new Error("Device Hub timing revision must be an opaque identifier.");
+    }
     const response = asRecord(await this.requestJson(
       `/v1/hub/receivers/${encodeURIComponent(receiverId)}/device-events/${encodeURIComponent(eventId)}/ack`,
       {
@@ -222,6 +226,7 @@ export class HubClient implements HubClientLike, HubCaptureClientLike, HubDevice
           protocol_version: acknowledgement.protocolVersion ?? HUB_DEVICE_EVENT_PROTOCOL_VERSION,
           status: acknowledgement.status,
           result_revision: resultRevision,
+          timing_revision: timingRevision,
           message: acknowledgement.message?.trim().slice(0, 120)
         })
       }
@@ -480,7 +485,8 @@ function normalizePendingDeviceEvent(value: unknown): HubPendingDeviceEvent {
   const action = readRequiredString(record, "action");
   if (action !== "useful" && action !== "later" && action !== "skip" && action !== "complete"
     && action !== "open_current" && action !== "start_open"
-    && action !== "create_note" && action !== "record_reserved") {
+    && action !== "create_note" && action !== "record_reserved"
+    && action !== "pause_task" && action !== "resume_task") {
     throw new Error("Device Hub returned an invalid pending device event action.");
   }
   const contentType = readRequiredString(record, "content_type", "contentType");

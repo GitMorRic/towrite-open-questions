@@ -214,6 +214,14 @@ export interface ToWriteDailySettings {
   summaryHeading: string;
   activityTracking: boolean;
   rawEventRetentionDays: number;
+  /** Content-free task timer ledger and pause/resume controls. */
+  taskTimingEnabled: boolean;
+  /** Treat an unclosed interval older than this as requiring confirmation. */
+  taskTimingReviewHours: number;
+  /** Optional coarse e-ink refresh while a task is running; zero disables it. */
+  runningCardRefreshMinutes: 0 | 5 | 15 | 30;
+  /** Lightweight task status controls in configured plan documents. */
+  editorTaskControls: boolean;
   attachmentFolder: string;
   includeInDeviceCandidates: boolean;
   /**
@@ -285,6 +293,7 @@ export interface ToWriteSavedData {
     processedAt: string;
     action: string;
     resultRevision?: string;
+    timingRevision?: string;
     displayMessage?: string;
   }>;
 }
@@ -612,6 +621,10 @@ export const DEFAULT_SETTINGS: ToWriteSettings = {
     summaryHeading: "\u4eca\u65e5\u603b\u7ed3",
     activityTracking: true,
     rawEventRetentionDays: 30,
+    taskTimingEnabled: true,
+    taskTimingReviewHours: 4,
+    runningCardRefreshMinutes: 15,
+    editorTaskControls: true,
     attachmentFolder: "00-Raw_Materials/Voice_Captures",
     includeInDeviceCandidates: true,
     summaryDevicePolicy: "none",
@@ -719,6 +732,15 @@ export function normalizeDailySettings(settings?: Partial<ToWriteDailySettings>)
       365,
       defaults.rawEventRetentionDays
     ),
+    taskTimingEnabled: settings?.taskTimingEnabled !== false,
+    taskTimingReviewHours: clampIntegerSetting(
+      settings?.taskTimingReviewHours,
+      1,
+      24,
+      defaults.taskTimingReviewHours
+    ),
+    runningCardRefreshMinutes: normalizeRunningCardRefreshMinutes(settings?.runningCardRefreshMinutes),
+    editorTaskControls: settings?.editorTaskControls !== false,
     attachmentFolder: normalizeVaultFolderSetting(settings?.attachmentFolder, defaults.attachmentFolder),
     includeInDeviceCandidates: settings?.includeInDeviceCandidates !== false,
     summaryDevicePolicy: settings?.summaryDevicePolicy === "manual"
@@ -730,6 +752,10 @@ export function normalizeDailySettings(settings?: Partial<ToWriteDailySettings>)
       ? settings.writerMode
       : "auto"
   };
+}
+
+function normalizeRunningCardRefreshMinutes(value: unknown): 0 | 5 | 15 | 30 {
+  return value === 0 || value === 5 || value === 30 ? value : 15;
 }
 
 export function normalizeArticleTypeList(types: ArticleTypeSettings[]): ArticleTypeSettings[] {

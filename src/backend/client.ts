@@ -5,7 +5,9 @@ import type {
   DailyDevicePolicy,
   DailyPlanItemKind,
   DailyPlanStatus,
-  DailySummary
+  DailySummary,
+  DailyTaskTimingSnapshot,
+  DailyTimerEvent
 } from "../daily";
 
 interface BackendRecommendationItem {
@@ -160,6 +162,13 @@ export interface BackendDailyTaskMoveResult {
   direction: "up" | "down";
 }
 
+export interface BackendDailyTaskTimingResult {
+  item?: BackendDailyTaskMutation;
+  timing: DailyTaskTimingSnapshot;
+  events: DailyTimerEvent[];
+  idempotent: boolean;
+}
+
 export interface BackendDailyPlanMutation {
   date: string;
   source: "daily" | "fixed" | "";
@@ -206,6 +215,16 @@ export interface BackendDailyTaskUpdateRequest {
   estimateMinutes?: number;
   target?: string;
   startedAt?: string;
+}
+
+export interface BackendDailyTimerTransitionRequest {
+  eventId?: string;
+  at?: string;
+  source?: "obsidian" | "device" | "nfc" | "backend";
+  rawBlock?: string;
+  taskRevision?: string;
+  lineageRevision?: string;
+  expectedTimingRevision?: string;
 }
 
 export class BackendEnhancementClient {
@@ -328,24 +347,160 @@ export class BackendEnhancementClient {
     return normalizeBackendDailyTaskMutation(payload);
   }
 
-  async completeDailyTask(id: string, rawBlock: string): Promise<BackendDailyTaskMutation> {
+  async getDailyTaskTiming(
+    id: string,
+    options: {
+      taskRevision?: string;
+      lineageRevision?: string;
+      includeEvents?: boolean;
+    } = {}
+  ): Promise<BackendDailyTaskTimingResult> {
+    const settings = this.requireEnabledSettings();
+    const query = new URLSearchParams();
+    if (options.taskRevision) query.set("task_revision", options.taskRevision);
+    if (options.lineageRevision) query.set("lineage_revision", options.lineageRevision);
+    query.set("include_events", options.includeEvents === false ? "false" : "true");
+    const payload = asBackendRecord(await this.requestJson(
+      `/tools/daily/tasks/${encodeURIComponent(id)}/timing?${query.toString()}`,
+      { method: "GET" },
+      settings
+    ), "DailyOps task timing");
+    return normalizeBackendDailyTaskTimingResult(payload, id);
+  }
+
+  async startDailyTask(
+    id: string,
+    options: BackendDailyTimerTransitionRequest
+  ): Promise<BackendDailyTaskTimingResult> {
+    return this.transitionDailyTaskTimer(id, "start", options);
+  }
+
+  async pauseDailyTask(
+    id: string,
+    options: BackendDailyTimerTransitionRequest
+  ): Promise<BackendDailyTaskTimingResult> {
+    return this.transitionDailyTaskTimer(id, "pause", options);
+  }
+
+  async resumeDailyTask(
+    id: string,
+    options: BackendDailyTimerTransitionRequest
+  ): Promise<BackendDailyTaskTimingResult> {
+    return this.transitionDailyTaskTimer(id, "resume", options);
+  }
+
+  async correctDailyTaskTiming(
+    id: string,
+    request: {
+      eventId: string;
+      operation: "correct" | "reset";
+      expectedTimingRevision: string;
+      targetEventId?: string;
+      replacementAt?: string;
+      reason?: string;
+      source?: "obsidian" | "device" | "nfc" | "backend";
+      taskRevision?: string;
+      lineageRevision?: string;
+    }
+  ): Promise<BackendDailyTaskTimingResult> {
+    const settings = this.requireEnabledSettings();
+    const payload = asBackendRecord(await this.requestJson(
+      `/tools/daily/tasks/${encodeURIComponent(id)}/timing`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          event_id: request.eventId,
+          operation: request.operation,
+          target_event_id: request.targetEventId ?? "",
+          replacement_at: request.replacementAt ?? "",
+          reason: request.reason ?? "",
+          source: request.source ?? "obsidian",
+          task_revision: request.taskRevision ?? "",
+          lineage_revision: request.lineageRevision ?? "",
+          expected_timing_revision: request.expectedTimingRevision
+        })
+      },
+      settings
+    ), "DailyOps timing correction");
+    return normalizeBackendDailyTaskTimingResult(payload, id);
+  }
+
+  private async transitionDailyTaskTimer(
+    id: string,
+    action: "start" | "pause" | "resume",
+    request: BackendDailyTimerTransitionRequest
+  ): Promise<BackendDailyTaskTimingResult> {
+    const settings = this.requireEnabledSettings();
+    const payload = asBackendRecord(await this.requestJson(
+      `/tools/daily/tasks/${encodeURIComponent(id)}/${action}`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          event_id: request.eventId?.trim() || `evt_${randomFragment()}`,
+          at: request.at ?? "",
+          source: request.source ?? "obsidian",
+          raw_block: request.rawBlock ?? "",
+          task_revision: request.taskRevision ?? "",
+          lineage_revision: request.lineageRevision ?? "",
+          expected_timing_revision: request.expectedTimingRevision ?? ""
+        })
+      },
+      settings
+    ), `DailyOps task ${action}`);
+    return normalizeBackendDailyTaskTimingResult(payload, id);
+  }
+
+  async completeDailyTask(
+    id: string,
+    request: BackendDailyTimerTransitionRequest
+  ): Promise<BackendDailyTaskTimingResult> {
+    return this.transitionDailyTaskState(id, "complete", request);
+  }
+
+  async reopenDailyTask(
+    id: string,
+    request: BackendDailyTimerTransitionRequest
+  ): Promise<BackendDailyTaskTimingResult> {
+    return this.transitionDailyTaskState(id, "reopen", request);
+  }
+
+  async setDailyTaskCompletionWithoutTiming(
+    id: string,
+    action: "complete" | "reopen",
+    rawBlock: string
+  ): Promise<BackendDailyTaskMutation> {
     const settings = this.requireEnabledSettings();
     const payload = asBackendRecord(await this.requestJson(`/tools/daily/tasks/${encodeURIComponent(id)}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action: "complete", raw_block: rawBlock })
+      body: JSON.stringify({ action, raw_block: rawBlock })
     }, settings), "DailyOps task mutation");
     return normalizeBackendDailyTaskMutation(payload);
   }
 
-  async reopenDailyTask(id: string, rawBlock: string): Promise<BackendDailyTaskMutation> {
+  private async transitionDailyTaskState(
+    id: string,
+    action: "complete" | "reopen",
+    request: BackendDailyTimerTransitionRequest
+  ): Promise<BackendDailyTaskTimingResult> {
     const settings = this.requireEnabledSettings();
     const payload = asBackendRecord(await this.requestJson(`/tools/daily/tasks/${encodeURIComponent(id)}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action: "reopen", raw_block: rawBlock })
-    }, settings), "DailyOps task mutation");
-    return normalizeBackendDailyTaskMutation(payload);
+      body: JSON.stringify({
+        action,
+        event_id: request.eventId?.trim() || `evt_${randomFragment()}`,
+        at: request.at ?? "",
+        source: request.source ?? "obsidian",
+        raw_block: request.rawBlock ?? "",
+        task_revision: request.taskRevision ?? "",
+        lineage_revision: request.lineageRevision ?? "",
+        expected_timing_revision: request.expectedTimingRevision ?? ""
+      })
+    }, settings), `DailyOps task ${action}`);
+    return normalizeBackendDailyTaskTimingResult(payload, id);
   }
 
   async moveDailyTask(
@@ -862,6 +1017,98 @@ function normalizeBackendDailyTaskMutation(payload: Record<string, unknown>): Ba
   };
 }
 
+function normalizeBackendDailyTaskTimingResult(
+  payload: Record<string, unknown>,
+  fallbackTaskId: string
+): BackendDailyTaskTimingResult {
+  const timing = isRecord(payload.timing) ? payload.timing : {};
+  const taskId = optionalString(timing.task_id) ?? fallbackTaskId;
+  const status = timing.status === "running"
+    || timing.status === "paused"
+    || timing.status === "completed"
+    ? timing.status
+    : "not-started";
+  const timingRevision = optionalString(timing.timing_revision);
+  if (!timingRevision) {
+    throw new Error("Obsidian AI Backend DailyOps timing response is missing its revision.");
+  }
+  const dailyActiveMs = isRecord(timing.daily_active_ms)
+    ? Object.fromEntries(Object.entries(timing.daily_active_ms)
+      .filter(([, value]) => typeof value === "number" && Number.isFinite(value))
+      .map(([key, value]) => [key, Math.max(0, Number(value))]))
+    : {};
+  const reviewReasons = Array.isArray(timing.review_reasons)
+    ? timing.review_reasons.filter((value): value is DailyTaskTimingSnapshot["reviewReasons"][number] =>
+      value === "open-session-over-4h"
+      || value === "open-session-crossed-midnight"
+      || value === "invalid-event-order")
+    : [];
+  const snapshot: DailyTaskTimingSnapshot = {
+    schemaVersion: 1,
+    taskId,
+    status,
+    activeMs: nonNegativeNumber(timing.active_ms),
+    wallMs: nonNegativeNumber(timing.wall_ms),
+    interruptionCount: nonNegativeNumber(timing.interruption_count),
+    firstStartedAt: optionalString(timing.first_started_at),
+    lastTransitionAt: optionalString(timing.last_transition_at),
+    completedAt: optionalString(timing.completed_at),
+    activeSince: optionalString(timing.active_since),
+    activeSessionId: optionalString(timing.active_session_id),
+    estimateMinutes: optionalFiniteNumber(timing.estimate_minutes),
+    estimateDeltaMinutes: optionalFiniteNumber(timing.estimate_delta_minutes),
+    dailyActiveMs,
+    needsReview: timing.needs_review === true,
+    reviewReasons,
+    timingRevision
+  };
+  const taskPayload = isRecord(payload.task)
+    ? payload
+    : isRecord(payload.item)
+      ? { ...payload, task: payload.item }
+      : undefined;
+  return {
+    item: taskPayload ? normalizeBackendDailyTaskMutation(taskPayload) : undefined,
+    timing: snapshot,
+    events: Array.isArray(payload.events)
+      ? payload.events.map(normalizeBackendDailyTimerEvent)
+        .filter((event): event is DailyTimerEvent => Boolean(event))
+      : [],
+    idempotent: payload.idempotent === true
+  };
+}
+
+function normalizeBackendDailyTimerEvent(value: unknown): DailyTimerEvent | undefined {
+  if (!isRecord(value)) return undefined;
+  const kind = value.kind;
+  const source = value.source;
+  const eventId = optionalString(value.event_id);
+  const taskId = optionalString(value.task_id);
+  const sessionId = optionalString(value.session_id);
+  const at = optionalString(value.at);
+  if (!eventId || !taskId || !sessionId || !at
+    || (kind !== "start" && kind !== "pause" && kind !== "resume" && kind !== "complete"
+      && kind !== "reopen" && kind !== "correct" && kind !== "reset")
+    || (source !== "obsidian" && source !== "device" && source !== "nfc" && source !== "backend")) {
+    return undefined;
+  }
+  return {
+    schemaVersion: 1,
+    eventId,
+    taskId,
+    sessionId,
+    kind,
+    at,
+    source,
+    automatic: value.automatic === true || undefined,
+    relatedTaskId: optionalString(value.related_task_id),
+    targetEventId: optionalString(value.target_event_id),
+    replacementAt: optionalString(value.replacement_at),
+    invalidateTarget: value.invalidate_target === true || undefined,
+    reason: optionalString(value.reason)
+  };
+}
+
 function normalizeBackendDailyPlanMutation(payload: Record<string, unknown>): BackendDailyPlanMutation {
   const date = optionalString(payload.date);
   const sourcePath = optionalString(payload.source_path);
@@ -911,6 +1158,19 @@ function stringRecord(value: unknown): Record<string, string> {
 
 function finiteNumber(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function nonNegativeNumber(value: unknown): number {
+  return Math.max(0, finiteNumber(value));
+}
+
+function optionalFiniteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function randomFragment(): string {
+  return globalThis.crypto?.randomUUID?.().replace(/-/gu, "")
+    ?? `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
 }
 
 export function buildRecommendationPayload(draft: CaptureDraft, candidates: CaptureTargetCandidate[]) {

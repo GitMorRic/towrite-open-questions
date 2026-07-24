@@ -122,7 +122,10 @@ describe("CaptureBridgeCoordinator", () => {
         sourceContext: {
           file: "Daily/2026-07-23.md",
           dailyItemId: "daily_test",
-          dailyTaskRevision: "rev_test"
+          dailyTaskRevision: "rev_test",
+          lineageRevision: "lineage_test",
+          timingRevision: "timer_test",
+          timingState: "idle"
         }
       })
     });
@@ -134,7 +137,7 @@ describe("CaptureBridgeCoordinator", () => {
     });
 
     const captureHandoff = await coordinator.createHandoff(tapId, CAPTURE_BRIDGE_PROTOCOL_V2);
-    expect(captureHandoff.availableOperations).toEqual(["capture", "complete", "later"]);
+    expect(captureHandoff.availableOperations).toEqual(["capture", "start", "complete", "later"]);
     const upload = coordinator.stageAsset(captureHandoff.handoffId, {
       idempotencyKey: "audio-1",
       fileName: "voice.webm",
@@ -170,6 +173,128 @@ describe("CaptureBridgeCoordinator", () => {
       body: ""
     });
     expect(result).toMatchObject({ operation: "complete", completed: true });
+    expect(complete).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes frozen task and timing revisions across non-consuming timer operations", async () => {
+    const tapId = generateCaptureTapId();
+    const target = candidate("existingNote", "append", "Daily/2026-07-24.md");
+    const observed: Array<{ operation: string; taskRevision?: string; timingRevision?: string }> = [];
+    let revision = 1;
+    const transitionTiming = vi.fn(async (
+      snapshot: TapSelectionSnapshot,
+      _request: CaptureBridgeCommitRequest,
+      operation: "start" | "pause" | "resume"
+    ) => {
+      observed.push({
+        operation,
+        taskRevision: snapshot.sourceContext?.dailyTaskRevision,
+        timingRevision: snapshot.sourceContext?.timingRevision
+      });
+      revision += 1;
+      return {
+        path: "Daily/2026-07-24.md",
+        transitionedAt: `2026-07-24T08:0${revision}:00.000Z`,
+        timingState: operation === "pause" ? "paused" as const : "running" as const,
+        timingRevision: `timer-${revision}`,
+        taskRevision: `task-${revision}`,
+        lineageRevision: "lineage-stable"
+      };
+    });
+    const complete = vi.fn(async (snapshot: TapSelectionSnapshot) => {
+      expect(snapshot.sourceContext).toMatchObject({
+        dailyTaskRevision: "task-4",
+        timingRevision: "timer-4",
+        lineageRevision: "lineage-stable",
+        timingState: "running"
+      });
+      return {
+        path: "Daily/2026-07-24.md",
+        completedAt: "2026-07-24T08:10:00.000Z"
+      };
+    });
+    const selection = new LocalTapSelectionService({
+      getFallbackLocalId: () => "daily-plan:daily_sequence",
+      createSnapshot: async (): Promise<TapSelectionSnapshot> => ({
+        protocolVersion: CAPTURE_BRIDGE_PROTOCOL_V2,
+        snapshotId: "snp_daily_sequence",
+        source: "local",
+        localId: "daily-plan:daily_sequence",
+        createdAt: "2026-07-24T08:00:00.000Z",
+        contentType: "daily_plan_item",
+        title: "Sequence",
+        prompt: "Start",
+        allowedActions: ["capture", "complete", "later"],
+        intent: "new",
+        candidate: target,
+        sourceContext: {
+          file: "Daily/2026-07-24.md",
+          dailyItemId: "daily_sequence",
+          dailyTaskRevision: "task-1",
+          dailyDate: "2026-07-24",
+          dailySourcePath: "Daily/2026-07-24.md",
+          lineageRevision: "lineage-stable",
+          timingState: "idle",
+          timingRevision: "timer-1"
+        }
+      })
+    });
+    const coordinator = new CaptureBridgeCoordinator({
+      selection,
+      commitAdapter: {
+        commit: commitAdapter().commit,
+        transitionTiming,
+        complete,
+        undo: vi.fn(async () => ({ undone: true }))
+      },
+      isTapAllowed: (value) => value === tapId,
+      handoffTtlSeconds: () => 300
+    });
+    const handoff = await coordinator.createHandoff(tapId, CAPTURE_BRIDGE_PROTOCOL_V2);
+    expect(handoff.context).toMatchObject({
+      taskId: "daily_sequence",
+      taskRevision: "task-1",
+      lineageRevision: "lineage-stable",
+      timingRevision: "timer-1",
+      timingStatus: "not_started"
+    });
+    const submit = (operation: "start" | "pause" | "resume" | "complete", index: number) =>
+      coordinator.commit(handoff.handoffId, {
+        protocolVersion: CAPTURE_BRIDGE_PROTOCOL_V2,
+        captureId: handoff.captureId,
+        idempotencyKey: `sequence-${index}`,
+        operation,
+        body: ""
+      });
+
+    await submit("start", 1);
+    expect(coordinator.getHandoff(handoff.handoffId)).toMatchObject({
+      context: {
+        taskRevision: "task-2",
+        lineageRevision: "lineage-stable",
+        timingRevision: "timer-2",
+        timingStatus: "running"
+      },
+      availableOperations: expect.arrayContaining(["pause"])
+    });
+    await submit("pause", 2);
+    expect(coordinator.getHandoff(handoff.handoffId)).toMatchObject({
+      context: {
+        taskRevision: "task-3",
+        lineageRevision: "lineage-stable",
+        timingRevision: "timer-3",
+        timingStatus: "paused"
+      },
+      availableOperations: expect.arrayContaining(["resume"])
+    });
+    await submit("resume", 3);
+    await submit("complete", 4);
+
+    expect(observed).toEqual([
+      { operation: "start", taskRevision: "task-1", timingRevision: "timer-1" },
+      { operation: "pause", taskRevision: "task-2", timingRevision: "timer-2" },
+      { operation: "resume", taskRevision: "task-3", timingRevision: "timer-3" }
+    ]);
     expect(complete).toHaveBeenCalledTimes(1);
   });
 

@@ -9,7 +9,12 @@ export const CAPTURE_BRIDGE_LATEST_PROTOCOL_VERSION = CAPTURE_BRIDGE_PROTOCOL_V2
 export type CaptureBridgeProtocolVersion =
   | typeof CAPTURE_BRIDGE_PROTOCOL_V1
   | typeof CAPTURE_BRIDGE_PROTOCOL_V2;
-export type CaptureBridgeOperation = "capture" | "complete" | "later";
+export type CaptureBridgeTimingOperation = "start" | "pause" | "resume";
+export type CaptureBridgeOperation =
+  | "capture"
+  | "complete"
+  | "later"
+  | CaptureBridgeTimingOperation;
 
 export type CaptureBridgeFlow = "local_capture" | "hub_e2ee";
 
@@ -110,6 +115,18 @@ export interface TapSelectionSnapshot {
     dailyDate?: string;
     /** Vault-relative Daily Markdown source, kept internal and never exposed to the phone. */
     dailySourcePath?: string;
+    /** Revision of the task plus inherited list ancestors used for target resolution. */
+    lineageRevision?: string;
+    /** Frozen timer state used only to choose contextual operations on the phone. */
+    timingState?: "idle" | "running" | "paused" | "completed" | "needs-review";
+    timingRevision?: string;
+    /** Phone-safe hierarchy and timer presentation; no Vault path is exposed. */
+    groupId?: string;
+    groupLabel?: string;
+    targetSource?: "explicit" | "task-link" | "ancestor-link" | "task-block" | "dashboard";
+    activeMinutes?: number;
+    estimateMinutes?: number;
+    interruptionCount?: number;
   };
 }
 
@@ -124,6 +141,18 @@ export interface CaptureBridgeHandoffResponse {
     title: string;
     prompt: string;
     body?: string;
+    /** Frozen Daily identity exposed as opaque values only; never a Vault path. */
+    taskId?: string;
+    taskRevision?: string;
+    lineageRevision?: string;
+    timingRevision?: string;
+    groupId?: string;
+    groupLabel?: string;
+    targetSource?: "explicit" | "task-link" | "ancestor-link" | "task-block" | "dashboard";
+    timingStatus?: "not_started" | "running" | "paused" | "completed";
+    activeMinutes?: number;
+    estimateMinutes?: number;
+    interruptionCount?: number;
   };
   target: {
     kind: CaptureTargetCandidate["kind"];
@@ -174,6 +203,11 @@ export interface CaptureBridgeCommitResult {
   operation?: CaptureBridgeOperation;
   completed?: boolean;
   snoozedUntil?: string;
+  timingState?: "idle" | "running" | "paused" | "completed" | "needs-review";
+  timingRevision?: string;
+  /** Internal CAS values returned after a non-consuming timer transition. */
+  taskRevision?: string;
+  lineageRevision?: string;
 }
 
 export interface CaptureBridgeUndoRequest {
@@ -209,6 +243,19 @@ export interface CaptureBridgeCommitAdapter {
   ): Promise<{
     path: string;
     snoozedUntil: string;
+    idempotent?: boolean;
+  }>;
+  transitionTiming?(
+    snapshot: TapSelectionSnapshot,
+    request: CaptureBridgeCommitRequest,
+    operation: CaptureBridgeTimingOperation
+  ): Promise<{
+    path: string;
+    transitionedAt: string;
+    timingState: NonNullable<CaptureBridgeCommitResult["timingState"]>;
+    timingRevision: string;
+    taskRevision: string;
+    lineageRevision: string;
     idempotent?: boolean;
   }>;
   undo(captureId: string, undoToken: string): Promise<{ undone: boolean }>;

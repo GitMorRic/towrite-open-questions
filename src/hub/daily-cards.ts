@@ -17,6 +17,17 @@ export type DailyDeckPageKind =
   | "daily_plan_item"
   | "daily_result";
 
+export interface DailyDeckTimingInput {
+  state: "idle" | "running" | "paused" | "completed" | "needs-review";
+  activeSeconds: number;
+  wallClockSeconds?: number;
+  interruptionCount?: number;
+  firstStartedAt?: string;
+  activeSince?: string;
+  completedAt?: string;
+  timingRevision?: string;
+}
+
 export interface DailyDeckPlanItemInput {
   id: string;
   text: string;
@@ -30,6 +41,11 @@ export interface DailyDeckPlanItemInput {
   estimateMinutes?: number;
   target?: string;
   startedAt?: string;
+  groupLabel?: string;
+  targetLabel?: string;
+  targetProvenance?: "explicit" | "task-link" | "ancestor-link" | "task-block" | "dashboard";
+  lineageRevision?: string;
+  timing?: DailyDeckTimingInput;
 }
 
 export interface DailyDeckTaskSummary {
@@ -38,6 +54,8 @@ export interface DailyDeckTaskSummary {
   status: DailyDeckPlanItemInput["status"];
   primary: boolean;
   minimum: boolean;
+  groupLabel?: string;
+  targetLabel?: string;
 }
 
 export interface DailyOverviewCard {
@@ -51,6 +69,9 @@ export interface DailyOverviewCard {
     goal?: string;
     nextStep?: string;
     estimateMinutes?: number;
+    groupLabel?: string;
+    targetLabel?: string;
+    timing?: DailyDeckTimingInput;
   };
   /** At most the two unfinished tasks after the current item. */
   upcoming: DailyDeckTaskSummary[];
@@ -76,6 +97,11 @@ export interface DailyPlanItemCard {
     estimateMinutes?: number;
     target?: string;
     startedAt?: string;
+    groupLabel?: string;
+    targetLabel?: string;
+    targetProvenance?: DailyDeckPlanItemInput["targetProvenance"];
+    lineageRevision?: string;
+    timing?: DailyDeckTimingInput;
   };
 }
 
@@ -207,7 +233,10 @@ export function buildDailyDeckSnapshot(input: DailyDeckBuildInput): DailyDeckSna
           ...summaries.get(current.id)!,
           goal: optionalLine(current.goal),
           nextStep: optionalLine(current.nextStep),
-          estimateMinutes: positiveInteger(current.estimateMinutes)
+          estimateMinutes: positiveInteger(current.estimateMinutes),
+          groupLabel: optionalLine(current.groupLabel),
+          targetLabel: optionalLine(current.targetLabel),
+          timing: normalizeTiming(current.timing)
         }
       : undefined,
     upcoming: orderedUpcoming.slice(1, 3).map((item) => summaries.get(item.id)!),
@@ -233,7 +262,12 @@ export function buildDailyDeckSnapshot(input: DailyDeckBuildInput): DailyDeckSna
         nextStep: optionalLine(item.nextStep),
         estimateMinutes: positiveInteger(item.estimateMinutes),
         target: optionalLine(item.target),
-        startedAt: optionalIsoDateTime(item.startedAt)
+        startedAt: optionalIsoDateTime(item.startedAt),
+        groupLabel: optionalLine(item.groupLabel),
+        targetLabel: optionalLine(item.targetLabel),
+        targetProvenance: normalizeTargetProvenance(item.targetProvenance),
+        lineageRevision: optionalIdentifier(item.lineageRevision),
+        timing: normalizeTiming(item.timing)
       }
     };
   });
@@ -424,7 +458,9 @@ function summarizeDeckItem(item: DailyDeckPlanItemInput): DailyDeckTaskSummary {
     text: item.text,
     status: item.status,
     primary: item.primary === true,
-    minimum: item.minimum === true
+    minimum: item.minimum === true,
+    groupLabel: optionalLine(item.groupLabel),
+    targetLabel: optionalLine(item.targetLabel)
   };
 }
 
@@ -442,4 +478,42 @@ function optionalIsoDateTime(value: string | undefined): string | undefined {
   if (!value) return undefined;
   const timestamp = Date.parse(value);
   return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : undefined;
+}
+
+function optionalIdentifier(value: string | undefined): string | undefined {
+  if (!value?.trim()) return undefined;
+  return requiredIdentifier(value, "Daily lineage revision");
+}
+
+function normalizeTargetProvenance(
+  value: DailyDeckPlanItemInput["targetProvenance"]
+): DailyDeckPlanItemInput["targetProvenance"] {
+  return value === "explicit"
+    || value === "task-link"
+    || value === "ancestor-link"
+    || value === "task-block"
+    || value === "dashboard"
+    ? value
+    : undefined;
+}
+
+function normalizeTiming(value: DailyDeckTimingInput | undefined): DailyDeckTimingInput | undefined {
+  if (!value) return undefined;
+  const activeSeconds = Math.max(0, Math.floor(finiteOr(value.activeSeconds, 0)));
+  const wallClockSeconds = value.wallClockSeconds === undefined
+    ? undefined
+    : Math.max(0, Math.floor(finiteOr(value.wallClockSeconds, 0)));
+  const interruptionCount = value.interruptionCount === undefined
+    ? undefined
+    : Math.max(0, Math.floor(finiteOr(value.interruptionCount, 0)));
+  return {
+    state: value.state,
+    activeSeconds,
+    wallClockSeconds,
+    interruptionCount,
+    firstStartedAt: optionalIsoDateTime(value.firstStartedAt),
+    activeSince: optionalIsoDateTime(value.activeSince),
+    completedAt: optionalIsoDateTime(value.completedAt),
+    timingRevision: optionalIdentifier(value.timingRevision)
+  };
 }

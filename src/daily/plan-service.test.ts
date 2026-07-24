@@ -1,8 +1,37 @@
 import { describe, expect, it } from "vitest";
-import { DailyPlanConflictError, DailyPlanService, type DailyPlanStorage } from "./plan-service";
+import {
+  DailyPlanConflictError,
+  DailyPlanService,
+  predictDailyPlanItemStatusRevision,
+  type DailyPlanStorage
+} from "./plan-service";
 import { buildDailySummary } from "./summary";
 
 describe("DailyPlanService", () => {
+  it("predicts the exact full logical-block revision for crash-safe status writes", async () => {
+    const storage = new MemoryDailyStorage();
+    const service = new DailyPlanService(storage, {
+      createId: () => "daily_revision_test",
+      now: () => new Date("2026-07-23T08:00:00+08:00")
+    });
+    const created = await service.create({ text: "Keep handwritten context" });
+    const path = "Daily/2026-07-23.md";
+    storage.files.set(
+      path,
+      storage.files.get(path)!.replace(
+        "  ^daily_revision_test",
+        "  Handwritten explanation must remain\n  ^daily_revision_test"
+      )
+    );
+    const current = (await service.list("2026-07-23"))[0];
+    const predicted = predictDailyPlanItemStatusRevision(current, "done");
+    const completed = await service.complete(current.id, current.revision, current.date);
+
+    expect(completed.revision.value).toBe(predicted.value);
+    expect(storage.files.get(path)).toContain("Handwritten explanation must remain");
+    expect(created.id).toBe(current.id);
+  });
+
   it("creates a Tasks-compatible daily item with a stable block id", async () => {
     const storage = new MemoryDailyStorage();
     const service = new DailyPlanService(storage, {
@@ -59,10 +88,10 @@ describe("DailyPlanService", () => {
     const reopened = await service.reopen(completedEdited.id, completedEdited.revision);
 
     expect(updated).toMatchObject({ text: "整理第二章提纲", status: "in-progress", devicePolicy: "rotation" });
-    expect(completed).toMatchObject({ status: "done", completionDate: "2026-07-23" });
+    expect(completed).toMatchObject({ status: "done", completionDate: undefined });
     expect(completed.rawLine).toContain("- [x]");
-    expect(completed.rawLine).toContain("✅ 2026-07-23");
-    expect(completedEdited).toMatchObject({ status: "done", completionDate: "2026-07-23", devicePolicy: "manual" });
+    expect(completed.rawLine).not.toContain("✅");
+    expect(completedEdited).toMatchObject({ status: "done", completionDate: undefined, devicePolicy: "manual" });
     expect(reopened).toMatchObject({ status: "todo", completionDate: undefined });
     expect(reopened.rawLine).not.toContain("✅");
     await expect(service.update(created.id, created.revision, { text: "过期修改" }))
@@ -191,9 +220,9 @@ describe("DailyPlanService", () => {
       id: item.id,
       date: "2026-07-23",
       status: "done",
-      completionDate: "2026-07-24"
+      completionDate: undefined
     });
-    expect(storage.files.get("Daily/2026-07-23.md")).toContain("✅ 2026-07-24");
+    expect(storage.files.get("Daily/2026-07-23.md")).not.toContain("✅ 2026-07-24");
     expect(storage.files.has("Daily/2026-07-24.md")).toBe(false);
   });
 

@@ -51,6 +51,7 @@ describe("device interaction protocol", () => {
     ["primary", "long", "record_reserved"],
     ["left", "single", "page_prev"],
     ["left", "double", "task_prev"],
+    ["left", "long", "toggle_timer"],
     ["right", "single", "page_next"],
     ["right", "double", "task_next"],
     ["right", "long", "complete"]

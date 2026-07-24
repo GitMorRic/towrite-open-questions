@@ -1,23 +1,38 @@
 import type {
   DailyDashboardSnapshot,
   DailyDevicePolicy,
+  DailyPlanGroup,
+  DailyPlanHierarchy,
   DailyPlanCreateInput,
   DailyPlanItem,
+  DailyPlanNormalizationPreview,
+  DailyPlanNormalizationResult,
+  DailyPlanNormalizationUndoResult,
   DailyPlanUpdate,
   DailySummary,
   DailyTaskRevision
 } from "../daily/types";
+import type {
+  DailyTaskTimingSnapshot,
+  DailyTimerEvent
+} from "../daily/task-timer-types";
 
 export type {
   DailyDashboardSnapshot,
   DailyDevicePolicy,
+  DailyPlanGroup,
+  DailyPlanHierarchy,
   DailyPlanCreateInput,
   DailyPlanItem,
   DailyPlanItemKind,
+  DailyPlanNormalizationPreview,
+  DailyPlanNormalizationResult,
+  DailyPlanNormalizationUndoResult,
   DailyPlanStatus,
   DailyPlanUpdate,
   DailyTaskRevision
 } from "../daily/types";
+export type { DailyTaskTimingSnapshot, DailyTimerEvent } from "../daily/task-timer-types";
 
 /** UI-only provenance. The Markdown written by DailyPlanService remains deterministic. */
 export type DailySummaryPresentation = DailySummary & {
@@ -43,6 +58,13 @@ export interface DailyPlanningCandidate {
   target?: string;
 }
 
+export interface DailyTimingCorrectionInput {
+  targetEventId: string;
+  replacementAt: string;
+  reason: string;
+  expectedTimingRevision: string;
+}
+
 /**
  * Narrow bridge between the Svelte view and the plugin services.
  *
@@ -51,6 +73,10 @@ export interface DailyPlanningCandidate {
  */
 export interface DailyDashboardAdapter {
   getSnapshot(date?: string): DailyDashboardSnapshot | undefined | Promise<DailyDashboardSnapshot | undefined>;
+  getPlanHierarchy?(date: string): DailyPlanHierarchy | Promise<DailyPlanHierarchy>;
+  getNormalizationPreview?(date: string): DailyPlanNormalizationPreview | Promise<DailyPlanNormalizationPreview>;
+  normalizePlan?(preview: DailyPlanNormalizationPreview): DailyPlanNormalizationResult | Promise<DailyPlanNormalizationResult>;
+  undoNormalization?(undoToken: string): DailyPlanNormalizationUndoResult | Promise<DailyPlanNormalizationUndoResult>;
   getPlanMetadata?(date: string): DailyPlanMetadataPresentation | Promise<DailyPlanMetadataPresentation>;
   updatePlanMetadata?(
     date: string,
@@ -65,13 +91,33 @@ export interface DailyDashboardAdapter {
     direction: "up" | "down"
   ): void | Promise<void>;
   startItem?(id: string, revision: DailyTaskRevision): void | Promise<void>;
+  pauseItem?(
+    id: string,
+    revision: DailyTaskRevision,
+    timingRevision?: string
+  ): void | Promise<void>;
+  resumeItem?(
+    id: string,
+    revision: DailyTaskRevision,
+    timingRevision?: string
+  ): void | Promise<void>;
   completeItem?(id: string, revision: DailyTaskRevision): void | Promise<void>;
   reopenItem?(id: string, revision: DailyTaskRevision): void | Promise<void>;
+  getItemTiming?(
+    id: string,
+    estimateMinutes?: number
+  ): DailyTaskTimingSnapshot | Promise<DailyTaskTimingSnapshot>;
+  listItemTimerEvents?(id: string): DailyTimerEvent[] | Promise<DailyTimerEvent[]>;
+  correctItemTiming?(
+    id: string,
+    correction: DailyTimingCorrectionInput
+  ): void | Promise<void>;
   writeSummary?(summary: DailySummary): void | Promise<void>;
   generateSummary?(mode: "rules" | "ai"): DailySummaryPresentation | Promise<DailySummaryPresentation>;
   sendItemToDevice?(id: string, revision: DailyTaskRevision): void | Promise<void>;
   sendSummaryToDevice?(): void | Promise<void>;
   openItem?(item: DailyPlanItem): void | Promise<void>;
+  openGroup?(group: DailyPlanGroup): void | Promise<void>;
   openPlanSource?(date: string): void | Promise<void>;
   listPlanningCandidates?(date: string): DailyPlanningCandidate[] | Promise<DailyPlanningCandidate[]>;
   addPlanningCandidate?(date: string, candidate: DailyPlanningCandidate): void | Promise<void>;

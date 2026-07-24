@@ -391,6 +391,88 @@ describe("Backend enhancement contract", () => {
     expect(requests.flatMap((request) => Object.values(request.body ?? {}))).not.toContain("Daily/2026-07-23.md");
   });
 
+  it("binds Backend complete and reopen transitions to event, task, lineage, and timer revisions", async () => {
+    vi.stubGlobal("window", globalThis);
+    const requests: Array<Record<string, unknown>> = [];
+    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      requests.push(body);
+      const completed = body.action === "complete";
+      return {
+        ok: true,
+        json: async () => ({
+          protocol_version: "towrite-daily-ops/v2",
+          task: {
+            id: "daily_bound",
+            revision: completed ? "task_after_complete" : "task_after_reopen",
+            raw_line: completed ? "- [x] Bound" : "- [ ] Bound",
+            raw_block: `${completed ? "- [x]" : "- [ ]"} Bound\n  ^daily_bound`
+          },
+          timing: {
+            task_id: "daily_bound",
+            status: completed ? "completed" : "paused",
+            active_ms: 60_000,
+            wall_ms: 120_000,
+            interruption_count: 1,
+            daily_active_ms: {},
+            needs_review: false,
+            review_reasons: [],
+            timing_revision: completed ? "timer_after_complete" : "timer_after_reopen"
+          },
+          events: [],
+          idempotent: false
+        })
+      };
+    }));
+    const client = new BackendEnhancementClient(() => backendSettings());
+    const base = {
+      source: "device" as const,
+      rawBlock: "- [/] Bound\n  ^daily_bound",
+      taskRevision: "task_before",
+      lineageRevision: "lineage_frozen",
+      expectedTimingRevision: "timer_before"
+    };
+
+    await expect(client.completeDailyTask("daily_bound", {
+      ...base,
+      eventId: "evt_complete_bound"
+    })).resolves.toMatchObject({
+      item: { id: "daily_bound", revision: "task_after_complete" },
+      timing: { status: "completed", timingRevision: "timer_after_complete" }
+    });
+    await expect(client.reopenDailyTask("daily_bound", {
+      ...base,
+      source: "obsidian",
+      eventId: "evt_reopen_bound"
+    })).resolves.toMatchObject({
+      item: { id: "daily_bound", revision: "task_after_reopen" },
+      timing: { status: "paused", timingRevision: "timer_after_reopen" }
+    });
+
+    expect(requests).toEqual([
+      {
+        action: "complete",
+        event_id: "evt_complete_bound",
+        at: "",
+        source: "device",
+        raw_block: "- [/] Bound\n  ^daily_bound",
+        task_revision: "task_before",
+        lineage_revision: "lineage_frozen",
+        expected_timing_revision: "timer_before"
+      },
+      {
+        action: "reopen",
+        event_id: "evt_reopen_bound",
+        at: "",
+        source: "obsidian",
+        raw_block: "- [/] Bound\n  ^daily_bound",
+        task_revision: "task_before",
+        lineage_revision: "lineage_frozen",
+        expected_timing_revision: "timer_before"
+      }
+    ]);
+  });
+
   it("parses the Backend NDJSON context inspection stream", async () => {
     vi.stubGlobal("window", globalThis);
     const bytes = new TextEncoder().encode([
