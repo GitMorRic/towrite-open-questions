@@ -19,7 +19,7 @@ import {
 const LIST_RE = /^(?<indent>[ \t]*)(?<marker>(?:[-+*]|\d+[.)]))[ \t]+(?:(?<checkbox>\[(?<mark>[^\]])\])[ \t]+)?(?<body>.*)$/u;
 const STANDALONE_BLOCK_RE = /^(?<indent>[ \t]+)\^(?<id>[A-Za-z0-9_-]+)\s*$/u;
 const INLINE_BLOCK_RE = /(?:^|\s)\^(?<id>[A-Za-z0-9_-]+)\s*$/u;
-const OWNED_FIELD_RE = /\[towrite-(?:kind|device|at|primary|minimum|goal|next|estimate|target|started)::\s*(?:\[\[[^\]]+\]\]|[^\]]*)\]/giu;
+const OWNED_FIELD_RE = /\[towrite-(?<key>kind|category|task-ref|pool-revision|device|at|scheduled|due|primary|minimum|goal|next|estimate|target|started)::\s*(?<value>\[\[[^\]]+\]\]|[^\]]*)\]/giu;
 const MARKDOWN_LINK_LIKE_RE = /(?<!!)\[[^\]\r\n]*\]\((?<target>[^)\r\n]+)\)/gu;
 
 export interface DailyPlanHierarchyParseOptions {
@@ -134,6 +134,8 @@ export function parseDailyPlanHierarchy(
     const rawBlock = [node.rawLine, ...node.directLines.map((line) => lines[line])].join("\n");
     const directBlock = [node.rawLine, ...node.directLines.map((index) => lines[index])].join("\n");
     const explicitTarget = extractExplicitDailyTarget(directBlock);
+    const category = normalizeOptionalField(readOwnedField(directBlock, "category"), 120);
+    const taskRef = normalizeTaskRef(readOwnedField(directBlock, "task-ref"));
     const text = cleanListText(node.body);
     const blockId = node.blockIds.length === 1 ? normalizeBlockId(node.blockIds[0]) : undefined;
     const links = parseDailyMarkdownTargets(text, { sourcePath });
@@ -155,6 +157,9 @@ export function parseDailyPlanHierarchy(
       line: node.line,
       endLine: ownEndIndex + 1,
       depth: node.depth,
+      parentTaskId: nearestParentTaskId(node),
+      category,
+      taskRef,
       status,
       checkbox: node.checkbox,
       rawLine: node.rawLine,
@@ -313,6 +318,38 @@ function nearestGroup(node: ListNode | undefined): DailyPlanGroup | undefined {
     current = current.parent;
   }
   return undefined;
+}
+
+function nearestParentTaskId(node: ListNode): string | undefined {
+  let current = node.parent;
+  while (current) {
+    if (current.checkbox) {
+      return current.blockIds.length === 1
+        ? normalizeBlockId(current.blockIds[0])
+        : undefined;
+    }
+    current = current.parent;
+  }
+  return undefined;
+}
+
+function readOwnedField(rawBlock: string, wanted: string): string | undefined {
+  for (const match of rawBlock.matchAll(OWNED_FIELD_RE)) {
+    if (match.groups?.key.toLowerCase() === wanted) return match.groups.value.trim();
+  }
+  return undefined;
+}
+
+function normalizeOptionalField(value: string | undefined, maxLength: number): string | undefined {
+  const normalized = value?.replace(/[\r\n\]]+/gu, " ").replace(/\s+/gu, " ").trim();
+  return normalized ? normalized.slice(0, maxLength) : undefined;
+}
+
+function normalizeTaskRef(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  return normalized && /^[A-Za-z0-9][A-Za-z0-9_:-]{5,127}$/u.test(normalized)
+    ? normalized
+    : undefined;
 }
 
 function cleanListText(body: string): string {

@@ -569,6 +569,8 @@ export class InMemoryDailyTimerEventLog implements DailyTimerEventLog {
 }
 
 export class PersistentDailyTaskTimer {
+  private transitionTail: Promise<void> = Promise.resolve();
+
   private constructor(
     private service: DailyTaskTimerService,
     private readonly log: DailyTimerEventLog,
@@ -590,23 +592,27 @@ export class PersistentDailyTaskTimer {
   async transition(
     operation: (draft: DailyTaskTimerService) => DailyTimerTransition
   ): Promise<DailyTimerTransition> {
-    const draft = new DailyTaskTimerService(this.service.getEvents(), this.options);
-    const result = operation(draft);
-    if (!result.idempotent && result.events.length > 0) {
-      await this.log.appendJsonl(eventsToJsonl(result.events));
-      this.service = draft;
-    }
-    return result;
+    return this.withTransitionLock(async () => {
+      const draft = new DailyTaskTimerService(this.service.getEvents(), this.options);
+      const result = operation(draft);
+      if (!result.idempotent && result.events.length > 0) {
+        await this.log.appendJsonl(eventsToJsonl(result.events));
+        this.service = draft;
+      }
+      return result;
+    });
   }
 
   async appendEvents(events: readonly DailyTimerEvent[]): Promise<{ accepted: DailyTimerEvent[]; duplicateEventIds: string[] }> {
-    const draft = new DailyTaskTimerService(this.service.getEvents(), this.options);
-    const result = draft.appendEvents(events);
-    if (result.accepted.length > 0) {
-      await this.log.appendJsonl(eventsToJsonl(result.accepted));
-      this.service = draft;
-    }
-    return result;
+    return this.withTransitionLock(async () => {
+      const draft = new DailyTaskTimerService(this.service.getEvents(), this.options);
+      const result = draft.appendEvents(events);
+      if (result.accepted.length > 0) {
+        await this.log.appendJsonl(eventsToJsonl(result.accepted));
+        this.service = draft;
+      }
+      return result;
+    });
   }
 
   async archive(name = `task-timer-events-${Date.now()}.jsonl`): Promise<DailyTimerArchive> {
@@ -628,6 +634,21 @@ export class PersistentDailyTaskTimer {
 
   exportJsonl(): string {
     return this.service.exportJsonl();
+  }
+
+  private async withTransitionLock<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.transitionTail;
+    let release: (() => void) | undefined;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.transitionTail = previous.then(() => current);
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release?.();
+    }
   }
 }
 

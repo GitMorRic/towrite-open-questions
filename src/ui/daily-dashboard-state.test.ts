@@ -1,8 +1,18 @@
 import { describe, expect, it } from "vitest";
+import type { DailyPlanGroup } from "../daily/types";
 import type { DailyDashboardSnapshot } from "./daily-dashboard-types";
 import {
   dailyDateForPlanningDay,
+  dailyDueDateForShortcut,
+  dailyCategories,
+  dailyGroupLabel,
+  dailyItemCategory,
+  dailyItemDepth,
+  filterDailyItemsByCategory,
+  buildDailyCalendar,
   dailySnapshotFingerprint,
+  filterAvailableTaskPoolItems,
+  groupDailyItems,
   isDailySummaryCurrent,
   selectDailyOverview
 } from "./daily-dashboard-state";
@@ -46,6 +56,55 @@ describe("Daily dashboard summary basis", () => {
     expect(dailyDateForPlanningDay("tomorrow", lateLocalTime)).toBe("2026-07-24");
   });
 
+  it("offers only unassigned pool tasks and filters by text, category, project, or target", () => {
+    const base = {
+      schemaVersion: 1 as const,
+      sourcePath: "Planning/Task Pool.md",
+      line: 1,
+      endLine: 1,
+      rawLine: "",
+      rawBlock: "",
+      revision: {
+        value: "tpr_test",
+        sourcePath: "Planning/Task Pool.md",
+        taskId: ""
+      },
+      unknownLines: []
+    };
+    const pool = [
+      {
+        ...base,
+        id: `task_${"a".repeat(32)}`,
+        taskId: `task_${"a".repeat(32)}`,
+        text: "写发布说明",
+        category: "写作",
+        state: "pool" as const
+      },
+      {
+        ...base,
+        id: `task_${"b".repeat(32)}`,
+        taskId: `task_${"b".repeat(32)}`,
+        text: "继续 Echo",
+        project: "创作工具",
+        state: "returned" as const
+      },
+      {
+        ...base,
+        id: `task_${"c".repeat(32)}`,
+        taskId: `task_${"c".repeat(32)}`,
+        text: "已经安排",
+        state: "planned" as const
+      }
+    ];
+
+    expect(filterAvailableTaskPoolItems(pool).map((item) => item.text))
+      .toEqual(["写发布说明", "继续 Echo"]);
+    expect(filterAvailableTaskPoolItems(pool, "写作").map((item) => item.text))
+      .toEqual(["写发布说明"]);
+    expect(filterAvailableTaskPoolItems(pool, "创作工具").map((item) => item.text))
+      .toEqual(["继续 Echo"]);
+  });
+
   it("keeps one current task and only two upcoming tasks while counting all", () => {
     const basis = snapshot();
     basis.plan.items = [
@@ -79,6 +138,128 @@ describe("Daily dashboard summary basis", () => {
     expect(primary.current?.id).toBe("daily_primary");
     expect(first.current?.id).toBe("daily_first");
   });
+
+  it("derives categories and depth while allowing explicit presentation fields", () => {
+    const grouped = item("grouped", "todo", {
+      lineage: {
+        groups: [{
+          id: "group_a",
+          text: "[[Project Note|项目]]",
+          sourcePath: "Daily/2026-07-23.md",
+          line: 1,
+          endLine: 2,
+          depth: 0,
+          links: []
+        }],
+        revision: "lineage_1"
+      }
+    });
+    const explicit = {
+      ...item("explicit", "todo"),
+      category: "写作与发布",
+      depth: 2
+    };
+
+    expect(dailyItemCategory(grouped)).toBe("项目");
+    expect(dailyItemCategory(explicit)).toBe("写作与发布");
+    expect(dailyItemDepth(explicit)).toBe(2);
+    expect(dailyCategories([grouped, explicit])).toEqual(["项目", "写作与发布"]);
+    expect(filterDailyItemsByCategory([grouped, explicit], "项目")).toEqual([grouped]);
+  });
+
+  it("projects explicit categories and Markdown lineage without losing source row order", () => {
+    const projectGroup = group("group_project", "[[Project Note|Project]]", 2, 12, 0);
+    const launchGroup = group("group_launch", "[[Launch Plan|Launch]]", 4, 10, 1, "group_project");
+    const fullMarkdownOrder = [
+      item("explicit", "todo", {
+        category: "Editorial",
+        lineage: {
+          groups: [projectGroup, launchGroup],
+          revision: "lineage_explicit"
+        }
+      }),
+      item("launch_first", "todo", {
+        lineage: {
+          groups: [projectGroup, launchGroup],
+          revision: "lineage_launch_first"
+        }
+      }),
+      item("project_task", "todo", {
+        lineage: {
+          groups: [projectGroup],
+          revision: "lineage_project"
+        }
+      }),
+      item("launch_second", "todo", {
+        lineage: {
+          groups: [projectGroup, launchGroup],
+          revision: "lineage_launch_second"
+        }
+      }),
+      item("ungrouped", "todo")
+    ];
+
+    expect(dailyGroupLabel(projectGroup)).toBe("Project");
+    expect(dailyGroupLabel(launchGroup)).toBe("Launch");
+
+    const projected = groupDailyItems(
+      fullMarkdownOrder,
+      { groups: [projectGroup, launchGroup] },
+      fullMarkdownOrder
+    );
+    expect(projected.map((bucket) => [bucket.key, bucket.label, bucket.path])).toEqual([
+      ["category:Editorial", "Editorial", "Project / Launch"],
+      ["group_launch", "Launch", "Project / Launch"],
+      ["group_project", "Project", undefined],
+      ["__ungrouped", dailyItemCategory(fullMarkdownOrder[4]), undefined]
+    ]);
+    expect(projected.map((bucket) =>
+      bucket.items.map(({ item: projectedItem, index }) => [projectedItem.id, index])
+    )).toEqual([
+      [["explicit", 0]],
+      [["launch_first", 1], ["launch_second", 3]],
+      [["project_task", 2]],
+      [["ungrouped", 4]]
+    ]);
+
+    const filtered = filterDailyItemsByCategory(fullMarkdownOrder, "Launch");
+    const filteredProjection = groupDailyItems(
+      filtered,
+      { groups: [projectGroup, launchGroup] },
+      fullMarkdownOrder
+    );
+    expect(filtered.map((candidate) => candidate.id)).toEqual([
+      "launch_first",
+      "launch_second"
+    ]);
+    expect(filteredProjection).toHaveLength(1);
+    expect(filteredProjection[0].items.map(({ item: projectedItem, index }) => [
+      projectedItem.id,
+      index
+    ])).toEqual([
+      ["launch_first", 1],
+      ["launch_second", 3]
+    ]);
+  });
+
+  it("provides local date shortcuts and a stable calendar projection", () => {
+    const monday = new Date(2026, 6, 27, 9, 30);
+    expect(dailyDueDateForShortcut("today", monday)).toBe("2026-07-27");
+    expect(dailyDueDateForShortcut("tomorrow", monday)).toBe("2026-07-28");
+    expect(dailyDueDateForShortcut("friday", monday)).toBe("2026-07-31");
+    expect(dailyDueDateForShortcut("next-week", monday)).toBe("2026-08-03");
+    expect(dailyDueDateForShortcut("clear", monday)).toBe("");
+
+    const due = item("due", "todo", { dueDate: "2026-07-30" });
+    const fallback = item("fallback", "todo", { dueDate: "" });
+    expect(buildDailyCalendar([fallback, due], "2026-07-27").map((entry) => [
+      entry.date,
+      entry.items.map((candidate) => candidate.id)
+    ])).toEqual([
+      ["2026-07-27", ["fallback"]],
+      ["2026-07-30", ["due"]]
+    ]);
+  });
 });
 
 function item(
@@ -99,6 +280,26 @@ function item(
       blockId: id
     },
     ...patch
+  };
+}
+
+function group(
+  id: string,
+  text: string,
+  line: number,
+  endLine: number,
+  depth: number,
+  parentGroupId?: string
+): DailyPlanGroup {
+  return {
+    id,
+    text,
+    sourcePath: "Daily/2026-07-23.md",
+    line,
+    endLine,
+    depth,
+    parentGroupId,
+    links: []
   };
 }
 

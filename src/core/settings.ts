@@ -208,6 +208,18 @@ export interface ToWriteDailySettings {
   dailyNoteFormat: "YYYY-MM-DD.md";
   /** Fixed planner document used when planSourceMode is fixed-document. */
   fixedPlanPath: string;
+  /** Markdown truth source for reusable work that has not been assigned to a day. */
+  taskPoolPath: string;
+  /** Return unfinished pool-backed assignments when a day has ended. */
+  autoReturnUnfinished: boolean;
+  /**
+   * Mirror scheduling fields as Tasks emoji on the checkbox line. Disabled by
+   * default so ToWrite metadata never changes the human-readable task title.
+   */
+  tasksCompatibilityOutput: boolean;
+  /** User-owned category presets used by the planner and task-pool board. */
+  categoryPresets: ToWriteDailyCategoryPreset[];
+  dashboardDefaultView: "list" | "board" | "table" | "calendar";
   /** Date section heading in a fixed planner document remains YYYY-MM-DD. */
   planHeading: string;
   todoHeading: string;
@@ -232,6 +244,13 @@ export interface ToWriteDailySettings {
   summaryDevicePolicy: import("../daily/types").DailySummaryDevicePolicy;
   /** Prefer the trusted Backend DailyOps writer while its capability handshake is healthy. */
   writerMode: "auto" | "local" | "backend";
+}
+
+export interface ToWriteDailyCategoryPreset {
+  id: string;
+  label: string;
+  color: string;
+  icon?: string;
 }
 
 export interface ToWriteSettings {
@@ -616,6 +635,16 @@ export const DEFAULT_SETTINGS: ToWriteSettings = {
     dailyNoteRoot: "Daily",
     dailyNoteFormat: "YYYY-MM-DD.md",
     fixedPlanPath: "Planning/Daily Plans.md",
+    taskPoolPath: "Planning/Task Pool.md",
+    autoReturnUnfinished: true,
+    tasksCompatibilityOutput: false,
+    categoryPresets: [
+      { id: "project", label: "项目", color: "#4f8cff", icon: "folder-kanban" },
+      { id: "writing", label: "写作与发布", color: "#d1843e", icon: "pen-line" },
+      { id: "learning", label: "记录与搞懂", color: "#3e9b78", icon: "lightbulb" },
+      { id: "other", label: "其他", color: "#7b8494", icon: "shapes" }
+    ],
+    dashboardDefaultView: "list",
     planHeading: "\u4eca\u65e5\u8ba1\u5212",
     todoHeading: "ToDo",
     summaryHeading: "\u4eca\u65e5\u603b\u7ed3",
@@ -722,6 +751,15 @@ export function normalizeDailySettings(settings?: Partial<ToWriteDailySettings>)
     dailyNoteRoot: normalizeVaultFolderSetting(settings?.dailyNoteRoot, defaults.dailyNoteRoot),
     dailyNoteFormat: "YYYY-MM-DD.md",
     fixedPlanPath: normalizeVaultFileSetting(settings?.fixedPlanPath, defaults.fixedPlanPath),
+    taskPoolPath: normalizeVaultFileSetting(settings?.taskPoolPath, defaults.taskPoolPath),
+    autoReturnUnfinished: settings?.autoReturnUnfinished !== false,
+    tasksCompatibilityOutput: settings?.tasksCompatibilityOutput === true,
+    categoryPresets: normalizeDailyCategoryPresets(settings?.categoryPresets, defaults.categoryPresets),
+    dashboardDefaultView: settings?.dashboardDefaultView === "board"
+      || settings?.dashboardDefaultView === "table"
+      || settings?.dashboardDefaultView === "calendar"
+      ? settings.dashboardDefaultView
+      : "list",
     planHeading: normalizeHeadingSetting(settings?.planHeading, defaults.planHeading),
     todoHeading: normalizeHeadingSetting(settings?.todoHeading, defaults.todoHeading),
     summaryHeading: normalizeHeadingSetting(settings?.summaryHeading, defaults.summaryHeading),
@@ -752,6 +790,34 @@ export function normalizeDailySettings(settings?: Partial<ToWriteDailySettings>)
       ? settings.writerMode
       : "auto"
   };
+}
+
+function normalizeDailyCategoryPresets(
+  value: unknown,
+  fallback: ToWriteDailyCategoryPreset[]
+): ToWriteDailyCategoryPreset[] {
+  if (!Array.isArray(value)) return fallback.map((preset) => ({ ...preset }));
+  const output: ToWriteDailyCategoryPreset[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Partial<ToWriteDailyCategoryPreset>;
+    const id = String(record.id ?? record.label ?? "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/gu, "-")
+      .replace(/^-+|-+$/gu, "")
+      .slice(0, 60);
+    const label = String(record.label ?? "").trim().replace(/\s+/gu, " ").slice(0, 80);
+    if (!id || !label || seen.has(id)) continue;
+    const color = /^#[0-9a-f]{6}$/iu.test(String(record.color ?? ""))
+      ? String(record.color).toLowerCase()
+      : "#7b8494";
+    const icon = String(record.icon ?? "").trim().replace(/[^a-z0-9-]/giu, "").slice(0, 60);
+    seen.add(id);
+    output.push({ id, label, color, ...(icon ? { icon } : {}) });
+  }
+  return (output.length ? output : fallback).map((preset) => ({ ...preset }));
 }
 
 function normalizeRunningCardRefreshMinutes(value: unknown): 0 | 5 | 15 | 30 {

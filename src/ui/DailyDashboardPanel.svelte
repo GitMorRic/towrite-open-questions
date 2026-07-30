@@ -2,11 +2,14 @@
   import {
     ArrowDown,
     ArrowUp,
+    ArchiveRestore,
     BarChart3,
     BookOpen,
     CalendarClock,
+    CalendarDays,
     Check,
     ChevronDown,
+    Columns3,
     Clock3,
     Circle,
     CirclePlay,
@@ -14,6 +17,9 @@
     FilePlus2,
     FolderTree,
     History,
+    LayoutList,
+    ListTodo,
+    MoreHorizontal,
     MonitorUp,
     Pause,
     PenLine,
@@ -23,30 +29,48 @@
     RotateCcw,
     Save,
     Send,
+    Settings2,
     Sparkles,
+    Table2,
+    Tag,
     Target,
+    Trash2,
     Undo2
   } from "lucide-svelte";
   import { onDestroy, onMount } from "svelte";
   import { buildDailyDeckSnapshot } from "../hub/daily-cards";
   import type {
     DailyDashboardAdapter,
+    DailyDashboardConfiguration,
     DailyDashboardSnapshot,
+    DailyDashboardView,
     DailyDevicePolicy,
-    DailyPlanGroup,
     DailyPlanHierarchy,
     DailyPlanItemKind,
     DailyPlanItem,
+    DailyPlanItemPresentation,
     DailyPlanMetadataPresentation,
     DailyPlanNormalizationPreview,
     DailyPlanningCandidate,
+    DailyPlanPriority,
     DailySummaryPresentation,
     DailyTaskTimingSnapshot,
-    DailyTimerEvent
+    DailyTimerEvent,
+    TaskPoolDocument,
+    TaskPoolItem
   } from "./daily-dashboard-types";
   import {
+    buildDailyCalendar,
+    dailyCategories,
     dailyDateForPlanningDay,
+    dailyDueDateForShortcut,
+    dailyGroupLabel,
+    dailyItemCategory,
+    dailyItemDepth,
     dailySnapshotFingerprint,
+    filterAvailableTaskPoolItems,
+    filterDailyItemsByCategory,
+    groupDailyItems,
     isDailySummaryCurrent,
     selectDailyOverview,
     type DailyPlanningDay
@@ -54,16 +78,34 @@
 
   export let dailyApi: DailyDashboardAdapter | undefined = undefined;
   export let onOpenCapture: (() => void) | undefined = undefined;
+  export let initialSurface: "today" | "pool" | "review" = "today";
 
+  let surface: "today" | "pool" | "review" = initialSurface;
   let planningDay: DailyPlanningDay = "today";
   let selectedDate = dailyDateForPlanningDay(planningDay);
   let snapshot: DailyDashboardSnapshot | undefined;
   let metadata: DailyPlanMetadataPresentation = {};
   let candidates: DailyPlanningCandidate[] = [];
+  let configuration: DailyDashboardConfiguration = {
+    categoryPresets: [],
+    defaultView: "list",
+    taskPoolPath: "Planning/Task Pool.md",
+    autoReturnUnfinished: true
+  };
+  let configurationLoaded = false;
+  let taskPool: TaskPoolDocument | undefined;
+  let poolDraftText = "";
+  let poolDraftCategory = "";
+  let poolDraftDueDate = "";
+  let poolDraftEstimate = "";
+  let poolDraftTarget = "";
+  let poolCategoryFilter = "";
+  let poolPickerSearch = "";
   let loading = true;
   let error = "";
   let busy = "";
-  let plannerExpanded = true;
+  let plannerExpanded = false;
+  let previewExpanded = false;
   let candidatesExpanded = false;
   let previewItemId = "";
   let previewPage: "overview" | "item" | "result" = "overview";
@@ -72,6 +114,10 @@
   let draftKind: DailyPlanItemKind = "task";
   let draftPolicy: DailyDevicePolicy = "none";
   let draftSchedule = "";
+  let draftDueDate = "";
+  let draftCategory = "";
+  let draftPriority: DailyPlanPriority = "normal";
+  let draftTags = "";
   let draftGoal = "";
   let draftNextStep = "";
   let draftEstimate = "";
@@ -86,6 +132,10 @@
   let editTarget = "";
   let editPrimary = false;
   let editMinimum = false;
+  let editDueDate = "";
+  let editCategory = "";
+  let editPriority: DailyPlanPriority = "normal";
+  let editTags = "";
   let generatedSummary: DailySummaryPresentation | undefined;
   let generatedSummaryFingerprint = "";
   let summary: DailySummaryPresentation | undefined;
@@ -95,6 +145,8 @@
   let timingByItem: Record<string, DailyTaskTimingSnapshot> = {};
   let timerEventsByItem: Record<string, DailyTimerEvent[]> = {};
   let collapsedGroups = new Set<string>();
+  let dashboardView: DailyDashboardView = "list";
+  let selectedCategory = "";
   let correctionEventByItem: Record<string, string> = {};
   let correctionTimeByItem: Record<string, string> = {};
   let correctionReasonByItem: Record<string, string> = {};
@@ -110,12 +162,33 @@
   onDestroy(() => unsubscribe?.());
 
   $: selectedDate = dailyDateForPlanningDay(planningDay);
-  $: items = snapshot?.plan.items ?? [];
+  $: items = (snapshot?.plan.items ?? []) as DailyPlanItemPresentation[];
   $: overview = selectDailyOverview(items);
   $: todoItems = items.filter((item) => item.status === "todo");
   $: inProgressItems = items.filter((item) => item.status === "in-progress");
   $: doneItems = items.filter((item) => item.status === "done");
-  $: groupedItems = groupDailyItems(items);
+  $: categories = dailyCategories(items);
+  $: categoryChoices = [...new Set([
+    ...configuration.categoryPresets.map((preset) => preset.label),
+    ...categories,
+    ...(taskPool?.items.map((item) => item.category).filter((value): value is string => Boolean(value)) ?? [])
+  ])];
+  $: poolItems = taskPool?.items ?? [];
+  $: availablePoolItems = filterAvailableTaskPoolItems(poolItems);
+  $: visiblePoolPickerItems = filterAvailableTaskPoolItems(poolItems, poolPickerSearch);
+  $: otherCandidates = candidates.filter((candidate) => candidate.source !== "pool");
+  $: filteredPoolItems = poolItems.filter((item) =>
+    !poolCategoryFilter || item.category === poolCategoryFilter
+  );
+  $: filteredItems = filterDailyItemsByCategory(items, selectedCategory);
+  $: groupedItems = groupDailyItems(filteredItems, hierarchy, items);
+  $: unnormalizedTaskCount = hierarchy?.tasks.filter((task) => task.normalizationRequired).length ?? 0;
+  $: boardColumns = [
+    { status: "todo" as const, label: "待办", items: filteredItems.filter((item) => item.status === "todo") },
+    { status: "in-progress" as const, label: "进行中", items: filteredItems.filter((item) => item.status === "in-progress") },
+    { status: "done" as const, label: "已完成", items: filteredItems.filter((item) => item.status === "done") }
+  ];
+  $: calendarEntries = buildDailyCalendar(filteredItems, selectedDate);
   $: previewItem = items.find((item) => item.id === previewItemId)
     ?? overview.current
     ?? doneItems[0];
@@ -136,7 +209,7 @@
           estimateMinutes: item.estimateMinutes,
           target: item.target,
           startedAt: item.startedAt,
-          groupLabel: displayGroupLabel(item.lineage?.groups.at(-1)),
+           groupLabel: dailyGroupLabel(item.lineage?.groups.at(-1)),
           targetLabel: item.targetResolution?.displayLabel,
           targetProvenance: item.targetResolution?.source,
           lineageRevision: item.lineageRevision,
@@ -167,6 +240,7 @@
       snapshot = undefined;
       metadata = {};
       candidates = [];
+      taskPool = undefined;
       hierarchy = undefined;
       timingByItem = {};
       timerEventsByItem = {};
@@ -176,13 +250,15 @@
     loading = true;
     error = "";
     try {
-      const [nextSnapshot, nextMetadata, nextCandidates, nextHierarchy] = await Promise.all([
+      const [nextSnapshot, nextMetadata, nextCandidates, nextHierarchy, nextConfiguration, nextTaskPool] = await Promise.all([
         dailyApi.getSnapshot(date),
         dailyApi.getPlanMetadata?.(date) ?? Promise.resolve({}),
         candidatesExpanded
           ? dailyApi.listPlanningCandidates?.(date) ?? Promise.resolve([])
           : Promise.resolve(candidates),
-        dailyApi.getPlanHierarchy?.(date) ?? Promise.resolve(undefined)
+        dailyApi.getPlanHierarchy?.(date) ?? Promise.resolve(undefined),
+        dailyApi.getConfiguration?.() ?? Promise.resolve(configuration),
+        dailyApi.getTaskPool?.() ?? Promise.resolve(undefined)
       ]);
       const nextTimingEntries = nextSnapshot && dailyApi.getItemTiming
         ? await Promise.all(nextSnapshot.plan.items.map(async (item) => [
@@ -208,6 +284,12 @@
       metadata = nextMetadata;
       candidates = nextCandidates;
       hierarchy = nextHierarchy;
+      configuration = nextConfiguration;
+      taskPool = nextTaskPool;
+      if (!configurationLoaded) {
+        dashboardView = nextConfiguration.defaultView;
+        configurationLoaded = true;
+      }
       timingByItem = Object.fromEntries(
         nextTimingEntries.filter((entry): entry is readonly [string, DailyTaskTimingSnapshot] => Boolean(entry[1]))
       );
@@ -228,13 +310,17 @@
     }
   }
 
-  async function run(id: string, action: () => void | Promise<void>): Promise<void> {
+  async function run(
+    id: string,
+    action: () => void | Promise<void>,
+    refreshDate?: string
+  ): Promise<void> {
     if (busy) return;
     busy = id;
     error = "";
     try {
       await action();
-      await refresh();
+      await refresh(refreshDate);
     } catch (cause) {
       error = messageForError(cause);
     } finally {
@@ -255,6 +341,25 @@
     ));
   }
 
+  function directChildTasks(item: DailyPlanItemPresentation): DailyPlanItemPresentation[] {
+    return items.filter((candidate) => candidate.parentTaskId === item.id);
+  }
+
+  async function toggleDailyCompletion(item: DailyPlanItemPresentation): Promise<void> {
+    if (item.status === "done") {
+      await run(`reopen:${item.id}`, () => dailyApi?.reopenItem?.(item.id, item.revision));
+      return;
+    }
+    const unfinishedChildren = directChildTasks(item).filter((child) => child.status !== "done");
+    if (
+      unfinishedChildren.length > 0
+      && !window.confirm(`还有 ${unfinishedChildren.length} 个直接子任务未完成。仍要完成父任务吗？`)
+    ) {
+      return;
+    }
+    await run(`complete:${item.id}`, () => dailyApi?.completeItem?.(item.id, item.revision));
+  }
+
   async function createItem(): Promise<void> {
     const text = draftText.trim();
     if (!text || !dailyApi?.createItem) return;
@@ -267,6 +372,10 @@
         scheduledFor: draftPolicy === "scheduled" && draftSchedule
           ? new Date(draftSchedule).toISOString()
           : undefined,
+        dueDate: draftDueDate || undefined,
+        category: draftCategory.trim() || undefined,
+        priority: draftPriority,
+        tags: parseTags(draftTags),
         goal: draftGoal.trim() || undefined,
         nextStep: draftNextStep.trim() || undefined,
         estimateMinutes: positiveNumber(draftEstimate),
@@ -284,9 +393,54 @@
     draftNextStep = "";
     draftEstimate = "";
     draftTarget = "";
+    draftDueDate = "";
+    draftCategory = "";
+    draftPriority = "normal";
+    draftTags = "";
     draftPrimary = false;
     draftMinimum = false;
     if (draftPolicy !== "scheduled") draftSchedule = "";
+  }
+
+  async function createPoolTask(): Promise<void> {
+    const text = poolDraftText.trim();
+    if (!text || !dailyApi?.createPoolTask) return;
+    await run("pool:create", async () => {
+      await dailyApi?.createPoolTask?.({
+        text,
+        category: poolDraftCategory.trim() || undefined,
+        target: poolDraftTarget.trim() || undefined,
+        dueDate: poolDraftDueDate || undefined,
+        estimateMinutes: positiveNumber(poolDraftEstimate)
+      });
+      poolDraftText = "";
+      poolDraftCategory = "";
+      poolDraftTarget = "";
+      poolDraftDueDate = "";
+      poolDraftEstimate = "";
+    });
+  }
+
+  async function assignPoolTask(item: TaskPoolItem, day: DailyPlanningDay): Promise<void> {
+    if (!dailyApi?.assignPoolTask) return;
+    const date = dailyDateForPlanningDay(day);
+    surface = "today";
+    planningDay = day;
+    await run(
+      `pool:assign:${item.taskId}`,
+      () => dailyApi?.assignPoolTask?.(item.taskId, item.revision, date),
+      date
+    );
+  }
+
+  function poolStateLabel(item: TaskPoolItem): string {
+    return {
+      pool: "任务池",
+      planned: item.plannedDate ? `已安排 ${item.plannedDate}` : "已安排",
+      returned: item.returnedDate ? `已回池 ${item.returnedDate}` : "已回池",
+      dropped: "不再追踪",
+      done: "已完成"
+    }[item.state];
   }
 
   function beginEdit(item: DailyPlanItem): void {
@@ -298,6 +452,10 @@
     editTarget = item.target ?? "";
     editPrimary = Boolean(item.primary);
     editMinimum = Boolean(item.minimum);
+    editDueDate = item.dueDateExplicit === false ? "" : (item.dueDate ?? "");
+    editCategory = item.category ?? dailyItemCategory(item);
+    editPriority = item.priority ?? "normal";
+    editTags = item.tags.join(", ");
   }
 
   async function saveItem(item: DailyPlanItem): Promise<void> {
@@ -309,6 +467,10 @@
         nextStep: editNextStep.trim() || null,
         estimateMinutes: positiveNumber(editEstimate) ?? null,
         target: editTarget.trim() || null,
+        dueDate: editDueDate || null,
+        category: editCategory.trim() || null,
+        priority: editPriority,
+        tags: parseTags(editTags),
         primary: editPrimary,
         minimum: editMinimum
       });
@@ -535,6 +697,7 @@
 
   function candidateSourceLabel(source: DailyPlanningCandidate["source"]): string {
     return {
+      pool: "任务池",
       tothink: "ToThink",
       towrite: "ToWrite",
       inbox: "Inbox",
@@ -554,49 +717,39 @@
     }[policy ?? "none"];
   }
 
-  function groupDailyItems(source: DailyPlanItem[]): Array<{
-    key: string;
-    label: string;
-    path?: string;
-    group?: DailyPlanGroup;
-    items: Array<{ item: DailyPlanItem; index: number }>;
-  }> {
-    const result: Array<{
-      key: string;
-      label: string;
-      path?: string;
-      group?: DailyPlanGroup;
-      items: Array<{ item: DailyPlanItem; index: number }>;
-    }> = [];
-    const byKey = new Map<string, (typeof result)[number]>();
-    source.forEach((item, index) => {
-      const groups = item.lineage?.groups ?? [];
-      const group = groups.at(-1)
-        ?? (item.groupId ? hierarchy?.groups.find((candidate) => candidate.id === item.groupId) : undefined);
-      const key = group?.id ?? "__ungrouped";
-      let bucket = byKey.get(key);
-      if (!bucket) {
-        bucket = {
-          key,
-          label: displayGroupLabel(group),
-          path: groups.length > 1 ? groups.map((value) => displayGroupLabel(value)).join(" / ") : undefined,
-          group,
-          items: []
-        };
-        byKey.set(key, bucket);
-        result.push(bucket);
-      }
-      bucket.items.push({ item, index });
-    });
-    return result;
+  function setDraftDueDate(shortcut: "today" | "tomorrow" | "friday" | "next-week" | "clear"): void {
+    draftDueDate = dailyDueDateForShortcut(shortcut);
   }
 
-  function displayGroupLabel(group: DailyPlanGroup | undefined): string {
-    if (!group) return "未分类";
-    return group.text
-      .replace(/\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]/gu, (_match, target: string, alias?: string) => alias?.trim() || target.trim())
-      .replace(/\[([^\]]+)\]\([^)]+\)/gu, "$1")
-      .trim() || group.links[0]?.label || group.links[0]?.linkText || "未分类";
+  function setEditDueDate(shortcut: "today" | "tomorrow" | "friday" | "next-week" | "clear"): void {
+    editDueDate = dailyDueDateForShortcut(shortcut);
+  }
+
+  function parseTags(value: string): string[] {
+    return [...new Set(value
+      .split(/[\s,，]+/u)
+      .map((tag) => tag.trim().replace(/^#/u, ""))
+      .filter(Boolean))];
+  }
+
+  function priorityLabel(priority: DailyPlanPriority | undefined): string {
+    return {
+      highest: "最高",
+      high: "高",
+      normal: "普通",
+      low: "低",
+      lowest: "最低"
+    }[priority ?? "normal"];
+  }
+
+  function formatCalendarDate(value: string): string {
+    const timestamp = Date.parse(`${value}T12:00:00`);
+    if (!Number.isFinite(timestamp)) return value;
+    return new Intl.DateTimeFormat("zh-CN", {
+      month: "long",
+      day: "numeric",
+      weekday: "short"
+    }).format(new Date(timestamp));
   }
 
   function targetSourceLabel(item: DailyPlanItem): string {
@@ -760,6 +913,20 @@
       <div class="daily-error" role="alert">{error}</div>
     {/if}
 
+    <nav class="surface-switcher" aria-label="每日工作区">
+      <button type="button" class:active={surface === "today"} on:click={() => (surface = "today")}>
+        <CalendarDays size={14} />今日
+      </button>
+      <button type="button" class:active={surface === "pool"} on:click={() => (surface = "pool")}>
+        <ListTodo size={14} />任务池
+        <em>{poolItems.filter((item) => item.state === "pool" || item.state === "returned").length}</em>
+      </button>
+      <button type="button" class:active={surface === "review"} on:click={() => (surface = "review")}>
+        <BarChart3 size={14} />复盘
+      </button>
+    </nav>
+
+    {#if surface === "today"}
     <nav class="day-switcher" aria-label="计划日期">
       <button
         type="button"
@@ -773,11 +940,59 @@
         aria-pressed={planningDay === "tomorrow"}
         on:click={() => switchDay("tomorrow")}
       >明日</button>
-      <span>{selectedDate}</span>
+      <span class="selected-date">{selectedDate}</span>
+      <div
+        class="source-state"
+        class:missing={metadata.sourceExists === false}
+        class:saving={Boolean(busy)}
+        role="status"
+        aria-live="polite"
+        title="这里显示唯一的 Markdown 计划真源。要同步已有清单，可在插件设置中把“每日计划来源”切换为固定规划文档。"
+      >
+        <i></i>
+        <span>
+          <strong>{metadata.sourcePath || "正在解析计划来源"}</strong>
+          <small>
+            {#if busy}
+              正在写回 Markdown…
+            {:else if metadata.sourceExists === false}
+              {metadata.sourceKind === "fixed-document" ? "固定规划文档" : "每日笔记"} · 文件尚未创建
+            {:else if unnormalizedTaskCount > 0}
+              {metadata.sourceKind === "fixed-document" ? "固定规划文档" : "每日笔记"} · {unnormalizedTaskCount} 条待规范化
+            {:else if (metadata.diagnostics?.length ?? 0) > 0}
+              {metadata.sourceKind === "fixed-document" ? "固定规划文档" : "每日笔记"} · {metadata.diagnostics?.length ?? 0} 个格式问题
+            {:else}
+              {metadata.sourceKind === "fixed-document" ? "固定规划文档" : "每日笔记"} · Markdown 双向同步
+            {/if}
+          </small>
+        </span>
+      </div>
+      {#if metadata.sourceExists === false && dailyApi.ensurePlanSource}
+        <button
+          class="source-button create-source"
+          type="button"
+          disabled={Boolean(busy)}
+          on:click={() => run("ensure-source", () => dailyApi?.ensurePlanSource?.(selectedDate))}
+        >
+          <FilePlus2 size={14} />
+          创建计划页
+        </button>
+      {/if}
       {#if dailyApi.openPlanSource}
-        <button class="source-button" type="button" on:click={() => dailyApi?.openPlanSource?.(selectedDate)}>
+        <button
+          class="source-button"
+          type="button"
+          disabled={metadata.sourceExists === false}
+          on:click={() => dailyApi?.openPlanSource?.(selectedDate)}
+        >
           <BookOpen size={14} />
-          打开计划原文
+          打开原文
+        </button>
+      {/if}
+      {#if dailyApi.openPlanSettings}
+        <button class="source-button" type="button" on:click={() => dailyApi?.openPlanSettings?.()}>
+          <Settings2 size={14} />
+          更改来源
         </button>
       {/if}
     </nav>
@@ -828,10 +1043,10 @@
     <section class="planner-card">
       <button class="planner-heading" type="button" aria-expanded={plannerExpanded} on:click={() => (plannerExpanded = !plannerExpanded)}>
         <span>
-          <CalendarClock size={17} />
+          <Columns3 size={17} />
           <span>
-            <strong>编排{planningDay === "today" ? "今天" : "明天"}</strong>
-            <small>用户负责承诺；Echo 和 AI 只提供候选。</small>
+            <strong>编排与任务池</strong>
+            <small>新建任务，或从任务池搜索并安排到今天 / 明天。</small>
           </span>
         </span>
         <ChevronDown class={plannerExpanded ? "" : "rotated"} size={17} />
@@ -869,6 +1084,35 @@
               <input bind:value={draftEstimate} type="number" min="1" step="1" placeholder="15" />
             </label>
             <label>
+              <span>类别</span>
+              <input bind:value={draftCategory} list="daily-category-options" placeholder="项目 / 写作与发布" />
+            </label>
+            <label>
+              <span>优先级</span>
+              <select bind:value={draftPriority}>
+                <option value="highest">最高</option>
+                <option value="high">高</option>
+                <option value="normal">普通</option>
+                <option value="low">低</option>
+                <option value="lowest">最低</option>
+              </select>
+            </label>
+            <label>
+              <span>标签</span>
+              <input bind:value={draftTags} placeholder="研究, 发布" />
+            </label>
+            <label class="due-field">
+              <span>截止日期</span>
+              <input bind:value={draftDueDate} type="date" />
+              <span class="date-shortcuts" aria-label="截止日期快捷选择">
+                <button type="button" on:click={() => setDraftDueDate("today")}>今天</button>
+                <button type="button" on:click={() => setDraftDueDate("tomorrow")}>明天</button>
+                <button type="button" on:click={() => setDraftDueDate("friday")}>本周五</button>
+                <button type="button" on:click={() => setDraftDueDate("next-week")}>下周</button>
+                <button type="button" on:click={() => setDraftDueDate("clear")}>清除</button>
+              </span>
+            </label>
+            <label>
               <span>类型</span>
               <select bind:value={draftKind}>
                 <option value="task">任务</option>
@@ -894,6 +1138,9 @@
               </label>
             {/if}
           </div>
+          <datalist id="daily-category-options">
+            {#each categoryChoices as category}<option value={category}></option>{/each}
+          </datalist>
           <div class="planning-footer">
             <label class="check"><input bind:checked={draftPrimary} type="checkbox" />最重要的一件事</label>
             <label class="check"><input bind:checked={draftMinimum} type="checkbox" />再乱也至少完成</label>
@@ -904,20 +1151,69 @@
           </div>
         </form>
 
+        <section class="planner-pool-picker" aria-label="从任务池选择">
+          <header>
+            <span>
+              <ListTodo size={15} />
+              <span>
+                <strong>从任务池选择</strong>
+                <small>{availablePoolItems.length} 条尚未承诺日期的任务</small>
+              </span>
+            </span>
+            <button type="button" on:click={() => (surface = "pool")}>打开完整任务池</button>
+          </header>
+          {#if availablePoolItems.length === 0}
+            <p>任务池目前为空。长期任务先放进任务池，需要时再安排到今天或明天。</p>
+          {:else}
+            <div class="pool-picker-filter">
+              <input
+                type="search"
+                bind:value={poolPickerSearch}
+                placeholder="搜索任务、类别或目标…"
+                aria-label="搜索任务池"
+              />
+            </div>
+            <div class="pool-picker-list">
+              {#each visiblePoolPickerItems.slice(0, 8) as item (item.taskId)}
+                <article>
+                  <div>
+                    <strong>{item.text}</strong>
+                    <small>
+                      {[item.category, item.project, item.dueDate ? `DDL ${item.dueDate}` : "", item.estimateMinutes ? `${item.estimateMinutes}m` : ""]
+                        .filter(Boolean).join(" · ") || "未分类"}
+                    </small>
+                  </div>
+                  <button
+                    class="primary"
+                    type="button"
+                    disabled={Boolean(busy)}
+                    on:click={() => assignPoolTask(item, planningDay)}
+                  >加入{planningDay === "today" ? "今天" : "明天"}</button>
+                </article>
+              {/each}
+            </div>
+            {#if visiblePoolPickerItems.length > 8}
+              <p>还有 {visiblePoolPickerItems.length - 8} 条；可搜索或打开完整任务池查看。</p>
+            {:else if visiblePoolPickerItems.length === 0}
+              <p>没有匹配的任务。</p>
+            {/if}
+          {/if}
+        </section>
+
         <section class="candidate-slot">
           <button type="button" aria-expanded={candidatesExpanded} on:click={toggleCandidates}>
             <Sparkles size={15} />
-            也许值得重新捞回来
+            从 ToThink、Inbox 与 Echo 选择
             <ChevronDown class={candidatesExpanded ? "" : "rotated"} size={15} />
           </button>
           {#if candidatesExpanded}
             {#if !dailyApi.listPlanningCandidates}
               <p>候选接口尚未接入。ToThink、ToWrite、Inbox 与旧笔记不会被自动加入计划。</p>
-            {:else if candidates.length === 0}
+            {:else if otherCandidates.length === 0}
               <p>目前没有新的规划候选。</p>
             {:else}
               <div class="candidate-list">
-                {#each candidates as candidate (candidate.id)}
+                {#each otherCandidates as candidate (candidate.id)}
                   <article>
                     <span>{candidateSourceLabel(candidate.source)}</span>
                     <div><strong>{candidate.title}</strong>{#if candidate.description}<small>{candidate.description}</small>{/if}</div>
@@ -931,12 +1227,12 @@
       {/if}
     </section>
 
-    <div class="daily-main-grid">
+    <div class="daily-main-grid" class:preview-open={previewExpanded}>
       <section class="plan-list-card">
         <header>
           <div>
             <h3>{planningDay === "today" ? "今日" : "明日"}清单</h3>
-            <p>Markdown 顺序就是设备顺序；未完成项目不会自动迁移。</p>
+            <p>Markdown 顺序就是设备顺序；普通任务不自动迁移，任务池引用会在日期结束后回池。</p>
           </div>
           <div class="list-header-actions">
             {#if normalizationUndoToken && dailyApi.undoNormalization}
@@ -951,11 +1247,56 @@
                 规范化这份清单
               </button>
             {/if}
+            <button
+              type="button"
+              class:active={previewExpanded}
+              title={previewExpanded ? "收起墨水屏预览" : "打开墨水屏预览"}
+              on:click={() => (previewExpanded = !previewExpanded)}
+            >
+              <MonitorUp size={15} />
+              设备预览
+            </button>
             <button type="button" title="刷新计划" aria-label="刷新计划" on:click={() => refresh()}>
               <RefreshCw size={15} />
             </button>
           </div>
         </header>
+
+        <div class="dashboard-view-toolbar">
+          <div class="view-switcher" role="group" aria-label="清单视图">
+            <button class:active={dashboardView === "list"} type="button" title="列表视图" on:click={() => (dashboardView = "list")}><LayoutList size={14} />列表</button>
+            <button class:active={dashboardView === "board"} type="button" title="看板视图" on:click={() => (dashboardView = "board")}><Columns3 size={14} />看板</button>
+            <button class:active={dashboardView === "table"} type="button" title="表格视图" on:click={() => (dashboardView = "table")}><Table2 size={14} />表格</button>
+            <button class:active={dashboardView === "calendar"} type="button" title="日历视图" on:click={() => (dashboardView = "calendar")}><CalendarDays size={14} />日历</button>
+          </div>
+          <label class="category-filter">
+            <span>类别</span>
+            <select bind:value={selectedCategory}>
+              <option value="">全部类别</option>
+              {#each categories as category}<option value={category}>{category}</option>{/each}
+            </select>
+          </label>
+          <span class="filtered-count">{filteredItems.length} / {items.length}</span>
+        </div>
+
+        <form class="quick-add" on:submit|preventDefault={createItem}>
+          <Plus size={16} />
+          <input
+            bind:value={draftText}
+            placeholder={`新建${planningDay === "today" ? "今日" : "明日"}任务，可直接写 [[笔记链接]]`}
+            aria-label={`新建${planningDay === "today" ? "今日" : "明日"}任务`}
+          />
+          <button type="button" on:click={() => (plannerExpanded = true)}>
+            属性
+          </button>
+          <button
+            class="primary"
+            type="submit"
+            disabled={!draftText.trim() || !dailyApi.createItem || busy === "create"}
+          >
+            添加
+          </button>
+        </form>
 
         {#if normalizationPreview}
           <section class="normalization-preview" aria-label="规范化预览">
@@ -986,7 +1327,7 @@
                 {#if normalizationPreview.groups.length}
                   <ul>
                     {#each normalizationPreview.groups as group}
-                      <li><span>{displayGroupLabel(group)}</span><small>第 {group.line} 行</small></li>
+                      <li><span>{dailyGroupLabel(group)}</span><small>第 {group.line} 行</small></li>
                     {/each}
                   </ul>
                 {:else}
@@ -1028,11 +1369,44 @@
           </section>
         {/if}
 
-        {#if items.length === 0}
+        <div class:view-hidden={dashboardView !== "list"}>
+        {#if filteredItems.length === 0}
           <div class="daily-empty">
             <Circle size={24} />
-            <strong>这一天还没有计划</strong>
-            <p>可先使用“规范化这份清单”，把现有普通叶子列表安全转换成任务。</p>
+            <strong>
+              {#if items.length}
+                这个类别里还没有任务
+              {:else if metadata.sourceExists === false}
+                这一天的计划笔记还没有创建
+              {:else if unnormalizedTaskCount > 0}
+                发现 {unnormalizedTaskCount} 条笔记待办，尚未纳入 Dashboard
+              {:else}
+                计划原文的 ToDo 区段还是空的
+              {/if}
+            </strong>
+            <p>
+              {#if items.length}
+                切换到“全部类别”查看完整计划。
+              {:else if metadata.sourceExists === false}
+                当前真源是 {metadata.sourcePath}。在上方添加第一条任务，或先创建计划页。
+              {:else if unnormalizedTaskCount > 0}
+                普通列表或缺少稳定 block ID 的 checkbox 需要先预览并规范化；原有缩进、链接和说明不会被覆盖。
+              {:else}
+                Dashboard 与 {metadata.sourcePath} 双向同步；在任一边修改都会更新另一边。
+              {/if}
+            </p>
+            <div class="empty-actions">
+              {#if metadata.sourceExists === false && dailyApi.ensurePlanSource}
+                <button class="primary" type="button" disabled={Boolean(busy)} on:click={() => run("ensure-source", () => dailyApi?.ensurePlanSource?.(selectedDate))}>
+                  <FilePlus2 size={14} />创建 Markdown 计划页
+                </button>
+              {/if}
+              {#if unnormalizedTaskCount > 0 && dailyApi.getNormalizationPreview}
+                <button class="primary" type="button" disabled={Boolean(busy)} on:click={previewNormalizationForPlan}>
+                  <FileDiff size={14} />预览并规范化
+                </button>
+              {/if}
+            </div>
           </div>
         {:else}
           {#each groupedItems as group (group.key)}
@@ -1062,21 +1436,25 @@
                 {#each group.items as row (row.item.id)}
                   {@const item = row.item}
                   {@const index = row.index}
-            <article class:current={item.status === "in-progress"} class:completed={item.status === "done"} class="plan-item">
+            <article
+              class:current={item.status === "in-progress"}
+              class:completed={item.status === "done"}
+              class="plan-item"
+              style={`--task-depth: ${dailyItemDepth(item)}`}
+            >
               <button
                 class="check-button"
                 type="button"
                 disabled={item.status === "done" ? !dailyApi.reopenItem || Boolean(busy) : !dailyApi.completeItem || Boolean(busy)}
                 title={item.status === "done" ? "重新打开" : "标记完成"}
-                on:click={() => item.status === "done"
-                  ? run(`reopen:${item.id}`, () => dailyApi?.reopenItem?.(item.id, item.revision))
-                  : run(`complete:${item.id}`, () => dailyApi?.completeItem?.(item.id, item.revision))}
+                on:click={() => toggleDailyCompletion(item)}
               >
                 {#if item.status === "done"}<Check size={17} />{:else}<Circle size={17} />{/if}
               </button>
               <button class="item-main" type="button" on:click={() => {
                 previewItemId = item.id;
                 previewPage = "item";
+                previewExpanded = true;
               }}>
                 <span class="item-topline">
                   <span class={`kind kind-${item.kind}`}>{kindLabel(item.kind)}</span>
@@ -1085,6 +1463,15 @@
                   {#if item.scheduledFor}<time datetime={item.scheduledFor}>{formatDateTime(item.scheduledFor)}</time>{/if}
                 </span>
                 <strong>{item.text}</strong>
+                <span class="item-properties">
+                  <em>{dailyItemCategory(item)}</em>
+                  {#if item.priority && item.priority !== "normal"}<em class={`priority priority-${item.priority}`}>{priorityLabel(item.priority)}</em>{/if}
+                  {#if item.dueDateExplicit !== false && item.dueDate}<time datetime={item.dueDate}>截止 {item.dueDate}</time>{/if}
+                  {#if directChildTasks(item).length}
+                    <em>子任务 {directChildTasks(item).filter((child) => child.status === "done").length}/{directChildTasks(item).length}</em>
+                  {/if}
+                  {#each item.tags.slice(0, 3) as tag}<em class="tag"><Tag size={10} />{tag}</em>{/each}
+                </span>
                 <small>{item.nextStep ? `下一步：${item.nextStep}` : policyLabel(item.devicePolicy)}</small>
                 <span class="resolved-target">
                   <Target size={12} />
@@ -1093,19 +1480,39 @@
                 </span>
               </button>
               <div class="item-actions">
-                {#if dailyApi.moveItem}
-                  <button type="button" title="上移" disabled={index === 0 || Boolean(busy)} on:click={() => run(`up:${item.id}`, () => dailyApi?.moveItem?.(item.id, item.revision, "up"))}><ArrowUp size={14} /></button>
-                  <button type="button" title="下移" disabled={index === items.length - 1 || Boolean(busy)} on:click={() => run(`down:${item.id}`, () => dailyApi?.moveItem?.(item.id, item.revision, "down"))}><ArrowDown size={14} /></button>
-                {/if}
-                {#if dailyApi.updateItem && item.status !== "done"}
-                  <button type="button" title="编辑规划字段" on:click={() => beginEdit(item)}><PenLine size={14} /></button>
-                {/if}
                 {#if dailyApi.openItem}
                   <button type="button" title="打开目标" on:click={() => dailyApi?.openItem?.(item)}><BookOpen size={14} /></button>
                 {/if}
-                {#if dailyApi.sendItemToDevice && item.status !== "done"}
-                  <button type="button" title="立即发送到墨水屏" on:click={() => run(`send:${item.id}`, () => dailyApi?.sendItemToDevice?.(item.id, item.revision))}><MonitorUp size={14} /></button>
+                {#if dailyApi.updateItem && item.status !== "done"}
+                  <button type="button" title="编辑属性" on:click={() => beginEdit(item)}><PenLine size={14} /></button>
                 {/if}
+                <details class="item-more">
+                  <summary title="更多操作" aria-label="更多操作"><MoreHorizontal size={15} /></summary>
+                  <div class="item-more-menu">
+                    {#if dailyApi.moveItem}
+                      <button type="button" disabled={index === 0 || Boolean(busy)} on:click={() => run(`up:${item.id}`, () => dailyApi?.moveItem?.(item.id, item.revision, "up"))}><ArrowUp size={14} />上移</button>
+                      <button type="button" disabled={index === items.length - 1 || Boolean(busy)} on:click={() => run(`down:${item.id}`, () => dailyApi?.moveItem?.(item.id, item.revision, "down"))}><ArrowDown size={14} />下移</button>
+                    {/if}
+                    {#if dailyApi.sendItemToDevice && item.status !== "done"}
+                      <button type="button" on:click={() => run(`send:${item.id}`, () => dailyApi?.sendItemToDevice?.(item.id, item.revision))}><MonitorUp size={14} />发送到墨水屏</button>
+                    {/if}
+                    {#if item.status !== "done" && directChildTasks(item).length === 0 && dailyApi.moveItemToTomorrow}
+                      <button type="button" on:click={() => run(`tomorrow:${item.id}`, () => dailyApi?.moveItemToTomorrow?.(item.id, item.revision))}><CalendarDays size={14} />移到明天</button>
+                    {/if}
+                    {#if item.status !== "done" && directChildTasks(item).length === 0 && dailyApi.returnItemToPool}
+                      <button
+                        type="button"
+                        title={item.taskRef
+                          ? "取消这一天的安排，保留任务池中的任务本体"
+                          : "转入任务池会保留任务、类别、目标、截止日期和预计时间；当天下一步不会自动沿用"}
+                        on:click={() => run(`return:${item.id}`, () => dailyApi?.returnItemToPool?.(item.id, item.revision))}
+                      ><ArchiveRestore size={14} />{item.taskRef ? "放回任务池" : "转入任务池"}</button>
+                    {/if}
+                    {#if item.status !== "done" && directChildTasks(item).length === 0 && dailyApi.dropDailyItem}
+                      <button type="button" class="danger" on:click={() => run(`drop:${item.id}`, () => dailyApi?.dropDailyItem?.(item.id, item.revision))}><Trash2 size={14} />不再追踪</button>
+                    {/if}
+                  </div>
+                </details>
               </div>
               {#if editingItemId === item.id}
                 <form class="inline-editor" on:submit|preventDefault={() => saveItem(item)}>
@@ -1114,6 +1521,25 @@
                   <label><span>最小下一步</span><input bind:value={editNextStep} /></label>
                   <label><span>目标笔记</span><input bind:value={editTarget} /></label>
                   <label><span>预计分钟</span><input bind:value={editEstimate} type="number" min="1" /></label>
+                  <label><span>类别</span><input bind:value={editCategory} list="daily-category-options" /></label>
+                  <label><span>优先级</span>
+                    <select bind:value={editPriority}>
+                      <option value="highest">最高</option>
+                      <option value="high">高</option>
+                      <option value="normal">普通</option>
+                      <option value="low">低</option>
+                      <option value="lowest">最低</option>
+                    </select>
+                  </label>
+                  <label><span>标签</span><input bind:value={editTags} placeholder="研究, 发布" /></label>
+                  <label class="due-field"><span>截止日期</span><input bind:value={editDueDate} type="date" /></label>
+                  <div class="edit-date-shortcuts">
+                    <button type="button" on:click={() => setEditDueDate("today")}>今天</button>
+                    <button type="button" on:click={() => setEditDueDate("tomorrow")}>明天</button>
+                    <button type="button" on:click={() => setEditDueDate("friday")}>本周五</button>
+                    <button type="button" on:click={() => setEditDueDate("next-week")}>下周</button>
+                    <button type="button" on:click={() => setEditDueDate("clear")}>清除</button>
+                  </div>
                   <label class="check"><input bind:checked={editPrimary} type="checkbox" />主线</label>
                   <label class="check"><input bind:checked={editMinimum} type="checkbox" />最低承诺</label>
                   <div class="inline-actions">
@@ -1216,8 +1642,94 @@
             </section>
           {/each}
         {/if}
+        </div>
+
+        {#if dashboardView === "board"}
+          <div class="daily-board" aria-label="任务看板">
+            {#each boardColumns as column (column.status)}
+              <section>
+                <header><strong>{column.label}</strong><span>{column.items.length}</span></header>
+                <div>
+                  {#each column.items as item (item.id)}
+                    <article class:current={item.status === "in-progress"} class:completed={item.status === "done"}>
+                      <button type="button" on:click={() => {
+                        previewItemId = item.id;
+                        previewPage = "item";
+                      }}>
+                        <small>{dailyItemCategory(item)}{item.parentTaskId ? " · 子任务" : ""}</small>
+                        <strong>{item.text}</strong>
+                        {#if item.nextStep}<span>下一步：{item.nextStep}</span>{/if}
+                        <footer>
+                          {#if item.dueDateExplicit !== false && item.dueDate}<time datetime={item.dueDate}>{item.dueDate}</time>{/if}
+                          <em>{priorityLabel(item.priority)}</em>
+                        </footer>
+                      </button>
+                      <div>
+                        {#if dailyApi.openItem}<button type="button" title="打开目标" on:click={() => dailyApi?.openItem?.(item)}><BookOpen size={13} /></button>{/if}
+                        {#if dailyApi.updateItem && item.status !== "done"}<button type="button" title="编辑" on:click={() => {
+                          dashboardView = "list";
+                          beginEdit(item);
+                        }}><PenLine size={13} /></button>{/if}
+                      </div>
+                    </article>
+                  {:else}
+                    <p>暂无任务</p>
+                  {/each}
+                </div>
+              </section>
+            {/each}
+          </div>
+        {:else if dashboardView === "table"}
+          <div class="daily-table-wrap">
+            <table class="daily-table">
+              <thead><tr><th>任务</th><th>类别</th><th>状态</th><th>优先级</th><th>截止</th><th>预计</th><th>标签</th><th></th></tr></thead>
+              <tbody>
+                {#each filteredItems as item (item.id)}
+                  <tr class:completed={item.status === "done"}>
+                    <td style={`--task-depth: ${dailyItemDepth(item)}`}><button type="button" on:click={() => {
+                      previewItemId = item.id;
+                      previewPage = "item";
+                    }}>{item.text}</button></td>
+                    <td>{dailyItemCategory(item)}</td>
+                    <td>{item.status === "todo" ? "待办" : item.status === "in-progress" ? "进行中" : "已完成"}</td>
+                    <td>{priorityLabel(item.priority)}</td>
+                    <td>{item.dueDateExplicit !== false ? item.dueDate : ""}</td>
+                    <td>{item.estimateMinutes ? `${item.estimateMinutes} 分钟` : "—"}</td>
+                    <td>{item.tags.join(" · ")}</td>
+                    <td>{#if dailyApi.openItem}<button type="button" title="打开目标" on:click={() => dailyApi?.openItem?.(item)}><BookOpen size={13} /></button>{/if}</td>
+                  </tr>
+                {:else}
+                  <tr><td colspan="8">这个类别里还没有任务。</td></tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        {:else if dashboardView === "calendar"}
+          <div class="daily-calendar" aria-label="任务日历">
+            {#each calendarEntries as entry (entry.date)}
+              <section>
+                <header><CalendarDays size={15} /><strong>{formatCalendarDate(entry.date)}</strong><span>{entry.items.length}</span></header>
+                <div>
+                  {#each entry.items as item (item.id)}
+                    <button class:completed={item.status === "done"} type="button" on:click={() => {
+                      previewItemId = item.id;
+                      previewPage = "item";
+                    }}>
+                      <small>{dailyItemCategory(item)}</small>
+                      <strong>{item.text}</strong>
+                      <span>{item.status === "todo" ? "待办" : item.status === "in-progress" ? "进行中" : "已完成"} · {priorityLabel(item.priority)}</span>
+                    </button>
+                  {/each}
+                </div>
+              </section>
+            {:else}
+              <div class="daily-empty">这个类别里还没有任务。</div>
+            {/each}
+          </div>
+        {/if}
       </section>
 
+      {#if previewExpanded}
       <aside class="preview-column">
         <section class="eink-card">
           <header>
@@ -1281,10 +1793,110 @@
           {/if}
         </section>
       </aside>
+      {/if}
     </div>
 
-    {#if planningDay === "today"}
-      <details class="review-card">
+    {:else if surface === "pool"}
+      <section class="task-pool-card">
+        <header class="task-pool-heading">
+          <div>
+            <span>Markdown 任务池</span>
+            <h2>先收集，再决定哪天承诺</h2>
+            <p>{configuration.taskPoolPath} · 今日只保存稳定引用；计时仍在独立 JSONL 账本。</p>
+          </div>
+          <div>
+            {#if dailyApi.openTaskPoolSource}
+              <button type="button" on:click={() => dailyApi?.openTaskPoolSource?.()}><BookOpen size={14} />打开原文</button>
+            {/if}
+            <button type="button" on:click={() => refresh()}><RefreshCw size={14} />刷新</button>
+          </div>
+        </header>
+
+        <form class="pool-create-form" on:submit|preventDefault={createPoolTask}>
+          <label class="wide"><span>任务</span><input bind:value={poolDraftText} placeholder="准备推进什么？可以绑定 [[笔记]]" required /></label>
+          <label><span>类别</span><input bind:value={poolDraftCategory} list="daily-category-options" placeholder="项目" /></label>
+          <label><span>目标笔记</span><input bind:value={poolDraftTarget} placeholder="[[Echo MVP]]" /></label>
+          <label class="pool-due">
+            <span>截止日期</span>
+            <input bind:value={poolDraftDueDate} type="date" />
+            <span class="date-shortcuts">
+              <button type="button" on:click={() => (poolDraftDueDate = dailyDueDateForShortcut("today"))}>今天</button>
+              <button type="button" on:click={() => (poolDraftDueDate = dailyDueDateForShortcut("tomorrow"))}>明天</button>
+              <button type="button" on:click={() => (poolDraftDueDate = dailyDueDateForShortcut("friday"))}>本周五</button>
+              <button type="button" on:click={() => (poolDraftDueDate = "")}>清除</button>
+            </span>
+          </label>
+          <label><span>预计分钟</span><input bind:value={poolDraftEstimate} type="number" min="1" max="1440" placeholder="30" /></label>
+          <button class="primary" type="submit" disabled={!poolDraftText.trim() || !dailyApi.createPoolTask || Boolean(busy)}>
+            <Plus size={14} />加入任务池
+          </button>
+        </form>
+        <datalist id="daily-category-options">
+          {#each categoryChoices as category}<option value={category}></option>{/each}
+        </datalist>
+
+        <div class="pool-toolbar">
+          <div>
+            <strong>{filteredPoolItems.length}</strong>
+            <span>条任务</span>
+            <small>{poolItems.filter((item) => item.state === "pool" || item.state === "returned").length} 条可安排</small>
+          </div>
+          <label>
+            <span>类别</span>
+            <select bind:value={poolCategoryFilter}>
+              <option value="">全部类别</option>
+              {#each categoryChoices as category}<option value={category}>{category}</option>{/each}
+            </select>
+          </label>
+        </div>
+
+        {#if taskPool?.diagnostics.some((diagnostic) => diagnostic.severity === "error")}
+          <div class="daily-error" role="alert">
+            任务池存在重复 ID 或无效字段，请先打开原文修复；为避免覆盖，写入已暂停。
+          </div>
+        {/if}
+
+        <div class="pool-grid">
+          {#each ["pool", "returned", "planned", "done", "dropped"] as state}
+            {@const stateItems = filteredPoolItems.filter((item) => item.state === state)}
+            {#if stateItems.length}
+              <section class={`pool-column state-${state}`}>
+                <header><strong>{poolStateLabel(stateItems[0])}</strong><span>{stateItems.length}</span></header>
+                <div>
+                  {#each stateItems as item (item.taskId)}
+                    <article>
+                      <span class="pool-state">{poolStateLabel(item)}</span>
+                      <strong>{item.text}</strong>
+                      <small>{[item.category, item.project].filter(Boolean).join(" · ") || "未分类"}</small>
+                      <div class="pool-properties">
+                        {#if item.dueDate}<time datetime={item.dueDate}>截止 {item.dueDate}</time>{/if}
+                        {#if item.estimateMinutes}<span>预计 {item.estimateMinutes} 分钟</span>{/if}
+                        {#if item.target}<span>{item.target}</span>{/if}
+                        {#if item.source && item.source !== item.target}<span>来源 {item.source}</span>{/if}
+                      </div>
+                      {#if (item.state === "pool" || item.state === "returned") && dailyApi.assignPoolTask}
+                        <footer>
+                          <button class="primary" type="button" disabled={Boolean(busy)} on:click={() => assignPoolTask(item, "today")}>加入今天</button>
+                          <button type="button" disabled={Boolean(busy)} on:click={() => assignPoolTask(item, "tomorrow")}>加入明天</button>
+                        </footer>
+                      {/if}
+                    </article>
+                  {/each}
+                </div>
+              </section>
+            {/if}
+          {/each}
+          {#if filteredPoolItems.length === 0}
+            <div class="daily-empty">
+              <ListTodo size={24} />
+              <strong>任务池还是空的</strong>
+              <p>先在上方写一条，或把 ToThink、ToWrite、Inbox 候选加入今天。</p>
+            </div>
+          {/if}
+        </div>
+      </section>
+    {:else}
+      <details class="review-card" open>
         <summary>
           <span><BarChart3 size={16} /><strong>数据与复盘</strong><small>写作统计、活动和今日总结放在第二层</small></span>
           <ChevronDown size={16} />
@@ -1331,10 +1943,34 @@
 <style>
   .daily-dashboard {
     display: grid;
-    gap: 14px;
+    gap: 9px;
     --daily-border: var(--background-modifier-border);
-    --daily-soft: var(--background-secondary);
+    --daily-soft: color-mix(in srgb, var(--background-secondary) 72%, transparent);
     --daily-raised: var(--background-primary);
+  }
+
+  .surface-switcher {
+    order: 0;
+  }
+
+  .day-switcher {
+    order: 1;
+  }
+
+  .focus-card {
+    order: 2;
+  }
+
+  .daily-main-grid {
+    order: 3;
+  }
+
+  .planner-card {
+    order: 4;
+  }
+
+  .review-card {
+    order: 5;
   }
 
   button {
@@ -1369,44 +2005,292 @@
     background: color-mix(in srgb, var(--background-modifier-error) 16%, transparent);
   }
 
+  .surface-switcher {
+    display: inline-flex;
+    width: fit-content;
+    padding: 0;
+    border: 0;
+    border-bottom: 1px solid var(--daily-border);
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .surface-switcher button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 10px;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    color: var(--text-muted);
+    background: transparent;
+  }
+
+  .surface-switcher button.active {
+    color: var(--text-normal);
+    border-bottom-color: var(--interactive-accent);
+    background: transparent;
+    font-weight: 700;
+  }
+
+  .surface-switcher em {
+    min-width: 18px;
+    padding: 1px 5px;
+    border-radius: 999px;
+    color: var(--text-muted);
+    background: var(--background-modifier-hover);
+    font-size: 0.66rem;
+    font-style: normal;
+    text-align: center;
+  }
+
   .day-switcher {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 5px;
+    min-width: 0;
+    padding: 4px 0 7px;
+    border-bottom: 1px solid var(--daily-border);
   }
 
   .day-switcher > button:not(.source-button) {
-    padding: 6px 16px;
-    border: 1px solid var(--daily-border);
+    padding: 5px 11px;
+    border: 0;
+    border-radius: 6px;
     color: var(--text-muted);
     background: transparent;
   }
 
   .day-switcher > button.active {
     color: var(--text-normal);
-    background: var(--daily-soft);
+    background: var(--background-modifier-hover);
     font-weight: 700;
   }
 
-  .day-switcher > span {
-    margin-left: 6px;
+  .selected-date {
+    margin: 0 4px;
     color: var(--text-muted);
     font-size: 0.75rem;
+  }
+
+  .source-state {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    gap: 7px;
+    margin-left: auto;
+    padding: 4px 8px;
+    border-radius: 7px;
+    color: var(--text-muted);
+    background: var(--daily-soft);
+  }
+
+  .source-state > i {
+    flex: none;
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    background: var(--color-green);
+  }
+
+  .source-state.missing > i {
+    background: var(--color-orange);
+  }
+
+  .source-state.saving > i {
+    background: var(--interactive-accent);
+    animation: source-pulse 1s ease-in-out infinite alternate;
+  }
+
+  .source-state > span {
+    display: grid;
+    min-width: 0;
+    line-height: 1.25;
+  }
+
+  .source-state strong,
+  .source-state small {
+    overflow: hidden;
+    max-width: 260px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .source-state strong {
+    color: var(--text-normal);
+    font-size: 0.68rem;
+    font-weight: 600;
+  }
+
+  .source-state small {
+    font-size: 0.6rem;
   }
 
   .source-button {
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    margin-left: auto;
+    flex: none;
     color: var(--text-muted);
     background: transparent;
   }
 
+  .source-button.create-source {
+    color: var(--text-normal);
+    background: var(--background-modifier-hover);
+  }
+
+  @keyframes source-pulse {
+    from { opacity: 0.4; }
+    to { opacity: 1; }
+  }
+
+  .task-pool-card {
+    display: grid;
+    gap: 14px;
+    padding: 16px;
+  }
+
+  .task-pool-heading,
+  .pool-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .task-pool-heading h2,
+  .task-pool-heading p {
+    margin: 2px 0 0;
+  }
+
+  .task-pool-heading > div:last-child,
+  .pool-toolbar > div,
+  .pool-toolbar label,
+  .pool-create-form > button,
+  .pool-column article footer {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+
+  .task-pool-heading button,
+  .pool-column button {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .pool-create-form {
+    display: grid;
+    grid-template-columns: minmax(220px, 2fr) repeat(4, minmax(120px, 1fr)) auto;
+    gap: 8px;
+    padding: 12px;
+    border: 1px solid var(--daily-border);
+    border-radius: 11px;
+    background: var(--daily-soft);
+  }
+
+  .pool-create-form label,
+  .pool-toolbar label {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+    color: var(--text-muted);
+    font-size: 0.7rem;
+  }
+
+  .pool-create-form input,
+  .pool-toolbar select {
+    width: 100%;
+  }
+
+  .pool-due .date-shortcuts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+  }
+
+  .pool-due .date-shortcuts button {
+    padding: 2px 5px;
+    font-size: 0.64rem;
+  }
+
+  .pool-toolbar {
+    padding-top: 2px;
+  }
+
+  .pool-toolbar > div strong {
+    font-size: 1.15rem;
+  }
+
+  .pool-toolbar small {
+    color: var(--text-muted);
+  }
+
+  .pool-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(210px, 1fr));
+    gap: 10px;
+    align-items: start;
+  }
+
+  .pool-column {
+    overflow: hidden;
+    border: 1px solid var(--daily-border);
+    border-radius: 11px;
+    background: var(--daily-soft);
+  }
+
+  .pool-column > header {
+    display: flex;
+    justify-content: space-between;
+    padding: 9px 10px;
+    border-bottom: 1px solid var(--daily-border);
+  }
+
+  .pool-column > header span,
+  .pool-state {
+    color: var(--text-muted);
+    font-size: 0.68rem;
+  }
+
+  .pool-column > div {
+    display: grid;
+    gap: 7px;
+    padding: 7px;
+  }
+
+  .pool-column article {
+    display: grid;
+    gap: 5px;
+    padding: 9px;
+    border: 1px solid var(--daily-border);
+    border-radius: 9px;
+    background: var(--daily-raised);
+  }
+
+  .pool-column article > small,
+  .pool-properties {
+    color: var(--text-muted);
+    font-size: 0.7rem;
+  }
+
+  .pool-properties {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 9px;
+  }
+
+  .pool-column.state-done,
+  .pool-column.state-dropped {
+    opacity: 0.72;
+  }
+
   .focus-card,
-  .planner-card,
-  .plan-list-card,
   .eink-card,
+  .task-pool-card,
   .review-card {
     border: 1px solid var(--daily-border);
     border-radius: 13px;
@@ -1414,7 +2298,7 @@
   }
 
   .focus-card {
-    padding: 16px;
+    padding: 12px 14px;
   }
 
   .focus-card > header {
@@ -1438,7 +2322,7 @@
   }
 
   .focus-card > header > div:first-child strong {
-    font-size: 1.2rem;
+    font-size: 1.05rem;
   }
 
   .focus-progress {
@@ -1446,7 +2330,7 @@
   }
 
   .focus-progress strong {
-    font-size: 1.25rem;
+    font-size: 1.05rem;
   }
 
   .focus-current {
@@ -1454,9 +2338,9 @@
     grid-template-columns: auto minmax(0, 1fr) auto;
     align-items: center;
     gap: 10px;
-    margin-top: 16px;
-    padding: 12px;
-    border-radius: 10px;
+    margin-top: 10px;
+    padding: 9px 10px;
+    border-radius: 7px;
     background: var(--daily-soft);
   }
 
@@ -1489,7 +2373,7 @@
   .focus-upcoming {
     display: grid;
     gap: 7px;
-    margin: 10px 0 0;
+    margin: 7px 0 0;
     padding: 0 12px;
     list-style: none;
   }
@@ -1505,14 +2389,14 @@
   }
 
   .focus-empty {
-    margin-top: 14px;
+    margin-top: 8px;
     color: var(--text-muted);
   }
 
   .focus-progress-bar {
     overflow: hidden;
     height: 4px;
-    margin-top: 14px;
+    margin-top: 9px;
     border-radius: 999px;
     background: var(--daily-border);
   }
@@ -1537,6 +2421,12 @@
     color: var(--text-normal);
     background: transparent;
     text-align: left;
+  }
+
+  .planner-card {
+    border-top: 1px solid var(--daily-border);
+    border-bottom: 1px solid var(--daily-border);
+    background: transparent;
   }
 
   .planner-heading > span,
@@ -1574,7 +2464,7 @@
     grid-template-columns: auto minmax(0, 1fr) auto;
     align-items: center;
     gap: 8px;
-    padding: 12px 15px;
+    padding: 10px 12px;
     border-top: 1px solid var(--daily-border);
     background: var(--daily-soft);
   }
@@ -1599,7 +2489,7 @@
   .planner-form {
     display: grid;
     gap: 10px;
-    padding: 14px 15px;
+    padding: 11px 12px;
     border-top: 1px solid var(--daily-border);
   }
 
@@ -1635,6 +2525,111 @@
 
   .planning-footer .primary {
     margin-left: auto;
+  }
+
+  .due-field {
+    grid-column: span 2;
+  }
+
+  .date-shortcuts,
+  .edit-date-shortcuts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .date-shortcuts button,
+  .edit-date-shortcuts button {
+    min-height: 24px;
+    padding: 2px 7px;
+    color: var(--text-muted);
+    background: var(--background-primary);
+    font-size: 0.65rem;
+  }
+
+  .edit-date-shortcuts {
+    align-self: end;
+  }
+
+  .planner-pool-picker {
+    display: grid;
+    gap: 8px;
+    padding: 11px 12px;
+    border-top: 1px solid var(--daily-border);
+    background: color-mix(in srgb, var(--background-secondary) 38%, transparent);
+  }
+
+  .planner-pool-picker > header,
+  .planner-pool-picker > header > span {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .planner-pool-picker > header {
+    justify-content: space-between;
+  }
+
+  .planner-pool-picker > header > span > span {
+    display: grid;
+    min-width: 0;
+  }
+
+  .planner-pool-picker > header small,
+  .planner-pool-picker > p,
+  .pool-picker-list small {
+    color: var(--text-muted);
+    font-size: 0.7rem;
+  }
+
+  .planner-pool-picker > p {
+    margin: 0;
+  }
+
+  .planner-pool-picker > header button {
+    flex: 0 0 auto;
+    min-height: 28px;
+    color: var(--text-muted);
+    background: transparent;
+  }
+
+  .pool-picker-filter input {
+    width: 100%;
+  }
+
+  .pool-picker-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .pool-picker-list article {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    padding: 8px 9px;
+    border: 1px solid var(--daily-border);
+    border-radius: 9px;
+    background: var(--daily-raised);
+  }
+
+  .pool-picker-list article > div {
+    display: grid;
+    min-width: 0;
+  }
+
+  .pool-picker-list strong,
+  .pool-picker-list small {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .pool-picker-list button {
+    min-height: 28px;
+    white-space: nowrap;
   }
 
   .candidate-slot {
@@ -1693,14 +2688,24 @@
 
   .daily-main-grid {
     display: grid;
-    grid-template-columns: minmax(0, 1.45fr) minmax(250px, 0.75fr);
-    gap: 12px;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
     align-items: start;
   }
 
-  .plan-list-card,
+  .daily-main-grid.preview-open {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .eink-card {
     overflow: hidden;
+  }
+
+  .plan-list-card {
+    overflow: visible;
+    border-top: 1px solid var(--daily-border);
+    border-bottom: 1px solid var(--daily-border);
+    background: var(--daily-raised);
   }
 
   .plan-list-card > header,
@@ -1710,7 +2715,7 @@
     align-items: flex-start;
     justify-content: space-between;
     gap: 10px;
-    padding: 12px 14px;
+    padding: 10px 4px;
     border-bottom: 1px solid var(--daily-border);
   }
 
@@ -1728,9 +2733,102 @@
   }
 
   .plan-list-card > header button {
-    padding: 5px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 5px 7px;
     color: var(--text-muted);
     background: transparent;
+  }
+
+  .dashboard-view-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 7px 4px;
+    border-bottom: 1px solid var(--daily-border);
+    background: transparent;
+  }
+
+  .view-switcher {
+    display: flex;
+    gap: 2px;
+    padding: 2px;
+    border-radius: 7px;
+    background: var(--daily-soft);
+  }
+
+  .view-switcher button {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-height: 27px;
+    padding: 3px 7px;
+    border: 0;
+    color: var(--text-muted);
+    background: transparent;
+    font-size: 0.67rem;
+  }
+
+  .view-switcher button.active {
+    color: var(--text-normal);
+    background: var(--background-modifier-hover);
+    font-weight: 650;
+  }
+
+  .category-filter {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+    color: var(--text-muted);
+    font-size: 0.68rem;
+  }
+
+  .category-filter select {
+    width: auto;
+    min-width: 110px;
+    height: 28px;
+  }
+
+  .filtered-count {
+    color: var(--text-faint);
+    font-size: 0.66rem;
+    white-space: nowrap;
+  }
+
+  .quick-add {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 4px;
+    border-bottom: 1px solid var(--daily-border);
+  }
+
+  .quick-add > :global(svg) {
+    color: var(--text-muted);
+  }
+
+  .quick-add input {
+    width: 100%;
+    border-color: transparent;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .quick-add input:focus {
+    border-color: var(--background-modifier-border-focus);
+    background: var(--background-primary);
+  }
+
+  .quick-add button {
+    min-height: 28px;
+    padding: 4px 9px;
+  }
+
+  .view-hidden {
+    display: none;
   }
 
   .list-header-actions,
@@ -1875,7 +2973,7 @@
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
     gap: 4px;
-    padding: 5px 8px;
+    padding: 5px 4px;
     background: var(--daily-soft);
   }
 
@@ -1925,7 +3023,8 @@
     display: grid;
     grid-template-columns: auto minmax(0, 1fr) auto;
     gap: 8px;
-    padding: 10px 12px;
+    padding: 9px 4px;
+    padding-left: calc(4px + var(--task-depth, 0) * 14px);
     border-bottom: 1px solid var(--daily-border);
   }
 
@@ -1966,6 +3065,216 @@
   .item-main small {
     color: var(--text-muted);
     font-size: 0.7rem;
+  }
+
+  .item-properties {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .item-properties em,
+  .item-properties time {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 1px 5px;
+    border-radius: 999px;
+    color: var(--text-muted);
+    background: var(--daily-soft);
+    font-size: 0.61rem;
+    font-style: normal;
+  }
+
+  .item-properties .priority-high,
+  .item-properties .priority-highest {
+    color: var(--text-error);
+  }
+
+  .item-properties .priority-low,
+  .item-properties .priority-lowest {
+    color: var(--text-faint);
+  }
+
+  .daily-board {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(180px, 1fr));
+    gap: 8px;
+    overflow-x: auto;
+    padding: 10px;
+  }
+
+  .daily-board > section {
+    min-width: 0;
+    border: 1px solid var(--daily-border);
+    border-radius: 9px;
+    background: var(--daily-soft);
+  }
+
+  .daily-board > section > header,
+  .daily-calendar > section > header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 9px;
+    border-bottom: 1px solid var(--daily-border);
+  }
+
+  .daily-board > section > header span,
+  .daily-calendar > section > header span {
+    margin-left: auto;
+    color: var(--text-muted);
+    font-size: 0.65rem;
+  }
+
+  .daily-board > section > div {
+    display: grid;
+    gap: 6px;
+    padding: 7px;
+  }
+
+  .daily-board > section > div > p {
+    margin: 8px;
+    color: var(--text-muted);
+    font-size: 0.68rem;
+    text-align: center;
+  }
+
+  .daily-board article {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 4px;
+    padding: 8px;
+    border: 1px solid var(--daily-border);
+    border-radius: 7px;
+    background: var(--daily-raised);
+  }
+
+  .daily-board article.current {
+    box-shadow: inset 3px 0 0 var(--interactive-accent);
+  }
+
+  .daily-board article.completed {
+    opacity: 0.62;
+  }
+
+  .daily-board article > button:first-child {
+    display: grid;
+    gap: 4px;
+    padding: 0;
+    border: 0;
+    color: var(--text-normal);
+    background: transparent;
+    text-align: left;
+  }
+
+  .daily-board article small,
+  .daily-board article span,
+  .daily-board article footer {
+    color: var(--text-muted);
+    font-size: 0.63rem;
+  }
+
+  .daily-board article footer {
+    display: flex;
+    justify-content: space-between;
+    gap: 5px;
+  }
+
+  .daily-board article footer em {
+    font-style: normal;
+  }
+
+  .daily-board article > div {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .daily-board article > div button {
+    padding: 4px;
+    color: var(--text-muted);
+    background: transparent;
+  }
+
+  .daily-table-wrap {
+    overflow: auto;
+    padding: 8px;
+  }
+
+  .daily-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.68rem;
+  }
+
+  .daily-table th,
+  .daily-table td {
+    padding: 7px 8px;
+    border-bottom: 1px solid var(--daily-border);
+    text-align: left;
+    white-space: nowrap;
+  }
+
+  .daily-table th {
+    color: var(--text-muted);
+    background: var(--daily-soft);
+    font-weight: 600;
+  }
+
+  .daily-table td:first-child {
+    min-width: 220px;
+    padding-left: calc(8px + var(--task-depth, 0) * 14px);
+    white-space: normal;
+  }
+
+  .daily-table td button {
+    padding: 0;
+    border: 0;
+    color: var(--text-normal);
+    background: transparent;
+    text-align: left;
+  }
+
+  .daily-table tr.completed {
+    opacity: 0.6;
+  }
+
+  .daily-calendar {
+    display: grid;
+    gap: 8px;
+    padding: 10px;
+  }
+
+  .daily-calendar > section {
+    border: 1px solid var(--daily-border);
+    border-radius: 9px;
+  }
+
+  .daily-calendar > section > div {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+    gap: 6px;
+    padding: 8px;
+  }
+
+  .daily-calendar > section > div > button {
+    display: grid;
+    gap: 3px;
+    padding: 8px;
+    color: var(--text-normal);
+    background: var(--daily-raised);
+    text-align: left;
+  }
+
+  .daily-calendar > section > div > button.completed {
+    opacity: 0.58;
+  }
+
+  .daily-calendar small,
+  .daily-calendar span {
+    color: var(--text-muted);
+    font-size: 0.63rem;
   }
 
   .resolved-target {
@@ -2016,6 +3325,7 @@
   }
 
   .item-actions {
+    position: relative;
     display: flex;
     align-items: flex-start;
     gap: 2px;
@@ -2025,6 +3335,62 @@
     padding: 5px;
     color: var(--text-muted);
     background: transparent;
+  }
+
+  .item-more {
+    position: relative;
+  }
+
+  .item-more > summary {
+    display: grid;
+    width: 26px;
+    height: 26px;
+    place-items: center;
+    border-radius: 6px;
+    color: var(--text-muted);
+    cursor: pointer;
+    list-style: none;
+  }
+
+  .item-more > summary:hover,
+  .item-more[open] > summary {
+    color: var(--text-normal);
+    background: var(--background-modifier-hover);
+  }
+
+  .item-more-menu {
+    position: absolute;
+    z-index: 20;
+    top: 30px;
+    right: 0;
+    display: grid;
+    min-width: 170px;
+    padding: 5px;
+    border: 1px solid var(--daily-border);
+    border-radius: 8px;
+    background: var(--background-primary);
+    box-shadow: var(--shadow-s);
+  }
+
+  .item-more-menu button {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 7px;
+    width: 100%;
+    padding: 6px 8px;
+    border: 0;
+    color: var(--text-normal);
+    background: transparent;
+    text-align: left;
+  }
+
+  .item-more-menu button:hover {
+    background: var(--background-modifier-hover);
+  }
+
+  .item-more-menu button.danger {
+    color: var(--text-error);
   }
 
   .policy-select {
@@ -2196,6 +3562,20 @@
     padding: 28px 14px;
     color: var(--text-muted);
     text-align: center;
+  }
+
+  .empty-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 6px;
+    margin-top: 4px;
+  }
+
+  .empty-actions button {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
   }
 
   .preview-column {
@@ -2391,21 +3771,87 @@
     border-top: 1px solid var(--daily-border);
   }
 
-  @media (max-width: 860px) {
-    .daily-main-grid {
-      grid-template-columns: 1fr;
+  @media (min-width: 1100px) {
+    .daily-main-grid.preview-open {
+      grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.72fr);
     }
+  }
+
+  @media (max-width: 860px) {
 
     .planning-fields,
     .daily-metrics,
     .timing-metrics {
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
+
+    .daily-board {
+      grid-template-columns: repeat(3, minmax(210px, 1fr));
+    }
+
+    .pool-create-form {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .pool-grid {
+      grid-template-columns: repeat(2, minmax(210px, 1fr));
+    }
   }
 
   @media (max-width: 560px) {
+    .surface-switcher {
+      display: grid;
+      width: 100%;
+      grid-template-columns: repeat(3, 1fr);
+    }
+
+    .surface-switcher button {
+      justify-content: center;
+    }
+
     .day-switcher {
       flex-wrap: wrap;
+    }
+
+    .source-state {
+      order: 3;
+      width: 100%;
+      margin-left: 0;
+    }
+
+    .source-state strong,
+    .source-state small {
+      max-width: none;
+    }
+
+    .dashboard-view-toolbar {
+      align-items: stretch;
+      flex-direction: column;
+    }
+
+    .quick-add {
+      grid-template-columns: auto minmax(0, 1fr) auto;
+    }
+
+    .quick-add > button:first-of-type {
+      display: none;
+    }
+
+    .view-switcher {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+    }
+
+    .view-switcher button {
+      justify-content: center;
+    }
+
+    .category-filter {
+      margin-left: 0;
+    }
+
+    .category-filter select {
+      flex: 1;
     }
 
     .source-button {
@@ -2423,6 +3869,23 @@
     .timing-correction,
     .normalization-structure {
       grid-template-columns: 1fr;
+    }
+
+    .pool-create-form,
+    .pool-grid,
+    .pool-picker-list {
+      grid-template-columns: 1fr;
+    }
+
+    .task-pool-heading,
+    .pool-toolbar,
+    .planner-pool-picker > header {
+      align-items: stretch;
+      flex-direction: column;
+    }
+
+    .due-field {
+      grid-column: 1;
     }
 
     .planning-footer {

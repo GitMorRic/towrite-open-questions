@@ -28,7 +28,7 @@ Wire three momentary buttons between GPIO and GND. The sketch enables
 
 | Button | Single click | Double click | Long press |
 | --- | --- | --- | --- |
-| Left | Previous page | Previous task card | Reserved |
+| Left | Previous page | Previous task card | Start / pause / resume current task |
 | Main | Start/open the displayed note | Open create-only Capture | Recording reserved |
 | Right | Next page | Next task card | Safely complete displayed task |
 
@@ -164,8 +164,11 @@ The server derives the action from `button + gesture`; the device does not send
 an arbitrary action. Duplicate `eventId` values are idempotent. A stale tuple
 returns HTTP 409 rather than opening or completing a different card.
 
-The JSON response's `displayMessage` is shown through the
-`renderCommandStatus()` partial-refresh hook. The sample reduces common
+The JSON response's `commandStatus` and `displayMessage` are shown through the
+`renderCommandStatus()` partial-refresh hook. An application-level
+`commandStatus: "conflict"` may intentionally arrive with HTTP 200 for
+idempotent replay; the sample still clears the displayed tuple, refreshes and
+ACKs again. The sample reduces common
 responses to short statuses such as:
 
 - `Opened`
@@ -187,6 +190,8 @@ healthy five-second poll does not refresh the full screen.
 - HTTP 401/403 means the target and token are not authorized together.
 - HTTP 409 means the physical screen tuple is stale; the sample immediately
   polls, redraws, and ACKs the new state.
+- HTTP 200 with `commandStatus: "conflict"` is handled the same way; do not
+  treat transport success as command success.
 - `Computer offline` means Wi-Fi could not reach Obsidian's External API.
 - `Recording unavailable` is the intentional V1 result of main-long; no fake
   audio session is created.

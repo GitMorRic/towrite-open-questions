@@ -1,5 +1,7 @@
-import { MarkdownView, Notice, TFile, type App } from "obsidian";
+import { Notice, TFile, type App } from "obsidian";
 import type { OpenQuestion } from "../core/types";
+import { navigationTargetForQuestion } from "../navigation";
+import { ObsidianNavigationAdapter } from "./open-target";
 import { jumpToPdfQuestion } from "./pdf-layer";
 
 export async function jumpToQuestion(app: App, question: OpenQuestion): Promise<void> {
@@ -9,46 +11,18 @@ export async function jumpToQuestion(app: App, question: OpenQuestion): Promise<
     return;
   }
 
-  const leaf = app.workspace.getLeaf(false);
   if (file.extension.toLowerCase() === "pdf") {
     await jumpToPdfQuestion(app, file, question);
     return;
   }
 
-  await leaf.openFile(file, {
-    active: true,
-    state: question.source.page ? { page: question.source.page } : undefined,
-    eState: question.source.page ? { page: question.source.page } : undefined
-  });
-
-  const view = app.workspace.getActiveViewOfType(MarkdownView);
-  const editor = view?.editor;
-
-  if (!editor) {
-    return;
+  const result = await new ObsidianNavigationAdapter(app).open(
+    navigationTargetForQuestion(question),
+    { displayedValidated: true }
+  );
+  if (result.status !== "opened") {
+    new Notice(`ToWrite could not open the question location: ${result.message}`);
+  } else if (!result.exact) {
+    new Notice("ToWrite opened the note, but the exact question position is unavailable.");
   }
-
-  const line = Math.max(0, question.source.lineStart);
-  const ch = 0;
-  const from = { line, ch };
-  const to = { line: Math.max(line, question.source.lineEnd), ch: editor.getLine(Math.max(line, question.source.lineEnd)).length };
-
-  editor.setCursor(from);
-  editor.scrollIntoView({ from, to }, true);
-  flashActiveMarkdownLine(view);
-}
-
-function flashActiveMarkdownLine(view: MarkdownView): void {
-  window.setTimeout(() => {
-    const line = view.containerEl.querySelector<HTMLElement>(".cm-line.cm-active")
-      ?? view.containerEl.querySelector<HTMLElement>(".cm-active");
-    if (!line) {
-      return;
-    }
-
-    line.addClass("towrite-editor-line-flash");
-    window.setTimeout(() => {
-      line.removeClass("towrite-editor-line-flash");
-    }, 1500);
-  }, 80);
 }

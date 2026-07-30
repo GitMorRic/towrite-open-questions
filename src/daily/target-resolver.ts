@@ -3,7 +3,8 @@ import type {
   DailyMarkdownTarget,
   DailyPlanGroup,
   DailyPlanLineage,
-  DailyTargetResolution
+  DailyTargetResolution,
+  DailyWebTarget
 } from "./types";
 
 const WIKILINK_RE = /(?<!!)\[\[(?<target>[^\]\r\n]+)\]\]/gu;
@@ -37,7 +38,11 @@ export function parseDailyMarkdownTargets(
 ): DailyMarkdownTarget[] {
   const targets: Array<{ index: number; target: DailyMarkdownTarget }> = [];
   for (const match of markdown.matchAll(WIKILINK_RE)) {
-    const parsed = parseWikilink(match.groups?.target ?? "", match[0]);
+    const parsed = parseWikilink(
+      match.groups?.target ?? "",
+      match[0],
+      options.sourcePath
+    );
     if (parsed) targets.push({ index: match.index, target: parsed });
   }
   for (const match of markdown.matchAll(MARKDOWN_LINK_RE)) {
@@ -81,6 +86,15 @@ export function resolveDailyTarget(input: DailyTargetResolverInput): DailyTarget
     : undefined;
   if (explicitLink) {
     return resolved("explicit", explicitLink, lineage.revision);
+  }
+  const explicitWeb = explicit ? parseExplicitWebTarget(explicit) : undefined;
+  if (explicitWeb) {
+    return {
+      source: "explicit",
+      webTarget: explicitWeb,
+      displayLabel: explicitWeb.label,
+      lineageRevision: lineage.revision
+    };
   }
 
   const own = parseDailyMarkdownTargets(input.taskText, { sourcePath: input.sourcePath })[0];
@@ -159,7 +173,19 @@ function parseExplicitTarget(value: string, sourcePath: string): DailyMarkdownTa
   // metadata cache. Protocol-looking and path-traversing values are rejected.
   if (!trimmed || isUnsafeLinkValue(trimmed)) return undefined;
   const ref = splitSubpath(trimmed);
-  if (!ref.note || ATTACHMENT_EXTENSION_RE.test(ref.note)) return undefined;
+  if (!ref.note) {
+    if (!sourcePath || (!ref.heading && !ref.blockId)) return undefined;
+    return {
+      kind: "wikilink",
+      raw: trimmed,
+      linkText: sourcePath,
+      path: sourcePath,
+      heading: ref.heading,
+      blockId: ref.blockId,
+      label: ref.heading || (ref.blockId ? `^${ref.blockId}` : sourcePath)
+    };
+  }
+  if (ATTACHMENT_EXTENSION_RE.test(ref.note)) return undefined;
   return {
     kind: "wikilink",
     raw: trimmed,
@@ -170,10 +196,43 @@ function parseExplicitTarget(value: string, sourcePath: string): DailyMarkdownTa
   };
 }
 
-function parseWikilink(value: string, raw: string): DailyMarkdownTarget | undefined {
+function parseExplicitWebTarget(value: string): DailyWebTarget | undefined {
+  const trimmed = value.trim();
+  if (!/^https:\/\//iu.test(trimmed)) return undefined;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password) return undefined;
+    return {
+      kind: "web",
+      raw: value,
+      url: parsed.href,
+      label: `${parsed.hostname}${parsed.pathname === "/" ? "" : parsed.pathname}`
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function parseWikilink(
+  value: string,
+  raw: string,
+  sourcePath: string | undefined
+): DailyMarkdownTarget | undefined {
   const [destination, alias] = splitOnce(value, "|");
   const ref = splitSubpath(destination.trim());
-  if (!ref.note || isUnsafeLinkValue(ref.note) || ATTACHMENT_EXTENSION_RE.test(ref.note)) return undefined;
+  if (!ref.note) {
+    if (!sourcePath || (!ref.heading && !ref.blockId)) return undefined;
+    return {
+      kind: "wikilink",
+      raw,
+      linkText: sourcePath,
+      path: sourcePath,
+      label: alias?.trim() || ref.heading || (ref.blockId ? `^${ref.blockId}` : sourcePath),
+      heading: ref.heading,
+      blockId: ref.blockId
+    };
+  }
+  if (isUnsafeLinkValue(ref.note) || ATTACHMENT_EXTENSION_RE.test(ref.note)) return undefined;
   return {
     kind: "wikilink",
     raw,
@@ -259,8 +318,14 @@ function splitSubpath(value: string): { note: string; heading?: string; blockId?
 }
 
 function parseFragment(value: string | undefined): { heading?: string; blockId?: string } {
-  const fragment = value?.trim();
+  let fragment = value?.trim();
   if (!fragment) return {};
+  try {
+    fragment = decodeURIComponent(fragment);
+  } catch {
+    return {};
+  }
+  if (/[\u0000-\u001f\u007f]/u.test(fragment)) return {};
   return fragment.startsWith("^")
     ? { blockId: fragment.slice(1).trim() || undefined }
     : { heading: fragment };

@@ -1,7 +1,10 @@
 # Changelog / 更新日志
 
-## 0.3.0-beta.13 - 2026-07-23
+## 0.3.0-beta.13 - 2026-07-30
 
+- Added a Markdown-first task pool that automatically tracks unchecked note tasks, keeps completed work in history, and lets the Today planner select and schedule existing tasks without duplicating their source text.
+- Added compact task-property controls, local timing journals, start/pause/resume/complete transitions, target inheritance, webpage and Obsidian checkpoint navigation, plus a pinned Today pop-out and embeddable Today card.
+- Fixed the pinned Today window's Today / Task Pool switch in Obsidian pop-outs by using a native state control, preventing layout persistence from replaying stale state, and forcing the selected surface to redraw.
 - Upgraded Daily planning to the `towrite-daily-plan/v2` Markdown contract with mutually exclusive daily-note and fixed-document sources, Today/Tomorrow planning, theme/primary/minimum metadata, ordered full task blocks, unique `[/]` current-task transitions, duplicate-ID diagnostics, and complete-block CAS that preserves user notes and nested lists.
 - Added the three-page e-ink deck (`daily_overview`, one card per `daily_plan_item`, and `daily_result`) plus displayed-first three-button gestures: main single starts/opens, main double opens create-only Capture without creating an empty file, main long reserves recording, left/right navigate pages/tasks, and right long safely completes only the exact ACKed task.
 - Added schema-v2 display acknowledgements and gesture events with exact device/selection/content/revision/card/playlist tuples, persisted at-most-once desktop-command handling, bounded command expiry, Hub long polling, and ESP32-S3 reference firmware with 45 ms debounce, 320 ms double-click, and 700 ms long-press timing.

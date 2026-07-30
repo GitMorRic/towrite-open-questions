@@ -5505,6 +5505,715 @@
   background: var(--background-modifier-hover);
 }
 
+.towrite-note-task-line-controls {
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+}
+
+.towrite-note-task-disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.towrite-note-task-disclosure > summary {
+  display: inline-grid;
+  place-items: center;
+  min-width: 1.55rem;
+  min-height: 1.45rem;
+  padding: 0 0.28rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--text-faint);
+  background: transparent;
+  cursor: pointer;
+  font-size: var(--font-ui-smaller);
+  line-height: 1;
+  list-style: none;
+  opacity: 0.42;
+}
+
+.towrite-note-task-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.towrite-note-task-disclosure-content {
+  display: none;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.08rem 0.2rem;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-secondary);
+}
+
+.towrite-note-task-disclosure[open] > .towrite-note-task-disclosure-content,
+.towrite-note-task-disclosure:hover > .towrite-note-task-disclosure-content,
+.towrite-note-task-disclosure:focus-within > .towrite-note-task-disclosure-content {
+  display: inline-flex;
+}
+
+.towrite-note-task-disclosure[open] > summary,
+.towrite-note-task-disclosure:hover > summary,
+.towrite-note-task-disclosure:focus-within > summary {
+  border-color: var(--background-modifier-border);
+  color: var(--text-muted);
+  background: var(--background-secondary);
+  opacity: 1;
+}
+
 .towrite-daily-line-state {
   white-space: nowrap;
+}
+
+.towrite-note-task-pool-state {
+  padding: 0 0.35rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-green) 12%, transparent);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  white-space: nowrap;
+}
+
+.towrite-daily-enrichment-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  margin-inline-start: 0.45rem;
+  padding: 0.08rem 0.2rem;
+  border: 1px dashed var(--background-modifier-border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--background-secondary) 72%, transparent);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  vertical-align: middle;
+}
+
+.towrite-note-task-candidate-controls {
+  flex-wrap: wrap;
+  max-width: min(760px, calc(100vw - 5rem));
+}
+
+.towrite-note-task-pool-suggestions {
+  display: inline-flex;
+  flex: 1 1 100%;
+  align-items: center;
+  gap: 0.2rem;
+  min-width: 0;
+  padding: 0.15rem 0.2rem 0.05rem;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.towrite-note-task-pool-suggestions-label {
+  flex: 0 0 auto;
+  padding-inline: 0.15rem;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.towrite-note-task-pool-suggestions .towrite-note-task-pool-suggestion {
+  overflow: hidden;
+  min-width: 0;
+  max-width: 15rem;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  color: var(--text-normal);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.markdown-source-view.is-live-preview .cm-line.towrite-daily-task-card-line {
+  margin-block: 0.12rem;
+  padding-block: 0.18rem;
+  padding-inline-end: 0.25rem;
+  border-radius: var(--radius-s);
+  background: color-mix(in srgb, var(--background-secondary) 42%, transparent);
+  box-shadow: inset 2px 0 0 var(--background-modifier-border);
+}
+
+.markdown-source-view.is-live-preview .cm-line.towrite-note-task-tracked-line {
+  margin-block: 0;
+  padding-block: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.markdown-source-view.is-live-preview .cm-line.towrite-daily-task-state-running {
+  background: color-mix(in srgb, var(--interactive-accent) 7%, transparent);
+  box-shadow: inset 2px 0 0 var(--interactive-accent);
+}
+
+.markdown-source-view.is-live-preview .cm-line.towrite-daily-task-candidate-line {
+  background: color-mix(in srgb, var(--background-secondary) 26%, transparent);
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--text-muted) 55%, transparent);
+}
+
+.towrite-daily-enrichment-state {
+  padding-inline: 0.3rem 0.15rem;
+  white-space: nowrap;
+}
+
+.towrite-daily-enrichment-controls button,
+.towrite-daily-property-summary {
+  min-height: 1.55rem;
+  padding: 0 0.45rem;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-muted);
+  font-size: inherit;
+}
+
+.towrite-daily-enrichment-controls button:hover,
+.towrite-daily-enrichment-controls button:focus-visible,
+.towrite-daily-property-summary:hover,
+.towrite-daily-property-summary:focus-visible {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.towrite-daily-enrichment-controls .towrite-daily-enrich {
+  background: color-mix(in srgb, var(--interactive-accent) 11%, transparent);
+  color: var(--text-accent);
+  font-weight: 600;
+}
+
+.towrite-daily-property-summary {
+  overflow: hidden;
+  max-width: min(260px, 32vw);
+  border: 1px solid var(--background-modifier-border);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.towrite-daily-line-controls[data-enriched="false"] .towrite-daily-line-properties {
+  color: var(--text-accent);
+}
+
+/*
+ * Only lines marked by the CodeMirror extension are folded, and only in Live
+ * Preview. Moving the caret onto a metadata line rebuilds decorations and
+ * reveals that exact source line; Source mode always shows the raw Markdown.
+ */
+.markdown-source-view.is-live-preview .cm-line.towrite-daily-owned-metadata-folded {
+  display: none;
+}
+
+.modal.towrite-daily-properties-modal-shell {
+  width: min(720px, calc(100vw - 32px));
+  max-width: min(720px, calc(100vw - 32px));
+}
+
+.modal.towrite-daily-properties-modal-shell .modal-content {
+  overflow-x: clip;
+  overflow-y: auto;
+  max-height: min(82vh, 780px);
+}
+
+.towrite-daily-properties-modal {
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  container-type: inline-size;
+}
+
+.towrite-daily-properties-header {
+  display: grid;
+  gap: 0.35rem;
+  margin-bottom: 0.7rem;
+}
+
+.towrite-daily-properties-kicker {
+  color: var(--text-accent);
+  font-size: var(--font-ui-smaller);
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.towrite-daily-properties-header h2 {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 1.25rem;
+  line-height: 1.35;
+}
+
+.towrite-daily-properties-context {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.towrite-daily-properties-context span {
+  min-width: 0;
+  max-width: 100%;
+  padding: 0.18rem 0.5rem;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 999px;
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  overflow-wrap: anywhere;
+}
+
+.towrite-daily-properties-helper {
+  margin: 0 0 0.8rem;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  line-height: 1.5;
+}
+
+.towrite-task-property-storage {
+  margin: -0.25rem 0 0.9rem;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.towrite-task-property-storage > summary {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--text-faint);
+}
+
+.towrite-task-property-storage > div {
+  margin-top: 0.45rem;
+  padding: 0.55rem 0.7rem;
+  border-left: 2px solid var(--background-modifier-border);
+  background: color-mix(in srgb, var(--background-secondary) 42%, transparent);
+}
+
+.towrite-task-property-storage p {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.towrite-task-property-storage p + p {
+  margin-top: 0.35rem;
+}
+
+.towrite-daily-properties-section-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin: 0 0 0.4rem;
+}
+
+.towrite-daily-properties-section-heading span {
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+}
+
+.towrite-daily-properties-grid {
+  overflow: hidden;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-l);
+  background: color-mix(in srgb, var(--background-secondary) 52%, var(--background-primary));
+}
+
+.towrite-daily-properties-grid .setting-item {
+  display: grid;
+  grid-template-columns: minmax(0, 0.95fr) minmax(220px, 1.05fr);
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.75rem 0.9rem;
+}
+
+.towrite-daily-properties-grid .setting-item:last-child {
+  border-bottom: 0;
+}
+
+.towrite-daily-properties-grid .setting-item-control {
+  min-width: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.towrite-daily-properties-grid .setting-item-info {
+  min-width: 0;
+}
+
+.towrite-daily-properties-grid input[type="text"],
+.towrite-daily-properties-grid input[type="date"],
+.towrite-daily-properties-grid input[type="datetime-local"],
+.towrite-daily-properties-grid input[type="number"],
+.towrite-daily-properties-grid textarea {
+  flex: 1 1 180px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.towrite-task-property-sections {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 0.65rem;
+}
+
+.towrite-task-property-section {
+  overflow: hidden;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-l);
+  background: color-mix(in srgb, var(--background-secondary) 30%, var(--background-primary));
+}
+
+.towrite-task-property-section > summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(70px, auto);
+  gap: 0.7rem;
+  align-items: center;
+  min-height: 3rem;
+  padding: 0.55rem 0.8rem;
+  cursor: pointer;
+  list-style-position: inside;
+}
+
+.towrite-task-property-section > summary > div {
+  display: grid;
+  min-width: 0;
+  gap: 0.1rem;
+}
+
+.towrite-task-property-section > summary strong {
+  font-size: var(--font-ui-small);
+}
+
+.towrite-task-property-section > summary small,
+.towrite-task-property-section-value {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.towrite-task-property-section-value {
+  overflow: hidden;
+  max-width: 16rem;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.towrite-task-property-section.is-empty:not([open]) .towrite-task-property-section-value {
+  color: var(--text-faint);
+}
+
+.towrite-task-property-section > summary:hover,
+.towrite-task-property-section > summary:focus-visible {
+  background: var(--background-modifier-hover);
+}
+
+.towrite-task-property-section > summary:focus-visible,
+.towrite-task-property-storage > summary:focus-visible,
+.towrite-note-task-plan-fields > summary:focus-visible,
+.towrite-note-task-timing-stats > summary:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: -2px;
+}
+
+.towrite-task-property-section-body {
+  border-top: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+}
+
+.towrite-task-property-section-body .setting-item {
+  display: grid;
+  grid-template-columns: minmax(0, 0.95fr) minmax(220px, 1.05fr);
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.75rem 0.9rem;
+}
+
+.towrite-task-property-section-body .setting-item-info,
+.towrite-task-property-section-body .setting-item-control {
+  min-width: 0;
+}
+
+.towrite-task-property-section-body .setting-item-control {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.towrite-task-property-section-body input,
+.towrite-task-property-section-body textarea {
+  flex: 1 1 180px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.towrite-daily-properties-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.45rem;
+  margin-top: 1rem;
+}
+
+.towrite-daily-properties-actions .mod-muted {
+  margin-inline-end: auto;
+  color: var(--text-muted);
+}
+
+.towrite-daily-properties-error {
+  margin: 0.75rem 0 0;
+  color: var(--text-error);
+  font-size: var(--font-ui-small);
+}
+
+.towrite-note-task-schedule {
+  display: grid;
+  gap: 0;
+  margin-top: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background: color-mix(in srgb, var(--background-secondary) 42%, var(--background-primary));
+}
+
+.towrite-note-task-schedule-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem 0.9rem;
+}
+
+.towrite-note-task-schedule-heading > div {
+  display: grid;
+  min-width: 0;
+  gap: 0.12rem;
+}
+
+.towrite-note-task-schedule-heading small,
+.towrite-note-task-timing-hint {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.towrite-note-task-timing-state {
+  flex: 0 0 auto;
+  padding: 0.18rem 0.5rem;
+  border-radius: 999px;
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.towrite-note-task-plan-fields,
+.towrite-note-task-timing-stats {
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.towrite-note-task-plan-fields > summary,
+.towrite-note-task-timing-stats > summary {
+  padding: 0.7rem 0.9rem;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  font-weight: 600;
+}
+
+.towrite-note-task-schedule-fields .setting-item {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(240px, 1.2fr);
+  gap: 0.7rem;
+  align-items: center;
+  padding: 0.68rem 0.9rem;
+}
+
+.towrite-note-task-schedule-fields .setting-item-info,
+.towrite-note-task-schedule-fields .setting-item-control {
+  min-width: 0;
+}
+
+.towrite-note-task-schedule-fields .setting-item-control {
+  flex-wrap: wrap;
+}
+
+.towrite-note-task-schedule-fields input[type="datetime-local"] {
+  flex: 1 1 190px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.towrite-note-task-timing-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+  gap: 0.45rem;
+  padding: 0.75rem 0.9rem;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.towrite-note-task-timing-metrics > div {
+  display: grid;
+  gap: 0.16rem;
+  min-width: 0;
+  padding: 0.55rem 0.62rem;
+  border-radius: var(--radius-s);
+  background: var(--background-primary);
+}
+
+.towrite-note-task-timing-metrics small {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.towrite-note-task-timing-metrics strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.towrite-note-task-timing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.4rem;
+  padding: 0 0.9rem 0.8rem;
+}
+
+.towrite-note-task-timing-history {
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.towrite-note-task-timing-history > summary {
+  padding: 0.7rem 0.9rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: var(--font-ui-small);
+  font-weight: 600;
+}
+
+.towrite-note-task-timing-history-list {
+  display: grid;
+  gap: 0;
+  padding: 0 0.9rem 0.75rem;
+}
+
+.towrite-note-task-timing-history-row {
+  display: grid;
+  grid-template-columns: minmax(72px, auto) minmax(0, 1fr) auto;
+  gap: 0.55rem;
+  align-items: center;
+  min-width: 0;
+  padding: 0.45rem 0;
+  border-top: 1px solid var(--background-modifier-border-hover);
+  font-size: var(--font-ui-smaller);
+}
+
+.towrite-note-task-timing-event {
+  font-weight: 600;
+}
+
+.towrite-note-task-timing-history-row time,
+.towrite-note-task-timing-source {
+  color: var(--text-muted);
+}
+
+.towrite-note-task-timing-history-row time {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.towrite-note-task-timing-hint {
+  margin: 0;
+  padding: 0.7rem 0.9rem;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.towrite-daily-enrichment-controls button:focus-visible,
+.towrite-daily-line-controls button:focus-visible,
+.towrite-daily-property-summary:focus-visible,
+.towrite-daily-properties-actions button:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
+}
+
+@container (max-width: 560px) {
+  .towrite-daily-properties-grid .setting-item {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 0.5rem;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .towrite-daily-properties-grid .setting-item-control,
+  .towrite-daily-properties-grid input[type="text"],
+  .towrite-daily-properties-grid input[type="date"],
+  .towrite-daily-properties-grid input[type="datetime-local"],
+  .towrite-daily-properties-grid input[type="number"],
+  .towrite-daily-properties-grid textarea {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .towrite-task-property-section > summary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .towrite-task-property-section-value {
+    max-width: 100%;
+    padding-inline-start: 1.1rem;
+    text-align: left;
+  }
+
+  .towrite-task-property-section-body .setting-item {
+    align-items: stretch;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .towrite-task-property-section-body .setting-item-control,
+  .towrite-task-property-section-body input,
+  .towrite-task-property-section-body textarea {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .towrite-daily-properties-actions {
+    flex-wrap: wrap;
+  }
+
+  .towrite-daily-properties-actions .mod-muted {
+    width: 100%;
+    margin-inline-end: 0;
+    order: 3;
+  }
+
+  .towrite-note-task-schedule-heading {
+    align-items: flex-start;
+  }
+
+  .towrite-note-task-schedule-fields .setting-item {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .towrite-note-task-schedule-fields .setting-item-control,
+  .towrite-note-task-schedule-fields input[type="datetime-local"] {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .towrite-note-task-timing-history-row {
+    grid-template-columns: minmax(64px, auto) minmax(0, 1fr);
+  }
+
+  .towrite-note-task-timing-source {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .towrite-daily-enrichment-controls,
+  .towrite-daily-property-summary {
+    transition: none;
+  }
 }

@@ -63,6 +63,7 @@ describe("daily hierarchy and inherited targets", () => {
       "## ToDo",
       "- [ ] Parent [[Parent]] ^daily_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "  - [ ] Child [[Child]] ^daily_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "    [towrite-category:: 写作与发布] [towrite-task-ref:: task_pool_child01]",
       "    Child explanation"
     ].join("\n");
     const hierarchy = parseDailyPlanHierarchy(markdown, PATH, DATE);
@@ -72,6 +73,13 @@ describe("daily hierarchy and inherited targets", () => {
       "Child [[Child]]"
     ]);
     expect(hierarchy.tasks[1].rawBlock).toContain("Child explanation");
+    expect(hierarchy.tasks[0]).toMatchObject({ depth: 0, parentTaskId: undefined });
+    expect(hierarchy.tasks[1]).toMatchObject({
+      depth: 1,
+      parentTaskId: "daily_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      category: "写作与发布",
+      taskRef: "task_pool_child01"
+    });
   });
 
   it("enriches DailyPlanService items and exposes nested normalized checkbox tasks", async () => {
@@ -91,6 +99,8 @@ describe("daily hierarchy and inherited targets", () => {
     expect(items).toHaveLength(2);
     expect(items[0]).toMatchObject({
       text: "Parent task",
+      depth: 1,
+      parentTaskId: undefined,
       groupId: expect.stringMatching(/^group_/u),
       lineageRevision: expect.stringMatching(/^dlr_/u),
       targetResolution: {
@@ -100,6 +110,8 @@ describe("daily hierarchy and inherited targets", () => {
     });
     expect(items[1]).toMatchObject({
       text: "Child task [[Child]]",
+      depth: 2,
+      parentTaskId: "daily_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       targetResolution: {
         source: "task-link",
         target: { linkText: "Child" }
@@ -277,6 +289,22 @@ describe("daily hierarchy and inherited targets", () => {
 });
 
 describe("daily target resolver", () => {
+  it("resolves same-note heading and block links against the planning source", () => {
+    expect(parseDailyMarkdownTargets(
+      "[[#Today focus]] and [[#^daily_same_note]]",
+      { sourcePath: PATH }
+    )).toEqual([
+      expect.objectContaining({
+        path: PATH,
+        heading: "Today focus"
+      }),
+      expect.objectContaining({
+        path: PATH,
+        blockId: "daily_same_note"
+      })
+    ]);
+  });
+
   const group: DailyPlanGroup = {
     id: "group_parent",
     text: "[Parent](父级, 分类.md)",
@@ -344,8 +372,7 @@ describe("daily target resolver", () => {
       "assets/image.png",
       "[[reference.pdf]]",
       "[[assets/image.png#preview]]",
-      "../../../Secret.md",
-      "https://example.com/Secret.md"
+      "../../../Secret.md"
     ]) {
       expect(resolveDailyTarget({
         sourcePath: PATH,
@@ -356,6 +383,39 @@ describe("daily target resolver", () => {
         source: "task-block",
         sourcePath: PATH,
         blockId: "daily_attachment"
+      });
+    }
+  });
+
+  it("accepts only an explicit credential-free HTTPS target as a web destination", () => {
+    expect(resolveDailyTarget({
+      sourcePath: PATH,
+      taskText: "Read the saved article",
+      rawBlock: "- [ ] Read the saved article\n  [towrite-target:: https://example.com/articles/echo#part-2]\n  ^daily_web",
+      blockId: "daily_web"
+    })).toMatchObject({
+      source: "explicit",
+      webTarget: {
+        kind: "web",
+        url: "https://example.com/articles/echo#part-2",
+        label: "example.com/articles/echo"
+      }
+    });
+
+    for (const unsafe of [
+      "http://example.com/article",
+      "https://user:secret@example.com/article",
+      "javascript:alert(1)",
+      "file:///C:/Secret.md"
+    ]) {
+      expect(resolveDailyTarget({
+        sourcePath: PATH,
+        taskText: "No task link",
+        rawBlock: `- [ ] No task link\n  [towrite-target:: ${unsafe}]\n  ^daily_unsafe_web`,
+        blockId: "daily_unsafe_web"
+      })).toMatchObject({
+        source: "task-block",
+        blockId: "daily_unsafe_web"
       });
     }
   });
@@ -412,6 +472,126 @@ describe("daily plan normalization", () => {
 
     await service.undo(result.undoToken!);
     expect(storage.files.get(PATH)).toBe(original);
+  });
+
+  it("normalizes only the selected quick task and leaves other drafts untouched", async () => {
+    const storage = new MemoryStorage();
+    storage.files.set(PATH, [
+      `# ${DATE}`,
+      "## ToDo",
+      "- [ ] First quick task",
+      "- [ ] Second quick task"
+    ].join("\n"));
+    const service = new DailyPlanNormalizationService(storage, {
+      createId: idSequence(),
+      now: () => new Date("2026-07-24T10:00:00+08:00")
+    });
+
+    const preview = await service.preview(DATE);
+    expect(preview.edits).toHaveLength(2);
+    const result = await service.normalizeTask(preview, preview.edits[0].line);
+    const written = storage.files.get(PATH)!;
+
+    expect(written).toContain("- [ ] First quick task ^daily_00000000000000000000000000000001");
+    expect(written).toContain("- [ ] Second quick task");
+    expect(written).not.toContain("Second quick task ^daily_");
+    expect(result.preview.edits).toHaveLength(1);
+    expect(result.preview.edits[0].taskText).toBe("Second quick task");
+  });
+
+  it("adopts one quick task with selected properties in the same revision-safe write", async () => {
+    const storage = new MemoryStorage();
+    storage.files.set(PATH, [
+      `# ${DATE}`,
+      "## ToDo",
+      "- [ ] 写出 [[Echo 发布计划]]",
+      "  用户自己的说明",
+      "- [ ] 另一条待办"
+    ].join("\n"));
+    const service = new DailyPlanNormalizationService(storage, {
+      createId: idSequence()
+    });
+    const preview = await service.preview(DATE);
+
+    await service.adoptTask(preview, preview.edits[0].line, {
+      category: "写作和发布",
+      dueDate: "2026-07-30",
+      estimateMinutes: 25,
+      nextStep: "先写出第一段",
+      target: "[[Echo 发布计划]]"
+    });
+    const written = storage.files.get(PATH)!;
+
+    expect(written).toContain("- [ ] 写出 [[Echo 发布计划]] ^daily_00000000000000000000000000000001");
+    expect(written).toContain("  [towrite-category:: 写作和发布]");
+    expect(written).toContain("  [towrite-due:: 2026-07-30]");
+    expect(written).toContain("  [towrite-estimate:: 25m]");
+    expect(written).toContain("  [towrite-next:: 先写出第一段]");
+    expect(written).toContain("  [towrite-target:: [[Echo 发布计划]]]");
+    expect(written).toContain("  用户自己的说明");
+    expect(written).toContain("- [ ] 另一条待办");
+    expect(written).not.toContain("另一条待办 ^daily_");
+
+    const item = (await new DailyPlanService(storage).list(DATE))[0];
+    expect(item).toMatchObject({
+      category: "写作和发布",
+      dueDate: "2026-07-30",
+      dueDateExplicit: true,
+      estimateMinutes: 25,
+      nextStep: "先写出第一段",
+      target: "[[Echo 发布计划]]"
+    });
+  });
+
+  it("track-only preserves optional fields the author already wrote", async () => {
+    const storage = new MemoryStorage();
+    storage.files.set(PATH, [
+      `# ${DATE}`,
+      "## ToDo",
+      "- [ ] Handwritten quick task",
+      "  [towrite-category:: Personal]",
+      "  Keep this note"
+    ].join("\n"));
+    const service = new DailyPlanNormalizationService(storage, {
+      createId: idSequence()
+    });
+
+    const preview = await service.preview(DATE);
+    await service.normalizeTask(preview, preview.edits[0].line);
+    const written = storage.files.get(PATH)!;
+    expect(written).toContain("[towrite-category:: Personal]");
+    expect(written).toContain("Keep this note");
+    expect(written).not.toContain("[towrite-kind::");
+  });
+
+  it("rejects invalid enrichment before writing an adopted task", async () => {
+    const storage = new MemoryStorage();
+    const original = `# ${DATE}\n## ToDo\n- [ ] Unsafe target`;
+    storage.files.set(PATH, original);
+    const service = new DailyPlanNormalizationService(storage, {
+      createId: idSequence()
+    });
+    const preview = await service.preview(DATE);
+
+    await expect(service.adoptTask(preview, preview.edits[0].line, {
+      target: "javascript:alert(1)"
+    })).rejects.toThrow(/safe Obsidian note/u);
+    expect(storage.files.get(PATH)).toBe(original);
+  });
+
+  it("rejects a stale scoped quick-task normalization without touching Markdown", async () => {
+    const storage = new MemoryStorage();
+    storage.files.set(PATH, `# ${DATE}\n## ToDo\n- [ ] Quick task`);
+    const service = new DailyPlanNormalizationService(storage, {
+      createId: idSequence()
+    });
+    const preview = await service.preview(DATE);
+    storage.files.set(PATH, `# ${DATE}\n## ToDo\n- [ ] Quick task changed`);
+
+    await expect(service.normalizeTask(preview, preview.edits[0].line))
+      .rejects.toMatchObject({ code: "revision-changed" });
+    expect(storage.files.get(PATH)).toContain("Quick task changed");
+    expect(storage.files.get(PATH)).not.toContain("^daily_");
   });
 
   it("rejects stale previews and refuses unsafe undo after user changes", async () => {

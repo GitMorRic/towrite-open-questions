@@ -9,6 +9,29 @@ import {
 } from "./plan-service";
 
 describe("DailyPlanService v2", () => {
+  it("creates an empty Markdown plan scaffold without inventing a task", async () => {
+    const storage = new MemoryDailyStorage();
+    const service = new DailyPlanService(storage, {
+      now: () => new Date("2026-07-27T08:00:00+08:00")
+    });
+
+    const document = await service.updateMetadata(
+      { theme: null },
+      undefined,
+      "2026-07-27"
+    );
+
+    expect(document.items).toEqual([]);
+    expect(storage.files.get("Daily/2026-07-27.md")).toBe([
+      "# 2026-07-27",
+      "",
+      "## 今日计划",
+      "",
+      "## ToDo",
+      ""
+    ].join("\n"));
+  });
+
   it("supports a fixed planning document with isolated date sections", async () => {
     const storage = new MemoryDailyStorage();
     const service = new DailyPlanService(storage, {
@@ -327,6 +350,135 @@ describe("DailyPlanService v2", () => {
     const written = storage.files.get(second.sourcePath)!;
     expect(written.indexOf("Second")).toBeLessThan(written.indexOf("First"));
     expect(written.indexOf("second note")).toBeLessThan(written.indexOf("First"));
+  });
+
+  it("persists the complete Dashboard edit lifecycle back to Markdown with CAS protection", async () => {
+    const path = "Daily/2026-07-23.md";
+    const storage = new MemoryDailyStorage();
+    storage.files.set(path, [
+      "# 2026-07-23",
+      "",
+      "## ToDo",
+      "",
+      "- [/] Existing current task",
+      "  This hand-written context must survive every Dashboard operation.",
+      "  [custom-field:: keep-me]",
+      "  ^daily_existing_dashboard",
+      "",
+      "## Notes",
+      "",
+      "A hand-written note outside the task list must also survive."
+    ].join("\n"));
+    const options = {
+      createId: () => "daily_dashboard_contract",
+      now: () => new Date("2026-07-23T08:00:00+08:00")
+    };
+    const service = new DailyPlanService(storage, options);
+    const reread = async () => (
+      new DailyPlanService(storage, options).read("2026-07-23")
+    );
+    const expectHandWrittenContent = (): void => {
+      const markdown = storage.files.get(path)!;
+      expect(markdown).toContain("This hand-written context must survive every Dashboard operation.");
+      expect(markdown).toContain("[custom-field:: keep-me]");
+      expect(markdown).toContain("A hand-written note outside the task list must also survive.");
+    };
+
+    const created = await service.create({
+      date: "2026-07-23",
+      text: "Draft the launch note",
+      category: "Writing and publishing",
+      goal: "Make the note ready for review",
+      nextStep: "Outline the three main sections",
+      target: "[[Launch Plan]]",
+      dueDate: "2026-07-30",
+      priority: "high",
+      tags: ["launch", "writing"]
+    });
+    const staleCreateRevision = created.revision;
+    let persisted = await reread();
+    expect(persisted.items.find((item) => item.id === created.id)).toMatchObject({
+      text: "Draft the launch note",
+      category: "Writing and publishing",
+      goal: "Make the note ready for review",
+      nextStep: "Outline the three main sections",
+      target: "[[Launch Plan]]",
+      dueDate: "2026-07-30",
+      dueDateExplicit: true,
+      priority: "high",
+      tags: ["launch", "writing"]
+    });
+    expect(storage.files.get(path)).toContain("[towrite-category:: Writing and publishing]");
+    expect(storage.files.get(path)).toContain("[towrite-goal:: Make the note ready for review]");
+    expect(storage.files.get(path)).toContain("[towrite-next:: Outline the three main sections]");
+    expect(storage.files.get(path)).toContain("[towrite-target:: [[Launch Plan]]]");
+    expect(storage.files.get(path)).toContain("[towrite-due:: 2026-07-30]");
+    expect(storage.files.get(path)).toContain("#launch #writing");
+    expectHandWrittenContent();
+
+    const updated = await service.update(created.id, created.revision, {
+      text: "Revise the launch note",
+      category: "Project",
+      goal: "Approve the final outline",
+      nextStep: "Review the opening paragraph",
+      target: "[[Launch Review]]",
+      dueDate: "2026-07-31",
+      priority: "highest",
+      tags: ["launch", "review"]
+    }, "2026-07-23");
+    persisted = await reread();
+    expect(persisted.items.find((item) => item.id === created.id)).toMatchObject({
+      text: "Revise the launch note",
+      category: "Project",
+      goal: "Approve the final outline",
+      nextStep: "Review the opening paragraph",
+      target: "[[Launch Review]]",
+      dueDate: "2026-07-31",
+      priority: "highest",
+      tags: ["launch", "review"]
+    });
+    expect(storage.files.get(path)).not.toContain("[[Launch Plan]]");
+    expect(storage.files.get(path)).not.toContain("#writing");
+    expectHandWrittenContent();
+
+    const markdownBeforeStaleWrite = storage.files.get(path);
+    await expect(service.update(created.id, staleCreateRevision, {
+      text: "A stale Dashboard must not overwrite the note"
+    }, "2026-07-23")).rejects.toMatchObject({ code: "revision-changed" });
+    expect(storage.files.get(path)).toBe(markdownBeforeStaleWrite);
+
+    const moved = await service.move(updated.id, updated.revision, "up", "2026-07-23");
+    persisted = await reread();
+    expect(persisted.items.map((item) => item.id)).toEqual([
+      "daily_dashboard_contract",
+      "daily_existing_dashboard"
+    ]);
+    expect(moved.line).toBeLessThan(
+      persisted.items.find((item) => item.id === "daily_existing_dashboard")!.line
+    );
+    expectHandWrittenContent();
+
+    const started = await service.start(moved.id, moved.revision, "2026-07-23");
+    persisted = await reread();
+    expect(persisted.items.map((item) => [item.id, item.status])).toEqual([
+      ["daily_dashboard_contract", "in-progress"],
+      ["daily_existing_dashboard", "todo"]
+    ]);
+    expect(storage.files.get(path)!.match(/- \[\/\]/gu)).toHaveLength(1);
+    expectHandWrittenContent();
+
+    const completed = await service.complete(started.id, started.revision, "2026-07-23");
+    persisted = await reread();
+    expect(persisted.items.find((item) => item.id === completed.id)?.status).toBe("done");
+    expect(storage.files.get(path)).toContain("- [x] Revise the launch note");
+    expectHandWrittenContent();
+
+    await service.reopen(completed.id, completed.revision, "2026-07-23");
+    persisted = await reread();
+    expect(persisted.items.find((item) => item.id === completed.id)?.status).toBe("todo");
+    expect(storage.files.get(path)).toContain("- [ ] Revise the launch note");
+    expect(storage.files.get(path)).not.toContain("- [x] Revise the launch note");
+    expectHandWrittenContent();
   });
 
   it("writes only the managed summary marker block and preserves hand-written review", async () => {

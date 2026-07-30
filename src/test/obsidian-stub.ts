@@ -1,7 +1,21 @@
+import { StateField } from "@codemirror/state";
+
+export const editorLivePreviewField = StateField.define<boolean>({
+  create: () => false,
+  update: (value) => value
+});
+
 export class TFile {
   path = "";
   extension = "md";
   basename = "";
+}
+
+export class MarkdownView {
+  editor: any;
+  containerEl: any = {
+    querySelector: () => null
+  };
 }
 
 export const Platform = {
@@ -10,6 +24,10 @@ export const Platform = {
 
 export function normalizePath(path: string): string {
   return path.replace(/\\/gu, "/").replace(/\/{2,}/gu, "/");
+}
+
+export function resolveSubpath(): null {
+  return null;
 }
 
 export function requestUrl(): never {

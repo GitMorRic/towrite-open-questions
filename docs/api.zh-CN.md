@@ -452,6 +452,39 @@ Content-Type: application/json
 
 请求：
 
+新固件必须使用 schema v2。设备先从 `/api/v1/eink` 取得 `playlist.desired`，在墨水屏实际刷新成功后将同一 tuple 提交给 `/api/v1/device/display-acks`。只有 ACK 成功，按键才能提交：
+
+```json
+{
+  "schemaVersion": 2,
+  "eventId": "evt_0123456789abcdef",
+  "targetId": "desk-eink",
+  "deviceId": "desk-eink",
+  "selectionId": "sel_local_...",
+  "stateVersion": 12,
+  "contentId": "cnt_local_...",
+  "revisionId": "rev_local_...",
+  "cardId": "daily-plan:daily_echo",
+  "playlistRevision": "einkrev_...",
+  "button": "primary",
+  "gesture": "single"
+}
+```
+
+服务端根据 `button + gesture` 推导动作，不信任固件自己提交的 `action`。默认三键行为：
+
+- `primary + single`：打开屏幕实际显示卡片对应的 Obsidian 笔记与 block/heading；概要页会先把任务设为进行中；
+- `primary + double`：打开 create-only Capture；
+- `primary + long`：V1 返回录音尚未启用；
+- `left/right + single`：切换页面；
+- `left/right + double`：切换任务；
+- `left + long`：开始、暂停或继续计时；
+- `right + long`：安全完成当前 displayed 任务。
+
+响应中的 `commandStatus` 才是命令结果。它可能是 `executed`、`conflict`、`unsupported` 或 `waiting`。为保证 event ID 幂等，应用级冲突可能以 HTTP 200 + `commandStatus: "conflict"` 返回；固件必须清除旧 displayed tuple，重新拉取、刷新并 ACK，不能只检查 HTTP 状态。
+
+下面的 schema v1 仅用于旧反馈、翻页客户端，不会触发打开桌面笔记等 UI 副作用：
+
 ```json
 {
   "schemaVersion": 1,

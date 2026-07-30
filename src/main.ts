@@ -1,6 +1,7 @@
 import "./styles.css";
 import {
   Component,
+  MarkdownRenderChild,
   MarkdownView,
   MarkdownRenderer,
   Notice,
@@ -132,6 +133,10 @@ import {
   dailyWikiLink,
   DailyPlanConflictError,
   DailyPlanService,
+  executeDailyStartAndOpen,
+  NoteTaskPoolCoordinator,
+  TaskPoolService,
+  TaskPoolConflictError,
   dailyAiSummaryPlaceholderInstruction,
   parseConstrainedDailyAiSummary,
   type DailyActivityState,
@@ -145,6 +150,7 @@ import {
   type DailyPlanItem,
   type DailyPlanMetadata,
   type DailyPlanMetadataUpdate,
+  type DailyPlanNormalizationEdit,
   type DailyPlanNormalizationPreview,
   type DailyPlanNormalizationResult,
   type DailyPlanNormalizationUndoResult,
@@ -153,6 +159,11 @@ import {
   type DailySummary,
   type DailyTaskTimingSnapshot,
   type DailyTimerCorrectionOptions,
+  type TaskPoolCreateInput,
+  type TaskPoolDocument,
+  type TaskPoolItem,
+  type TaskPoolRevision,
+  type TaskPoolUpdate,
   type DailyTimerEvent,
   type DailyTimerEventLog,
   type DailyTimerEventSource,
@@ -160,7 +171,12 @@ import {
   type DailyTimerTransitionJournalEntry,
   type DailyTimerTransition,
   type DailyTimerTransitionOptions,
-  type DailyTaskRevision
+  type DailyTaskRevision,
+  NoteTaskService,
+  type NoteTaskCandidate,
+  type NoteTaskDocument,
+  type NoteTaskPatch,
+  type TrackedNoteTask
 } from "./daily";
 import { QuestionExporter } from "./export/exporter";
 import {
@@ -234,6 +250,7 @@ import type {
   DeviceDisplayedTuple,
   DeviceEventInput
 } from "./device-interactions";
+import { shouldStartDailyOverviewForAction } from "./device-interactions";
 import {
   resolveLocalEinkConnectionStatus,
   type SmallScreenConnectionStatus
@@ -265,8 +282,31 @@ import type { InboxDeviceEligibility, InboxSnapshot } from "./inbox/types";
 import { yieldToEventLoop } from "./core/async-batch";
 import { createQuestionDecorations, refreshQuestionDecorations } from "./obsidian/decorations";
 import { createDailyTaskControls, refreshDailyTaskControls } from "./obsidian/daily-task-controls";
+import {
+  createNoteTaskControls,
+  rankNoteTaskPoolMatches,
+  refreshNoteTaskControls
+} from "./obsidian/note-task-controls";
+import {
+  DailyTaskPropertiesModal,
+  type DailyTaskPropertiesModalOptions,
+  type DailyTaskPropertiesModalResult
+} from "./obsidian/daily-task-properties-modal";
+import { initialNoteTaskDeadline } from "./obsidian/daily-task-properties";
 import { OpenQuestionIndexer } from "./obsidian/indexer";
 import { jumpToQuestion as jumpToQuestionInWorkspace } from "./obsidian/jump";
+import { ObsidianNavigationAdapter } from "./obsidian/open-target";
+import { openPinnedFloatingView } from "./obsidian/floating-view";
+import { noteTaskTimingReconciliationAction } from "./obsidian/note-task-timing";
+import {
+  NavigationCheckpointService,
+  NavigationRouter,
+  WebNavigationAdapter,
+  dailyNavigationTargetKey,
+  navigationTargetForDailyItem,
+  navigationTargetForMarkdownTarget,
+  type ObsidianNavigationTarget
+} from "./navigation";
 import { AddQuestionModal } from "./obsidian/modal";
 import { CaptureModal } from "./obsidian/capture-modal";
 import { AiAssistantModal } from "./obsidian/ai-assistant-modal";
@@ -278,8 +318,11 @@ import { readVaultDataText, writeVaultDataText } from "./obsidian/vault-data";
 import {
   TOWRITE_DASHBOARD_VIEW,
   TOWRITE_SIDEBAR_VIEW,
+  TOWRITE_TODAY_FLOATING_VIEW,
   ToWriteDashboardItemView,
-  ToWriteSidebarItemView
+  type ToWriteDashboardViewState,
+  ToWriteSidebarItemView,
+  ToWriteTodayFloatingItemView
 } from "./obsidian/views";
 import type { ActiveLineRange, LinkSuggestion, ToWriteUiApi } from "./ui/api";
 import type {
@@ -287,6 +330,8 @@ import type {
   DailyPlanningCandidate,
   DailySummaryPresentation
 } from "./ui/daily-dashboard-types";
+import TodayEmbedCard from "./ui/TodayEmbedCard.svelte";
+import { todayEmbedMarkdown } from "./ui/today-embed-state";
 import type { CaptureModalSubmitRequest, CaptureModalSubmitResult } from "./ui/capture-modal-types";
 import type {
   AiAssistantCatalog,
@@ -340,15 +385,25 @@ export default class ToWritePlugin extends Plugin {
   private capturePluginBridge!: CapturePluginBridgeClient;
   private dailyPlanService!: DailyPlanService;
   private dailyPlanNormalizationService!: DailyPlanNormalizationService;
+  private noteTaskService!: NoteTaskService;
+  private noteTaskPoolCoordinator!: NoteTaskPoolCoordinator;
+  private taskPoolService!: TaskPoolService;
   private dailyActivityService!: DailyActivityService;
   private dailyTaskTimer?: PersistentDailyTaskTimer;
+  private noteTaskTimer?: PersistentDailyTaskTimer;
   private dailyTimerCoordinator?: DailyTimerTransitionCoordinator;
   private dailyTimerLedgerPath = "";
   private dailyTimerLoadError = "";
   private dailyTimerTransitionTail: Promise<void> = Promise.resolve();
   private dailyTimerManagedMarkdownWriteDepth = 0;
   private dailyPlanItems: DailyPlanItem[] = [];
+  private dailyEditorPlanItems: DailyPlanItem[] = [];
   private dailyPlanDocument?: DailyPlanDocument;
+  private dailyPlanNormalizationPreviews: DailyPlanNormalizationPreview[] = [];
+  private activeNoteTaskDocument?: NoteTaskDocument;
+  private activeTaskPoolItems: TaskPoolItem[] = [];
+  private activeNoteTaskPoolMatches = new Map<string, TaskPoolItem[]>();
+  private activeNoteTaskRefreshTail: Promise<void> = Promise.resolve();
   private dailyActivityRetentionDays = 30;
   private dailyStateSaveTimer = 0;
   private dailyMidnightTimer = 0;
@@ -417,6 +472,8 @@ export default class ToWritePlugin extends Plugin {
   private quote0SyncService!: Quote0SyncService;
   private learningService!: HabitLearningService;
   private suggestionService!: SuggestionService;
+  private navigationRouter!: NavigationRouter;
+  private navigationCheckpointService!: NavigationCheckpointService;
   private uiApi!: ToWriteUiApi;
   private selectionToolbar?: SelectionQuestionToolbar;
   private pdfQuestionLayer?: PdfQuestionLayer;
@@ -447,11 +504,27 @@ export default class ToWritePlugin extends Plugin {
   async onload(): Promise<void> {
     await this.loadPluginData();
 
+    this.navigationRouter = new NavigationRouter();
+    this.navigationRouter.register(new ObsidianNavigationAdapter(this.app));
+    this.navigationRouter.register(new WebNavigationAdapter());
+    const navigationCheckpointPath =
+      `${normalizeVaultPath(this.settings.exportDirectory)}/daily/navigation-checkpoints.json`;
+    this.navigationCheckpointService = new NavigationCheckpointService({
+      readText: () => readVaultDataText(this.app, navigationCheckpointPath),
+      writeText: (content) => writeVaultDataText(this.app, navigationCheckpointPath, content)
+    });
+    try {
+      await this.navigationCheckpointService.load();
+    } catch (error) {
+      console.error("ToWrite could not load navigation checkpoints", error);
+    }
     this.backendClient = new BackendEnhancementClient(() => this.settings.backend);
     this.store = new OpenQuestionStore(this.savedQuestionStates);
     this.register(this.store.subscribe(() => this.invalidateLegacyEinkPlaylist()));
     this.initializeDailyServices();
     await this.initializeDailyTaskTimer();
+    await this.initializeNoteTaskTimer();
+    await this.returnExpiredTaskPoolAssignments();
     await this.refreshDailyPlanCache(false);
     this.learningService = new HabitLearningService(this.savedLearningState);
     this.learningService.setCollectionPaused(!this.settings.learning.enabled);
@@ -718,6 +791,36 @@ export default class ToWritePlugin extends Plugin {
         getFullWorkflowPayload: () => this.workflowIndex.getPayload({ compact: true })
       })
     );
+    this.registerView(
+      TOWRITE_TODAY_FLOATING_VIEW,
+      (leaf) => new ToWriteTodayFloatingItemView(leaf, {
+        dailyApi: dailyDashboardApi,
+        onOpenDashboard: () => {
+          void this.activateDashboard({ activeTab: "today", dailySurface: "today" });
+        },
+        onOpenTaskPool: () => {
+          void this.activateDashboard({ activeTab: "today", dailySurface: "pool" });
+        }
+      })
+    );
+    this.registerMarkdownCodeBlockProcessor("towrite-today", (source, el, context) => {
+      const component = new TodayEmbedCard({
+        target: el,
+        props: {
+          dailyApi: dailyDashboardApi,
+          source,
+          onOpenDashboard: () => {
+            void this.activateDashboard({ activeTab: "today", dailySurface: "today" });
+          },
+          onOpenFloating: () => {
+            void this.activateTodayFloating();
+          }
+        }
+      });
+      const lifecycle = new MarkdownRenderChild(el);
+      lifecycle.register(() => component.$destroy());
+      context.addChild(lifecycle);
+    });
 
     this.addRibbonIcon("circle-help", "Open ToWrite questions", () => {
       void this.activateSidebar();
@@ -727,6 +830,9 @@ export default class ToWritePlugin extends Plugin {
     });
     this.addRibbonIcon("bot", "Open ToWrite AI assistant", () => {
       this.openAiAssistant();
+    });
+    this.addRibbonIcon("calendar-check", "Open ToWrite Today floating window", () => {
+      void this.activateTodayFloating();
     });
 
     this.addCommand({
@@ -742,6 +848,46 @@ export default class ToWritePlugin extends Plugin {
       name: "Open question dashboard",
       callback: () => {
         void this.activateDashboard();
+      }
+    });
+
+    this.addCommand({
+      id: "open-today-dashboard",
+      name: "Today: open dashboard",
+      callback: () => {
+        void this.activateDashboard({ activeTab: "today", dailySurface: "today" });
+      }
+    });
+
+    this.addCommand({
+      id: "open-task-pool-dashboard",
+      name: "Today: open task pool",
+      callback: () => {
+        void this.activateDashboard({ activeTab: "today", dailySurface: "pool" });
+      }
+    });
+
+    this.addCommand({
+      id: "insert-today-card",
+      name: "Today: insert synced card into note",
+      editorCallback: (editor) => {
+        editor.replaceSelection(todayEmbedMarkdown());
+      }
+    });
+
+    this.addCommand({
+      id: "open-today-floating-window",
+      name: "Today: open floating window",
+      callback: () => {
+        void this.activateTodayFloating();
+      }
+    });
+
+    this.addCommand({
+      id: "simulate-displayed-primary-button",
+      name: "Device: simulate main-button single click",
+      callback: () => {
+        void this.simulateDisplayedPrimaryButton();
       }
     });
 
@@ -864,7 +1010,8 @@ export default class ToWritePlugin extends Plugin {
     this.registerEditorExtension(createDailyTaskControls({
       isEnabled: () => this.settings.daily.enabled && this.settings.daily.editorTaskControls,
       getActiveFilePath: () => this.getActiveFile() ?? undefined,
-      getItems: () => this.dailyPlanItems,
+      getItems: () => this.dailyEditorPlanItems,
+      getNormalizationPreviews: () => this.dailyPlanNormalizationPreviews,
       getTiming: (item) => this.dailyTimingSnapshotForItem(item),
       onToggle: async (item) => {
         try {
@@ -901,7 +1048,29 @@ export default class ToWritePlugin extends Plugin {
         } catch (error) {
           new Notice(messageForError(error));
         }
-      }
+      },
+      onEditProperties: (item) => this.editDailyTaskProperties(item),
+      onEnrich: (edit) => this.enrichPendingDailyTask(edit),
+      onTrackOnly: (edit) => this.trackPendingDailyTask(edit)
+    }));
+    this.registerEditorExtension(createNoteTaskControls({
+      isEnabled: () => this.settings.daily.enabled && this.settings.daily.editorTaskControls,
+      getActiveFilePath: () => this.getActiveFile() ?? undefined,
+      getDocument: () => this.activeNoteTaskDocument,
+      getTiming: (item) => this.noteTaskTimingSnapshot(item),
+      getPoolTask: (item) => item.poolTaskRef
+        ? this.activeTaskPoolItems.find((poolItem) => poolItem.taskId === item.poolTaskRef)
+        : undefined,
+      getPoolMatches: (candidate) =>
+        this.activeNoteTaskPoolMatches.get(noteTaskCandidateCacheKey(candidate)) ?? [],
+      onEditProperties: (item) => this.editTrackedNoteTaskProperties(item),
+      onToggleTiming: (item) => this.toggleTrackedNoteTaskTiming(item),
+      onComplete: (item) => this.completeTrackedNoteTask(item),
+      onAddTrackedToPool: (item) => this.addTrackedNoteTaskToPool(item),
+      onAddToPool: (candidate) => this.addPendingNoteTaskToPool(candidate),
+      onLinkPoolTask: (candidate, item) => this.linkPendingNoteTaskToPool(candidate, item),
+      onEnrich: (candidate) => this.enrichPendingNoteTask(candidate),
+      onTrackOnly: (candidate) => this.trackPendingNoteTask(candidate)
     }));
 
     this.addSettingTab(new ToWriteSettingTab(this.app, this));
@@ -909,6 +1078,15 @@ export default class ToWritePlugin extends Plugin {
     this.registerInterval(window.setInterval(() => {
       void this.runSuggestionNotifications();
     }, 15 * 60 * 1000));
+    this.registerInterval(window.setInterval(() => {
+      if (
+        this.activeNoteTaskDocument?.tasks.some((item) =>
+          this.noteTaskTimingSnapshot(item).status === "running"
+        )
+      ) {
+        this.refreshNoteEditorTaskControls();
+      }
+    }, 60_000));
     void this.configureExternalApiServer(false);
     this.configureQuote0Sync();
     this.configureDeviceHub();
@@ -924,6 +1102,7 @@ export default class ToWritePlugin extends Plugin {
 
     this.app.workspace.onLayoutReady(() => {
       void this.refreshIndex();
+      void this.refreshActiveNoteTaskCache();
       if (this.settings.autoOpenSidebar) {
         window.setTimeout(() => {
           void this.activateSidebar();
@@ -3440,6 +3619,55 @@ export default class ToWritePlugin extends Plugin {
     };
   }
 
+  private async simulateDisplayedPrimaryButton(): Promise<void> {
+    const runtimeTargetId = this.externalApiServer?.getRuntimeStatus().lastTargetId?.trim();
+    const preferredTargetId = runtimeTargetId
+      || this.settings.push.targets.find((target) =>
+        target.enabled && this.localDeviceCompletionGuards.has(localDeviceTargetKey(target.id))
+      )?.id;
+    const entry = preferredTargetId
+      ? [localDeviceTargetKey(preferredTargetId), this.localDeviceCompletionGuards.get(
+        localDeviceTargetKey(preferredTargetId)
+      )] as const
+      : this.localDeviceCompletionGuards.entries().next().value;
+    const targetId = entry?.[0] === "__default__" ? "" : entry?.[0];
+    const displayed = entry?.[1];
+    if (!displayed
+      || !targetId
+      || !displayed.deviceId
+      || !displayed.selectionId
+      || !displayed.contentId
+      || !displayed.revisionId) {
+      new Notice(this.settings.language === "zh"
+        ? "还没有设备已 ACK 的 displayed 卡片；先让墨水屏拉取、显示并 ACK。"
+        : "No displayed card has been ACKed yet. Poll, render, and ACK the screen first.");
+      return;
+    }
+    const event: DeviceEventInput = {
+      schemaVersion: 2,
+      eventId: `evt_sim_${randomTokenFragment()}`,
+      targetId,
+      deviceId: displayed.deviceId,
+      selectionId: displayed.selectionId,
+      stateVersion: displayed.stateVersion,
+      contentId: displayed.contentId,
+      revisionId: displayed.revisionId,
+      cardId: displayed.cardId,
+      playlistRevision: displayed.playlistRevision,
+      button: "primary",
+      gesture: "single",
+      action: "open_current"
+    };
+    const result = await this.handleLocalDeviceGesture(event);
+    new Notice(result.status === "executed"
+      ? (this.settings.language === "zh"
+        ? `主键模拟成功：${result.displayMessage}`
+        : `Main-button simulation: ${result.displayMessage}`)
+      : (this.settings.language === "zh"
+        ? `主键模拟未执行：${result.displayMessage}`
+        : `Main-button simulation did not execute: ${result.displayMessage}`));
+  }
+
   private async handleLocalDeviceGesture(event: DeviceEventInput) {
     const action = event.action;
     if (!action || event.schemaVersion !== 2) {
@@ -3540,7 +3768,7 @@ export default class ToWritePlugin extends Plugin {
       } else if (action === "open_current" || action === "start_open") {
         const opened = await this.openDisplayedCard(
           event.cardId,
-          action === "open_current",
+          shouldStartDailyOverviewForAction(action),
           frozenDaily,
           event.eventId
         );
@@ -3748,7 +3976,10 @@ export default class ToWritePlugin extends Plugin {
         : current;
       await this.refreshDailyPlanCache(false);
       try {
-        const focused = await this.openDailyItemTarget(started);
+        const focused = await this.openDailyItemTarget(started, {
+          eventId: deviceEventId,
+          displayedValidated: Boolean(deviceEventId)
+        });
         return {
           started: startOverview,
           resultRevision: started.revision.value,
@@ -3782,13 +4013,36 @@ export default class ToWritePlugin extends Plugin {
     if (cardId.startsWith("daily-plan:")) {
       const id = cardId.slice("daily-plan:".length);
       const item = await this.resolveFrozenDailyItem(frozenDaily, id);
-      const focused = await this.openDailyItemTarget(item);
+      let focused = false;
+      const active = await executeDailyStartAndOpen(item, {
+        loadCurrent: () => this.dailyPlanService.get(item.id, item.date),
+        getTiming: () => this.getDailyItemTiming(item.id, item.date),
+        start: (current, timing) => this.startDailyItem(
+          current.id,
+          current.revision,
+          current.date,
+          deviceEventId ? `${deviceEventId}:start` : undefined,
+          deviceEventId ? "device" : "obsidian",
+          timing.timingRevision,
+          frozenDaily?.dailyLineageRevision
+        ),
+        open: async (current) => {
+          focused = await this.openDailyItemTarget(current, {
+            eventId: deviceEventId,
+            displayedValidated: Boolean(deviceEventId)
+          });
+        }
+      });
       return {
-        started: false,
-        resultRevision: item.revision.value,
+        started: active.revision.value !== item.revision.value,
+        resultRevision: active.revision.value,
         displayMessage: focused
-          ? (this.settings.language === "zh" ? "已打开" : "Opened")
-          : (this.settings.language === "zh" ? "请手动切到电脑" : "Bring computer forward")
+          ? (active.revision.value !== item.revision.value
+            ? (this.settings.language === "zh" ? "已开始并打开" : "Started and opened")
+            : (this.settings.language === "zh" ? "已打开" : "Opened"))
+          : (active.revision.value !== item.revision.value
+            ? (this.settings.language === "zh" ? "已开始，请手动切到电脑" : "Started; bring computer forward")
+            : (this.settings.language === "zh" ? "请手动切到电脑" : "Bring computer forward"))
       };
     }
     const question = this.store.getQuestion(cardId);
@@ -3852,7 +4106,10 @@ export default class ToWritePlugin extends Plugin {
     return item;
   }
 
-  private async openDailyItemTarget(item: DailyPlanItem): Promise<boolean> {
+  private async openDailyItemTarget(
+    item: DailyPlanItem,
+    context: { eventId?: string; displayedValidated?: boolean } = {}
+  ): Promise<boolean> {
     const resolution = item.targetResolution ?? resolveDailyTarget({
       sourcePath: item.sourcePath,
       taskText: item.text,
@@ -3863,9 +4120,28 @@ export default class ToWritePlugin extends Plugin {
     });
     const target = resolution?.target;
     const linked = target ? this.resolveDailyMarkdownTargetFile(target, item.sourcePath) : undefined;
-    if (linked && target) {
-      await this.app.workspace.openLinkText(this.dailyTargetLinkText(target), item.sourcePath, false);
-      return bestEffortFocusObsidian();
+    let navigationTarget = resolution
+      ? navigationTargetForDailyItem(item, resolution)
+      : undefined;
+    if (navigationTarget?.provider === "obsidian") {
+      navigationTarget = this.applyDailyNavigationCheckpoint(
+        item,
+        resolution,
+        navigationTarget
+      );
+    }
+    if (navigationTarget && (!target || linked)) {
+      const result = await this.navigationRouter.open(navigationTarget, {
+        eventId: context.eventId,
+        displayedValidated: context.displayedValidated ?? !context.eventId
+      });
+      if (result.status !== "opened") {
+        throw new DailyPlanConflictError(
+          result.status === "not-found" ? "not-found" : "invalid-state",
+          result.message
+        );
+      }
+      return result.focused;
     }
     if (item.kind === "create_note") {
       this.openCaptureModal({
@@ -3880,14 +4156,164 @@ export default class ToWritePlugin extends Plugin {
       await this.activateDashboard();
       return bestEffortFocusObsidian();
     }
-    const sourcePath = resolution?.sourcePath || item.sourcePath;
-    const blockId = resolution?.blockId || item.blockId;
-    if (sourcePath && blockId) {
-      await this.app.workspace.openLinkText(`${sourcePath}#^${blockId}`, item.sourcePath, false);
-      return bestEffortFocusObsidian();
+    if (target && !linked) {
+      throw new DailyPlanConflictError(
+        "not-found",
+        `The target note no longer exists: ${target.label || target.linkText}`
+      );
     }
     await this.activateDashboard();
     return bestEffortFocusObsidian();
+  }
+
+  private applyDailyNavigationCheckpoint(
+    item: DailyPlanItem,
+    resolution: NonNullable<DailyPlanItem["targetResolution"]>,
+    target: ObsidianNavigationTarget
+  ): ObsidianNavigationTarget {
+    const checkpoint = this.navigationCheckpointService.get(
+      item.id,
+      dailyNavigationTargetKey(item, resolution)
+    );
+    if (!checkpoint) return target;
+    const resolved = this.resolveObsidianNavigationTargetFile(target);
+    if (!resolved || resolved.path !== normalizePath(checkpoint.filePath)) return target;
+    return {
+      ...target,
+      filePath: resolved.path,
+      locations: [
+        ...checkpoint.locations,
+        ...(target.locations ?? [])
+      ]
+    };
+  }
+
+  private resolveObsidianNavigationTargetFile(
+    target: ObsidianNavigationTarget
+  ): TFile | undefined {
+    const direct = target.filePath
+      ? this.app.vault.getFileByPath(normalizePath(target.filePath))
+      : undefined;
+    if (direct) return direct;
+    return target.linkText
+      ? this.app.metadataCache.getFirstLinkpathDest(target.linkText, target.sourcePath) ?? undefined
+      : undefined;
+  }
+
+  private async startAndOpenDailyItem(item: DailyPlanItem): Promise<void> {
+    const date = await this.dateForDailyItem(item.id, item.revision);
+    await executeDailyStartAndOpen(item, {
+      loadCurrent: () => this.dailyPlanService.get(item.id, date),
+      getTiming: (current) => this.getDailyItemTiming(current.id, date),
+      start: (current, timing) => this.startDailyItem(
+        current.id,
+        current.revision,
+        date,
+        undefined,
+        "obsidian",
+        timing.timingRevision,
+        current.lineageRevision
+      ),
+      open: (active) => this.openDailyItemTarget(active).then(() => undefined)
+    });
+  }
+
+  private hasDailyItemCheckpoint(item: DailyPlanItem): boolean {
+    const resolution = item.targetResolution ?? resolveDailyTarget({
+      sourcePath: item.sourcePath,
+      taskText: item.text,
+      rawBlock: item.rawBlock,
+      blockId: item.blockId,
+      explicitTarget: item.target,
+      lineage: item.lineage
+    });
+    return this.navigationCheckpointService.has(
+      item.id,
+      dailyNavigationTargetKey(item, resolution)
+    );
+  }
+
+  private async pauseAndRememberDailyItem(item: DailyPlanItem): Promise<void> {
+    const date = await this.dateForDailyItem(item.id, item.revision);
+    const current = await this.dailyPlanService.get(item.id, date);
+    if (!current) {
+      throw new DailyPlanConflictError("not-found", `Daily item does not exist: ${item.id}`);
+    }
+    if (current.revision.value !== item.revision.value
+      || (item.lineageRevision && current.lineageRevision !== item.lineageRevision)) {
+      throw new DailyPlanConflictError(
+        "revision-changed",
+        "The Daily task or inherited target changed after the floating card was loaded."
+      );
+    }
+    const resolution = current.targetResolution ?? resolveDailyTarget({
+      sourcePath: current.sourcePath,
+      taskText: current.text,
+      rawBlock: current.rawBlock,
+      blockId: current.blockId,
+      explicitTarget: current.target,
+      lineage: current.lineage
+    });
+    const navigationTarget = navigationTargetForDailyItem(current, resolution);
+    if (!navigationTarget || navigationTarget.provider !== "obsidian") {
+      throw new DailyPlanConflictError(
+        "invalid-state",
+        "External web pages cannot report their scroll position to Obsidian. Add a URL fragment to the explicit target instead."
+      );
+    }
+    const targetFile = this.resolveObsidianNavigationTargetFile(navigationTarget);
+    if (!targetFile || targetFile.extension.toLowerCase() !== "md") {
+      throw new DailyPlanConflictError(
+        "not-found",
+        "The note for this task is unavailable, so its reading position was not saved."
+      );
+    }
+    const view = this.app.workspace.getLeavesOfType("markdown")
+      .map((leaf) => leaf.view)
+      .find((candidate): candidate is MarkdownView =>
+        candidate instanceof MarkdownView && candidate.file?.path === targetFile.path
+      );
+    if (!view?.file) {
+      throw new DailyPlanConflictError(
+        "invalid-state",
+        "Open the task note before choosing “later” so ToWrite can save its current reading position."
+      );
+    }
+    const editor = view.editor;
+    const cursor = editor.getCursor();
+    const line = Math.max(0, Math.min(cursor.line, Math.max(0, editor.lineCount() - 1)));
+    const lineText = editor.getLine(line);
+    const content = editor.getValue();
+    const startOffset = editor.posToOffset({ line, ch: 0 });
+    const endOffset = editor.posToOffset({ line, ch: lineText.length });
+    const locations: import("./navigation").ObsidianNavigationLocation[] = [];
+    if (lineText.trim()) {
+      locations.push({
+        kind: "text",
+        anchor: createQuestionAnchor(content, startOffset, endOffset)
+      });
+    }
+    locations.push({ kind: "line", range: { start: line, end: line } });
+    await this.navigationCheckpointService.set({
+      schemaVersion: 1,
+      taskId: current.id,
+      targetKey: dailyNavigationTargetKey(current, resolution),
+      filePath: targetFile.path,
+      locations,
+      capturedAt: new Date().toISOString()
+    });
+    const timing = await this.getDailyItemTiming(current.id, date);
+    if (this.settings.daily.taskTimingEnabled && timing.status === "running") {
+      await this.pauseDailyItem(
+        current.id,
+        current.revision,
+        undefined,
+        date,
+        "obsidian",
+        timing.timingRevision,
+        current.lineageRevision
+      );
+    }
   }
 
   private resolveDailyMarkdownTargetFile(
@@ -3918,11 +4344,28 @@ export default class ToWritePlugin extends Plugin {
     return bestEffortFocusObsidian();
   }
 
+  private async openTaskPoolSource(): Promise<boolean> {
+    let file = this.app.vault.getFileByPath(this.taskPoolService.path);
+    if (!file) {
+      await this.createDailyPlanStorage().writeText(
+        this.taskPoolService.path,
+        "# ToWrite Task Pool\n\n## Tasks\n"
+      );
+      file = this.app.vault.getFileByPath(this.taskPoolService.path);
+    }
+    if (file) await this.openFile(file.path);
+    else await this.activateDashboard();
+    return bestEffortFocusObsidian();
+  }
+
   private async openDailyGroupTarget(group: import("./daily").DailyPlanGroup): Promise<boolean> {
     const target = group.links[0];
     if (target && this.resolveDailyMarkdownTargetFile(target, group.sourcePath)) {
-      await this.app.workspace.openLinkText(this.dailyTargetLinkText(target), group.sourcePath, false);
-      return bestEffortFocusObsidian();
+      const result = await this.navigationRouter.open(
+        navigationTargetForMarkdownTarget(target, group.sourcePath),
+        { displayedValidated: true }
+      );
+      if (result.status === "opened") return result.focused;
     }
     const source = this.app.vault.getFileByPath(group.sourcePath);
     if (source) {
@@ -4179,7 +4622,7 @@ export default class ToWritePlugin extends Plugin {
       } else if (event.action === "open_current" || event.action === "start_open") {
         const opened = await this.openDisplayedCard(
           localId,
-          event.action === "start_open",
+          shouldStartDailyOverviewForAction(event.action),
           {
             dailyItemId: storedSnapshot?.sourceContext?.dailyItemId,
             dailyTaskRevision: storedSnapshot?.sourceContext?.dailyTaskRevision,
@@ -4949,6 +5392,15 @@ export default class ToWritePlugin extends Plugin {
   private initializeDailyServices(state: DailyActivityState | undefined = this.savedDailyActivityState): void {
     this.dailyPlanService = this.createDailyPlanService();
     this.dailyPlanNormalizationService = this.createDailyPlanNormalizationService();
+    this.noteTaskService = this.createNoteTaskService();
+    this.taskPoolService = this.createTaskPoolService();
+    this.noteTaskPoolCoordinator = new NoteTaskPoolCoordinator(
+      this.noteTaskService,
+      this.taskPoolService,
+      {
+        completePlanned: (item) => this.completePlannedPoolTaskFromNote(item)
+      }
+    );
     this.dailyActivityRetentionDays = this.settings.daily.rawEventRetentionDays;
     this.dailyActivityService = new DailyActivityService(state, {
       retentionDays: this.dailyActivityRetentionDays,
@@ -4972,6 +5424,7 @@ export default class ToWritePlugin extends Plugin {
       planHeading: this.settings.daily.planHeading,
       todoHeading: this.settings.daily.todoHeading,
       summaryHeading: this.settings.daily.summaryHeading,
+      tasksCompatibilityOutput: this.settings.daily.tasksCompatibilityOutput,
       onChanged: async () => {
         await this.refreshDailyPlanCache();
         this.queueDeviceHubSync();
@@ -4990,6 +5443,31 @@ export default class ToWritePlugin extends Plugin {
       onChanged: async () => {
         await this.refreshDailyPlanCache();
         this.queueDeviceHubSync();
+      }
+    });
+  }
+
+  private createTaskPoolService(): TaskPoolService {
+    return new TaskPoolService(this.createDailyPlanStorage(), {
+      path: this.settings.daily.taskPoolPath,
+      onChanged: async () => {
+        await this.refreshActiveTaskPoolCache();
+        this.notifyUi();
+        this.queueDeviceHubSync();
+      }
+    });
+  }
+
+  private createNoteTaskService(): NoteTaskService {
+    const storage = this.createDailyPlanStorage();
+    return new NoteTaskService({
+      ...storage,
+      processText: async (path, update) => {
+        const file = this.app.vault.getFileByPath(normalizePath(path));
+        if (!file || file.extension.toLowerCase() !== "md") {
+          throw new Error(`Markdown note does not exist: ${path}`);
+        }
+        return this.app.vault.process(file, update);
       }
     });
   }
@@ -5071,6 +5549,35 @@ export default class ToWritePlugin extends Plugin {
     }
   }
 
+  private async initializeNoteTaskTimer(): Promise<void> {
+    const root = normalizeVaultPath(this.settings.exportDirectory);
+    const ledgerPath = `${root}/tasks/note-task-timer-events.jsonl`;
+    const log: DailyTimerEventLog = {
+      readJsonl: async () => await readVaultDataText(this.app, ledgerPath) ?? "",
+      appendJsonl: async (jsonl) => {
+        if (!jsonl) return;
+        const existing = await readVaultDataText(this.app, ledgerPath) ?? "";
+        const separator = existing && !existing.endsWith("\n") ? "\n" : "";
+        await writeVaultDataText(this.app, ledgerPath, `${existing}${separator}${jsonl}`);
+      },
+      archive: async (name, jsonl) => {
+        const safeName = name.replace(/[^A-Za-z0-9_.-]/gu, "_");
+        await writeVaultDataText(this.app, `${root}/tasks/archive/${safeName}`, jsonl);
+      },
+      clear: async () => {
+        await writeVaultDataText(this.app, ledgerPath, "");
+      }
+    };
+    try {
+      this.noteTaskTimer = await PersistentDailyTaskTimer.load(log, {
+        maxOpenSessionMs: this.settings.daily.taskTimingReviewHours * 60 * 60_000
+      });
+    } catch (error) {
+      this.noteTaskTimer = undefined;
+      console.error("ToWrite ordinary-note task timer ledger could not be loaded", error);
+    }
+  }
+
   private scheduleDailyStateSave(): void {
     if (this.dailyStateSaveTimer) window.clearTimeout(this.dailyStateSaveTimer);
     this.dailyStateSaveTimer = window.setTimeout(() => {
@@ -5086,8 +5593,59 @@ export default class ToWritePlugin extends Plugin {
     next.setHours(24, 0, 1, 0);
     this.dailyMidnightTimer = window.setTimeout(() => {
       this.dailyMidnightTimer = 0;
-      void this.refreshDailyDashboard().finally(() => this.scheduleDailyMidnightRefresh());
+      void this.returnExpiredTaskPoolAssignments()
+        .then(() => this.refreshDailyDashboard())
+        .finally(() => this.scheduleDailyMidnightRefresh());
     }, Math.max(1_000, next.getTime() - now.getTime()));
+  }
+
+  private async returnExpiredTaskPoolAssignments(now = new Date()): Promise<void> {
+    if (!this.settings.daily.enabled || !this.settings.daily.autoReturnUnfinished || !this.taskPoolService) return;
+    const returnedDate = formatDailyInputDate(now);
+    let pool: TaskPoolDocument;
+    try {
+      pool = await this.taskPoolService.read();
+    } catch (error) {
+      console.error("ToWrite could not inspect the Task Pool for expired assignments", error);
+      return;
+    }
+    const documents = new Map<string, DailyPlanDocument>();
+    for (const poolTask of pool.items) {
+      if (
+        poolTask.state !== "planned"
+        || !poolTask.plannedDate
+        || poolTask.plannedDate >= returnedDate
+        || !poolTask.assignmentId
+      ) {
+        continue;
+      }
+      try {
+        let document = documents.get(poolTask.plannedDate);
+        if (!document) {
+          document = await this.dailyPlanService.read(poolTask.plannedDate);
+          documents.set(poolTask.plannedDate, document);
+        }
+        const assignment = document.items.find((item) =>
+          item.id === poolTask.assignmentId && item.taskRef === poolTask.taskId
+        );
+        if (assignment?.status === "done") {
+          await this.taskPoolService.completeAssigned(
+            poolTask.taskId,
+            poolTask.revision,
+            poolTask.plannedDate,
+            poolTask.assignmentId
+          );
+        } else {
+          await this.taskPoolService.returnToPool(
+            poolTask.taskId,
+            poolTask.revision,
+            returnedDate
+          );
+        }
+      } catch (error) {
+        console.error(`ToWrite could not reconcile expired Task Pool item ${poolTask.taskId}`, error);
+      }
+    }
   }
 
   /**
@@ -5151,18 +5709,60 @@ export default class ToWritePlugin extends Plugin {
       // the pre-normalized two-running-task document.
       document = await this.dailyPlanService.read();
     }
-    const next = document?.items ?? [];
+    let next = document?.items ?? [];
+    let poolProjectionChanged = false;
     if (this.dailyPlanCacheInitialized && previous[0]?.sourcePath === next[0]?.sourcePath) {
       const previousById = new Map(previous.map((item) => [item.id, item]));
       for (const item of next) {
         const old = previousById.get(item.id);
         if (old && !old.done && item.done) {
-          this.dailyActivityService.recordTaskCompleted(item.id);
+          this.dailyActivityService.recordTaskCompleted(item.taskRef ?? item.id);
+          const projected = await this.syncTaskPoolCompletion(item);
+          poolProjectionChanged ||= projected.revision.value !== item.revision.value;
+        } else if (old?.done && !item.done && item.taskRef) {
+          try {
+            const projected = await this.syncTaskPoolReopen(item);
+            poolProjectionChanged ||= projected.revision.value !== item.revision.value;
+          } catch (error) {
+            console.error("ToWrite could not reopen a Task Pool item after a Markdown checkbox change", error);
+          }
+        } else if (old && item.taskRef) {
+          const projected = await this.syncTaskPoolFieldsFromDaily(old, item);
+          poolProjectionChanged ||= projected.revision.value !== item.revision.value;
+        }
+      }
+    }
+    if (document && poolProjectionChanged) {
+      document = await this.dailyPlanService.read(document.date);
+      next = document.items;
+    }
+    const editorDocuments: DailyPlanDocument[] = document ? [document] : [];
+    if (document) {
+      const tomorrow = new Date(`${document.date}T12:00:00`);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      const tomorrowDate = formatDailyInputDate(tomorrow);
+      try {
+        editorDocuments.push(await this.dailyPlanService.read(tomorrowDate));
+      } catch (error) {
+        console.error("ToWrite could not read tomorrow's plan for editor task controls", error);
+      }
+    }
+    const normalizationPreviews: DailyPlanNormalizationPreview[] = [];
+    if (document) {
+      for (const editorDocument of editorDocuments) {
+        try {
+          normalizationPreviews.push(
+            await this.dailyPlanNormalizationService.preview(editorDocument.date)
+          );
+        } catch (error) {
+          console.error("ToWrite could not inspect quick Daily tasks for progressive properties", error);
         }
       }
     }
     this.dailyPlanItems = next;
+    this.dailyEditorPlanItems = editorDocuments.flatMap((entry) => entry.items);
     this.dailyPlanDocument = document;
+    this.dailyPlanNormalizationPreviews = normalizationPreviews;
     await this.refreshDailyBackendTimingCache(next);
     if (this.dailyPlanCacheInitialized && previousRevision && document?.revision !== previousRevision) {
       this.dailyDeviceStateVersion += 1;
@@ -5465,6 +6065,7 @@ export default class ToWritePlugin extends Plugin {
     } else {
       this.dailyPlanService = this.createDailyPlanService();
       this.dailyPlanNormalizationService = this.createDailyPlanNormalizationService();
+      this.taskPoolService = this.createTaskPoolService();
       this.dailyActivityService.setCollectionPaused(
         !this.settings.daily.enabled || !this.settings.daily.activityTracking
       );
@@ -5499,8 +6100,10 @@ export default class ToWritePlugin extends Plugin {
     };
   }
 
-  private dailyTimingSnapshotForItem(item: Pick<DailyPlanItem, "id" | "estimateMinutes">): DailyTaskTimingSnapshot {
-    const backend = this.dailyBackendTimingCache.get(item.id);
+  private dailyTimingSnapshotForItem(
+    item: Pick<DailyPlanItem, "id" | "estimateMinutes" | "taskRef">
+  ): DailyTaskTimingSnapshot {
+    const backend = item.taskRef ? undefined : this.dailyBackendTimingCache.get(item.id);
     if (backend) return projectCachedDailyTiming(
       backend.timing,
       backend.fetchedAtMs,
@@ -5538,11 +6141,12 @@ export default class ToWritePlugin extends Plugin {
       this.dailyBackendTimingCache.clear();
       return;
     }
-    const liveIds = new Set(items.map((item) => item.id));
+    const backendItems = items.filter((item) => !item.taskRef);
+    const liveIds = new Set(backendItems.map((item) => item.id));
     for (const id of this.dailyBackendTimingCache.keys()) {
       if (!liveIds.has(id)) this.dailyBackendTimingCache.delete(id);
     }
-    await Promise.all(items.map(async (item) => {
+    await Promise.all(backendItems.map(async (item) => {
       const cached = this.dailyBackendTimingCache.get(item.id);
       if (cached
         && cached.taskRevision === item.revision.value
@@ -5596,7 +6200,7 @@ export default class ToWritePlugin extends Plugin {
 
   private async createDailyItem(input: DailyPlanCreateInput): Promise<DailyPlanItem> {
     this.assertDailyEnabled();
-    if (await this.shouldUseBackendDailyWriter()) {
+    if (!input.taskRef && input.category === undefined && await this.shouldUseBackendDailyWriter()) {
       const date = input.date ? formatDailyInputDate(input.date) : formatDailyInputDate(new Date());
       const result = await this.backendClient.createDailyTask({
         id: input.id,
@@ -5629,9 +6233,13 @@ export default class ToWritePlugin extends Plugin {
     value: Date | string = new Date()
   ): Promise<DailyPlanItem> {
     this.assertDailyEnabled();
-    if (await this.shouldUseBackendDailyWriter()) {
-      const current = await this.dailyPlanService.get(id, value);
-      if (!current) throw new DailyPlanConflictError("not-found", `Daily item does not exist: ${id}`);
+    const current = await this.dailyPlanService.get(id, value);
+    if (!current) throw new DailyPlanConflictError("not-found", `Daily item does not exist: ${id}`);
+    if (current.revision.value !== revision.value) {
+      throw new DailyPlanConflictError("revision-changed", "The Daily task changed after it was loaded.");
+    }
+    let updated: DailyPlanItem;
+    if (!current.taskRef && await this.shouldUseBackendDailyWriter()) {
       if (current.revision.value !== revision.value) {
         throw new DailyPlanConflictError("revision-changed", "The Daily task changed after it was loaded.");
       }
@@ -5659,11 +6267,551 @@ export default class ToWritePlugin extends Plugin {
         startedAt: patch.startedAt === null ? "" : patch.startedAt ?? current.startedAt
       });
       await this.refreshDailyPlanCache();
-      const updated = await this.dailyPlanService.get(id, value);
-      if (!updated) throw new Error("Backend updated the Daily task, but the local Markdown view could not verify it.");
-      return updated;
+      const verified = await this.dailyPlanService.get(id, value);
+      if (!verified) throw new Error("Backend updated the Daily task, but the local Markdown view could not verify it.");
+      updated = verified;
+    } else {
+      updated = await this.dailyPlanService.update(id, revision, patch, value);
     }
-    return this.dailyPlanService.update(id, revision, patch, value);
+    return this.syncTaskPoolFieldsFromDaily(current, updated);
+  }
+
+  private async trackPendingDailyTask(edit: DailyPlanNormalizationEdit): Promise<void> {
+    try {
+      const preview = this.requireCurrentDailyNormalizationEdit(edit);
+      await this.dailyPlanNormalizationService.normalizeTask(preview, edit.line);
+      await this.refreshDailyPlanCache();
+      new Notice(this.settings.language === "zh"
+        ? "已跟踪这条待办；没有添加任何可选属性。"
+        : "This task is now tracked without optional properties.");
+    } catch (error) {
+      new Notice(messageForError(error));
+    }
+  }
+
+  private refreshActiveNoteTaskCache(path = this.getActiveFile() ?? undefined): Promise<void> {
+    const run = this.activeNoteTaskRefreshTail.then(() =>
+      this.refreshActiveNoteTaskCacheUnlocked(path)
+    );
+    this.activeNoteTaskRefreshTail = run.catch(() => undefined);
+    return run;
+  }
+
+  private async refreshActiveNoteTaskCacheUnlocked(path: string | undefined): Promise<void> {
+    const enabled = this.settings.daily.enabled && this.settings.daily.editorTaskControls;
+    if (
+      !enabled
+      || !path
+      || this.isTrackedDailyPlanPath(path)
+      || normalizePath(path) === normalizePath(this.taskPoolService.path)
+    ) {
+      this.activeNoteTaskDocument = undefined;
+      this.activeNoteTaskPoolMatches.clear();
+      this.refreshNoteEditorTaskControls();
+      return;
+    }
+    const file = this.app.vault.getFileByPath(normalizePath(path));
+    if (!file || file.extension.toLowerCase() !== "md") {
+      this.activeNoteTaskDocument = undefined;
+      this.refreshNoteEditorTaskControls();
+      return;
+    }
+    try {
+      const previousStatus = new Map(
+        (this.activeNoteTaskDocument?.sourcePath === file.path
+          ? this.activeNoteTaskDocument.tasks
+          : []
+        ).map((item) => [item.taskId, item.status] as const)
+      );
+      await this.refreshActiveTaskPoolCache(false);
+      let inspected = await this.noteTaskService.inspect(file.path);
+      if (this.getActiveFile() !== file.path) return;
+      const automatic = inspected.candidates
+        .filter((candidate) => candidate.status !== "done")
+        .slice(0, 100);
+      if (automatic.length > 0) {
+        const registered = await this.noteTaskService.adoptMany(
+          automatic.map((candidate) => ({
+            candidate,
+            patch: { poolTaskRef: candidate.proposedTaskId }
+          }))
+        );
+        for (const item of registered) {
+          try {
+            await this.noteTaskPoolCoordinator.ensureRegistered(item);
+          } catch (error) {
+            console.error(`ToWrite could not finish automatic Task Pool registration for ${item.taskId}`, error);
+          }
+        }
+        inspected = await this.noteTaskService.inspect(file.path);
+      }
+      const previouslyTrackedButLocal = inspected.tasks.filter((item) =>
+        item.status !== "done" && !item.poolTaskRef
+      );
+      if (previouslyTrackedButLocal.length > 0) {
+        for (const item of previouslyTrackedButLocal) {
+          try {
+            const linked = await this.noteTaskService.update(item, {
+              poolTaskRef: item.taskId
+            });
+            await this.noteTaskPoolCoordinator.ensureRegistered(linked);
+          } catch (error) {
+            console.error(`ToWrite could not migrate tracked task ${item.taskId} into the Task Pool`, error);
+          }
+        }
+        inspected = await this.noteTaskService.inspect(file.path);
+      }
+      await this.reconcileNoteTaskTiming(inspected.tasks);
+      await this.reconcileTrackedNoteTasksWithPool(inspected.tasks);
+      if (this.getActiveFile() !== file.path) return;
+      for (const item of inspected.tasks) {
+        if (
+          item.status === "done"
+          && previousStatus.has(item.taskId)
+          && previousStatus.get(item.taskId) !== "done"
+        ) {
+          this.dailyActivityService.recordTaskCompleted(
+            item.poolTaskRef ?? item.taskId,
+            new Date()
+          );
+        }
+      }
+      this.activeNoteTaskDocument = inspected;
+      await this.refreshActiveTaskPoolCache(false);
+    } catch (error) {
+      console.error("ToWrite could not inspect ordinary tasks in the active note", error);
+      this.activeNoteTaskDocument = undefined;
+      this.activeNoteTaskPoolMatches.clear();
+    }
+    this.refreshNoteEditorTaskControls();
+  }
+
+  private async refreshActiveTaskPoolCache(refreshControls = true): Promise<void> {
+    try {
+      this.activeTaskPoolItems = (await this.taskPoolService.read()).items;
+    } catch (error) {
+      console.error("ToWrite could not refresh the Task Pool search cache", error);
+      this.activeTaskPoolItems = [];
+    }
+    this.rebuildActiveNoteTaskPoolMatches();
+    if (refreshControls) this.refreshNoteEditorTaskControls();
+  }
+
+  private rebuildActiveNoteTaskPoolMatches(): void {
+    const matches = new Map<string, TaskPoolItem[]>();
+    for (const candidate of this.activeNoteTaskDocument?.candidates ?? []) {
+      matches.set(
+        noteTaskCandidateCacheKey(candidate),
+        rankNoteTaskPoolMatches(candidate.taskText, this.activeTaskPoolItems)
+      );
+    }
+    this.activeNoteTaskPoolMatches = matches;
+  }
+
+  private async reconcileTrackedNoteTasksWithPool(items: readonly TrackedNoteTask[]): Promise<void> {
+    for (const item of items) {
+      if (!item.poolTaskRef) continue;
+      try {
+        if (item.status === "done") {
+          await this.noteTaskPoolCoordinator.complete(item);
+        } else {
+          await this.noteTaskPoolCoordinator.ensureRegistered(item);
+        }
+      } catch (error) {
+        console.error(`ToWrite could not reconcile note task ${item.taskId} with the Task Pool`, error);
+      }
+    }
+  }
+
+  private async trackPendingNoteTask(candidate: NoteTaskCandidate): Promise<void> {
+    try {
+      await this.noteTaskService.adopt(candidate);
+      await this.refreshActiveNoteTaskCache(candidate.sourcePath);
+      new Notice(this.settings.language === "zh"
+        ? "已跟踪这条待办；没有添加任何可选属性。"
+        : "This task is now tracked without optional properties.");
+    } catch (error) {
+      new Notice(messageForError(error));
+      await this.refreshActiveNoteTaskCache();
+    }
+  }
+
+  private async addPendingNoteTaskToPool(
+    candidate: NoteTaskCandidate,
+    patch: NoteTaskPatch = {}
+  ): Promise<void> {
+    const current = this.requireCurrentNoteTaskCandidate(candidate);
+    if (!current) return;
+    try {
+      await this.noteTaskPoolCoordinator.register(current, patch);
+      await this.refreshActiveNoteTaskCache(current.sourcePath);
+      new Notice(this.settings.language === "zh"
+        ? "已登记到统一任务池；完成后会进入任务池的“已完成”栏。"
+        : "Added to the shared Task Pool. Completion will move it to the Done lane.");
+    } catch (error) {
+      new Notice(messageForError(error));
+      await this.refreshActiveNoteTaskCache();
+    }
+  }
+
+  private async linkPendingNoteTaskToPool(
+    candidate: NoteTaskCandidate,
+    poolTask: TaskPoolItem
+  ): Promise<void> {
+    const current = this.requireCurrentNoteTaskCandidate(candidate);
+    if (!current) return;
+    const latestPoolTask = this.activeTaskPoolItems.find((item) =>
+      item.taskId === poolTask.taskId
+      && item.revision.value === poolTask.revision.value
+    );
+    if (!latestPoolTask) {
+      new Notice(this.settings.language === "zh"
+        ? "任务池条目已经变化，请等待列表刷新后再试。"
+        : "The Task Pool item changed. Wait for the suggestions to refresh.");
+      return;
+    }
+    try {
+      await this.noteTaskPoolCoordinator.linkExisting(current, latestPoolTask);
+      await this.refreshActiveNoteTaskCache(current.sourcePath);
+      new Notice(this.settings.language === "zh"
+        ? "已关联已有任务池条目，没有创建重复任务。"
+        : "Linked the existing Task Pool item without creating a duplicate.");
+    } catch (error) {
+      new Notice(messageForError(error));
+      await this.refreshActiveNoteTaskCache();
+    }
+  }
+
+  private async addTrackedNoteTaskToPool(item: TrackedNoteTask): Promise<void> {
+    try {
+      let current = this.activeNoteTaskDocument?.tasks.find((candidate) =>
+        candidate.taskId === item.taskId
+        && candidate.revision === item.revision
+      );
+      if (!current) {
+        throw new Error("这条待办已经变化，请等待刷新后再试。");
+      }
+      if (!current.poolTaskRef) {
+        current = await this.noteTaskService.update(current, { poolTaskRef: current.taskId });
+      }
+      await this.noteTaskPoolCoordinator.ensureRegistered(current);
+      await this.refreshActiveNoteTaskCache(current.sourcePath);
+      new Notice(this.settings.language === "zh"
+        ? "已加入统一任务池。"
+        : "Added to the shared Task Pool.");
+    } catch (error) {
+      new Notice(messageForError(error));
+      await this.refreshActiveNoteTaskCache();
+    }
+  }
+
+  private requireCurrentNoteTaskCandidate(
+    candidate: NoteTaskCandidate
+  ): NoteTaskCandidate | undefined {
+    const current = this.activeNoteTaskDocument?.candidates.find((entry) =>
+      entry.sourcePath === candidate.sourcePath
+      && entry.line === candidate.line
+      && entry.before === candidate.before
+      && entry.documentRevision === candidate.documentRevision
+    );
+    if (!current) {
+      new Notice(this.settings.language === "zh"
+        ? "这条待办已经变化，请等待插件刷新后再试。"
+        : "This task changed. Wait for the editor to refresh and try again.");
+    }
+    return current;
+  }
+
+  private async enrichPendingNoteTask(candidate: NoteTaskCandidate): Promise<void> {
+    const current = this.requireCurrentNoteTaskCandidate(candidate);
+    if (!current) return;
+    const result = await this.openDailyTaskPropertiesModal({
+      taskText: candidate.taskText,
+      resolvedTargetLabel: candidate.resolvedTargetLabel,
+      pending: true,
+      schedule: {},
+      categorySuggestions: this.settings.daily.categoryPresets.map((preset) => preset.label)
+    });
+    if (!result) return;
+    if (result.action === "track-only") {
+      await this.addPendingNoteTaskToPool(candidate);
+      return;
+    }
+    await this.addPendingNoteTaskToPool(candidate, {
+      ...result.patch,
+      ...result.schedulePatch
+    });
+  }
+
+  private async editTrackedNoteTaskProperties(item: TrackedNoteTask): Promise<void> {
+    let currentItem = item;
+    const result = await this.openDailyTaskPropertiesModal({
+      taskText: item.text,
+      resolvedTargetLabel: item.target ?? item.sourcePath,
+      pending: false,
+      initial: {
+        category: item.category,
+        target: item.target,
+        dueDate: item.dueDate ?? "",
+        dueDateExplicit: Boolean(item.dueDate),
+        estimateMinutes: item.estimateMinutes,
+        nextStep: item.nextStep
+      },
+      schedule: {
+        initial: {
+          plannedStartAt: item.plannedStartAt,
+          expectedFinishAt: item.expectedFinishAt,
+          deadlineAt: initialNoteTaskDeadline(item.deadlineAt, item.dueDate)
+        },
+        timing: this.noteTaskTimingSnapshot(item),
+        getTimingEvents: () => this.noteTaskTimingEvents(currentItem.taskId),
+        ...(item.status !== "done" ? {
+          onTimingAction: async (action: "start" | "pause" | "resume" | "complete") => {
+            const transitioned = await this.transitionTrackedNoteTaskTiming(currentItem, action);
+            currentItem = transitioned.item;
+            return transitioned.timing;
+          }
+        } : {})
+      },
+      categorySuggestions: this.settings.daily.categoryPresets.map((preset) => preset.label)
+    });
+    if (!result || result.action !== "save") return;
+    try {
+      const updated = await this.noteTaskService.update(currentItem, {
+        ...result.patch,
+        ...result.schedulePatch
+      });
+      if (updated.poolTaskRef) {
+        await this.noteTaskPoolCoordinator.ensureRegistered(updated);
+      }
+      await this.refreshActiveNoteTaskCache(currentItem.sourcePath);
+      new Notice(this.settings.language === "zh" ? "待办属性已更新。" : "Task properties updated.");
+    } catch (error) {
+      new Notice(messageForError(error));
+      await this.refreshActiveNoteTaskCache();
+    }
+  }
+
+  private noteTaskTimingSnapshot(
+    item: Pick<TrackedNoteTask, "taskId" | "estimateMinutes">
+  ): DailyTaskTimingSnapshot {
+    return this.noteTaskTimer?.core.getSnapshot(item.taskId, item.estimateMinutes)
+      ?? new DailyTaskTimerService().getSnapshot(item.taskId, item.estimateMinutes);
+  }
+
+  private noteTaskTimingEvents(taskId: string): DailyTimerEvent[] {
+    return this.noteTaskTimer?.core.getEvents().filter((event) => event.taskId === taskId) ?? [];
+  }
+
+  private async reconcileNoteTaskTiming(items: readonly TrackedNoteTask[]): Promise<void> {
+    const timer = this.noteTaskTimer;
+    if (!timer) return;
+    for (const item of items) {
+      const timing = timer.core.getSnapshot(item.taskId, item.estimateMinutes);
+      const action = noteTaskTimingReconciliationAction(item.status, timing.status);
+      if (!action) continue;
+      try {
+        await timer.transition((draft) => {
+          const options = {
+            eventId: `evt_note_reconcile_${randomTokenFragment()}`,
+            source: "obsidian" as const
+          };
+          if (action === "reopen") return draft.reopen(item.taskId, options);
+          return timing.status === "not-started"
+            ? draft.startAndComplete(item.taskId, options)
+            : draft.complete(item.taskId, options);
+        });
+      } catch (error) {
+        console.error(`ToWrite could not reconcile timer state for ${item.taskId}`, error);
+      }
+    }
+  }
+
+  private async toggleTrackedNoteTaskTiming(item: TrackedNoteTask): Promise<void> {
+    try {
+      const timing = this.noteTaskTimingSnapshot(item);
+      const action = timing.status === "running"
+        ? "pause"
+        : timing.status === "paused"
+          ? "resume"
+          : "start";
+      await this.transitionTrackedNoteTaskTiming(item, action);
+    } catch (error) {
+      new Notice(messageForError(error));
+    }
+  }
+
+  private async completeTrackedNoteTask(item: TrackedNoteTask): Promise<void> {
+    try {
+      await this.transitionTrackedNoteTaskTiming(item, "complete");
+    } catch (error) {
+      new Notice(messageForError(error));
+    }
+  }
+
+  private async transitionTrackedNoteTaskTiming(
+    item: TrackedNoteTask,
+    action: "start" | "pause" | "resume" | "complete"
+  ): Promise<{ item: TrackedNoteTask; timing: DailyTaskTimingSnapshot }> {
+    if (!this.noteTaskTimer) throw new Error("Task timer ledger is unavailable.");
+    let currentItem = item;
+    const before = this.noteTaskTimingSnapshot(item);
+    if (action === "complete" && item.status !== "done") {
+      currentItem = await this.noteTaskService.setStatus(item, "done");
+    }
+    if (!(action === "complete" && before.status === "completed")) {
+      await this.noteTaskTimer.transition((draft) => {
+        const options = { source: "obsidian" as const };
+        if (action === "start") return draft.start(item.taskId, options);
+        if (action === "pause") return draft.pause(item.taskId, options);
+        if (action === "resume") return draft.resume(item.taskId, options);
+        return before.status === "not-started"
+          ? draft.startAndComplete(item.taskId, options)
+          : draft.complete(item.taskId, options);
+      });
+    }
+    if (action === "complete") {
+      this.dailyActivityService.recordTaskCompleted(
+        currentItem.poolTaskRef ?? currentItem.taskId,
+        new Date()
+      );
+      try {
+        await this.noteTaskPoolCoordinator.complete(currentItem);
+      } catch (error) {
+        console.error("ToWrite completed the note task but could not synchronize its Task Pool state", error);
+        new Notice(this.settings.language === "zh"
+          ? "待办已完成，但任务池状态暂未同步；插件会在下次刷新时重试。"
+          : "The task completed, but its Task Pool state will retry on the next refresh.");
+      }
+      await this.refreshActiveNoteTaskCache(currentItem.sourcePath);
+    } else {
+      this.refreshNoteEditorTaskControls();
+    }
+    return {
+      item: currentItem,
+      timing: this.noteTaskTimingSnapshot(currentItem)
+    };
+  }
+
+  private async completePlannedPoolTaskFromNote(poolTask: TaskPoolItem): Promise<void> {
+    if (!poolTask.plannedDate || !poolTask.assignmentId) {
+      throw new TaskPoolConflictError("invalid-state", "The planned Task Pool item is missing its assignment.");
+    }
+    const plan = await this.dailyPlanService.read(poolTask.plannedDate);
+    const assignment = plan.items.find((item) =>
+      item.taskRef === poolTask.taskId
+      && item.id === poolTask.assignmentId
+    );
+    if (!assignment) {
+      throw new TaskPoolConflictError(
+        "not-found",
+        "The planned Daily assignment could not be found; refresh the Task Pool before completing it."
+      );
+    }
+    await this.completeDailyItem(
+      assignment.id,
+      assignment.revision,
+      undefined,
+      poolTask.plannedDate
+    );
+  }
+
+  private async enrichPendingDailyTask(edit: DailyPlanNormalizationEdit): Promise<void> {
+    const preview = this.findCurrentDailyNormalizationPreview(edit);
+    const hierarchyTask = preview?.tasks.find((task) =>
+      task.line === edit.line
+      && task.rawLine === edit.before
+      && task.lineageRevision === edit.lineageRevision
+    );
+    if (!preview || !hierarchyTask) {
+      new Notice(this.settings.language === "zh"
+        ? "这条待办已经变化，请等待插件刷新后再试。"
+        : "This task changed. Wait for the editor to refresh and try again.");
+      return;
+    }
+    const result = await this.openDailyTaskPropertiesModal({
+      taskText: edit.taskText,
+      resolvedTargetLabel: edit.targetResolution.displayLabel,
+      lineageLabel: hierarchyTask.lineage.groups.at(-1)?.text,
+      pending: true,
+      categorySuggestions: this.settings.daily.categoryPresets.map((preset) => preset.label)
+    });
+    if (!result) return;
+    if (result.action === "track-only") {
+      await this.trackPendingDailyTask(edit);
+      return;
+    }
+    try {
+      const currentPreview = this.requireCurrentDailyNormalizationEdit(edit);
+      await this.dailyPlanNormalizationService.adoptTask(
+        currentPreview,
+        edit.line,
+        result.patch
+      );
+      await this.refreshDailyPlanCache();
+      new Notice(this.settings.language === "zh" ? "待办属性已保存。" : "Task properties saved.");
+    } catch (error) {
+      new Notice(messageForError(error));
+    }
+  }
+
+  private async editDailyTaskProperties(item: DailyPlanItem): Promise<void> {
+    const result = await this.openDailyTaskPropertiesModal({
+      taskText: item.text,
+      resolvedTargetLabel: item.targetResolution?.displayLabel ?? item.target ?? item.sourcePath,
+      lineageLabel: item.lineage?.groups.at(-1)?.text,
+      pending: false,
+      initial: item,
+      categorySuggestions: this.settings.daily.categoryPresets.map((preset) => preset.label)
+    });
+    if (!result || result.action !== "save") return;
+    try {
+      await this.updateDailyItem(item.id, item.revision, result.patch, item.date);
+      await this.refreshDailyPlanCache();
+      new Notice(this.settings.language === "zh" ? "待办属性已更新。" : "Task properties updated.");
+    } catch (error) {
+      new Notice(messageForError(error));
+    }
+  }
+
+  private openDailyTaskPropertiesModal(
+    options: DailyTaskPropertiesModalOptions
+  ): Promise<DailyTaskPropertiesModalResult | undefined> {
+    return new Promise((resolve) => {
+      new DailyTaskPropertiesModal(this.app, options, resolve).open();
+    });
+  }
+
+  private requireCurrentDailyNormalizationEdit(
+    edit: DailyPlanNormalizationEdit
+  ): DailyPlanNormalizationPreview {
+    const preview = this.findCurrentDailyNormalizationPreview(edit);
+    const matches = preview?.edits.filter((candidate) =>
+      candidate.line === edit.line
+      && candidate.before === edit.before
+      && candidate.proposedBlockId === edit.proposedBlockId
+      && candidate.lineageRevision === edit.lineageRevision
+    ) ?? [];
+    if (!preview || matches.length !== 1) {
+      throw new DailyPlanConflictError(
+        "revision-changed",
+        "The quick task changed after the editor enrichment control was rendered."
+      );
+    }
+    return preview;
+  }
+
+  private findCurrentDailyNormalizationPreview(
+    edit: DailyPlanNormalizationEdit
+  ): DailyPlanNormalizationPreview | undefined {
+    return this.dailyPlanNormalizationPreviews.find((preview) =>
+      preview.edits.some((candidate) =>
+        candidate.line === edit.line
+        && candidate.before === edit.before
+        && candidate.proposedBlockId === edit.proposedBlockId
+        && candidate.lineageRevision === edit.lineageRevision
+      )
+    );
   }
 
   private async updateDailyPlanMetadata(
@@ -5725,7 +6873,8 @@ export default class ToWritePlugin extends Plugin {
     expectedLineageRevision?: string
   ): Promise<DailyPlanItem> {
     this.assertDailyEnabled();
-    const useBackendWriter = await this.shouldUseBackendDailyWriter();
+    const frozenCurrent = await this.dailyPlanService.get(id, value);
+    const useBackendWriter = !frozenCurrent?.taskRef && await this.shouldUseBackendDailyWriter();
     if (!useBackendWriter) {
       const replay = await this.replayLocalDailyTimerTransition(
         id,
@@ -5809,7 +6958,8 @@ export default class ToWritePlugin extends Plugin {
     expectedLineageRevision?: string
   ): Promise<DailyPlanItem> {
     this.assertDailyEnabled();
-    const useBackendWriter = await this.shouldUseBackendDailyWriter();
+    const frozenCurrent = await this.dailyPlanService.get(id, value);
+    const useBackendWriter = !frozenCurrent?.taskRef && await this.shouldUseBackendDailyWriter();
     if (!useBackendWriter) {
       const replay = await this.replayLocalDailyTimerTransition(
         id,
@@ -5881,7 +7031,8 @@ export default class ToWritePlugin extends Plugin {
     expectedTimingRevision?: string,
     expectedLineageRevision?: string
   ): Promise<DailyPlanItem> {
-    const useBackendWriter = await this.shouldUseBackendDailyWriter();
+    const frozenCurrent = await this.dailyPlanService.get(id, value);
+    const useBackendWriter = !frozenCurrent?.taskRef && await this.shouldUseBackendDailyWriter();
     if (!useBackendWriter) {
       const replay = await this.replayLocalDailyTimerTransition(
         id,
@@ -5928,7 +7079,7 @@ export default class ToWritePlugin extends Plugin {
   private async getDailyItemTiming(id: string, date?: string): Promise<DailyTaskTimingSnapshot> {
     const item = await this.findDailyItem(id, date);
     if (!item) throw new DailyPlanConflictError("not-found", `Daily item does not exist: ${id}`);
-    if (await this.shouldUseBackendDailyWriter()) {
+    if (!item.taskRef && await this.shouldUseBackendDailyWriter()) {
       const result = await this.backendClient.getDailyTaskTiming(id, {
         taskRevision: item.revision.value,
         lineageRevision: item.lineageRevision,
@@ -5956,7 +7107,7 @@ export default class ToWritePlugin extends Plugin {
   ): Promise<DailyTaskTimingSnapshot> {
     const item = await this.findDailyItem(id, date);
     if (!item) throw new DailyPlanConflictError("not-found", `Daily item does not exist: ${id}`);
-    if (await this.shouldUseBackendDailyWriter()) {
+    if (!item.taskRef && await this.shouldUseBackendDailyWriter()) {
       const result = await this.backendClient.correctDailyTaskTiming(id, patch.operation === "reset"
         ? {
             eventId: patch.options?.eventId ?? `evt_reset_${randomTokenFragment()}`,
@@ -6141,7 +7292,9 @@ export default class ToWritePlugin extends Plugin {
               `Timer transaction has no Markdown state for task ${identity.id}.`
             );
           }
-          const predicted = predictDailyPlanItemStatusRevision(item, desired);
+          const predicted = predictDailyPlanItemStatusRevision(item, desired, {
+            tasksCompatibilityOutput: this.settings.daily.tasksCompatibilityOutput
+          });
           revisions[key] = `${predicted.value}\u0000${item.lineageRevision}`;
         }
         return revisions;
@@ -6383,7 +7536,8 @@ export default class ToWritePlugin extends Plugin {
     expectedLineageRevision?: string
   ): Promise<DailyPlanItem> {
     this.assertDailyEnabled();
-    const useBackendWriter = await this.shouldUseBackendDailyWriter();
+    const frozenCurrent = await this.dailyPlanService.get(id, value);
+    const useBackendWriter = !frozenCurrent?.taskRef && await this.shouldUseBackendDailyWriter();
     if (!useBackendWriter) {
       const replay = await this.replayLocalDailyTimerTransition(
         id,
@@ -6393,7 +7547,9 @@ export default class ToWritePlugin extends Plugin {
         value,
         expectedLineageRevision
       );
-      if (replay) return replay;
+      if (replay) {
+        return this.syncTaskPoolCompletion(replay);
+      }
     }
     let item: DailyPlanItem;
     if (useBackendWriter) {
@@ -6517,8 +7673,8 @@ export default class ToWritePlugin extends Plugin {
           : this.dailyPlanService.complete(id, revision, value);
       });
     }
-    this.dailyActivityService.recordTaskCompleted(id, new Date(), eventId);
-    return item;
+    this.dailyActivityService.recordTaskCompleted(item.taskRef ?? item.id, new Date(), eventId);
+    return this.syncTaskPoolCompletion(item);
   }
 
   private async reopenDailyItem(
@@ -6531,7 +7687,8 @@ export default class ToWritePlugin extends Plugin {
     expectedLineageRevision?: string
   ): Promise<DailyPlanItem> {
     this.assertDailyEnabled();
-    const useBackendWriter = await this.shouldUseBackendDailyWriter();
+    const frozenCurrent = await this.dailyPlanService.get(id, value);
+    const useBackendWriter = !frozenCurrent?.taskRef && await this.shouldUseBackendDailyWriter();
     if (!useBackendWriter) {
       const replay = await this.replayLocalDailyTimerTransition(
         id,
@@ -6623,6 +7780,11 @@ export default class ToWritePlugin extends Plugin {
   private async shouldUseBackendDailyWriter(now = Date.now()): Promise<boolean> {
     const mode = this.settings.daily.writerMode;
     if (mode === "local") return false;
+    // Task Pool assignments and explicit categories are plugin-owned V2
+    // extensions that the current Backend contract cannot mutate atomically.
+    // Keep the complete date on one local writer instead of mixing timer
+    // ledgers or silently dropping these fields.
+    if (this.dailyPlanItems.some((item) => item.taskRef || item.category)) return false;
     if (!this.settings.backend.enabled) {
       if (mode === "backend") throw new Error("DailyOps Backend writer is selected, but Backend integration is disabled.");
       return false;
@@ -6709,6 +7871,27 @@ export default class ToWritePlugin extends Plugin {
   private createDailyDashboardAdapter(): DailyDashboardAdapter {
     return {
       getSnapshot: (date) => this.getDailyDashboardSnapshot(date ?? new Date()),
+      getConfiguration: () => ({
+        categoryPresets: this.settings.daily.categoryPresets.map((preset) => ({ ...preset })),
+        defaultView: this.settings.daily.dashboardDefaultView,
+        taskPoolPath: this.settings.daily.taskPoolPath,
+        autoReturnUnfinished: this.settings.daily.autoReturnUnfinished
+      }),
+      getTaskPool: () => this.taskPoolService.read(),
+      createPoolTask: async (input) => this.taskPoolService.create(input),
+      updatePoolTask: async (id, revision, patch) => this.taskPoolService.update(id, revision, patch),
+      assignPoolTask: async (id, revision, date) => {
+        await this.assignTaskPoolItemToDate(id, revision, date);
+      },
+      returnItemToPool: async (id, revision) => {
+        await this.returnDailyItemToPool(id, revision);
+      },
+      moveItemToTomorrow: async (id, revision) => {
+        await this.moveDailyItemToTomorrow(id, revision);
+      },
+      dropDailyItem: async (id, revision) => {
+        await this.dropDailyItem(id, revision);
+      },
       getPlanHierarchy: (date) => this.dailyPlanService.readHierarchy(date),
       getNormalizationPreview: (date) => this.previewDailyPlanNormalization(date),
       normalizePlan: (preview) => this.normalizeDailyPlan(preview.date, preview),
@@ -6719,9 +7902,19 @@ export default class ToWritePlugin extends Plugin {
           ...document.metadata,
           sourcePath: document.sourcePath,
           sourceKind: document.source.kind,
+          sourceExists: this.app.vault.getAbstractFileByPath(normalizePath(document.sourcePath)) instanceof TFile,
           diagnostics: document.diagnostics.map((diagnostic) => diagnostic.message),
           revision: document.revision
         };
+      },
+      ensurePlanSource: async (date) => {
+        const current = await this.dailyPlanService.read(date);
+        await this.dailyPlanService.updateMetadata(
+          { theme: current.metadata.theme ?? null },
+          current.revision,
+          date
+        );
+        await this.refreshDailyPlanCache();
       },
       updatePlanMetadata: async (date, revision, patch) => {
         const current = await this.dailyPlanService.read(date);
@@ -6757,14 +7950,14 @@ export default class ToWritePlugin extends Plugin {
       },
       moveItem: async (id, revision, direction) => {
         const date = await this.dateForDailyItem(id, revision);
-        if (await this.shouldUseBackendDailyWriter()) {
-          const current = await this.dailyPlanService.get(id, date);
-          if (!current) {
-            throw new DailyPlanConflictError("not-found", `Daily item does not exist: ${id}`);
-          }
-          if (current.revision.value !== revision.value) {
-            throw new DailyPlanConflictError("revision-changed", "The Daily task changed after it was loaded.");
-          }
+        const current = await this.dailyPlanService.get(id, date);
+        if (!current) {
+          throw new DailyPlanConflictError("not-found", `Daily item does not exist: ${id}`);
+        }
+        if (current.revision.value !== revision.value) {
+          throw new DailyPlanConflictError("revision-changed", "The Daily task changed after it was loaded.");
+        }
+        if (!current.taskRef && await this.shouldUseBackendDailyWriter()) {
           await this.backendClient.moveDailyTask(
             id,
             current.rawBlock ?? current.rawLine,
@@ -6791,13 +7984,14 @@ export default class ToWritePlugin extends Plugin {
         await this.completeDailyItem(id, revision, undefined, await this.dateForDailyItem(id, revision));
       },
       reopenItem: async (id, revision) => {
-        await this.reopenDailyItem(id, revision, await this.dateForDailyItem(id, revision));
+        const reopened = await this.reopenDailyItem(id, revision, await this.dateForDailyItem(id, revision));
+        await this.syncTaskPoolReopen(reopened);
       },
       getItemTiming: (id) => this.getDailyItemTiming(id),
       listItemTimerEvents: async (id) => {
         const item = await this.findDailyItem(id);
         if (!item) throw new DailyPlanConflictError("not-found", `Daily item does not exist: ${id}`);
-        if (await this.shouldUseBackendDailyWriter()) {
+        if (!item.taskRef && await this.shouldUseBackendDailyWriter()) {
           const result = await this.backendClient.getDailyTaskTiming(id, {
             taskRevision: item.revision.value,
             lineageRevision: item.lineageRevision,
@@ -6832,16 +8026,35 @@ export default class ToWritePlugin extends Plugin {
         await this.sendDailyItemToDevice(id, revision, await this.dateForDailyItem(id, revision));
       },
       sendSummaryToDevice: async () => { await this.sendDailySummaryToDevice(); },
+      startAndOpenItem: async (item) => { await this.startAndOpenDailyItem(item); },
+      pauseAndRememberItem: async (item) => { await this.pauseAndRememberDailyItem(item); },
+      hasItemCheckpoint: (item) => this.hasDailyItemCheckpoint(item),
       openItem: async (item) => { await this.openDailyItemTarget(item); },
       openGroup: async (group) => { await this.openDailyGroupTarget(group); },
       openPlanSource: async (date) => { await this.openDailyPlanSource(date); },
+      openPlanSettings: () => {
+        const setting = (this.app as unknown as {
+          setting?: { open(): void; openTabById(id: string): void };
+        }).setting;
+        setting?.open();
+        setting?.openTabById(this.manifest.id);
+      },
+      openTaskPoolSource: async () => { await this.openTaskPoolSource(); },
       listPlanningCandidates: (date) => this.listDailyPlanningCandidates(date),
       addPlanningCandidate: async (date, candidate) => {
+        if (candidate.source === "pool" && candidate.taskRef && candidate.poolRevision) {
+          await this.assignTaskPoolItemToDate(candidate.taskRef, candidate.poolRevision, date);
+          return;
+        }
         await this.createDailyItem({
           date,
           text: candidate.title,
           kind: candidate.kind ?? "edit_note",
           target: candidate.target,
+          taskRef: candidate.taskRef,
+          category: candidate.category,
+          dueDate: candidate.dueDate,
+          estimateMinutes: candidate.estimateMinutes,
           devicePolicy: "rotation"
         });
       },
@@ -6849,7 +8062,393 @@ export default class ToWritePlugin extends Plugin {
     };
   }
 
+  private async assignTaskPoolItemToDate(
+    taskId: string,
+    revision: TaskPoolRevision,
+    date: string
+  ): Promise<DailyPlanItem> {
+    this.assertDailyEnabled();
+    const assignment = await this.taskPoolService.assignToDate(taskId, revision, date);
+    const dailyId = assignment.assignment.assignmentId;
+    if (!dailyId) throw new Error("Task Pool assignment did not produce a stable Daily id.");
+    try {
+      const created = await this.dailyPlanService.create({
+        id: dailyId,
+        date,
+        text: assignment.task.text,
+        kind: assignment.task.target ? "edit_note" : "task",
+        taskRef: assignment.task.taskId,
+        taskPoolRevision: assignment.task.revision.value,
+        category: assignment.task.category,
+        dueDate: assignment.task.dueDate,
+        estimateMinutes: assignment.task.estimateMinutes,
+        target: assignment.task.target,
+        devicePolicy: "rotation"
+      });
+      await this.refreshDailyPlanCache();
+      return created;
+    } catch (error) {
+      if (!assignment.idempotent) {
+        try {
+          await this.taskPoolService.returnToPool(
+            assignment.task.taskId,
+            assignment.task.revision,
+            date
+          );
+        } catch (rollbackError) {
+          console.error("ToWrite could not roll back a failed Task Pool assignment", rollbackError);
+        }
+      }
+      throw error;
+    }
+  }
+
+  private async returnDailyItemToPool(
+    id: string,
+    revision: DailyTaskRevision,
+    returnedDate = formatDailyInputDate(new Date())
+  ): Promise<void> {
+    const date = await this.dateForDailyItem(id, revision);
+    const item = await this.dailyPlanService.get(id, date);
+    if (!item || item.revision.value !== revision.value) {
+      throw new DailyPlanConflictError("revision-changed", "The Daily task changed after it was loaded.");
+    }
+    await this.assertDailyLifecycleLeaf(item, date);
+    if (!item.taskRef) {
+      const created = await this.taskPoolService.create({
+        text: item.text,
+        category: item.category,
+        target: item.target,
+        dueDate: item.dueDateExplicit ? item.dueDate : undefined,
+        estimateMinutes: item.estimateMinutes
+      });
+      try {
+        await this.dailyPlanService.remove(item.id, item.revision, date);
+      } catch (error) {
+        try {
+          await this.taskPoolService.removeUnassigned(created.taskId, created.revision);
+        } catch (rollbackError) {
+          console.error("ToWrite could not roll back a newly pooled Daily task", rollbackError);
+        }
+        throw error;
+      }
+      await this.refreshDailyPlanCache();
+      return;
+    }
+    const poolTask = await this.taskPoolService.get(item.taskRef);
+    if (!poolTask) throw new TaskPoolConflictError("not-found", `Task Pool item does not exist: ${item.taskRef}`);
+    this.assertCurrentTaskPoolAssignment(poolTask, item);
+    const returned = await this.taskPoolService.returnToPool(poolTask.taskId, poolTask.revision, returnedDate);
+    try {
+      await this.dailyPlanService.remove(item.id, item.revision, date);
+    } catch (error) {
+      try {
+        await this.taskPoolService.restoreAssignment(
+          returned.task.taskId,
+          returned.task.revision,
+          date,
+          item.id
+        );
+      } catch (rollbackError) {
+        console.error("ToWrite could not restore a Task Pool assignment after Daily removal failed", rollbackError);
+      }
+      throw error;
+    }
+    await this.refreshDailyPlanCache();
+  }
+
+  private async moveDailyItemToTomorrow(
+    id: string,
+    revision: DailyTaskRevision
+  ): Promise<void> {
+    const date = await this.dateForDailyItem(id, revision);
+    const item = await this.dailyPlanService.get(id, date);
+    if (!item || item.revision.value !== revision.value) {
+      throw new DailyPlanConflictError("revision-changed", "The Daily task changed after it was loaded.");
+    }
+    await this.assertDailyLifecycleLeaf(item, date);
+    const tomorrow = new Date(`${date}T12:00:00`);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const tomorrowDate = formatDailyInputDate(tomorrow);
+    let createdTomorrow: DailyPlanItem | undefined;
+    let reassignedPool: TaskPoolItem | undefined;
+    try {
+      if (item.taskRef) {
+        const poolTask = await this.taskPoolService.get(item.taskRef);
+        if (!poolTask) throw new TaskPoolConflictError("not-found", `Task Pool item does not exist: ${item.taskRef}`);
+        this.assertCurrentTaskPoolAssignment(poolTask, item);
+        const assignment = await this.taskPoolService.assignToDate(
+          poolTask.taskId,
+          poolTask.revision,
+          tomorrowDate
+        );
+        reassignedPool = assignment.task;
+        const dailyId = assignment.assignment.assignmentId;
+        if (!dailyId) throw new Error("Task Pool assignment did not produce a stable Daily id.");
+        createdTomorrow = await this.dailyPlanService.create({
+          id: dailyId,
+          date: tomorrowDate,
+          text: poolTask.text,
+          kind: item.kind,
+          taskRef: poolTask.taskId,
+          taskPoolRevision: assignment.task.revision.value,
+          category: poolTask.category ?? item.category,
+          dueDate: poolTask.dueDate,
+          estimateMinutes: poolTask.estimateMinutes,
+          target: poolTask.target ?? item.target,
+          devicePolicy: item.devicePolicy,
+          goal: item.goal,
+          nextStep: item.nextStep,
+          priority: item.priority,
+          tags: item.tags
+        });
+      } else {
+        createdTomorrow = await this.dailyPlanService.create({
+          date: tomorrowDate,
+          text: item.text,
+          kind: item.kind,
+          category: item.category,
+          dueDate: item.dueDateExplicit ? item.dueDate : undefined,
+          estimateMinutes: item.estimateMinutes,
+          target: item.target,
+          devicePolicy: item.devicePolicy,
+          goal: item.goal,
+          nextStep: item.nextStep,
+          priority: item.priority,
+          tags: item.tags,
+          primary: item.primary,
+          minimum: item.minimum
+        });
+      }
+      await this.dailyPlanService.remove(item.id, item.revision, date);
+    } catch (error) {
+      if (createdTomorrow) {
+        try {
+          await this.dailyPlanService.remove(
+            createdTomorrow.id,
+            createdTomorrow.revision,
+            tomorrowDate
+          );
+        } catch (rollbackError) {
+          console.error("ToWrite could not remove a partially migrated Daily task", rollbackError);
+        }
+      }
+      if (reassignedPool) {
+        try {
+          await this.taskPoolService.restoreAssignment(
+            reassignedPool.taskId,
+            reassignedPool.revision,
+            date,
+            item.id
+          );
+        } catch (rollbackError) {
+          console.error("ToWrite could not restore the prior Task Pool assignment", rollbackError);
+        }
+      }
+      throw error;
+    }
+    await this.refreshDailyPlanCache();
+  }
+
+  private async dropDailyItem(id: string, revision: DailyTaskRevision): Promise<void> {
+    const date = await this.dateForDailyItem(id, revision);
+    const item = await this.dailyPlanService.get(id, date);
+    if (!item || item.revision.value !== revision.value) {
+      throw new DailyPlanConflictError("revision-changed", "The Daily task changed after it was loaded.");
+    }
+    await this.assertDailyLifecycleLeaf(item, date);
+    if (item.taskRef) {
+      const poolTask = await this.taskPoolService.get(item.taskRef);
+      if (!poolTask) throw new TaskPoolConflictError("not-found", `Task Pool item does not exist: ${item.taskRef}`);
+      this.assertCurrentTaskPoolAssignment(poolTask, item);
+      const dropped = await this.taskPoolService.drop(poolTask.taskId, poolTask.revision);
+      try {
+        await this.dailyPlanService.remove(item.id, item.revision, date);
+      } catch (error) {
+        try {
+          await this.taskPoolService.restoreAssignment(
+            dropped.task.taskId,
+            dropped.task.revision,
+            date,
+            item.id
+          );
+        } catch (rollbackError) {
+          console.error("ToWrite could not restore a dropped Task Pool assignment", rollbackError);
+        }
+        throw error;
+      }
+    } else {
+      await this.dailyPlanService.remove(item.id, item.revision, date);
+    }
+    await this.refreshDailyPlanCache();
+  }
+
+  private async assertDailyLifecycleLeaf(item: DailyPlanItem, date: string): Promise<void> {
+    const hierarchy = await this.dailyPlanService.readHierarchy(date);
+    if (hierarchy.tasks.some((task) => task.parentTaskId === item.id)) {
+      throw new DailyPlanConflictError(
+        "invalid-state",
+        this.settings.language === "zh"
+          ? "这个任务仍有子任务。请先分别处理子任务，再移动、回池或停止追踪父任务。"
+          : "This task still has subtasks. Handle them individually before moving, returning, or dropping the parent."
+      );
+    }
+  }
+
+  private assertCurrentTaskPoolAssignment(poolTask: TaskPoolItem, item: DailyPlanItem): void {
+    if (
+      poolTask.state !== "planned"
+      || poolTask.plannedDate !== item.date
+      || poolTask.assignmentId !== item.id
+    ) {
+      throw new TaskPoolConflictError(
+        "invalid-state",
+        "This Daily item is no longer the current Task Pool assignment."
+      );
+    }
+    if (item.taskPoolRevision && poolTask.revision.value !== item.taskPoolRevision) {
+      throw new TaskPoolConflictError(
+        "revision-changed",
+        "Task Pool item changed after this Daily assignment was loaded."
+      );
+    }
+  }
+
+  private async syncTaskPoolCompletion(item: DailyPlanItem): Promise<DailyPlanItem> {
+    if (!item.taskRef || !this.taskPoolService) return item;
+    try {
+      const poolTask = await this.taskPoolService.get(item.taskRef);
+      if (!poolTask) {
+        throw new TaskPoolConflictError("not-found", `Task Pool item does not exist: ${item.taskRef}`);
+      }
+      if (poolTask.state === "done") {
+        if (poolTask.plannedDate !== item.date || poolTask.assignmentId !== item.id) {
+          throw new TaskPoolConflictError("invalid-state", "This Daily item is not the completed Task Pool assignment.");
+        }
+        return item.taskPoolRevision === poolTask.revision.value
+          ? item
+          : this.dailyPlanService.update(
+            item.id,
+            item.revision,
+            { taskPoolRevision: poolTask.revision.value },
+            item.date
+          );
+      }
+      if (item.taskPoolRevision && poolTask.revision.value !== item.taskPoolRevision) {
+        throw new TaskPoolConflictError("revision-changed", "Task Pool item changed after this Daily assignment was loaded.");
+      }
+      const completed = await this.taskPoolService.completeAssigned(
+        poolTask.taskId,
+        poolTask.revision,
+        item.date,
+        item.id
+      );
+      return this.dailyPlanService.update(
+        item.id,
+        item.revision,
+        { taskPoolRevision: completed.task.revision.value },
+        item.date
+      );
+    } catch (error) {
+      console.error("ToWrite completed Daily task but could not update its Task Pool source", error);
+      new Notice(this.settings.language === "zh"
+        ? "今日任务已完成，但任务池状态同步失败；请打开任务池检查。"
+        : "Daily task completed, but Task Pool synchronization failed. Please inspect the pool.");
+      return item;
+    }
+  }
+
+  private async syncTaskPoolReopen(item: DailyPlanItem): Promise<DailyPlanItem> {
+    if (!item.taskRef || !this.taskPoolService) return item;
+    const poolTask = await this.taskPoolService.get(item.taskRef);
+    if (!poolTask) {
+      throw new TaskPoolConflictError("not-found", `Task Pool item does not exist: ${item.taskRef}`);
+    }
+    if (poolTask.state === "planned") {
+      if (poolTask.plannedDate !== item.date || poolTask.assignmentId !== item.id) {
+        throw new TaskPoolConflictError("invalid-state", "This Daily item is no longer the current Task Pool assignment.");
+      }
+      return item.taskPoolRevision === poolTask.revision.value
+        ? item
+        : this.dailyPlanService.update(
+          item.id,
+          item.revision,
+          { taskPoolRevision: poolTask.revision.value },
+          item.date
+        );
+    }
+    if (item.taskPoolRevision && poolTask.revision.value !== item.taskPoolRevision) {
+      throw new TaskPoolConflictError("revision-changed", "Task Pool item changed after this Daily assignment was loaded.");
+    }
+    const reopened = await this.taskPoolService.reopenForDate(
+      poolTask.taskId,
+      poolTask.revision,
+      item.date,
+      item.id
+    );
+    return this.dailyPlanService.update(
+      item.id,
+      item.revision,
+      { taskPoolRevision: reopened.task.revision.value },
+      item.date
+    );
+  }
+
+  private async syncTaskPoolFieldsFromDaily(
+    before: DailyPlanItem,
+    after: DailyPlanItem
+  ): Promise<DailyPlanItem> {
+    if (!after.taskRef || !this.taskPoolService) return after;
+    const changed = before.text !== after.text
+      || before.category !== after.category
+      || before.target !== after.target
+      || before.dueDate !== after.dueDate
+      || before.dueDateExplicit !== after.dueDateExplicit
+      || before.estimateMinutes !== after.estimateMinutes;
+    if (!changed) return after;
+    try {
+      const poolTask = await this.taskPoolService.get(after.taskRef);
+      if (!poolTask) throw new TaskPoolConflictError("not-found", `Task Pool item does not exist: ${after.taskRef}`);
+      if (after.taskPoolRevision && poolTask.revision.value !== after.taskPoolRevision) {
+        throw new TaskPoolConflictError("revision-changed", "Task Pool item changed after this Daily assignment was loaded.");
+      }
+      const updatedPool = await this.taskPoolService.updateAssigned(
+        poolTask.taskId,
+        poolTask.revision,
+        after.date,
+        after.id,
+        {
+        text: after.text,
+        category: after.category ?? null,
+        target: after.target ?? null,
+        dueDate: after.dueDateExplicit ? after.dueDate : null,
+        estimateMinutes: after.estimateMinutes ?? null
+        }
+      );
+      return this.dailyPlanService.update(
+        after.id,
+        after.revision,
+        { taskPoolRevision: updatedPool.revision.value },
+        after.date
+      );
+    } catch (error) {
+      console.error("ToWrite updated a Daily assignment but could not update its Task Pool source", error);
+      new Notice(this.settings.language === "zh"
+        ? "今日任务已更新，但任务池发生冲突；请打开任务池核对。"
+        : "Daily task updated, but its Task Pool source conflicted. Please inspect the pool.");
+      return after;
+    }
+  }
+
   private async dateForDailyItem(id: string, revision: DailyTaskRevision): Promise<string> {
+    if (revision.date) {
+      const item = await this.dailyPlanService.get(id, revision.date);
+      if (item?.revision.value === revision.value) return revision.date;
+      throw new DailyPlanConflictError(
+        "revision-changed",
+        "The Daily task changed in its original date scope after it was loaded."
+      );
+    }
     const dates = [0, 1, -1].map((offset) => {
       const date = new Date();
       date.setDate(date.getDate() + offset);
@@ -6862,7 +8461,7 @@ export default class ToWritePlugin extends Plugin {
     throw new DailyPlanConflictError("not-found", `Daily item does not exist at the supplied revision: ${id}`);
   }
 
-  private listDailyPlanningCandidates(_date: string): DailyPlanningCandidate[] {
+  private async listDailyPlanningCandidates(date: string): Promise<DailyPlanningCandidate[]> {
     const output: DailyPlanningCandidate[] = [];
     const seen = new Set<string>();
     const append = (candidate: DailyPlanningCandidate): void => {
@@ -6870,6 +8469,31 @@ export default class ToWritePlugin extends Plugin {
       seen.add(candidate.id);
       output.push(candidate);
     };
+    const daily = await this.dailyPlanService.read(date);
+    const poolCandidates = await this.taskPoolService.candidates(
+      date,
+      daily.items.map((item) => ({
+        taskRef: item.taskRef,
+        date: item.date,
+        assignmentId: item.id
+      }))
+    );
+    for (const item of poolCandidates) {
+      append({
+        id: `pool:${item.taskId}`,
+        title: item.text,
+        description: [item.category, item.project].filter(Boolean).join(" · ")
+          || (this.settings.language === "zh" ? "任务池" : "Task Pool"),
+        source: "pool",
+        kind: item.target ? "edit_note" : "task",
+        target: item.target,
+        taskRef: item.taskId,
+        category: item.category,
+        dueDate: item.dueDate,
+        estimateMinutes: item.estimateMinutes,
+        poolRevision: item.revision
+      });
+    }
     for (const question of this.store.query().filter((item) => item.status !== "resolved" && item.status !== "ignored")) {
       append({
         id: `question:${question.id}`,
@@ -8246,6 +9870,22 @@ export default class ToWritePlugin extends Plugin {
     this.app.workspace.updateOptions();
   }
 
+  refreshNoteEditorTaskControls(): void {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const codeMirror = (view?.editor as unknown as {
+      cm?: { dispatch: (spec: { effects: ReturnType<typeof refreshNoteTaskControls.of> }) => void };
+    } | undefined)?.cm;
+    if (codeMirror) {
+      codeMirror.dispatch({ effects: refreshNoteTaskControls.of(undefined) });
+      return;
+    }
+    this.app.workspace.updateOptions();
+  }
+
+  async refreshActiveNoteTasks(): Promise<void> {
+    await this.refreshActiveNoteTaskCache();
+  }
+
   private patchQuestionState(id: string, patch: Omit<Partial<StoredQuestionState>, "id">): void {
     const previous = this.store.getQuestion(id);
     this.store.patchQuestion(id, patch, false);
@@ -8273,10 +9913,35 @@ export default class ToWritePlugin extends Plugin {
     await this.app.workspace.revealLeaf(leaf);
   }
 
-  private async activateDashboard(): Promise<void> {
-    const leaf = this.app.workspace.getLeaf("tab");
-    await leaf.setViewState({ type: TOWRITE_DASHBOARD_VIEW, active: true });
+  private async activateDashboard(
+    state: Partial<ToWriteDashboardViewState> = {}
+  ): Promise<void> {
+    const leaf = this.app.workspace.getLeavesOfType(TOWRITE_DASHBOARD_VIEW)[0]
+      ?? this.app.workspace.getLeaf("tab");
+    await leaf.setViewState({
+      type: TOWRITE_DASHBOARD_VIEW,
+      active: true,
+      state: {
+        activeTab: state.activeTab ?? "today",
+        dailySurface: state.dailySurface ?? "today"
+      }
+    });
+    await this.app.workspace.revealLeaf(leaf);
     this.app.workspace.setActiveLeaf(leaf, { focus: true });
+  }
+
+  private async activateTodayFloating(): Promise<void> {
+    const result = await openPinnedFloatingView(this.app.workspace, {
+      viewType: TOWRITE_TODAY_FLOATING_VIEW,
+      state: { collapsed: false },
+      width: 380,
+      height: 520
+    });
+    if (!result.popout && result.popoutError) {
+      new Notice(this.settings.language === "zh"
+        ? `无法创建独立小窗，已在普通标签页打开：${messageForError(result.popoutError)}`
+        : `Could not create a pop-out; opened a normal tab instead: ${messageForError(result.popoutError)}`);
+    }
   }
 
   private registerEvents(): void {
@@ -8323,6 +9988,16 @@ export default class ToWritePlugin extends Plugin {
         new Notice(messageForError(error));
       });
     }, 700, true);
+    const refreshActiveNoteTasksAfterVaultChange = debounce(() => {
+      void this.refreshActiveNoteTaskCache().catch((error: unknown) => {
+        console.error("ToWrite could not refresh ordinary tasks in the active note", error);
+      });
+    }, 700, true);
+    const refreshTaskPoolAfterVaultChange = debounce(() => {
+      void this.refreshActiveTaskPoolCache().catch((error: unknown) => {
+        console.error("ToWrite could not refresh the Task Pool search cache", error);
+      });
+    }, 250, true);
 
     this.registerEvent(
       this.app.metadataCache.on("changed", (file) => {
@@ -8346,8 +10021,12 @@ export default class ToWritePlugin extends Plugin {
               }
             });
           }
-          if (this.isTrackedDailyPlanPath(file.path)) {
+          if (normalizePath(file.path) === normalizePath(this.taskPoolService.path)) {
+            refreshTaskPoolAfterVaultChange();
+          } else if (this.isTrackedDailyPlanPath(file.path)) {
             refreshDailyPlanAfterVaultChange();
+          } else if (file.path === this.getActiveFile() || file.path === this.activeNoteTaskDocument?.sourcePath) {
+            refreshActiveNoteTasksAfterVaultChange();
           }
           this.recordEditPresenceLearning(file);
           this.deviceHub?.recordEditPresence();
@@ -8369,8 +10048,12 @@ export default class ToWritePlugin extends Plugin {
               }
             });
           }
-          if (this.isTrackedDailyPlanPath(file.path)) {
+          if (normalizePath(file.path) === normalizePath(this.taskPoolService.path)) {
+            refreshTaskPoolAfterVaultChange();
+          } else if (this.isTrackedDailyPlanPath(file.path)) {
             refreshDailyPlanAfterVaultChange();
+          } else if (file.path === this.getActiveFile() || file.path === this.activeNoteTaskDocument?.sourcePath) {
+            refreshActiveNoteTasksAfterVaultChange();
           }
           void this.autoApplyInboxMetadata(file)
             .catch((error: unknown) => console.error("ToWrite could not apply Inbox metadata", error))
@@ -8384,11 +10067,18 @@ export default class ToWritePlugin extends Plugin {
         if (file instanceof TFolder) rebuildInboxAfterFolderChange();
         if (file instanceof TFile) {
           this.dailyActivityService.removeDocumentBaseline(file.path);
-          if (this.isTrackedDailyPlanPath(file.path)) {
+          if (normalizePath(file.path) === normalizePath(this.taskPoolService.path)) {
+            refreshTaskPoolAfterVaultChange();
+          } else if (this.isTrackedDailyPlanPath(file.path)) {
             // Both today's and tomorrow's source are watched. Always re-read
             // the active (today) plan so deleting tomorrow cannot blank the
             // current dashboard cache.
             refreshDailyPlanAfterVaultChange();
+          } else if (
+            file.path === this.getActiveFile()
+            || file.path === this.activeNoteTaskDocument?.sourcePath
+          ) {
+            refreshActiveNoteTasksAfterVaultChange();
           }
         }
         this.handleDeletedFile(file);
@@ -8400,8 +10090,15 @@ export default class ToWritePlugin extends Plugin {
         if (file instanceof TFolder) rebuildInboxAfterFolderChange();
         if (file instanceof TFile) {
           this.dailyActivityService.renameDocumentBaseline(oldPath, file.path);
-          if (this.isTrackedDailyPlanPath(oldPath) || this.isTrackedDailyPlanPath(file.path)) {
+          if (
+            normalizePath(oldPath) === normalizePath(this.taskPoolService.path)
+            || normalizePath(file.path) === normalizePath(this.taskPoolService.path)
+          ) {
+            refreshTaskPoolAfterVaultChange();
+          } else if (this.isTrackedDailyPlanPath(oldPath) || this.isTrackedDailyPlanPath(file.path)) {
             refreshDailyPlanAfterVaultChange();
+          } else if (oldPath === this.activeNoteTaskDocument?.sourcePath || file.path === this.getActiveFile()) {
+            refreshActiveNoteTasksAfterVaultChange();
           }
         }
         void (async () => {
@@ -8444,6 +10141,7 @@ export default class ToWritePlugin extends Plugin {
         this.recordFileSwitchLearning();
         this.refreshEditorDecorations();
         this.notifyActiveContext();
+        void this.refreshActiveNoteTaskCache();
       })
     );
 
@@ -9342,6 +11040,12 @@ function ensureQuote0NfcToken(settings: ToWriteSettings["quote0"]): ToWriteSetti
 
 function randomTokenFragment(): string {
   return activeWindow.crypto?.randomUUID?.().replace(/-/gu, "") ?? `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+}
+
+function noteTaskCandidateCacheKey(
+  candidate: Pick<NoteTaskCandidate, "sourcePath" | "line" | "taskRevision">
+): string {
+  return `${candidate.sourcePath}:${candidate.line}:${candidate.taskRevision}`;
 }
 
 function dailyTimerTaskKey(item: Pick<DailyPlanItem, "id" | "date">): string {

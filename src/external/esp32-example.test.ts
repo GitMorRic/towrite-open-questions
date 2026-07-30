@@ -43,6 +43,17 @@ describe("ESP32-S3 e-ink example", () => {
     expect(sketch).not.toContain("StaticJsonDocument<24576>");
   });
 
+  it("sends the full displayed tuple and handles application-level command conflicts", () => {
+    expect(sketch).toContain('event["schemaVersion"] = 2;');
+    expect(sketch).toContain('event["selectionId"] = displayedTuple.selectionId;');
+    expect(sketch).toContain('event["playlistRevision"] = displayedTuple.playlistRevision;');
+    expect(sketch).toContain('commandStatus = String(response["commandStatus"] | "executed");');
+    expect(sketch).toContain('if (commandStatus == "conflict")');
+    expect(sketch).toContain('renderCommandStatus("Conflict - refreshing", true);');
+    expect(sketch).toContain("clearTuple(displayedTuple);");
+    expect(sketch).toContain("refreshEinkPayload(true);");
+  });
+
   it("renders canonical page progress instead of treating totals or cursor zero as the page number", () => {
     expect(sketch).toContain('const int currentIndex = playlist["currentIndex"] | 0;');
     expect(sketch).toContain('const int currentPosition = playlist["currentPosition"] | (currentIndex + 1);');

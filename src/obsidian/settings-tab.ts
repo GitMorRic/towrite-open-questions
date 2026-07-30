@@ -1421,6 +1421,103 @@ export class ToWriteSettingTab extends PluginSettingTab {
     }
 
     new Setting(containerEl)
+      .setName(zh ? "任务池文档" : "Task pool document")
+      .setDesc(zh
+        ? "尚未分配到某一天的任务保存在这份 Markdown；今日计划只保存带稳定引用的编排项。"
+        : "Reusable, unassigned work remains in this Markdown file; Daily plans keep stable assignments.")
+      .addText((text) => text
+        .setValue(daily.taskPoolPath)
+        .setPlaceholder("Planning/Task Pool.md")
+        .onChange(async (value) => {
+          const normalized = value.trim()
+            .replace(/\\/gu, "/")
+            .replace(/^\/+|\/+$/gu, "")
+            .replace(/(?:^|\/)\.{1,2}(?=\/|$)/gu, "")
+            .replace(/\/{2,}/gu, "/")
+            .replace(/^\/+|\/+$/gu, "")
+            || "Planning/Task Pool.md";
+          daily.taskPoolPath = normalized.toLowerCase().endsWith(".md") ? normalized : `${normalized}.md`;
+          await this.plugin.savePluginData();
+          await this.plugin.refreshDailyDashboard();
+        }));
+
+    new Setting(containerEl)
+      .setName(zh ? "未完成任务自动回池" : "Return unfinished assignments")
+      .setDesc(zh
+        ? "日期结束后不复制到第二天；保留当天历史，并把任务重新标为任务池可选。"
+        : "At day end, preserve the Daily history and make unfinished pool tasks available again instead of copying them forward.")
+      .addToggle((toggle) => toggle.setValue(daily.autoReturnUnfinished).onChange(async (value) => {
+        daily.autoReturnUnfinished = value;
+        await this.plugin.savePluginData();
+        await this.plugin.refreshDailyDashboard();
+      }));
+
+    new Setting(containerEl)
+      .setName(zh ? "简洁任务属性" : "Clean task properties")
+      .setDesc(zh
+        ? "默认把类别、截止日和预计时间写到缩进 metadata，不把 ⏳/📅 塞进任务标题。需要 Tasks emoji 时可关闭。"
+        : "Keeps category, due date, and estimate in indented metadata instead of adding ⏳/📅 to titles. Disable for Tasks emoji output.")
+      .addToggle((toggle) => toggle.setValue(!daily.tasksCompatibilityOutput).onChange(async (value) => {
+        daily.tasksCompatibilityOutput = !value;
+        await this.plugin.savePluginData();
+        await this.plugin.refreshDailyDashboard();
+      }));
+
+    new Setting(containerEl)
+      .setName(zh ? "Dashboard 默认视图" : "Default Dashboard view")
+      .setDesc(zh ? "任务池和今日计划共享同一数据，可切换列表、看板、表格与日历投影。" : "Task Pool and Daily plans share data rendered as list, board, table, or calendar views.")
+      .addDropdown((dropdown) => dropdown
+        .addOption("list", zh ? "列表" : "List")
+        .addOption("board", zh ? "看板" : "Board")
+        .addOption("table", zh ? "表格" : "Table")
+        .addOption("calendar", zh ? "日历" : "Calendar")
+        .setValue(daily.dashboardDefaultView)
+        .onChange(async (value) => {
+          daily.dashboardDefaultView = value === "board" || value === "table" || value === "calendar"
+            ? value
+            : "list";
+          await this.plugin.savePluginData();
+          this.plugin.notifyUi();
+        }));
+
+    new Setting(containerEl)
+      .setName(zh ? "任务类别预设" : "Task category presets")
+      .setDesc(zh
+        ? "每行：ID | 显示名 | #颜色 | Lucide 图标。没有显式类别时仍会继承 Markdown 父列表。"
+        : "One per line: id | label | #color | Lucide icon. Tasks without a category still inherit their Markdown parent list.")
+      .addTextArea((text) => text
+        .setValue(daily.categoryPresets.map((preset) => [
+          preset.id,
+          preset.label,
+          preset.color,
+          preset.icon ?? ""
+        ].join(" | ")).join("\n"))
+        .setPlaceholder("project | 项目 | #4f8cff | folder-kanban")
+        .onChange(async (value) => {
+          const seen = new Set<string>();
+          const parsed = value.split(/\r?\n/gu).flatMap((line) => {
+            const [rawId, rawLabel, rawColor, rawIcon] = line.split("|").map((part) => part.trim());
+            const id = (rawId || rawLabel || "")
+              .toLowerCase()
+              .replace(/[^a-z0-9_-]+/gu, "-")
+              .replace(/^-+|-+$/gu, "")
+              .slice(0, 60);
+            const label = (rawLabel || "").replace(/\s+/gu, " ").slice(0, 80);
+            if (!id || !label || seen.has(id)) return [];
+            seen.add(id);
+            return [{
+              id,
+              label,
+              color: /^#[0-9a-f]{6}$/iu.test(rawColor || "") ? rawColor.toLowerCase() : "#7b8494",
+              ...(rawIcon ? { icon: rawIcon.replace(/[^a-z0-9-]/giu, "").slice(0, 60) } : {})
+            }];
+          });
+          if (parsed.length > 0) daily.categoryPresets = parsed;
+          await this.plugin.savePluginData();
+          this.plugin.notifyUi();
+        }));
+
+    new Setting(containerEl)
       .setName(zh ? "计划与总结区段" : "Plan and summary headings")
       .setDesc(zh ? "普通 Tasks 兼容复选框写入计划区；总结仅在点击确认后写回。" : "Tasks-compatible checkboxes use the plan heading; summaries are written only after confirmation.")
       .addText((text) => text.setValue(daily.todoHeading).setPlaceholder("ToDo").onChange(async (value) => {
@@ -1506,14 +1603,15 @@ export class ToWriteSettingTab extends PluginSettingTab {
           }));
 
       new Setting(containerEl)
-        .setName(zh ? "计划文档行尾控件" : "Plan editor task controls")
+        .setName(zh ? "待办行尾控件" : "Task editor controls")
         .setDesc(zh
-          ? "仅在配置的计划来源显示轻量状态控件；输入处理链不读取文件或访问网络。"
-          : "Shows lightweight controls only in configured plan sources; the typing path performs no file or network I/O.")
+          ? "在计划文档和当前普通笔记中识别待办；普通笔记里保存的非空未完成项会在防抖后自动登记到统一任务池，历史完成项不会导入。已登记操作默认收起，悬停、聚焦或点击后展开；输入处理链不读取文件或访问网络。"
+          : "Recognizes tasks in plan sources and ordinary notes. Saved non-empty unfinished items in ordinary notes join the shared pool automatically after debounce; historical completed items are not imported. Registered actions stay collapsed until hover, focus, or click, and the typing path performs no file or network I/O.")
         .addToggle((toggle) => toggle.setValue(daily.editorTaskControls).onChange(async (value) => {
           daily.editorTaskControls = value;
           await this.plugin.savePluginData();
           this.plugin.refreshDailyEditorTaskControls();
+          await this.plugin.refreshActiveNoteTasks();
         }));
 
       new Setting(containerEl)

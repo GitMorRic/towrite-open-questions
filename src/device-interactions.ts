@@ -335,6 +335,13 @@ export function resolveDeviceGestureAction(
   return undefined;
 }
 
+/** Both local and Hub paths start the current task when opening an overview. */
+export function shouldStartDailyOverviewForAction(
+  action: DeviceActionIntent | undefined
+): boolean {
+  return action === "open_current" || action === "start_open";
+}
+
 export function isGuardedDeviceCompletionEvent(
   event: DeviceEventInput
 ): event is GuardedDeviceCompletionEvent {

@@ -15,6 +15,8 @@
   export let api: ToWriteUiApi;
   export let dailyApi: DailyDashboardAdapter | undefined = undefined;
   export let getFullWorkflowPayload: (() => WorkflowIndexPayload) | undefined = undefined;
+  export let initialTab: DashboardTab = dailyApi ? "today" : "all";
+  export let initialDailySurface: "today" | "pool" | "review" = "today";
 
   type DashboardTab = "today" | "all";
 
@@ -26,7 +28,7 @@
     stale: number;
   }
 
-  let activeTab: DashboardTab = dailyApi ? "today" : "all";
+  let activeTab: DashboardTab = initialTab;
   let summaries: ArticleSummary[] = [];
   let workflowPayload: WorkflowIndexPayload = readWorkflowPayload();
   let questions: OpenQuestion[] = [];
@@ -139,7 +141,7 @@
       <span class="eyebrow">ToWrite workspace</span>
       <h2>{activeTab === "today" ? "今日状态" : "全部状态"}</h2>
       <p>{activeTab === "today"
-        ? "安排今天要推进的内容，并在同一处查看写作与完成记录。"
+        ? "直接编辑绑定的 Markdown 待办；计划原文与 Dashboard 会保持双向同步。"
         : `${workflowPayload.counts.uniqueFiles} 篇笔记 · ${activeQuestions.length} 个待处理问题 · ${inboxCount} 条 Inbox`}</p>
     </div>
     <div class="dashboard-actions">
@@ -172,7 +174,11 @@
   </nav>
 
   {#if activeTab === "today"}
-    <DailyDashboardPanel {dailyApi} onOpenCapture={() => api.openCapture()} />
+    <DailyDashboardPanel
+      {dailyApi}
+      initialSurface={initialDailySurface}
+      onOpenCapture={() => api.openCapture()}
+    />
   {:else}
     <section class="all-status" aria-label="全部状态">
       <div class="metric-grid" aria-label="全库摘要">
@@ -321,9 +327,11 @@
     --dashboard-raised: var(--background-primary);
     display: flex;
     flex-direction: column;
-    gap: 18px;
+    gap: 12px;
+    width: min(100%, 1240px);
     min-height: 100%;
-    padding: clamp(16px, 3vw, 30px);
+    margin: 0 auto;
+    padding: clamp(14px, 2vw, 22px);
     color: var(--text-normal);
     background: var(--background-primary);
   }
@@ -337,7 +345,7 @@
   }
 
   .eyebrow {
-    color: var(--text-accent);
+    color: var(--text-muted);
     font-size: 0.72rem;
     font-weight: 700;
     letter-spacing: 0.08em;
@@ -346,7 +354,7 @@
 
   .dashboard-header h2 {
     margin: 4px 0 2px;
-    font-size: clamp(1.45rem, 3vw, 2rem);
+    font-size: clamp(1.4rem, 2.4vw, 1.75rem);
     line-height: 1.2;
   }
 
@@ -385,17 +393,19 @@
     display: inline-flex;
     align-self: flex-start;
     gap: 4px;
-    padding: 4px;
-    border: 1px solid var(--dashboard-border);
-    border-radius: 11px;
-    background: var(--dashboard-soft);
+    padding: 0;
+    border: 0;
+    border-bottom: 1px solid var(--dashboard-border);
+    border-radius: 0;
+    background: transparent;
   }
 
   .dashboard-tabs button {
     min-width: 112px;
-    padding: 7px 16px;
+    padding: 7px 14px;
     border: 0;
-    border-radius: 8px;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
     color: var(--text-muted);
     background: transparent;
     box-shadow: none;
@@ -404,8 +414,9 @@
 
   .dashboard-tabs button.active {
     color: var(--text-normal);
-    background: var(--dashboard-raised);
-    box-shadow: 0 1px 3px rgb(0 0 0 / 0.08);
+    border-bottom-color: var(--interactive-accent);
+    background: transparent;
+    box-shadow: none;
   }
 
   .all-status {

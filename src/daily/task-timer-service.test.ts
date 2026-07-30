@@ -305,6 +305,35 @@ describe("PersistentDailyTaskTimer", () => {
     expect(await log.readJsonl()).toBe("");
     expect(reloaded.core.getEvents()).toEqual([]);
   });
+
+  it("serializes concurrent transitions so neither event nor auto-pause is lost", async () => {
+    class YieldingLog extends InMemoryDailyTimerEventLog {
+      override async appendJsonl(jsonl: string): Promise<void> {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        await super.appendJsonl(jsonl);
+      }
+    }
+    const ledger = await PersistentDailyTaskTimer.load(new YieldingLog(), timerOptions());
+
+    await Promise.all([
+      ledger.transition((draft) =>
+        draft.start("task-a", at("2026-07-24T09:00:00+08:00", "start-a", "session-a"))
+      ),
+      ledger.transition((draft) =>
+        draft.start("task-b", at("2026-07-24T09:05:00+08:00", "start-b", "session-b"))
+      )
+    ]);
+
+    expect(ledger.core.getEvents().map((event) => [event.taskId, event.kind])).toEqual([
+      ["task-a", "start"],
+      ["task-a", "pause"],
+      ["task-b", "start"]
+    ]);
+    expect(ledger.core.getSnapshot("task-a", undefined, "2026-07-24T09:10:00+08:00").status)
+      .toBe("paused");
+    expect(ledger.core.getSnapshot("task-b", undefined, "2026-07-24T09:10:00+08:00").status)
+      .toBe("running");
+  });
 });
 
 describe("DailyTimerTransitionCoordinator", () => {

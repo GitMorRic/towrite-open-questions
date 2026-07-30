@@ -9,11 +9,18 @@ import {
   isGuardedDeviceCompletionEvent,
   normalizeDeviceDisplayAcknowledgement,
   normalizeDeviceEventInput,
+  shouldStartDailyOverviewForAction,
   type DeviceCommandAcknowledgement,
   type DeviceEventInput
 } from "./device-interactions";
 
 describe("device interaction protocol", () => {
+  it("keeps local and Hub overview-open semantics identical", () => {
+    expect(shouldStartDailyOverviewForAction("open_current")).toBe(true);
+    expect(shouldStartDailyOverviewForAction("start_open")).toBe(true);
+    expect(shouldStartDailyOverviewForAction("create_note")).toBe(false);
+  });
+
   it("accepts a complete event only with the exact display guard", () => {
     const event = normalizeDeviceEventInput({
       schemaVersion: 2,

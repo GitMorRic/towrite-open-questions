@@ -31,6 +31,12 @@ export interface DailyPlanServiceOptions {
   planHeading?: string;
   todoHeading?: string;
   summaryHeading?: string;
+  /**
+   * Emits Tasks-compatible date emoji on the checkbox line. The default
+   * keeps the task title clean and stores authored dates as continuation
+   * metadata instead.
+   */
+  tasksCompatibilityOutput?: boolean;
   now?: () => Date;
   createId?: () => string;
   onChanged?: (path: string) => void | Promise<void>;
@@ -40,6 +46,10 @@ export interface DailyPlanParseOptions {
   source?: DailyPlanSource;
   planHeading?: string;
   summaryHeading?: string;
+}
+
+export interface DailyPlanFormatOptions {
+  tasksCompatibilityOutput?: boolean;
 }
 
 export class DailyPlanConflictError extends Error {
@@ -65,7 +75,7 @@ const ANY_TASK_RE = /^(?<indent>\s*)(?:[-+*]|\d+[.)])(?<spacing>\s+)(?<checkbox>
 const LIST_NODE_RE = /^(?<indent>[ \t]*)(?:[-+*]|\d+[.)])[ \t]+.*$/u;
 const INLINE_BLOCK_RE = /(?:^|\s)\^(?<id>[A-Za-z0-9_-]+)\s*$/u;
 const STANDALONE_BLOCK_RE = /^(?<indent>\s+)\^(?<id>[A-Za-z0-9_-]+)\s*$/u;
-const OWNED_FIELD_RE = /\[towrite-(?<key>kind|device|at|primary|minimum|goal|next|estimate|target|started)::\s*(?<value>\[\[[^\]]+\]\]|[^\]]*)\]/giu;
+const OWNED_FIELD_RE = /\[towrite-(?<key>kind|category|task-ref|pool-revision|device|at|scheduled|due|primary|minimum|goal|next|estimate|target|started)::\s*(?<value>\[\[[^\]]+\]\]|[^\]]*)\]/giu;
 const THEME_FIELD_RE = /\[towrite-theme::\s*(?<value>[^\]]*)\]/giu;
 const PRIORITY_RE = /(?:^|\s)(?<emoji>🔺|⏫|🔼|🔽|⏬)(?=\s|$)/gu;
 const DATE_RE = {
@@ -110,6 +120,7 @@ export class DailyPlanService {
   private readonly planHeading: string;
   private readonly todoHeading: string;
   private readonly summaryHeading: string;
+  private readonly tasksCompatibilityOutput: boolean;
   private readonly now: () => Date;
   private readonly createId: () => string;
   private readonly locks = new Map<string, Promise<void>>();
@@ -125,6 +136,7 @@ export class DailyPlanService {
     this.planHeading = normalizeHeading(options.planHeading ?? "今日计划");
     this.todoHeading = normalizeHeading(options.todoHeading ?? "ToDo");
     this.summaryHeading = normalizeHeading(options.summaryHeading ?? "今日总结");
+    this.tasksCompatibilityOutput = options.tasksCompatibilityOutput === true;
     this.now = options.now ?? (() => new Date());
     this.createId = options.createId ?? createDailyId;
   }
@@ -215,13 +227,17 @@ export class DailyPlanService {
       const replacements = new Map<number, string>();
       for (const item of document.items) {
         const changed = changedItems.get(item.id);
-        if (changed) replacements.set(item.line, formatTaskBlock(changed, item.rawBlock));
+        if (changed) replacements.set(item.line, formatTaskBlock(changed, item.rawBlock, {
+          tasksCompatibilityOutput: this.tasksCompatibilityOutput
+        }));
       }
       let next = replaceTaskBlocks(current, document.items, replacements);
       next = appendToTodoSection(next, date, this.resolveSource(date), {
         planHeading: this.planHeading,
         todoHeading: this.todoHeading
-      }, formatTaskBlock(desired));
+      }, formatTaskBlock(desired, undefined, {
+        tasksCompatibilityOutput: this.tasksCompatibilityOutput
+      }));
       await this.storage.writeText(path, next);
       await this.notify(path);
       const created = this.parse(next, path, date).items.find((item) => item.id === id);
@@ -385,6 +401,50 @@ export class DailyPlanService {
     });
   }
 
+  /**
+   * Removes the complete structural list subtree guarded by the task's
+   * current logical-block revision. Removing a parent task therefore removes
+   * its nested task/document children as one explicit operation; siblings,
+   * headings, and unrelated user text remain untouched.
+   */
+  async remove(
+    id: string,
+    expectedRevision: string | DailyTaskRevision,
+    value: Date | string = this.now()
+  ): Promise<DailyPlanItem> {
+    const date = normalizeDate(value);
+    const path = this.pathForDate(date);
+    return this.withPathLock(path, async () => {
+      const current = await this.storage.readText(path);
+      if (current === undefined) {
+        throw new DailyPlanConflictError("not-found", `Daily plan file does not exist: ${path}`);
+      }
+      const document = this.parse(current, path, date);
+      assertWritable(document);
+      const target = document.items.find((item) => item.id === id);
+      if (!target) throw new DailyPlanConflictError("not-found", `Daily plan item does not exist: ${id}`);
+      assertRevision(target, expectedRevision);
+
+      const node = parseMovableListNodes(current).find((entry) => entry.line === target.line);
+      if (!node) {
+        throw new DailyPlanConflictError(
+          "invalid-document",
+          `Daily plan item is not backed by a removable list node: ${id}`
+        );
+      }
+      const eol = current.includes("\r\n") ? "\r\n" : "\n";
+      const lines = current.split(/\r?\n/u);
+      lines.splice(node.start, Math.max(1, node.end - node.start));
+      const next = lines.join(eol);
+      await this.storage.writeText(path, next);
+      await this.notify(path);
+      if (this.parse(next, path, date).items.some((item) => item.id === id)) {
+        throw new Error("Daily plan item could not be verified after removal.");
+      }
+      return target;
+    });
+  }
+
   async updateMetadata(
     patch: DailyPlanMetadataUpdate,
     expectedRevision?: string,
@@ -418,7 +478,9 @@ export class DailyPlanService {
             [key]: requestedId !== null && item.id === requestedId
           };
           if (Boolean(updated[key]) !== Boolean(item[key])) {
-            replacements.set(item.line, formatTaskBlock(updated, item.rawBlock));
+            replacements.set(item.line, formatTaskBlock(updated, item.rawBlock, {
+              tasksCompatibilityOutput: this.tasksCompatibilityOutput
+            }));
           }
         }
       }
@@ -495,7 +557,9 @@ export class DailyPlanService {
       const replacements = new Map<number, string>();
       for (const item of document.items) {
         const replacement = byId.get(item.id);
-        if (replacement) replacements.set(item.line, formatTaskBlock(replacement, item.rawBlock));
+        if (replacement) replacements.set(item.line, formatTaskBlock(replacement, item.rawBlock, {
+          tasksCompatibilityOutput: this.tasksCompatibilityOutput
+        }));
       }
       const next = replaceTaskBlocks(current, document.items, replacements);
       await this.storage.writeText(path, next);
@@ -675,12 +739,13 @@ export function parseDailyPlanDocumentWithDiagnostics(
  */
 export function predictDailyPlanItemStatusRevision(
   item: DailyPlanItem,
-  status: DailyPlanItem["status"]
+  status: DailyPlanItem["status"],
+  options: DailyPlanFormatOptions = {}
 ): DailyTaskRevision {
   const updated = status === "done"
     ? { ...item, status, done: true }
     : applyUpdate(item, { status });
-  const rawBlock = formatTaskBlock(updated, item.rawBlock);
+  const rawBlock = formatTaskBlock(updated, item.rawBlock, options);
   return {
     ...item.revision,
     value: dailyTaskRevisionValue(item.sourcePath, item.date, item.id, rawBlock)
@@ -729,6 +794,10 @@ function mergeHierarchyIntoPlanDocument(
       ...item,
       line: task.line,
       endLine: task.endLine,
+      depth: task.depth,
+      parentTaskId: task.parentTaskId,
+      category: item.category ?? task.category,
+      taskRef: item.taskRef ?? task.taskRef,
       rawLine: task.rawLine,
       rawBlock: task.rawBlock,
       detachedOwnedLines: task.detachedOwnedLines,
@@ -828,12 +897,17 @@ function parseTaskEntry(
   const fields = parseFields(rawBlock);
   const status = normalizeStatus(match.groups!.mark);
   const logicalSource = rawBlock.replace(/\r?\n/gu, " ");
+  const legacyScheduledDate = DATE_RE.scheduled.exec(logicalSource)?.[1];
+  const legacyDueDate = DATE_RE.due.exec(logicalSource)?.[1];
+  const metadataScheduledDate = normalizeOptionalDate(fields.scheduled);
+  const metadataDueDate = normalizeOptionalDate(fields.due);
   const target = normalizeOptionalTarget(fields.target);
   const linkedSource = `${cleanTaskText(body)} ${target ?? ""}`;
   const revision: DailyTaskRevision = {
     value: dailyTaskRevisionValue(sourcePath, date, blockId, rawBlock),
     sourcePath,
-    blockId
+    blockId,
+    date
   };
   return {
     line: lineNumber,
@@ -854,8 +928,13 @@ function parseTaskEntry(
       rawLine,
       rawBlock,
       revision,
-      scheduledDate: DATE_RE.scheduled.exec(logicalSource)?.[1] ?? date,
-      dueDate: DATE_RE.due.exec(logicalSource)?.[1] ?? date,
+      category: normalizeOptionalText(fields.category, 120),
+      taskRef: normalizeTaskRef(fields["task-ref"]),
+      taskPoolRevision: normalizePoolRevision(fields["pool-revision"]),
+      scheduledDate: metadataScheduledDate ?? legacyScheduledDate ?? date,
+      scheduledDateExplicit: Boolean(metadataScheduledDate || legacyScheduledDate),
+      dueDate: metadataDueDate ?? legacyDueDate ?? date,
+      dueDateExplicit: Boolean(metadataDueDate || legacyDueDate),
       completionDate: DATE_RE.completion.exec(logicalSource)?.[1],
       scheduledFor: normalizeScheduledFor(fields.at),
       devicePolicy: normalizePolicy(fields.device),
@@ -881,6 +960,7 @@ function createItemShape(args: {
   input: DailyPlanCreateInput;
 }): DailyPlanItem {
   const dueDate = normalizeOptionalDate(args.input.dueDate) ?? args.date;
+  const scheduledDate = normalizeOptionalDate(args.input.scheduledDate) ?? args.date;
   const text = normalizeTaskText(args.input.text);
   const target = normalizeOptionalTarget(args.input.target);
   return {
@@ -897,9 +977,15 @@ function createItemShape(args: {
     endLine: 0,
     rawLine: "",
     rawBlock: "",
-    revision: { value: "", sourcePath: args.sourcePath, blockId: args.id },
-    scheduledDate: args.date,
+    revision: { value: "", sourcePath: args.sourcePath, blockId: args.id, date: args.date },
+    category: normalizeOptionalText(args.input.category, 120),
+    taskRef: normalizeTaskRef(args.input.taskRef),
+    taskPoolRevision: normalizePoolRevision(args.input.taskPoolRevision),
+    depth: 0,
+    scheduledDate,
+    scheduledDateExplicit: args.input.scheduledDate !== undefined,
     dueDate,
+    dueDateExplicit: args.input.dueDate !== undefined,
     scheduledFor: normalizeScheduledFor(args.input.scheduledFor),
     devicePolicy: normalizePolicy(args.input.devicePolicy),
     priority: normalizePriority(args.input.priority),
@@ -923,12 +1009,26 @@ function applyUpdate(item: DailyPlanItem, patch: DailyPlanUpdate): DailyPlanItem
     ...item,
     text,
     kind: patch.kind === undefined ? item.kind : normalizeKind(patch.kind),
+    category: patch.category === undefined
+      ? item.category
+      : normalizeOptionalText(patch.category, 120),
+    taskRef: patch.taskRef === undefined ? item.taskRef : normalizeTaskRef(patch.taskRef),
+    taskPoolRevision: patch.taskPoolRevision === undefined
+      ? item.taskPoolRevision
+      : normalizePoolRevision(patch.taskPoolRevision),
     devicePolicy: patch.devicePolicy === undefined ? item.devicePolicy : normalizePolicy(patch.devicePolicy),
     priority: patch.priority === undefined ? item.priority : normalizePriority(patch.priority),
     priorityExplicit: patch.priority === undefined ? item.priorityExplicit : true,
-    dueDate: patch.dueDate === undefined
-      ? item.dueDate
-      : normalizeOptionalDate(patch.dueDate) ?? item.date,
+    scheduledDate: patch.scheduledDate === undefined
+      ? item.scheduledDate
+      : normalizeOptionalDate(patch.scheduledDate) ?? item.date,
+    scheduledDateExplicit: patch.scheduledDate === undefined
+      ? item.scheduledDateExplicit
+      : patch.scheduledDate !== null && normalizeOptionalDate(patch.scheduledDate) !== undefined,
+    dueDate: patch.dueDate === undefined ? item.dueDate : normalizeOptionalDate(patch.dueDate) ?? item.date,
+    dueDateExplicit: patch.dueDate === undefined
+      ? item.dueDateExplicit
+      : patch.dueDate !== null && normalizeOptionalDate(patch.dueDate) !== undefined,
     scheduledFor: patch.scheduledFor === undefined
       ? item.scheduledFor
       : normalizeScheduledFor(patch.scheduledFor),
@@ -951,7 +1051,11 @@ function applyUpdate(item: DailyPlanItem, patch: DailyPlanUpdate): DailyPlanItem
   };
 }
 
-function formatTaskBlock(item: DailyPlanItem, existingRawBlock?: string): string {
+function formatTaskBlock(
+  item: DailyPlanItem,
+  existingRawBlock?: string,
+  options: DailyPlanFormatOptions = {}
+): string {
   const indent = /^\s*/u.exec(item.rawLine)?.[0] ?? "";
   const childIndent = `${indent}  `;
   const mark = item.status === "done" ? "x" : item.status === "in-progress" ? "/" : " ";
@@ -959,10 +1063,26 @@ function formatTaskBlock(item: DailyPlanItem, existingRawBlock?: string): string
   const completed = item.status === "done" && item.completionDate ? ` ✅ ${item.completionDate}` : "";
   const tags = item.tags.length ? ` ${item.tags.map((tag) => `#${tag}`).join(" ")}` : "";
   const checkbox = `${indent}- [${mark}] ${item.text}${priority ? ` ${priority}` : ""}`
-    + ` ⏳ ${item.scheduledDate || item.date} 📅 ${item.dueDate}${completed}${tags}`;
+    + (options.tasksCompatibilityOutput
+      ? ` ⏳ ${item.scheduledDate || item.date} 📅 ${item.dueDate}`
+      : "")
+    + `${completed}${tags}`;
   const controlLines = [
     `${childIndent}[towrite-kind:: ${item.kind}] [towrite-device:: ${item.devicePolicy}]`
       + (item.scheduledFor ? ` [towrite-at:: ${item.scheduledFor}]` : ""),
+    ...optionalFieldLine(childIndent, "category", item.category),
+    ...optionalFieldLine(childIndent, "task-ref", item.taskRef),
+    ...optionalFieldLine(childIndent, "pool-revision", item.taskPoolRevision),
+    ...optionalFieldLine(
+      childIndent,
+      "scheduled",
+      !options.tasksCompatibilityOutput && item.scheduledDateExplicit ? item.scheduledDate : undefined
+    ),
+    ...optionalFieldLine(
+      childIndent,
+      "due",
+      !options.tasksCompatibilityOutput && item.dueDateExplicit ? item.dueDate : undefined
+    ),
     ...optionalFieldLine(childIndent, "primary", item.primary ? "true" : undefined),
     ...optionalFieldLine(childIndent, "minimum", item.minimum ? "true" : undefined),
     ...optionalFieldLine(childIndent, "goal", item.goal),
@@ -1593,7 +1713,44 @@ function normalizeOptionalTarget(value: unknown): string | undefined {
   if (!normalized) return undefined;
   const wikilink = /^\[\[([^\]\r\n]+)\]\]$/u.exec(normalized);
   if (wikilink) return `[[${wikilink[1]}]]`;
+  const markdown = /^\[([^\]\r\n]+)\]\(([^)\r\n]+)\)$/u.exec(normalized);
+  if (markdown) {
+    const target = safeMarkdownNoteTarget(markdown[2]);
+    if (!target) return undefined;
+    const label = markdown[1].trim();
+    return `[[${target}${label ? `|${label}` : ""}]]`;
+  }
   return normalized.replace(/[\[\]]/gu, "").trim() || undefined;
+}
+
+function safeMarkdownNoteTarget(value: string): string | undefined {
+  const decoded = (() => {
+    try {
+      return decodeURIComponent(value.trim());
+    } catch {
+      return value.trim();
+    }
+  })();
+  if (!decoded || /^(?:[a-z]+:|[\\/])/iu.test(decoded)) return undefined;
+  const fragmentIndex = decoded.indexOf("#");
+  const path = fragmentIndex >= 0 ? decoded.slice(0, fragmentIndex) : decoded;
+  const fragment = fragmentIndex >= 0 ? decoded.slice(fragmentIndex) : "";
+  if (!path.toLowerCase().endsWith(".md") || path.split(/[\\/]/u).includes("..")) return undefined;
+  return `${path.slice(0, -3).replace(/\\/gu, "/")}${fragment}`;
+}
+
+function normalizeTaskRef(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return /^[A-Za-z0-9][A-Za-z0-9_:-]{5,127}$/u.test(normalized)
+    ? normalized
+    : undefined;
+}
+
+function normalizePoolRevision(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return /^tpr_[0-9a-f]{32}$/u.test(normalized) ? normalized : undefined;
 }
 
 function normalizeTags(values: unknown): string[] {
@@ -1614,9 +1771,15 @@ function ensureTrailingNewline(value: string): string {
 function sameCreateRequest(left: DailyPlanItem, right: DailyPlanItem): boolean {
   return left.text === right.text
     && left.kind === right.kind
+    && left.category === right.category
+    && left.taskRef === right.taskRef
+    && left.taskPoolRevision === right.taskPoolRevision
     && left.devicePolicy === right.devicePolicy
     && left.priority === right.priority
+    && left.scheduledDate === right.scheduledDate
+    && Boolean(left.scheduledDateExplicit) === Boolean(right.scheduledDateExplicit)
     && left.dueDate === right.dueDate
+    && Boolean(left.dueDateExplicit) === Boolean(right.dueDateExplicit)
     && left.scheduledFor === right.scheduledFor
     && Boolean(left.primary) === Boolean(right.primary)
     && Boolean(left.minimum) === Boolean(right.minimum)

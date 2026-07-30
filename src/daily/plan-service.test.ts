@@ -8,6 +8,8 @@ import {
 import { buildDailySummary } from "./summary";
 
 describe("DailyPlanService", () => {
+  const poolRevision = `tpr_${"a".repeat(32)}`;
+
   it("predicts the exact full logical-block revision for crash-safe status writes", async () => {
     const storage = new MemoryDailyStorage();
     const service = new DailyPlanService(storage, {
@@ -32,7 +34,7 @@ describe("DailyPlanService", () => {
     expect(created.id).toBe(current.id);
   });
 
-  it("creates a Tasks-compatible daily item with a stable block id", async () => {
+  it("creates a clean daily item with readable metadata and a stable block id", async () => {
     const storage = new MemoryDailyStorage();
     const service = new DailyPlanService(storage, {
       createId: () => "daily_test123",
@@ -42,8 +44,13 @@ describe("DailyPlanService", () => {
     const item = await service.create({
       text: "补充 [[关于创作]]",
       kind: "edit_note",
+      category: "写作与发布",
+      taskRef: "task_pool_writing01",
+      taskPoolRevision: poolRevision,
       devicePolicy: "scheduled",
+      scheduledDate: "2026-07-23",
       scheduledFor: "2026-07-23T09:30",
+      dueDate: "2026-07-24",
       tags: ["writing"]
     });
 
@@ -52,23 +59,81 @@ describe("DailyPlanService", () => {
       date: "2026-07-23",
       text: "补充 [[关于创作]]",
       kind: "edit_note",
+      category: "写作与发布",
+      taskRef: "task_pool_writing01",
+      taskPoolRevision: poolRevision,
       devicePolicy: "scheduled",
+      scheduledDate: "2026-07-23",
       scheduledFor: "2026-07-23T09:30",
+      dueDate: "2026-07-24",
       linkedNotes: ["关于创作"],
       status: "todo"
     });
-    expect(storage.files.get("Daily/2026-07-23.md")).toContain(
-      "- [ ] 补充 [[关于创作]] ⏳ 2026-07-23 📅 2026-07-23"
-    );
-    expect(storage.files.get("Daily/2026-07-23.md")).toContain("^daily_test123");
+    const written = storage.files.get("Daily/2026-07-23.md")!;
+    expect(written).toContain("- [ ] 补充 [[关于创作]] #writing");
+    expect(written).not.toContain("⏳");
+    expect(written).not.toContain("📅");
+    expect(written).toContain("[towrite-category:: 写作与发布]");
+    expect(written).toContain("[towrite-task-ref:: task_pool_writing01]");
+    expect(written).toContain(`[towrite-pool-revision:: ${poolRevision}]`);
+    expect(written).toContain("[towrite-scheduled:: 2026-07-23]");
+    expect(written).toContain("[towrite-due:: 2026-07-24]");
+    expect(written).toContain("^daily_test123");
     expect(await service.create({
       id: "daily_test123",
       text: "补充 [[关于创作]]",
       kind: "edit_note",
+      category: "写作与发布",
+      taskRef: "task_pool_writing01",
+      taskPoolRevision: poolRevision,
       devicePolicy: "scheduled",
+      scheduledDate: "2026-07-23",
       scheduledFor: "2026-07-23T09:30",
+      dueDate: "2026-07-24",
       tags: ["writing"]
     })).toMatchObject({ id: item.id });
+    expect(item.revision.date).toBe("2026-07-23");
+  });
+
+  it("normalizes safe Markdown targets into metadata-safe wikilinks", async () => {
+    const storage = new MemoryDailyStorage();
+    const service = new DailyPlanService(storage, {
+      createId: () => "daily_markdown_target",
+      now: () => new Date("2026-07-23T08:00:00+08:00")
+    });
+    const item = await service.create({
+      text: "打开项目",
+      target: "[创作辅助工具](项目/创作辅助工具.md)"
+    });
+    expect(item.target).toBe("[[项目/创作辅助工具|创作辅助工具]]");
+    expect(storage.files.get(item.sourcePath)).toContain(
+      "[towrite-target:: [[项目/创作辅助工具|创作辅助工具]]]"
+    );
+  });
+
+  it("can opt into legacy Tasks-compatible date output while retaining clean parsing", async () => {
+    const storage = new MemoryDailyStorage();
+    const service = new DailyPlanService(storage, {
+      createId: () => "daily_tasks_compat",
+      now: () => new Date("2026-07-23T08:00:00+08:00"),
+      tasksCompatibilityOutput: true
+    });
+
+    const item = await service.create({
+      text: "Tasks compatibility",
+      scheduledDate: "2026-07-23",
+      dueDate: "2026-07-24"
+    });
+    const written = storage.files.get(item.sourcePath)!;
+    expect(written).toContain("- [ ] Tasks compatibility ⏳ 2026-07-23 📅 2026-07-24");
+    expect(written).not.toContain("[towrite-scheduled::");
+    expect(written).not.toContain("[towrite-due::");
+    expect(item).toMatchObject({
+      scheduledDate: "2026-07-23",
+      scheduledDateExplicit: true,
+      dueDate: "2026-07-24",
+      dueDateExplicit: true
+    });
   });
 
   it("updates and completes only the expected task revision", async () => {
@@ -149,8 +214,12 @@ describe("DailyPlanService", () => {
 
     const completed = await service.complete(item.id, item.revision, "2026-07-23");
     const written = storage.files.get(item.sourcePath)!;
-    expect(completed).toMatchObject({ status: "done", priority: "highest", line: 5, endLine: 7 });
+    expect(completed).toMatchObject({ status: "done", priority: "highest", line: 5, endLine: 9 });
     expect(written).toContain("- [x] 补充 [[关于创作]] 🔺");
+    expect(written).not.toContain("⏳");
+    expect(written).not.toContain("📅");
+    expect(written).toContain("[towrite-scheduled:: 2026-07-23]");
+    expect(written).toContain("[towrite-due:: 2026-07-24]");
     expect(written).toContain("\n  [towrite-kind:: edit_note]");
     expect(written).toContain("\n  ^daily_multiline1");
     expect(written).toContain("这行与任务无关，必须保留。");
@@ -179,6 +248,64 @@ describe("DailyPlanService", () => {
     await expect(service.complete(item.id, item.revision, item.date))
       .rejects.toMatchObject({ code: "revision-changed" });
     expect(storage.files.get(item.sourcePath)).toContain("[towrite-device:: agent]");
+  });
+
+  it("removes an exact task subtree under CAS and preserves siblings and unrelated prose", async () => {
+    const path = "Daily/2026-07-23.md";
+    const markdown = [
+      "# 2026-07-23",
+      "## ToDo",
+      "- [ ] Parent task",
+      "  [towrite-category:: 项目]",
+      "  - [ ] Child task",
+      "    ^daily_remove_child",
+      "  ^daily_remove_parent",
+      "- [ ] Keep sibling",
+      "  Keep this explanation",
+      "  ^daily_remove_keep",
+      "",
+      "## Notes",
+      "Unrelated prose must stay."
+    ].join("\n");
+    const storage = new MemoryDailyStorage();
+    storage.files.set(path, markdown);
+    const service = new DailyPlanService(storage, {
+      now: () => new Date("2026-07-23T08:00:00+08:00")
+    });
+    const parent = (await service.list())[0];
+
+    const removed = await service.remove(parent.id, parent.revision);
+    expect(removed.id).toBe("daily_remove_parent");
+    const written = storage.files.get(path)!;
+    expect(written).not.toContain("Parent task");
+    expect(written).not.toContain("Child task");
+    expect(written).not.toContain("^daily_remove_child");
+    expect(written).toContain("- [ ] Keep sibling");
+    expect(written).toContain("Keep this explanation");
+    expect(written).toContain("## Notes\nUnrelated prose must stay.");
+    expect((await service.list()).map((item) => item.id)).toEqual(["daily_remove_keep"]);
+  });
+
+  it("refuses to remove a task after its full logical block changed", async () => {
+    const path = "Daily/2026-07-23.md";
+    const storage = new MemoryDailyStorage();
+    storage.files.set(path, [
+      "# 2026-07-23",
+      "## ToDo",
+      "- [ ] Keep on conflict",
+      "  [towrite-category:: 项目]",
+      "  ^daily_remove_conflict"
+    ].join("\n"));
+    const service = new DailyPlanService(storage, {
+      now: () => new Date("2026-07-23T08:00:00+08:00")
+    });
+    const item = (await service.list())[0];
+    storage.files.set(path, storage.files.get(path)!.replace("项目", "写作与发布"));
+
+    await expect(service.remove(item.id, item.revision))
+      .rejects.toMatchObject({ code: "revision-changed" });
+    expect(storage.files.get(path)).toContain("Keep on conflict");
+    expect(storage.files.get(path)).toContain("[towrite-category:: 写作与发布]");
   });
 
   it("maps and retains Obsidian Tasks priority emoji", async () => {

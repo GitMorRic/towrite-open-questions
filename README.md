@@ -1,5 +1,27 @@
 # ToWrite Open Questions
 
+## Floating Today window
+
+Run `ToWrite: Today: open floating window` or use the `calendar-check`
+ribbon icon. The pop-out is an Obsidian pinned leaf and can collapse to one
+line. Pinning prevents leaf replacement; it is not an operating-system
+always-on-top flag.
+
+- Clicking a task row starts or resumes the current Markdown revision, then
+  opens the freshly resolved target.
+- Clicking the target chip opens without changing task state.
+- **Later** pauses timing and stores the current note line as a local reading
+  checkpoint; the next row click returns there first.
+- Note targets support headings, blocks, and safe relative Markdown links.
+- Web destinations must be explicit, for example
+  `[towrite-target:: https://example.com/read#part-2]`. Prose URLs, HTTP,
+  credential-bearing URLs, and executable schemes are never opened.
+
+Checkpoints live in
+`.obsidian-open-questions/daily/navigation-checkpoints.json`, never in the
+task body or Device Hub. Hardware gestures retain the same acknowledged
+`displayed`-card and revision checks.
+
 [简体中文](README.zh-CN.md)
 
 The Dashboard separates **Today** from **All status**. Today uses
@@ -342,3 +364,6 @@ The ToWrite Open Questions plugin is MIT licensed. See [LICENSE](LICENSE).
 The optional Obsidian AI Backend is a separate project with its own license terms. The plugin's MIT license does not grant rights to Backend code or hosted services; consult the Backend distribution's `LICENSE` and commercial-license documents.
 
 For the new ESP32/eink integration, see [Device Hub V1](docs/device-hub-protocol.md). The older local feed remains documented in the Chinese [device-feed compatibility guide](docs/device-feed-protocol.zh-CN.md).
+See [Open the displayed location with one button](docs/navigation-adapters.md)
+for the display-ACK-safe main-button flow, exact Obsidian location handling,
+and the adapter architecture reserved for web pages and other note apps.

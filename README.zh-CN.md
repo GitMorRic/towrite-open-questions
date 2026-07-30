@@ -1,6 +1,27 @@
 # ToWrite Open Questions
 
+## 今日悬浮小窗
+
+在命令面板运行 `ToWrite: Today: open floating window`，或点击左侧
+`calendar-check` ribbon 图标，可以打开独立的今日小窗。小窗默认固定为
+Obsidian 的 pinned leaf，可折叠成一行；这里的“固定”用于防止视图被其他
+文件替换，并不等同于 Windows 的“始终置顶”。
+
+- 点击任务整行：未开始时先开始，暂停时先继续，然后打开最新修订所解析的目标。
+- 点击目标标签：只打开目标，不改变任务状态。
+- 点击“稍后”：暂停计时，并把当前笔记行保存为本地阅读断点；下次点击任务时优先返回断点。
+- 笔记目标支持 `[[笔记#标题]]`、`[[笔记#^block]]` 和安全的相对 `.md` 链接。
+- 网页必须显式写为 `[towrite-target:: https://example.com/path#fragment]`；
+  普通正文 URL、HTTP、带账号密码的 URL、`file:` 和 `javascript:` 都不会执行。
+
+阅读断点保存在
+`.obsidian-open-questions/daily/navigation-checkpoints.json`，不写进待办正文，
+也不会发送给 Device Hub。硬件主键继续严格针对屏幕已经 ACK 的
+`displayed` 卡片，因此电脑小窗与设备共用同一套目标解析和冲突保护。
+
 [今日 Dashboard 与每日计划](docs/daily-dashboard.zh-CN.md) 已把“今日”和“全部状态”明确分开：“今日”以 `Daily/YYYY-MM-DD.md` 为数据真源，原生理解项目/任务层级和父级目标继承，并把开始、暂停、继续、完成计时保存在不含正文的 JSONL 账本；“全部状态”使用完整增量索引统计 Workflow、Article Type、Inbox、stale、ToThink 与 ToWrite。指南同时说明规范化预览、30 天活动统计隐私边界、设备/NFC 冲突保护，以及 `auto` / `local` / `backend` 单写入者模式。
+
+[按一下打开对应位置](docs/navigation-adapters.zh-CN.md) 说明主键单击如何严格依据墨水屏已 ACK 的 displayed 卡片，打开 Obsidian 文件、heading、block 或移动后的文本锚点，并给出后续网页与其他笔记软件的安全 Adapter 架构。
 
 [English](README.md) | 简体中文
 

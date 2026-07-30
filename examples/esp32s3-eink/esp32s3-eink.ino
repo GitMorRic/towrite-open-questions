@@ -506,14 +506,28 @@ void sendGestureEvent(const char* buttonName, const char* gestureName) {
   }
 
   String displayMessage = "Waiting for computer";
+  String commandStatus = "executed";
   DynamicJsonDocument response(2048);
   if (!deserializeJson(response, body)) {
+    commandStatus = String(response["commandStatus"] | "executed");
     const char* serverMessage = response["displayMessage"] | "";
     if (serverMessage[0] != '\0') {
       displayMessage = serverMessage;
     }
   }
-  renderCommandStatus(shortCommandStatus(displayMessage), false);
+  if (commandStatus == "conflict") {
+    // Some application-level revision conflicts are intentionally returned as
+    // HTTP 200 so an idempotent replay can return the same terminal result.
+    // They are still stale screen state and must force a redraw + new ACK.
+    renderCommandStatus("Conflict - refreshing", true);
+    clearTuple(displayedTuple);
+    markConnectionSuccess(code);
+    refreshEinkPayload(true);
+    return;
+  }
+  const bool commandFailed = commandStatus == "unsupported"
+    || commandStatus == "waiting";
+  renderCommandStatus(shortCommandStatus(displayMessage), commandFailed);
   markConnectionSuccess(code);
 
   // A start, completion, or page/task gesture can change the desired tuple.

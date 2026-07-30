@@ -61,6 +61,8 @@ export interface DailyTaskRevision {
   value: string;
   sourcePath: string;
   blockId: string;
+  /** Date scope is required to address fixed-document plans without guessing. */
+  date?: string;
 }
 
 export interface DailyPlanItem {
@@ -80,8 +82,25 @@ export interface DailyPlanItem {
   /** Checkbox line plus recognized ToWrite metadata and block-id continuations. */
   rawBlock?: string;
   revision: DailyTaskRevision;
+  /** Optional user-facing category independent of the structural list group. */
+  category?: string;
+  /**
+   * Stable reference to a canonical Task Pool item. A Daily item may be an
+   * assignment/projection while the pool remains the content source of truth.
+   */
+  taskRef?: string;
+  /** Frozen Task Pool revision used to reject stale cross-document writes. */
+  taskPoolRevision?: string;
+  /** Stable id of the nearest containing checkbox task, when one exists. */
+  parentTaskId?: string;
+  /** Structural list depth inside the configured ToDo section. */
+  depth?: number;
   scheduledDate: string;
+  /** Distinguishes an authored schedule from the date-scoped compatibility default. */
+  scheduledDateExplicit?: boolean;
   dueDate: string;
+  /** Distinguishes an authored deadline from the date-scoped compatibility default. */
+  dueDateExplicit?: boolean;
   completionDate?: string;
   scheduledFor?: string;
   devicePolicy: DailyDevicePolicy;
@@ -136,6 +155,17 @@ export interface DailyMarkdownTarget {
   blockId?: string;
 }
 
+/**
+ * An explicitly configured HTTPS destination. Web targets are never inferred
+ * from arbitrary prose; they must come from the owned `towrite-target` field.
+ */
+export interface DailyWebTarget {
+  kind: "web";
+  raw: string;
+  url: string;
+  label: string;
+}
+
 export interface DailyPlanGroup {
   id: string;
   text: string;
@@ -159,6 +189,7 @@ export interface DailyPlanLineage {
 export interface DailyTargetResolution {
   source: DailyTargetSource;
   target?: DailyMarkdownTarget;
+  webTarget?: DailyWebTarget;
   /** Source-note block fallback. */
   sourcePath?: string;
   blockId?: string;
@@ -179,6 +210,12 @@ export interface DailyPlanHierarchyTask {
   line: number;
   endLine: number;
   depth: number;
+  /** Stable id of the nearest containing checkbox task, when one exists. */
+  parentTaskId?: string;
+  /** Optional explicit category stored in a ToWrite continuation field. */
+  category?: string;
+  /** Optional canonical Task Pool reference stored in a continuation field. */
+  taskRef?: string;
   status: DailyPlanStatus;
   checkbox: boolean;
   rawLine: string;
@@ -269,7 +306,11 @@ export interface DailyPlanCreateInput {
   date?: string | Date;
   text: string;
   kind?: DailyPlanItemKind;
+  category?: string;
+  taskRef?: string;
+  taskPoolRevision?: string;
   devicePolicy?: DailyDevicePolicy;
+  scheduledDate?: string;
   scheduledFor?: string;
   dueDate?: string;
   priority?: DailyPlanPriority;
@@ -285,9 +326,13 @@ export interface DailyPlanCreateInput {
 export interface DailyPlanUpdate {
   text?: string;
   kind?: DailyPlanItemKind;
+  category?: string | null;
+  taskRef?: string | null;
+  taskPoolRevision?: string | null;
   devicePolicy?: DailyDevicePolicy;
+  scheduledDate?: string | null;
   scheduledFor?: string | null;
-  dueDate?: string;
+  dueDate?: string | null;
   priority?: DailyPlanPriority;
   tags?: string[];
   status?: Exclude<DailyPlanStatus, "done">;
@@ -299,6 +344,12 @@ export interface DailyPlanUpdate {
   target?: string | null;
   startedAt?: string | null;
 }
+
+/** Optional fields shown by the progressive editor card for a quick task. */
+export type DailyPlanEnrichmentPatch = Pick<
+  DailyPlanUpdate,
+  "category" | "target" | "dueDate" | "estimateMinutes" | "nextStep"
+>;
 
 export type DailyDocumentMeasurementReason = "created" | "modified";
 

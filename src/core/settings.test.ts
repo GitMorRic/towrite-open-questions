@@ -58,6 +58,11 @@ describe("settings normalization", () => {
       dailyNoteRoot: "Daily/Writing",
       dailyNoteFormat: "YYYY-MM-DD.md",
       fixedPlanPath: "Planning/Daily Plans.md",
+      taskPoolPath: "Planning/Task Pool.md",
+      autoReturnUnfinished: true,
+      tasksCompatibilityOutput: false,
+      categoryPresets: DEFAULT_SETTINGS.daily.categoryPresets,
+      dashboardDefaultView: "list",
       planHeading: "今日计划",
       todoHeading: "Plans",
       summaryHeading: "Review",
@@ -83,6 +88,24 @@ describe("settings normalization", () => {
       planSourceMode: "fixed-document",
       fixedPlanPath: "Planning/Tomorrow.md",
       planHeading: "明日编排"
+    });
+    expect(normalizeDailySettings({
+      taskPoolPath: " /Planning\\Ideas ",
+      autoReturnUnfinished: false,
+      tasksCompatibilityOutput: true,
+      dashboardDefaultView: "calendar",
+      categoryPresets: [
+        { id: " Project ", label: " 项目 ", color: "#ABCDEF", icon: "folder-kanban" },
+        { id: "project", label: "重复", color: "#000000" }
+      ]
+    })).toMatchObject({
+      taskPoolPath: "Planning/Ideas.md",
+      autoReturnUnfinished: false,
+      tasksCompatibilityOutput: true,
+      dashboardDefaultView: "calendar",
+      categoryPresets: [
+        { id: "project", label: "项目", color: "#abcdef", icon: "folder-kanban" }
+      ]
     });
   });
 

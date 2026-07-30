@@ -1,5 +1,6 @@
 import { shortHash } from "../core/hash";
 import { parseDailyPlanHierarchy, type DailyPlanHierarchyParseOptions } from "./hierarchy";
+import { resolveDailyTarget } from "./target-resolver";
 import {
   DailyPlanConflictError,
   DailyPlanService,
@@ -8,6 +9,7 @@ import {
 } from "./plan-service";
 import type {
   DailyPlanNormalizationEdit,
+  DailyPlanEnrichmentPatch,
   DailyPlanNormalizationPreview,
   DailyPlanNormalizationResult,
   DailyPlanNormalizationUndoResult
@@ -62,6 +64,52 @@ export class DailyPlanNormalizationService {
   }
 
   async normalize(preview: DailyPlanNormalizationPreview): Promise<DailyPlanNormalizationResult> {
+    return this.normalizeScoped(preview);
+  }
+
+  /**
+   * Normalizes one newly authored task while leaving every other pending line
+   * untouched. This powers the editor's "track only" and progressive
+   * properties actions without turning a quick checkbox into a bulk rewrite.
+   */
+  async normalizeTask(
+    preview: DailyPlanNormalizationPreview,
+    line: number
+  ): Promise<DailyPlanNormalizationResult> {
+    return this.adoptTask(preview, line);
+  }
+
+  /**
+   * Adopts one quick Markdown task and writes only the optional properties the
+   * author explicitly selected. ID + properties share one document CAS and
+   * one Vault write, so a successful result can never leave a half-enriched
+   * task behind.
+   */
+  async adoptTask(
+    preview: DailyPlanNormalizationPreview,
+    line: number,
+    patch: DailyPlanEnrichmentPatch = {}
+  ): Promise<DailyPlanNormalizationResult> {
+    const selected = preview.edits.filter((edit) => edit.line === line);
+    if (selected.length !== 1) {
+      throw new DailyPlanConflictError(
+        "not-found",
+        `The Daily normalization candidate at line ${line} is missing or ambiguous.`
+      );
+    }
+    return this.normalizeScoped({
+      ...preview,
+      edits: selected,
+      changed: true,
+      diff: formatCompactDiff(selected)
+    }, false, patch);
+  }
+
+  private async normalizeScoped(
+    preview: DailyPlanNormalizationPreview,
+    requireAll = true,
+    enrichment?: DailyPlanEnrichmentPatch
+  ): Promise<DailyPlanNormalizationResult> {
     const sourcePath = this.plan.pathForDate(preview.date);
     if (sourcePath !== preview.sourcePath || !sameSource(this.plan.planSource, preview.source)) {
       throw new DailyPlanConflictError("invalid-document", "The normalization preview belongs to another plan source.");
@@ -82,7 +130,7 @@ export class DailyPlanNormalizationService {
       assertNormalizable({ ...preview, diagnostics: parsed.diagnostics });
       const newline = current.includes("\r\n") ? "\r\n" : "\n";
       const lines = current.split(/\r?\n/u);
-      assertCanonicalNormalizationEdits(preview, parsed.tasks, lines);
+      assertCanonicalNormalizationEdits(preview, parsed.tasks, lines, requireAll);
       for (const edit of [...preview.edits].sort((left, right) => right.line - left.line)) {
         if (lines[edit.line - 1] !== edit.before) {
           throw new DailyPlanConflictError(
@@ -91,6 +139,14 @@ export class DailyPlanNormalizationService {
           );
         }
         lines[edit.line - 1] = edit.after;
+      }
+      if (enrichment && preview.edits.length === 1) {
+        applyEnrichmentPatch(
+          lines,
+          parsed.tasks.find((task) => task.line === preview.edits[0].line),
+          enrichment,
+          sourcePath
+        );
       }
       const next = lines.join(newline);
       if (next === current) {
@@ -265,13 +321,20 @@ function assertNormalizable(preview: DailyPlanNormalizationPreview): void {
 function assertCanonicalNormalizationEdits(
   preview: DailyPlanNormalizationPreview,
   tasks: DailyPlanNormalizationPreview["tasks"],
-  lines: readonly string[]
+  lines: readonly string[],
+  requireAll = true
 ): void {
   const required = tasks.filter((task) => task.normalizationRequired);
-  if (preview.edits.length !== required.length) {
+  if (requireAll && preview.edits.length !== required.length) {
     throw new DailyPlanConflictError(
       "invalid-document",
       "Normalization edits must exactly match the tasks in the current plan."
+    );
+  }
+  if (!requireAll && preview.edits.length !== 1) {
+    throw new DailyPlanConflictError(
+      "invalid-document",
+      "A scoped normalization must contain exactly one current task edit."
     );
   }
   const byLine = new Map(required.map((task) => [task.line, task]));
@@ -311,6 +374,114 @@ function assertCanonicalNormalizationEdits(
       );
     }
   }
+}
+
+function applyEnrichmentPatch(
+  lines: string[],
+  task: DailyPlanNormalizationPreview["tasks"][number] | undefined,
+  patch: DailyPlanEnrichmentPatch,
+  sourcePath: string
+): void {
+  if (!task) {
+    throw new DailyPlanConflictError(
+      "invalid-document",
+      "The selected quick task is no longer part of the current plan."
+    );
+  }
+  const start = task.line - 1;
+  const originalLength = Math.max(1, task.endLine - task.line + 1);
+  const block = lines.slice(start, start + originalLength);
+  if (!block.length) {
+    throw new DailyPlanConflictError("invalid-document", "The selected quick task has no source block.");
+  }
+  const indent = `${/^[ \t]*/u.exec(block[0])?.[0] ?? ""}  `;
+  const requested: Array<{
+    key: "category" | "due" | "estimate" | "target" | "next";
+    value: string | null | undefined;
+  }> = [
+    { key: "category", value: optionalOwnedText(patch.category, 120) },
+    { key: "due", value: normalizedEnrichmentDate(patch.dueDate) },
+    { key: "estimate", value: normalizedEnrichmentEstimate(patch.estimateMinutes) },
+    { key: "target", value: normalizedEnrichmentTarget(patch.target, sourcePath) },
+    { key: "next", value: optionalOwnedText(patch.nextStep, 1_000) }
+  ];
+
+  const additions: string[] = [];
+  for (const field of requested) {
+    if (field.value === undefined) continue;
+    const matcher = new RegExp(`^[ \\t]*\\[towrite-${field.key}::[\\s\\S]*\\][ \\t]*$`, "u");
+    const matches = block
+      .map((line, index) => matcher.test(line) ? index : -1)
+      .filter((index) => index >= 1);
+    if (field.value === null) {
+      for (const index of matches.sort((left, right) => right - left)) block.splice(index, 1);
+      continue;
+    }
+    const formatted = `${indent}[towrite-${field.key}:: ${field.value}]`;
+    if (matches.length) {
+      block[matches[0]] = formatted;
+      for (const index of matches.slice(1).sort((left, right) => right - left)) block.splice(index, 1);
+    } else {
+      additions.push(formatted);
+    }
+  }
+  if (additions.length) {
+    let insertAt = 1;
+    while (insertAt < block.length && /^\s*\[towrite-[a-z-]+::/iu.test(block[insertAt])) insertAt += 1;
+    block.splice(insertAt, 0, ...additions);
+  }
+  lines.splice(start, originalLength, ...block);
+}
+
+function optionalOwnedText(
+  value: string | null | undefined,
+  maxLength: number
+): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  const normalized = String(value)
+    .replace(/[\r\n\]]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .slice(0, maxLength);
+  return normalized || null;
+}
+
+function normalizedEnrichmentDate(value: string | null | undefined): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || value === "") return null;
+  const normalized = value.trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(normalized)) {
+    throw new Error("Daily task due date must use YYYY-MM-DD.");
+  }
+  const parsed = new Date(`${normalized}T12:00:00`);
+  const roundTrip = Number.isFinite(parsed.getTime())
+    ? `${parsed.getFullYear().toString().padStart(4, "0")}-${(parsed.getMonth() + 1).toString().padStart(2, "0")}-${parsed.getDate().toString().padStart(2, "0")}`
+    : "";
+  if (roundTrip !== normalized) throw new Error("Daily task due date is invalid.");
+  return normalized;
+}
+
+function normalizedEnrichmentEstimate(value: number | null | undefined): string | null | undefined {
+  if (value === undefined || value === null) return value;
+  if (!Number.isInteger(value) || value < 1 || value > 1_440) {
+    throw new Error("Daily task estimate must be an integer between 1 and 1440 minutes.");
+  }
+  return `${value}m`;
+}
+
+function normalizedEnrichmentTarget(value: string | null | undefined, sourcePath: string): string | null | undefined {
+  if (value === undefined || value === null || !value.trim()) return value === undefined ? undefined : null;
+  const normalized = value.replace(/[\r\n]+/gu, " ").trim();
+  const resolved = resolveDailyTarget({
+    sourcePath,
+    taskText: "",
+    explicitTarget: normalized
+  });
+  if (resolved.source !== "explicit" || (!resolved.target && !resolved.webTarget)) {
+    throw new Error("Daily task target must be a safe Obsidian note or explicit HTTPS URL.");
+  }
+  return normalized;
 }
 
 function formatCompactDiff(edits: readonly DailyPlanNormalizationEdit[]): string {
