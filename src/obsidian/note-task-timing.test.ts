@@ -15,16 +15,16 @@ describe("ordinary note task derived timing", () => {
         return (prefix) => `${prefix}_${++id}`;
       })()
     });
-    timer.start(taskId, { at: "2026-07-29T09:00:00+08:00" });
-    timer.pause(taskId, { at: "2026-07-29T09:30:00+08:00" });
-    timer.resume(taskId, { at: "2026-07-29T10:00:00+08:00" });
-    timer.complete(taskId, { at: "2026-07-29T10:45:00+08:00" });
+    timer.start(taskId, { at: "2026-07-29T09:00:00Z" });
+    timer.pause(taskId, { at: "2026-07-29T09:30:00Z" });
+    timer.resume(taskId, { at: "2026-07-29T10:00:00Z" });
+    timer.complete(taskId, { at: "2026-07-29T10:45:00Z" });
 
-    const timing = timer.getSnapshot(taskId, undefined, "2026-07-29T10:45:00+08:00");
+    const timing = timer.getSnapshot(taskId, undefined, "2026-07-29T10:45:00Z");
     const derived = deriveNoteTaskTiming(timing, {
-      expectedFinishAt: "2026-07-29T10:15",
-      deadlineAt: "2026-07-29T10:30"
-    }, Date.parse("2026-07-29T10:45:00+08:00"));
+      expectedFinishAt: "2026-07-29T10:15:00Z",
+      deadlineAt: "2026-07-29T10:30:00Z"
+    }, Date.parse("2026-07-29T10:45:00Z"));
 
     expect(timing.activeMs).toBe(75 * 60_000);
     expect(derived.spanMs).toBe(105 * 60_000);
@@ -36,19 +36,19 @@ describe("ordinary note task derived timing", () => {
 
   it("derives current stagnation from a missed plan or paused transition", () => {
     const timer = new DailyTaskTimerService();
-    const notStarted = timer.getSnapshot(taskId, undefined, "2026-07-29T10:00:00+08:00");
+    const notStarted = timer.getSnapshot(taskId, undefined, "2026-07-29T10:00:00Z");
     expect(deriveNoteTaskTiming(notStarted, {
-      plannedStartAt: "2026-07-29T09:30",
-      expectedFinishAt: "2026-07-29T09:45"
-    }, Date.parse("2026-07-29T10:00:00+08:00"))).toMatchObject({
+      plannedStartAt: "2026-07-29T09:30:00Z",
+      expectedFinishAt: "2026-07-29T09:45:00Z"
+    }, Date.parse("2026-07-29T10:00:00Z"))).toMatchObject({
       stalledMs: 30 * 60_000,
       scheduleDelayMs: 15 * 60_000
     });
 
-    timer.start(taskId, { at: "2026-07-29T10:00:00+08:00" });
-    timer.pause(taskId, { at: "2026-07-29T10:15:00+08:00" });
-    const paused = timer.getSnapshot(taskId, undefined, "2026-07-29T10:45:00+08:00");
-    expect(deriveNoteTaskTiming(paused, {}, Date.parse("2026-07-29T10:45:00+08:00")).stalledMs)
+    timer.start(taskId, { at: "2026-07-29T10:00:00Z" });
+    timer.pause(taskId, { at: "2026-07-29T10:15:00Z" });
+    const paused = timer.getSnapshot(taskId, undefined, "2026-07-29T10:45:00Z");
+    expect(deriveNoteTaskTiming(paused, {}, Date.parse("2026-07-29T10:45:00Z")).stalledMs)
       .toBe(30 * 60_000);
   });
 

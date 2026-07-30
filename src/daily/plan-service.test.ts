@@ -332,14 +332,16 @@ describe("DailyPlanService", () => {
 
   it("completes the frozen source-day task after the local calendar crosses midnight", async () => {
     const storage = new MemoryDailyStorage();
-    let now = new Date("2026-07-23T23:59:00+08:00");
+    // Use the runner's local calendar rather than assuming Asia/Shanghai.
+    // DailyPlanService intentionally follows the user's local day.
+    let now = new Date(2026, 6, 23, 23, 59);
     const service = new DailyPlanService(storage, {
       createId: () => "daily_crossmidnight",
       now: () => now
     });
     const item = await service.create({ text: "睡前仍显示在墨水屏上的任务" });
 
-    now = new Date("2026-07-24T00:01:00+08:00");
+    now = new Date(2026, 6, 24, 0, 1);
     expect(await service.get(item.id)).toBeUndefined();
     const completed = await service.complete(item.id, item.revision, item.date);
 
