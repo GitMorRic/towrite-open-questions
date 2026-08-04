@@ -65,8 +65,8 @@ describe("TaskPoolService", () => {
       estimateMinutes: 20
     });
     expect(created.taskId).toBe(TASK_A);
-    expect(storage.files.get(PATH)).toContain(`[towrite-category:: 记录和搞懂]`);
-    expect(storage.files.get(PATH)).toContain(`[towrite-source:: [[Quick Notes/index#^${TASK_A}]]]`);
+    expect(storage.files.get(PATH)).toContain(`%% [towrite-category:: 记录和搞懂] %%`);
+    expect(storage.files.get(PATH)).toContain(`%% [towrite-source:: [[Quick Notes/index#^${TASK_A}]]] %%`);
     expect(storage.files.get(PATH)).toContain(`^${TASK_A}`);
     expect(storage.files.get(PATH)?.match(/理解 \[\[皮质醇\]\]/gu)).toHaveLength(1);
 
@@ -192,7 +192,7 @@ describe("TaskPoolService", () => {
     });
     expect(created.target).toBe("[[项目/创作辅助工具|创作辅助工具]]");
     expect(storage.files.get(PATH)).toContain(
-      "[towrite-target:: [[项目/创作辅助工具|创作辅助工具]]]"
+      "%% [towrite-target:: [[项目/创作辅助工具|创作辅助工具]]] %%"
     );
     await expect(service.create({
       id: TASK_B,
@@ -285,6 +285,78 @@ describe("TaskPoolService", () => {
     expect(result.stateMismatchTaskIds).toEqual([TASK_A]);
     expect(result.staleTaskIds).toEqual([TASK_B]);
     expect(result.candidates).toEqual([]);
+  });
+
+  it("reads hidden metadata and treats a manually edited checkbox as authoritative", () => {
+    const completed = parseTaskPoolMarkdown([
+      "## Tasks",
+      "- [x] 用户在 Markdown 中直接完成",
+      "  %% [towrite-state:: pool] %%",
+      "  %% [towrite-category:: 写作和发布] %%",
+      `  ^${TASK_A}`
+    ].join("\n"), PATH);
+    expect(completed.diagnostics).toEqual([]);
+    expect(completed.items[0]).toMatchObject({
+      state: "done",
+      category: "写作和发布"
+    });
+
+    const reopened = parseTaskPoolMarkdown([
+      "## Tasks",
+      "- [ ] 用户在 Markdown 中重新打开",
+      "  %% [towrite-state:: done] %%",
+      `  ^${TASK_B}`
+    ].join("\n"), PATH);
+    expect(reopened.diagnostics).toEqual([]);
+    expect(reopened.items[0].state).toBe("pool");
+  });
+
+  it("previews, applies, and safely undoes legacy field cleanup", async () => {
+    const storage = new MemoryStorage();
+    storage.files.set(PATH, [
+      "# Task Pool",
+      "",
+      "## Tasks",
+      "",
+      "- [ ] Preserve handwritten context",
+      "  [towrite-state:: pool]",
+      "  [towrite-project:: [[Echo]]]",
+      "  This line belongs to the user.",
+      `  ^${TASK_A}`
+    ].join("\n"));
+    const service = serviceFor(storage);
+    const preview = await service.previewFormatCleanup();
+
+    expect(preview).toMatchObject({ changed: true, legacyFieldCount: 2, affectedTaskIds: [TASK_A] });
+    expect(preview.after).toContain("%% [towrite-project:: [[Echo]]] %%");
+    expect(preview.after).toContain("This line belongs to the user.");
+
+    const applied = await service.applyFormatCleanup(preview.expectedRevision);
+    expect(applied.changed).toBe(true);
+    expect(applied.undoToken).toMatch(/^tpf_/u);
+    expect(storage.files.get(PATH)).toBe(preview.after);
+
+    await expect(service.applyFormatCleanup(preview.expectedRevision))
+      .rejects.toMatchObject({ code: "revision-changed" });
+    await service.undoFormatCleanup(applied.undoToken!);
+    expect(storage.files.get(PATH)).toBe(preview.before);
+  });
+
+  it("refuses cleanup undo after the Task Pool changed", async () => {
+    const storage = new MemoryStorage();
+    storage.files.set(PATH, [
+      "## Tasks",
+      "- [ ] One",
+      "  [towrite-state:: pool]",
+      `  ^${TASK_A}`
+    ].join("\n"));
+    const service = serviceFor(storage);
+    const preview = await service.previewFormatCleanup();
+    const applied = await service.applyFormatCleanup(preview.expectedRevision);
+    storage.files.set(PATH, `${storage.files.get(PATH)}\nUser edit\n`);
+
+    await expect(service.undoFormatCleanup(applied.undoToken!))
+      .rejects.toMatchObject({ code: "revision-changed" });
   });
 
   it("exports a readable snapshot and keeps assignment helpers pure", () => {

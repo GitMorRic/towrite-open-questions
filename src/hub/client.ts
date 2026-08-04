@@ -721,6 +721,7 @@ function isHubContentType(value: string): value is HubPendingDeviceEvent["conten
     || value === "wellbeing_reminder"
     || value === "daily_overview"
     || value === "daily_plan_item"
+    || value === "daily_inbox"
     || value === "daily_result"
     || value === "daily_summary";
 }

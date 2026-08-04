@@ -15,7 +15,8 @@ import {
   type DailyPlanStatus,
   type DailyPlanUpdate,
   type DailySummary,
-  type DailyTaskRevision
+  type DailyTaskRevision,
+  type DailyWorkKind
 } from "./types";
 import { parseDailyPlanHierarchy } from "./hierarchy";
 
@@ -75,7 +76,7 @@ const ANY_TASK_RE = /^(?<indent>\s*)(?:[-+*]|\d+[.)])(?<spacing>\s+)(?<checkbox>
 const LIST_NODE_RE = /^(?<indent>[ \t]*)(?:[-+*]|\d+[.)])[ \t]+.*$/u;
 const INLINE_BLOCK_RE = /(?:^|\s)\^(?<id>[A-Za-z0-9_-]+)\s*$/u;
 const STANDALONE_BLOCK_RE = /^(?<indent>\s+)\^(?<id>[A-Za-z0-9_-]+)\s*$/u;
-const OWNED_FIELD_RE = /\[towrite-(?<key>kind|category|task-ref|pool-revision|device|at|scheduled|due|primary|minimum|goal|next|estimate|target|started)::\s*(?<value>\[\[[^\]]+\]\]|[^\]]*)\]/giu;
+const OWNED_FIELD_RE = /\[towrite-(?<key>kind|category|task-ref|pool-revision|work-kind|work-ref|work-revision|device|at|scheduled|due|primary|minimum|goal|next|estimate|target|started)::\s*(?<value>\[\[[^\]]+\]\]|[^\]]*)\]/giu;
 const THEME_FIELD_RE = /\[towrite-theme::\s*(?<value>[^\]]*)\]/giu;
 const PRIORITY_RE = /(?:^|\s)(?<emoji>🔺|⏫|🔼|🔽|⏬)(?=\s|$)/gu;
 const DATE_RE = {
@@ -931,6 +932,9 @@ function parseTaskEntry(
       category: normalizeOptionalText(fields.category, 120),
       taskRef: normalizeTaskRef(fields["task-ref"]),
       taskPoolRevision: normalizePoolRevision(fields["pool-revision"]),
+      workKind: normalizeWorkKind(fields["work-kind"]),
+      workRef: normalizeWorkRef(fields["work-ref"]),
+      workRevision: normalizeWorkRevision(fields["work-revision"]),
       scheduledDate: metadataScheduledDate ?? legacyScheduledDate ?? date,
       scheduledDateExplicit: Boolean(metadataScheduledDate || legacyScheduledDate),
       dueDate: metadataDueDate ?? legacyDueDate ?? date,
@@ -981,6 +985,9 @@ function createItemShape(args: {
     category: normalizeOptionalText(args.input.category, 120),
     taskRef: normalizeTaskRef(args.input.taskRef),
     taskPoolRevision: normalizePoolRevision(args.input.taskPoolRevision),
+    workKind: normalizeWorkKind(args.input.workKind),
+    workRef: normalizeWorkRef(args.input.workRef),
+    workRevision: normalizeWorkRevision(args.input.workRevision),
     depth: 0,
     scheduledDate,
     scheduledDateExplicit: args.input.scheduledDate !== undefined,
@@ -1016,6 +1023,11 @@ function applyUpdate(item: DailyPlanItem, patch: DailyPlanUpdate): DailyPlanItem
     taskPoolRevision: patch.taskPoolRevision === undefined
       ? item.taskPoolRevision
       : normalizePoolRevision(patch.taskPoolRevision),
+    workKind: patch.workKind === undefined ? item.workKind : normalizeWorkKind(patch.workKind),
+    workRef: patch.workRef === undefined ? item.workRef : normalizeWorkRef(patch.workRef),
+    workRevision: patch.workRevision === undefined
+      ? item.workRevision
+      : normalizeWorkRevision(patch.workRevision),
     devicePolicy: patch.devicePolicy === undefined ? item.devicePolicy : normalizePolicy(patch.devicePolicy),
     priority: patch.priority === undefined ? item.priority : normalizePriority(patch.priority),
     priorityExplicit: patch.priority === undefined ? item.priorityExplicit : true,
@@ -1073,6 +1085,9 @@ function formatTaskBlock(
     ...optionalFieldLine(childIndent, "category", item.category),
     ...optionalFieldLine(childIndent, "task-ref", item.taskRef),
     ...optionalFieldLine(childIndent, "pool-revision", item.taskPoolRevision),
+    ...optionalFieldLine(childIndent, "work-kind", item.workKind),
+    ...optionalFieldLine(childIndent, "work-ref", item.workRef),
+    ...optionalFieldLine(childIndent, "work-revision", item.workRevision),
     ...optionalFieldLine(
       childIndent,
       "scheduled",
@@ -1753,6 +1768,28 @@ function normalizePoolRevision(value: unknown): string | undefined {
   return /^tpr_[0-9a-f]{32}$/u.test(normalized) ? normalized : undefined;
 }
 
+function normalizeWorkKind(value: unknown): DailyWorkKind | undefined {
+  return value === "question" || value === "note" || value === "inbox"
+    ? value
+    : undefined;
+}
+
+function normalizeWorkRef(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().replace(/\\/gu, "/");
+  return normalized
+    && normalized.length <= 500
+    && !/[\r\n\]]/u.test(normalized)
+    ? normalized
+    : undefined;
+}
+
+function normalizeWorkRevision(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return /^(?:wq|wn)_[0-9a-f]{32}$/u.test(normalized) ? normalized : undefined;
+}
+
 function normalizeTags(values: unknown): string[] {
   if (!Array.isArray(values)) return [];
   return unique(values.map((value) => String(value).trim().replace(/^#+/u, ""))
@@ -1774,6 +1811,9 @@ function sameCreateRequest(left: DailyPlanItem, right: DailyPlanItem): boolean {
     && left.category === right.category
     && left.taskRef === right.taskRef
     && left.taskPoolRevision === right.taskPoolRevision
+    && left.workKind === right.workKind
+    && left.workRef === right.workRef
+    && left.workRevision === right.workRevision
     && left.devicePolicy === right.devicePolicy
     && left.priority === right.priority
     && left.scheduledDate === right.scheduledDate

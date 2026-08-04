@@ -17,6 +17,8 @@ import type {
 
 export interface NoteTaskPoolCoordinatorOptions {
   completePlanned?(item: TaskPoolItem): Promise<void>;
+  /** Optional source-note frontmatter fallback; an explicit task category wins. */
+  resolveCategory?(task: TrackedNoteTask): string | undefined | Promise<string | undefined>;
 }
 
 /**
@@ -74,6 +76,8 @@ export class NoteTaskPoolCoordinator {
   async ensureRegistered(noteTask: TrackedNoteTask): Promise<TaskPoolItem> {
     const taskId = noteTask.poolTaskRef ?? noteTask.taskId;
     const source = noteTaskSourceLink(noteTask);
+    const inheritedCategory = noteTask.category
+      ?? await this.options.resolveCategory?.(noteTask);
     const existing = await this.pool.get(taskId);
     if (!existing) {
       if (taskId !== noteTask.taskId) {
@@ -82,7 +86,7 @@ export class NoteTaskPoolCoordinator {
           "The linked Task Pool item no longer exists; choose another item or create a new pool task."
         );
       }
-      return this.pool.create(noteTaskPoolCreateInput(noteTask));
+      return this.pool.create(noteTaskPoolCreateInput(noteTask, inheritedCategory));
     }
     if (existing.source && existing.source !== source) {
       throw new TaskPoolConflictError(
@@ -91,7 +95,7 @@ export class NoteTaskPoolCoordinator {
       );
     }
     if (existing.state === "done" || existing.state === "dropped") return existing;
-    const patch = noteTaskPoolUpdate(noteTask, existing, source);
+    const patch = noteTaskPoolUpdate(noteTask, existing, source, inheritedCategory);
     if (existing.state === "planned") {
       if (!existing.plannedDate || !existing.assignmentId) {
         throw new TaskPoolConflictError("invalid-state", "The planned Task Pool item is missing its assignment.");
@@ -133,12 +137,15 @@ export function noteTaskSourceLink(
   return `[[${path}#^${task.taskId}]]`;
 }
 
-export function noteTaskPoolCreateInput(task: TrackedNoteTask): TaskPoolCreateInput {
+export function noteTaskPoolCreateInput(
+  task: TrackedNoteTask,
+  inheritedCategory?: string
+): TaskPoolCreateInput {
   const source = noteTaskSourceLink(task);
   return {
     id: task.taskId,
     text: task.text,
-    category: task.category,
+    category: task.category ?? inheritedCategory,
     target: task.target ?? source,
     source,
     dueDate: task.dueDate ?? task.deadlineAt?.slice(0, 10),
@@ -149,14 +156,15 @@ export function noteTaskPoolCreateInput(task: TrackedNoteTask): TaskPoolCreateIn
 function noteTaskPoolUpdate(
   task: TrackedNoteTask,
   existing: TaskPoolItem,
-  source: string
+  source: string,
+  inheritedCategory?: string
 ): TaskPoolUpdate {
   if (task.poolTaskRef !== task.taskId) {
     return { source };
   }
   return {
     text: task.text,
-    category: task.category ?? null,
+    category: task.category ?? inheritedCategory ?? existing.category ?? null,
     target: task.target ?? source,
     source,
     dueDate: task.dueDate ?? task.deadlineAt?.slice(0, 10) ?? null,

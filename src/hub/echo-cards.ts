@@ -524,6 +524,7 @@ function defaultTypeLabel(type: HubContentType): string {
     wellbeing_reminder: "轻提醒",
     daily_overview: "今日概要",
     daily_plan_item: "今日计划",
+    daily_inbox: "提醒收件箱",
     daily_result: "今日结果",
     daily_summary: "今日总结"
   } as const)[type];

@@ -18,6 +18,7 @@ export type HubContentType =
   | "wellbeing_reminder"
   | "daily_overview"
   | "daily_plan_item"
+  | "daily_inbox"
   | "daily_result"
   | "daily_summary";
 

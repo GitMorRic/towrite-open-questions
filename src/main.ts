@@ -17,6 +17,11 @@ import {
 import { createQuestionAnchor, lineRangeForOffsets } from "./core/anchor";
 import { DeferredKeyedQueue } from "./core/deferred-keyed-queue";
 import { makeQuestionId, shortHash } from "./core/hash";
+import {
+  normalizeWorkflowStageId,
+  readExplicitWorkflowStage,
+  WORKFLOW_STAGE_PROPERTY
+} from "./core/workflow-metadata";
 import { queryQuestions as filterQuestions } from "./core/query";
 import {
   DEFAULT_SETTINGS,
@@ -29,6 +34,7 @@ import {
   normalizeDailySettings,
   normalizeDeviceProfiles,
   normalizeInboxSettings,
+  normalizeWorkPoolSettings,
   normalizePushSettings,
   normalizeQuote0Settings,
   normalizeReminderPresets,
@@ -68,6 +74,11 @@ import {
   parseBackendInteraction,
   parseDirectInteraction
 } from "./ai/interaction";
+import { concealTaskPoolTechnicalMetadata } from "./obsidian/task-pool-preview";
+import {
+  createTaskPoolTechnicalMetadataExtension,
+  refreshTaskPoolTechnicalMetadata
+} from "./obsidian/task-pool-editor";
 import { AiQuestionService } from "./ai/service";
 import {
   BackendEnhancementClient,
@@ -277,6 +288,14 @@ import { Quote0SyncService, type Quote0SyncPreview, type Quote0SyncResult } from
 import type { Quote0Device, Quote0DeviceStatus } from "./quote0/client";
 import { WorkflowIndex } from "./workflow";
 import { InboxIndex } from "./inbox";
+import {
+  WorkPoolService,
+  questionRevision,
+  type WorkPoolAction,
+  type WorkPoolItem,
+  type WorkPoolQuery,
+  type WorkPoolSnapshot
+} from "./work-pool";
 import { applyInboxStageMetadata, materializeInboxStageMetadata, type InboxMetadataBatchResult } from "./inbox/metadata";
 import type { InboxDeviceEligibility, InboxSnapshot } from "./inbox/types";
 import { yieldToEventLoop } from "./core/async-batch";
@@ -371,6 +390,7 @@ export default class ToWritePlugin extends Plugin {
   private exporter!: QuestionExporter;
   private workflowIndex!: WorkflowIndex;
   private inboxIndex!: InboxIndex;
+  private readonly workPoolService = new WorkPoolService();
   private localKnowledgeIndex!: LocalKnowledgeIndex;
   private aiService!: AiQuestionService;
   private aiProvider!: OpenAiCompatibleProvider;
@@ -403,6 +423,7 @@ export default class ToWritePlugin extends Plugin {
   private activeNoteTaskDocument?: NoteTaskDocument;
   private activeTaskPoolItems: TaskPoolItem[] = [];
   private activeNoteTaskPoolMatches = new Map<string, TaskPoolItem[]>();
+  private taskPoolFormatUndoToken?: string;
   private activeNoteTaskRefreshTail: Promise<void> = Promise.resolve();
   private dailyActivityRetentionDays = 30;
   private dailyStateSaveTimer = 0;
@@ -452,7 +473,9 @@ export default class ToWritePlugin extends Plugin {
     timingRevision?: string;
     taskDate?: string;
     taskSourcePath?: string;
+    batteryPercent?: number;
   }>();
+  private lastLocalDeviceBatteryPercent?: number;
   private readonly deviceCommandJournal = new Map<string, {
     eventId: string;
     fingerprint: string;
@@ -788,7 +811,10 @@ export default class ToWritePlugin extends Plugin {
       TOWRITE_DASHBOARD_VIEW,
       (leaf) => new ToWriteDashboardItemView(leaf, this.uiApi, {
         dailyApi: dailyDashboardApi,
-        getFullWorkflowPayload: () => this.workflowIndex.getPayload({ compact: true })
+        getFullWorkflowPayload: () => this.workflowIndex.getPayload({ compact: true }),
+        onOpenFloatingToday: () => {
+          void this.activateTodayFloating();
+        }
       })
     );
     this.registerView(
@@ -796,10 +822,10 @@ export default class ToWritePlugin extends Plugin {
       (leaf) => new ToWriteTodayFloatingItemView(leaf, {
         dailyApi: dailyDashboardApi,
         onOpenDashboard: () => {
-          void this.activateDashboard({ activeTab: "today", dailySurface: "today" });
+          void this.activateDashboard({ activeTab: "today" });
         },
         onOpenTaskPool: () => {
-          void this.activateDashboard({ activeTab: "today", dailySurface: "pool" });
+          void this.activateDashboard({ activeTab: "pool" });
         }
       })
     );
@@ -810,7 +836,7 @@ export default class ToWritePlugin extends Plugin {
           dailyApi: dailyDashboardApi,
           source,
           onOpenDashboard: () => {
-            void this.activateDashboard({ activeTab: "today", dailySurface: "today" });
+            void this.activateDashboard({ activeTab: "today" });
           },
           onOpenFloating: () => {
             void this.activateTodayFloating();
@@ -820,6 +846,11 @@ export default class ToWritePlugin extends Plugin {
       const lifecycle = new MarkdownRenderChild(el);
       lifecycle.register(() => component.$destroy());
       context.addChild(lifecycle);
+    });
+    this.registerMarkdownPostProcessor((el, context) => {
+      if (normalizePath(context.sourcePath) !== normalizePath(this.settings.daily.taskPoolPath)) return;
+      if (this.settings.workPool.showTechnicalMetadata) return;
+      concealTaskPoolTechnicalMetadata(el);
     });
 
     this.addRibbonIcon("circle-help", "Open ToWrite questions", () => {
@@ -831,7 +862,7 @@ export default class ToWritePlugin extends Plugin {
     this.addRibbonIcon("bot", "Open ToWrite AI assistant", () => {
       this.openAiAssistant();
     });
-    this.addRibbonIcon("calendar-check", "Open ToWrite Today floating window", () => {
+    this.addRibbonIcon("focus", "Open ToWrite Focus Now window", () => {
       void this.activateTodayFloating();
     });
 
@@ -855,15 +886,31 @@ export default class ToWritePlugin extends Plugin {
       id: "open-today-dashboard",
       name: "Today: open dashboard",
       callback: () => {
-        void this.activateDashboard({ activeTab: "today", dailySurface: "today" });
+        void this.activateDashboard({ activeTab: "today" });
       }
     });
 
     this.addCommand({
       id: "open-task-pool-dashboard",
-      name: "Today: open task pool",
+      name: "Workbench: open work pool",
       callback: () => {
-        void this.activateDashboard({ activeTab: "today", dailySurface: "pool" });
+        void this.activateDashboard({ activeTab: "pool" });
+      }
+    });
+
+    this.addCommand({
+      id: "clean-task-pool-format",
+      name: "Work pool: organize Task Pool technical fields",
+      callback: () => {
+        void this.cleanTaskPoolFormat();
+      }
+    });
+
+    this.addCommand({
+      id: "undo-task-pool-format-cleanup",
+      name: "Work pool: undo last Task Pool format cleanup",
+      callback: () => {
+        void this.undoTaskPoolFormatCleanup();
       }
     });
 
@@ -877,7 +924,7 @@ export default class ToWritePlugin extends Plugin {
 
     this.addCommand({
       id: "open-today-floating-window",
-      name: "Today: open floating window",
+      name: "Focus Now: open floating window",
       callback: () => {
         void this.activateTodayFloating();
       }
@@ -1052,6 +1099,12 @@ export default class ToWritePlugin extends Plugin {
       onEditProperties: (item) => this.editDailyTaskProperties(item),
       onEnrich: (edit) => this.enrichPendingDailyTask(edit),
       onTrackOnly: (edit) => this.trackPendingDailyTask(edit)
+    }));
+    this.registerEditorExtension(createTaskPoolTechnicalMetadataExtension({
+      isEnabled: () => this.settings.daily.enabled,
+      getActiveFilePath: () => this.getActiveFile() ?? undefined,
+      getTaskPoolPath: () => this.settings.daily.taskPoolPath,
+      showTechnicalMetadata: () => this.settings.workPool.showTechnicalMetadata
     }));
     this.registerEditorExtension(createNoteTaskControls({
       isEnabled: () => this.settings.daily.enabled && this.settings.daily.editorTaskControls,
@@ -2940,19 +2993,27 @@ export default class ToWritePlugin extends Plugin {
   private dailyEinkCards(): DailyEinkCard[] {
     const deck = this.currentDailyDeck();
     const zh = this.settings.language === "zh";
+    const progressBar = compactDeviceProgressBar(
+      deck.overview.progress.done,
+      deck.overview.progress.total
+    );
     const overview: DailyEinkCard = {
       localId: deck.overview.localId,
       contentType: "daily_overview",
-      title: deck.theme || (zh ? "今日概要" : "Today"),
+      title: zh ? "今日总览" : "Today overview",
       body: [
+        `${progressBar} ${deck.overview.progress.done}/${deck.overview.progress.total}`,
+        ...deck.overview.projects.slice(0, 4).map((project) =>
+          `${project.label}  ${project.done}/${project.total}`
+        ),
+        deck.theme ? `${zh ? "主线" : "Focus"} · ${deck.theme}` : "",
         deck.overview.current
-          ? `● ${deck.overview.current.text}`
+          ? `${zh ? "当前" : "Now"} · ${deck.overview.current.text}`
           : (zh ? "今天还没有待办" : "No remaining task"),
-        ...deck.overview.upcoming.map((item) => `○ ${item.text}`),
-        `${deck.overview.progress.done} / ${deck.overview.progress.total}`
-      ].join("\n"),
-      prompt: deck.overview.current?.nextStep
-        || (zh ? "主键开始并打开" : "Press primary to start and open"),
+      ].filter(Boolean).join("\n"),
+      prompt: `${zh ? "电量" : "Battery"} ${deck.overview.batteryPercent ?? "--"}% · ${
+        zh ? "主键开始" : "Primary: start"
+      }`,
       actions: ["open", "capture"],
       updatedAt: this.dailyPlanDocument?.revision
     };
@@ -2983,20 +3044,25 @@ export default class ToWritePlugin extends Plugin {
       taskRevision: card.item.taskRevision,
       updatedAt: card.item.taskRevision
     }));
-    const result: DailyEinkCard = {
-      localId: deck.result.localId,
-      contentType: "daily_result",
-      title: zh ? "今日结果" : "Today result",
-      body: [
-        ...deck.result.completed.map((item) => `✓ ${item.text}`),
-        ...deck.result.remaining.map((item) => `→ ${item.text}`)
-      ].join("\n") || (zh ? "今天还没有计划" : "No plan yet"),
-      prompt: `${deck.result.progress.done} / ${deck.result.progress.total}`,
-      actions: ["open", "capture"],
-      updatedAt: this.dailyPlanDocument?.revision
-    };
+    const inboxCards: DailyEinkCard[] = deck.inboxItems.map((card) => ({
+      localId: card.localId,
+      contentType: "daily_inbox",
+      title: card.item
+        ? `${dailyInboxSourceLabel(card.item.source, this.settings.language)} · ${card.item.title}`
+        : (zh ? "提醒 · 收件箱" : "Reminders · Inbox"),
+      body: card.item
+        ? [card.item.detail, card.item.reason ? `${zh ? "此刻出现" : "Why now"} · ${card.item.reason}` : ""]
+            .filter(Boolean)
+            .join("\n\n")
+        : (zh ? "现在没有新提醒" : "No new reminders"),
+      prompt: card.total > 0
+        ? `${card.position}/${card.total} · ${zh ? "右键切换，主键确认" : "Right: next · Primary: confirm"}`
+        : (zh ? "右键切换" : "Right: next"),
+      actions: card.item ? ["open", "later"] : ["next"],
+      updatedAt: card.item?.generatedAt || this.dailyPlanDocument?.revision
+    }));
     const summaryAdapter = this.dailySummaryDeviceAdapter();
-    if (!summaryAdapter) return [overview, ...planCards, result];
+    if (!summaryAdapter) return [overview, ...planCards, ...inboxCards];
     const snapshot = this.dailyActivityService.getSnapshot(new Date(), this.dailyPlanItems);
     const candidate = summaryAdapter.candidate;
     const stableRevision = shortHash(JSON.stringify({
@@ -3004,7 +3070,7 @@ export default class ToWritePlugin extends Plugin {
       metrics: snapshot.summary.metrics,
       items: snapshot.plan.items.map((item) => [item.id, item.revision.value, item.status])
     }));
-    return [overview, ...planCards, result, {
+    return [overview, ...planCards, ...inboxCards, {
       localId: summaryAdapter.localId,
       contentType: "daily_summary",
       title: candidate?.display.title || (this.settings.language === "zh" ? "今日总结" : "Today summary"),
@@ -3020,26 +3086,79 @@ export default class ToWritePlugin extends Plugin {
     return buildDailyDeckSnapshot({
       date,
       theme: this.dailyPlanDocument?.metadata.theme,
-      items: this.dailyPlanItems.map((item) => ({
-        id: item.id,
-        text: item.text,
-        kind: item.kind,
-        status: item.status,
-        taskRevision: item.revision.value,
-        primary: item.primary,
-        minimum: item.minimum,
-        goal: item.goal,
-        nextStep: item.nextStep,
-        estimateMinutes: item.estimateMinutes,
-        target: item.target,
-        startedAt: item.startedAt,
-        groupLabel: dailyGroupDisplayLabel(item.lineage?.groups.at(-1)),
-        targetLabel: item.targetResolution?.displayLabel,
-        targetProvenance: item.targetResolution?.source,
-        lineageRevision: item.lineageRevision,
-        timing: dailyDeckTiming(this.dailyTimingSnapshotForItem(item))
-      }))
+      items: this.dailyPlanItems.map((item) => {
+        const groupLabel = dailyGroupDisplayLabel(item.lineage?.groups.at(-1));
+        const poolTask = item.taskRef
+          ? this.activeTaskPoolItems.find((candidate) => candidate.taskId === item.taskRef)
+          : undefined;
+        const projectLabel = cleanDailyProjectLabel(poolTask?.project)
+          || cleanDailyProjectLabel(groupLabel)
+          || item.category
+          || (this.settings.language === "zh" ? "未分类" : "Unclassified");
+        const projectId = dailyProjectIdentifier(projectLabel);
+        const projectColor = this.settings.workPool.projectAppearances
+          .find((appearance) => appearance.projectId === projectId)?.color;
+        return {
+          id: item.id,
+          text: item.text,
+          kind: item.kind,
+          status: item.status,
+          taskRevision: item.revision.value,
+          primary: item.primary,
+          minimum: item.minimum,
+          goal: item.goal,
+          nextStep: item.nextStep,
+          estimateMinutes: item.estimateMinutes,
+          target: item.target,
+          startedAt: item.startedAt,
+          groupLabel,
+          projectId,
+          projectLabel,
+          projectColor,
+          targetLabel: item.targetResolution?.displayLabel,
+          targetProvenance: item.targetResolution?.source,
+          lineageRevision: item.lineageRevision,
+          timing: dailyDeckTiming(this.dailyTimingSnapshotForItem(item))
+        };
+      }),
+      inboxItems: this.currentDailyInboxItems(),
+      batteryPercent: this.lastLocalDeviceBatteryPercent
     });
+  }
+
+  private currentDailyInboxItems() {
+    const suggestions = this.getProactiveSuggestions()
+      .filter((suggestion) => {
+        if (!suggestion.sourceFile) return true;
+        const privacy = this.hubPrivacyForPath(suggestion.sourceFile);
+        return !privacy.private && !privacy.excluded;
+      })
+      .slice(0, 8)
+      .map((suggestion) => ({
+        id: `suggestion:${suggestion.id}`,
+        source: "rule" as const,
+        title: suggestion.title,
+        detail: suggestion.detail,
+        reason: suggestion.triggerReason,
+        generatedAt: suggestion.generatedAt
+      }));
+    const seenTitles = new Set(suggestions.map((item) => item.title.trim().toLocaleLowerCase()));
+    const inbox = this.getInboxSnapshot().items
+      .filter((item) => {
+        if (seenTitles.has(item.title.trim().toLocaleLowerCase())) return false;
+        const privacy = this.hubPrivacyForPath(item.filePath, item.tags);
+        return !privacy.private && !privacy.excluded;
+      })
+      .slice(0, 8)
+      .map((item) => ({
+        id: `inbox:${item.id}`,
+        source: item.kind === "human-message" ? "human" as const : "inbox" as const,
+        title: item.title,
+        detail: [item.project, item.folder].filter(Boolean).join(" · "),
+        reason: this.settings.language === "zh" ? "尚未整理的 Inbox 内容" : "Pending Inbox item",
+        generatedAt: item.updatedAt
+      }));
+    return [...suggestions, ...inbox].slice(0, 12);
   }
 
   getDeviceContentLibrary(): DeviceLibrarySnapshot {
@@ -3089,7 +3208,7 @@ export default class ToWritePlugin extends Plugin {
     return [...new Set([
       deck.overview.localId,
       ...deck.planItems.map((item) => item.localId),
-      deck.result.localId,
+      ...deck.inboxItems.map((item) => item.localId),
       ...configuredPool
     ])];
   }
@@ -3167,7 +3286,7 @@ export default class ToWritePlugin extends Plugin {
         : undefined;
       const servedTiming = servedItem ? this.dailyTimingSnapshotForItem(servedItem) : undefined;
       const dailyDate = servedItem?.date
-        || (/^daily-(?:overview|result|summary):(\d{4}-\d{2}-\d{2})$/u.exec(servedCardId)?.[1]);
+        || (/^daily-(?:overview|result|summary|inbox):(\d{4}-\d{2}-\d{2})(?::|$)/u.exec(servedCardId)?.[1]);
       if (dailyDate) {
         const servedDailyCard = dailyCards.find((card) => card.localId === servedCardId);
         const selectionState = this.localTapSelection.serialize();
@@ -3488,8 +3607,12 @@ export default class ToWritePlugin extends Plugin {
       lineageRevision: servedTask?.lineageRevision,
       timingRevision: servedTask?.timingRevision,
       taskDate: servedTask?.taskDate,
-      taskSourcePath: servedTask?.taskSourcePath
+      taskSourcePath: servedTask?.taskSourcePath,
+      batteryPercent: acknowledgement.batteryPercent
     });
+    if (acknowledgement.batteryPercent !== undefined) {
+      this.lastLocalDeviceBatteryPercent = acknowledgement.batteryPercent;
+    }
     const displayKey = [
       targetKey,
       acknowledgement.selectionId,
@@ -3670,7 +3793,7 @@ export default class ToWritePlugin extends Plugin {
 
   private async handleLocalDeviceGesture(event: DeviceEventInput) {
     const action = event.action;
-    if (!action || event.schemaVersion !== 2) {
+    if (!action || (event.schemaVersion !== 2 && event.schemaVersion !== 3)) {
       return {
         status: "unsupported" as const,
         displayMessage: "Update device firmware"
@@ -3749,6 +3872,9 @@ export default class ToWritePlugin extends Plugin {
         }
         await this.advanceLocalDailyTask(event.cardId, action === "task_next" ? "next" : "prev");
         displayMessage = this.settings.language === "zh" ? "已切换任务" : "Task queued";
+      } else if (action === "item_prev" || action === "item_next") {
+        await this.advanceLocalDailyItem(event.cardId, action === "item_next" ? "next" : "prev");
+        displayMessage = this.settings.language === "zh" ? "已切换当前条目" : "Item queued";
       } else if (action === "complete") {
         await this.completeDailyFromDeviceEvent(event);
         displayMessage = this.settings.language === "zh" ? "已完成" : "Completed";
@@ -3827,12 +3953,15 @@ export default class ToWritePlugin extends Plugin {
     const taskCard = displayedCardId?.startsWith("daily-plan:")
       ? deck.planItems.find((card) => card.localId === displayedCardId)
       : undefined;
+    const inboxCard = displayedCardId?.startsWith("daily-inbox:")
+      ? deck.inboxItems.find((card) => card.localId === displayedCardId)
+      : undefined;
     const page = displayedCardId === deck.overview.localId
       ? "daily_overview"
-      : displayedCardId === deck.result.localId
-        ? "daily_result"
-        : taskCard
+      : taskCard
           ? "daily_plan_item"
+        : inboxCard
+          ? "daily_inbox"
           : undefined;
     if (!page) {
       await this.advanceLocalDevicePage(direction);
@@ -3843,19 +3972,27 @@ export default class ToWritePlugin extends Plugin {
     const nextPage = order[(index + (direction === "next" ? 1 : -1) + order.length) % order.length];
     const nextId = nextPage === "daily_overview"
       ? deck.overview.localId
-      : nextPage === "daily_result"
-        ? deck.result.localId
-        : taskCard?.localId || deck.activePlanItem?.localId || deck.result.localId;
+      : nextPage === "daily_inbox"
+        ? inboxCard?.localId || deck.activeInboxItem.localId
+        : taskCard?.localId || deck.activePlanItem?.localId || deck.overview.localId;
     await this.selectLocalDeviceCard(nextId);
   }
 
-  private async advanceLocalDailyTask(
+  private async advanceLocalDailyItem(
     displayedCardId: string | undefined,
     direction: "next" | "prev"
   ): Promise<void> {
-    const cards = this.currentDailyDeck().planItems;
+    const deck = this.currentDailyDeck();
+    const cards = displayedCardId?.startsWith("daily-inbox:")
+      ? deck.inboxItems
+      : displayedCardId?.startsWith("daily-plan:")
+        ? deck.planItems
+        : [];
     if (cards.length === 0) {
-      throw new Error(this.settings.language === "zh" ? "今日还没有任务卡" : "There is no task card today");
+      throw new DailyPlanConflictError(
+        "invalid-state",
+        "Item switching is available only on a displayed Daily task or reminder page."
+      );
     }
     const currentIndex = displayedCardId
       ? cards.findIndex((card) => card.localId === displayedCardId)
@@ -3863,6 +4000,16 @@ export default class ToWritePlugin extends Plugin {
     const base = currentIndex >= 0 ? currentIndex : 0;
     const nextIndex = (base + (direction === "next" ? 1 : -1) + cards.length) % cards.length;
     await this.selectLocalDeviceCard(cards[nextIndex].localId);
+  }
+
+  private async advanceLocalDailyTask(
+    displayedCardId: string | undefined,
+    direction: "next" | "prev"
+  ): Promise<void> {
+    if (this.currentDailyDeck().planItems.length === 0) {
+      throw new Error(this.settings.language === "zh" ? "今日还没有任务卡" : "There is no task card today");
+    }
+    await this.advanceLocalDailyItem(displayedCardId, direction);
   }
 
   private async transitionDisplayedDailyTimer(
@@ -3997,6 +4144,33 @@ export default class ToWritePlugin extends Plugin {
           displayMessage: this.settings.language === "zh" ? "已开始，聚焦失败" : "Started; focus failed"
         };
       }
+    }
+    if (cardId.startsWith("daily-inbox:")) {
+      const inboxCard = deck.inboxItems.find((card) => card.localId === cardId);
+      const itemId = inboxCard?.item?.id ?? "";
+      if (itemId.startsWith("suggestion:")) {
+        await this.actOnSuggestion(itemId.slice("suggestion:".length), "open-source");
+        return {
+          started: false,
+          displayMessage: this.settings.language === "zh" ? "已打开提醒来源" : "Reminder source opened"
+        };
+      }
+      if (itemId.startsWith("inbox:")) {
+        const inbox = this.getInboxSnapshot().items.find((item) => item.id === itemId.slice("inbox:".length));
+        if (inbox) {
+          await this.openFile(inbox.filePath);
+          bestEffortFocusObsidian();
+          return {
+            started: false,
+            displayMessage: this.settings.language === "zh" ? "已打开 Inbox" : "Inbox item opened"
+          };
+        }
+      }
+      await this.activateDashboard({ activeTab: "today" });
+      return {
+        started: false,
+        displayMessage: this.settings.language === "zh" ? "已打开提醒页" : "Reminder page opened"
+      };
     }
     if (cardId.startsWith("daily-result:") || cardId.startsWith("daily-summary:")) {
       const displayedDate = frozenDaily?.dailyDate
@@ -4353,8 +4527,18 @@ export default class ToWritePlugin extends Plugin {
       );
       file = this.app.vault.getFileByPath(this.taskPoolService.path);
     }
-    if (file) await this.openFile(file.path);
-    else await this.activateDashboard();
+    if (file) {
+      const leaf = this.app.workspace.getLeaf(false);
+      await leaf.openFile(file, { active: true });
+      if (leaf.view instanceof MarkdownView) {
+        await leaf.view.setState(
+          { ...leaf.view.getState(), mode: "source" },
+          { history: false }
+        );
+      }
+    } else {
+      await this.activateDashboard();
+    }
     return bestEffortFocusObsidian();
   }
 
@@ -5398,7 +5582,8 @@ export default class ToWritePlugin extends Plugin {
       this.noteTaskService,
       this.taskPoolService,
       {
-        completePlanned: (item) => this.completePlannedPoolTaskFromNote(item)
+        completePlanned: (item) => this.completePlannedPoolTaskFromNote(item),
+        resolveCategory: (task) => this.taskCategoryFromSourceNote(task.sourcePath)
       }
     );
     this.dailyActivityRetentionDays = this.settings.daily.rawEventRetentionDays;
@@ -5430,6 +5615,27 @@ export default class ToWritePlugin extends Plugin {
         this.queueDeviceHubSync();
       }
     });
+  }
+
+  private taskCategoryFromSourceNote(sourcePath: string): string | undefined {
+    const file = this.app.vault.getFileByPath(sourcePath);
+    if (!file) return undefined;
+    const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
+    if (!frontmatter || typeof frontmatter !== "object") return undefined;
+    for (const key of [
+      "towrite-category",
+      "towrite_category",
+      "task-category",
+      "task_category",
+      "category"
+    ]) {
+      const value = (frontmatter as Record<string, unknown>)[key];
+      const candidate = Array.isArray(value) ? value[0] : value;
+      if (typeof candidate !== "string") continue;
+      const normalized = candidate.trim().replace(/\s+/gu, " ");
+      if (normalized) return normalized.slice(0, 120);
+    }
+    return undefined;
   }
 
   private createDailyPlanNormalizationService(): DailyPlanNormalizationService {
@@ -7868,17 +8074,358 @@ export default class ToWritePlugin extends Plugin {
     };
   }
 
+  private async getWorkPoolSnapshot(query: WorkPoolQuery = {}): Promise<WorkPoolSnapshot> {
+    const taskPool = await this.taskPoolService.read();
+    return this.workPoolService.build({
+      tasks: taskPool.items,
+      questions: this.store.query(),
+      inboxItems: this.getInboxSnapshot().items,
+      workflowFiles: this.workflowIndex.getPayload({ compact: true }).files ?? [],
+      classification: {
+        projectFrontmatterKeys: this.settings.workPool.projectFrontmatterKeys,
+        projectTagPrefixes: this.settings.workPool.projectTagPrefixes,
+        projectRules: this.settings.workPool.projectRules
+      }
+    }, query);
+  }
+
+  private async syncMarkdownTasksToWorkPool(): Promise<{
+    filesScanned: number;
+    tasksRegistered: number;
+    filesFailed: number;
+  }> {
+    const beforeIds = new Set((await this.taskPoolService.list()).map((item) => item.taskId));
+    let filesScanned = 0;
+    let filesFailed = 0;
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      if (
+        normalizePath(file.path) === normalizePath(this.taskPoolService.path)
+        || this.isTrackedDailyPlanPath(file.path)
+      ) {
+        continue;
+      }
+      try {
+        let inspected = await this.noteTaskService.inspect(file.path);
+        const automatic = inspected.candidates
+          .filter((candidate) => candidate.status !== "done")
+          .slice(0, 500);
+        if (automatic.length > 0) {
+          const adopted = await this.noteTaskService.adoptMany(automatic.map((candidate) => ({
+            candidate,
+            patch: { poolTaskRef: candidate.proposedTaskId }
+          })));
+          for (const item of adopted) await this.noteTaskPoolCoordinator.ensureRegistered(item);
+          inspected = await this.noteTaskService.inspect(file.path);
+        }
+        while (true) {
+          const local = inspected.tasks.find((item) => item.status !== "done" && !item.poolTaskRef);
+          if (!local) break;
+          const linked = await this.noteTaskService.update(local, { poolTaskRef: local.taskId });
+          await this.noteTaskPoolCoordinator.ensureRegistered(linked);
+          inspected = await this.noteTaskService.inspect(file.path);
+        }
+        for (const item of inspected.tasks) {
+          if (item.status === "done") await this.noteTaskPoolCoordinator.complete(item);
+          else await this.noteTaskPoolCoordinator.ensureRegistered(item);
+        }
+        filesScanned += 1;
+      } catch (error) {
+        filesFailed += 1;
+        console.error(`ToWrite could not sync Markdown tasks from ${file.path}`, error);
+      }
+      if ((filesScanned + filesFailed) % 20 === 0) await Promise.resolve();
+    }
+    const after = await this.taskPoolService.list();
+    await this.refreshActiveTaskPoolCache(false);
+    await this.refreshActiveNoteTaskCache();
+    this.notifyUi();
+    return {
+      filesScanned,
+      filesFailed,
+      tasksRegistered: after.filter((item) => !beforeIds.has(item.taskId)).length
+    };
+  }
+
+  private async currentWorkPoolItem(item: WorkPoolItem): Promise<WorkPoolItem> {
+    const current = (await this.getWorkPoolSnapshot({ history: "all" }))
+      .items.find((candidate) => candidate.id === item.id);
+    if (!current) {
+      throw new DailyPlanConflictError("not-found", "The Work Pool source was moved or deleted.");
+    }
+    if (current.sourceRef.revision !== item.sourceRef.revision) {
+      throw new DailyPlanConflictError(
+        "revision-changed",
+        "The Work Pool source changed after it was loaded. Refresh before applying the action."
+      );
+    }
+    return current;
+  }
+
+  private async actOnWorkPoolItem(
+    staleItem: WorkPoolItem,
+    action: WorkPoolAction,
+    options: { date?: string; stageId?: string; status?: string } = {}
+  ): Promise<void> {
+    const item = await this.currentWorkPoolItem(staleItem);
+    if (action === "open") {
+      await this.openWorkPoolItem(item);
+      return;
+    }
+    if (action === "add-today" || action === "add-tomorrow") {
+      const date = options.date ?? (() => {
+        const value = new Date();
+        if (action === "add-tomorrow") value.setDate(value.getDate() + 1);
+        return formatDailyInputDate(value);
+      })();
+      await this.addWorkPoolItemToDate(item, date);
+      return;
+    }
+    if (item.kind === "task" && item.taskId && item.taskRevision) {
+      if (action === "complete-task") {
+        if (item.taskState === "planned") await this.completePlannedPoolTaskFromNote(await this.requirePoolTask(item));
+        else await this.taskPoolService.complete(item.taskId, item.taskRevision);
+      } else if (action === "return-task") {
+        const task = await this.requirePoolTask(item);
+        if (task.state === "planned" && task.plannedDate && task.assignmentId) {
+          const daily = await this.dailyPlanService.get(task.assignmentId, task.plannedDate);
+          if (!daily) throw new TaskPoolConflictError("not-found", "The planned Daily assignment no longer exists.");
+          await this.returnDailyItemToPool(daily.id, daily.revision);
+        }
+      } else if (action === "drop-task") {
+        const task = await this.requirePoolTask(item);
+        if (task.state === "planned" && task.plannedDate && task.assignmentId) {
+          const daily = await this.dailyPlanService.get(task.assignmentId, task.plannedDate);
+          if (!daily) throw new TaskPoolConflictError("not-found", "The planned Daily assignment no longer exists.");
+          await this.dropDailyItem(daily.id, daily.revision);
+        } else {
+          await this.taskPoolService.drop(task.taskId, task.revision);
+        }
+      }
+      this.notifyUi();
+      return;
+    }
+    if (item.kind === "question" && item.questionId) {
+      if (action === "resolve-question") {
+        await this.updateQuestionFromUi(item.questionId, { status: "resolved" });
+      } else if (action === "reopen-question") {
+        await this.updateQuestionFromUi(item.questionId, { status: "open" });
+      } else if (action === "move-to-think") {
+        await this.updateQuestionFromUi(item.questionId, { lane: "think" });
+      } else if (action === "move-to-write") {
+        await this.updateQuestionFromUi(item.questionId, { lane: "write" });
+      } else if (action === "change-question-status" && options.status) {
+        const allowed = this.settings.statusOptions.some((status) => status.id === options.status);
+        if (!allowed) throw new DailyPlanConflictError("invalid-state", "Select a configured question status.");
+        await this.updateQuestionFromUi(item.questionId, { status: options.status });
+      }
+      this.notifyUi();
+      return;
+    }
+    if (item.kind === "note" && action === "change-stage" && options.stageId) {
+      await this.updateWorkPoolNoteStage(item, options.stageId);
+      this.notifyUi();
+    }
+  }
+
+  private async requirePoolTask(item: WorkPoolItem): Promise<TaskPoolItem> {
+    const task = item.taskId ? await this.taskPoolService.get(item.taskId) : undefined;
+    if (!task) throw new TaskPoolConflictError("not-found", "The Task Pool source no longer exists.");
+    if (task.revision.value !== item.sourceRef.revision) {
+      throw new TaskPoolConflictError("revision-changed", "The Task Pool item changed after it was loaded.");
+    }
+    return task;
+  }
+
+  private async openWorkPoolItem(item: WorkPoolItem): Promise<void> {
+    if (item.kind === "question" && item.questionId) {
+      await this.jumpToQuestion(item.questionId);
+      return;
+    }
+    if (item.kind === "note" && item.notePath) {
+      await this.openFile(item.notePath);
+      return;
+    }
+    const link = /^\[\[([^\]]+)\]\]$/u.exec(item.target?.trim() ?? "")?.[1];
+    if (link) {
+      await this.openObsidianLink(link, this.taskPoolService.path);
+      return;
+    }
+    if (item.notePath) {
+      await this.openFile(item.notePath);
+      return;
+    }
+    await this.openTaskPoolSource();
+  }
+
+  private async addWorkPoolItemToDate(item: WorkPoolItem, date: string): Promise<void> {
+    if (item.kind === "task" && item.taskId && item.taskRevision) {
+      await this.assignTaskPoolItemToDate(item.taskId, item.taskRevision, date);
+      return;
+    }
+    const current = await this.dailyPlanService.read(date);
+    if (current.items.some((candidate) =>
+      candidate.workKind === (item.kind === "question" ? "question" : item.inbox ? "inbox" : "note")
+      && candidate.workRef === item.sourceRef.id
+      && candidate.status !== "done"
+    )) return;
+    await this.createDailyItem({
+      date,
+      text: item.title,
+      kind: "edit_note",
+      category: item.category ?? item.stageTitle ?? item.typeTitle,
+      target: item.target,
+      workKind: item.kind === "question" ? "question" : item.inbox ? "inbox" : "note",
+      workRef: item.sourceRef.id,
+      workRevision: item.sourceRef.revision,
+      devicePolicy: "rotation"
+    });
+  }
+
+  private async updateWorkPoolNoteStage(item: WorkPoolItem, stageId: string): Promise<void> {
+    const stage = this.settings.workflowStages.stages.find((candidate) =>
+      normalizeWorkflowStageId(candidate.id) === normalizeWorkflowStageId(stageId)
+    );
+    if (!stage || !item.notePath) {
+      throw new DailyPlanConflictError("invalid-state", "Select a configured Workflow stage.");
+    }
+    const file = this.app.vault.getFileByPath(item.notePath);
+    if (!file) throw new DailyPlanConflictError("not-found", "The Workflow note no longer exists.");
+    await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+      const explicit = readExplicitWorkflowStage(frontmatter);
+      if (
+        explicit
+        && item.stageId
+        && normalizeWorkflowStageId(explicit) !== normalizeWorkflowStageId(item.stageId)
+      ) {
+        throw new DailyPlanConflictError(
+          "revision-changed",
+          "The note Workflow stage changed after it was loaded."
+        );
+      }
+      frontmatter[WORKFLOW_STAGE_PROPERTY] = stage.id;
+    });
+    this.pendingWorkflowPaths.add(file.path);
+    await this.workflowIndex.upsert(file);
+    this.inboxIndex.upsert(file);
+    this.queueDeviceHubSync();
+  }
+
+  private async completeDailyItemAndApplyOrigin(
+    id: string,
+    revision: DailyTaskRevision,
+    stageId?: string
+  ): Promise<void> {
+    const date = await this.dateForDailyItem(id, revision);
+    const item = await this.dailyPlanService.get(id, date);
+    if (!item || item.revision.value !== revision.value) {
+      throw new DailyPlanConflictError("revision-changed", "The Daily task changed after it was loaded.");
+    }
+    if (!item.workKind || !item.workRef || !item.workRevision) {
+      await this.completeDailyItem(id, revision, undefined, date);
+      return;
+    }
+    const source = (await this.getWorkPoolSnapshot({ history: "all" })).items.find((candidate) =>
+      candidate.sourceRef.id === item.workRef
+      && candidate.sourceRef.kind === (item.workKind === "question" ? "question" : "note")
+    );
+    if (!source || source.sourceRef.revision !== item.workRevision) {
+      throw new DailyPlanConflictError(
+        "revision-changed",
+        "The linked Work Pool source changed. Refresh before completing both objects."
+      );
+    }
+    if (item.workKind === "question" && source.questionId) {
+      const priorStatus = source.questionStatus ?? "open";
+      await this.updateQuestionFromUi(source.questionId, { status: "resolved" });
+      try {
+        await this.completeDailyItem(id, revision, undefined, date);
+      } catch (error) {
+        await this.updateQuestionFromUi(source.questionId, { status: priorStatus }).catch((rollbackError) => {
+          console.error("ToWrite could not roll back a Work Pool question transition", rollbackError);
+        });
+        throw error;
+      }
+      return;
+    } else {
+      if (!stageId) throw new DailyPlanConflictError("invalid-state", "Choose the Workflow stage to apply.");
+      const noteFile = source.notePath ? this.app.vault.getFileByPath(source.notePath) : undefined;
+      const previousExplicitStage = noteFile
+        ? readExplicitWorkflowStage(this.app.metadataCache.getFileCache(noteFile)?.frontmatter)
+        : undefined;
+      await this.updateWorkPoolNoteStage(source, stageId);
+      try {
+        await this.completeDailyItem(id, revision, undefined, date);
+      } catch (error) {
+        if (noteFile) {
+          await this.app.fileManager.processFrontMatter(noteFile, (frontmatter) => {
+            if (previousExplicitStage) frontmatter[WORKFLOW_STAGE_PROPERTY] = previousExplicitStage;
+            else delete frontmatter[WORKFLOW_STAGE_PROPERTY];
+          }).catch((rollbackError) => {
+            console.error("ToWrite could not roll back a Work Pool stage transition", rollbackError);
+          });
+          await this.workflowIndex.upsert(noteFile);
+          this.inboxIndex.upsert(noteFile);
+        }
+        throw error;
+      }
+      return;
+    }
+  }
+
   private createDailyDashboardAdapter(): DailyDashboardAdapter {
     return {
       getSnapshot: (date) => this.getDailyDashboardSnapshot(date ?? new Date()),
       getConfiguration: () => ({
         categoryPresets: this.settings.daily.categoryPresets.map((preset) => ({ ...preset })),
         defaultView: this.settings.daily.dashboardDefaultView,
+        focusMessages: [...this.settings.daily.focusMessages],
+        focusMessageIntervalSeconds: this.settings.daily.focusMessageIntervalSeconds,
         taskPoolPath: this.settings.daily.taskPoolPath,
-        autoReturnUnfinished: this.settings.daily.autoReturnUnfinished
+        autoReturnUnfinished: this.settings.daily.autoReturnUnfinished,
+        workflowStages: this.settings.workflowStages.stages.map((stage) => ({
+          id: stage.id,
+          label: stage.title
+        })),
+        articleTypes: this.settings.articleTypes.types.map((type) => ({
+          id: type.id,
+          label: type.title
+        })),
+        questionStatuses: this.settings.statusOptions.map((status) => ({
+          id: status.id,
+          label: status.label
+        })),
+        deviceBatteryPercent: this.lastLocalDeviceBatteryPercent,
+        workPool: {
+          ...this.settings.workPool,
+          views: this.settings.workPool.views.map((view) => ({ ...view })),
+          projectFrontmatterKeys: [...this.settings.workPool.projectFrontmatterKeys],
+          projectTagPrefixes: [...this.settings.workPool.projectTagPrefixes],
+          projectRules: this.settings.workPool.projectRules.map((rule) => ({
+            ...rule,
+            tags: [...rule.tags],
+            folderPrefixes: [...rule.folderPrefixes]
+          })),
+          projectAppearances: this.settings.workPool.projectAppearances.map((appearance) => ({
+            ...appearance
+          }))
+        }
       }),
       getTaskPool: () => this.taskPoolService.read(),
+      getWorkPool: (query) => this.getWorkPoolSnapshot(query),
+      actOnWorkPoolItem: async (item, action, options) => {
+        await this.actOnWorkPoolItem(item, action, options);
+      },
       createPoolTask: async (input) => this.taskPoolService.create(input),
+      syncMarkdownTasks: () => this.syncMarkdownTasksToWorkPool(),
+      updateWorkPoolSettings: async (patch) => {
+        this.settings.workPool = normalizeWorkPoolSettings({
+          ...this.settings.workPool,
+          ...patch
+        });
+        await this.savePluginData();
+        this.refreshTaskPoolTechnicalMetadata();
+        this.notifyUi();
+      },
       updatePoolTask: async (id, revision, patch) => this.taskPoolService.update(id, revision, patch),
       assignPoolTask: async (id, revision, date) => {
         await this.assignTaskPoolItemToDate(id, revision, date);
@@ -7983,6 +8530,9 @@ export default class ToWritePlugin extends Plugin {
       completeItem: async (id, revision) => {
         await this.completeDailyItem(id, revision, undefined, await this.dateForDailyItem(id, revision));
       },
+      completeItemAndApplyOrigin: async (id, revision, options) => {
+        await this.completeDailyItemAndApplyOrigin(id, revision, options?.stageId);
+      },
       reopenItem: async (id, revision) => {
         const reopened = await this.reopenDailyItem(id, revision, await this.dateForDailyItem(id, revision));
         await this.syncTaskPoolReopen(reopened);
@@ -8052,6 +8602,9 @@ export default class ToWritePlugin extends Plugin {
           kind: candidate.kind ?? "edit_note",
           target: candidate.target,
           taskRef: candidate.taskRef,
+          workKind: candidate.workKind,
+          workRef: candidate.workRef,
+          workRevision: candidate.workRevision,
           category: candidate.category,
           dueDate: candidate.dueDate,
           estimateMinutes: candidate.estimateMinutes,
@@ -8060,6 +8613,48 @@ export default class ToWritePlugin extends Plugin {
       },
       subscribe: (listener) => this.subscribe(listener)
     };
+  }
+
+  private async cleanTaskPoolFormat(): Promise<void> {
+    try {
+      const preview = await this.taskPoolService.previewFormatCleanup();
+      if (!preview.changed) {
+        new Notice(this.settings.language === "zh"
+          ? "Task Pool 已经是简洁注释格式。"
+          : "Task Pool already uses the compact comment format.");
+        return;
+      }
+      const sample = taskPoolCleanupDiffSummary(preview.before, preview.after);
+      const confirmed = window.confirm(this.settings.language === "zh"
+        ? `将整理 ${preview.affectedTaskIds.length} 条任务、${preview.legacyFieldCount} 行旧字段。\n\n${sample}\n\n只转换 ToWrite 字段，手写说明会保留。继续吗？`
+        : `Organize ${preview.affectedTaskIds.length} task(s) and ${preview.legacyFieldCount} legacy field line(s)?\n\n${sample}\n\nOnly ToWrite-owned fields change; handwritten text is preserved.`);
+      if (!confirmed) return;
+      const result = await this.taskPoolService.applyFormatCleanup(preview.expectedRevision);
+      this.taskPoolFormatUndoToken = result.undoToken;
+      this.refreshTaskPoolTechnicalMetadata();
+      new Notice(this.settings.language === "zh"
+        ? "Task Pool 已整理；可运行“撤销上次格式整理”恢复。"
+        : "Task Pool organized. Use the undo cleanup command to restore it.");
+    } catch (error) {
+      new Notice(messageForError(error));
+    }
+  }
+
+  private async undoTaskPoolFormatCleanup(): Promise<void> {
+    if (!this.taskPoolFormatUndoToken) {
+      new Notice(this.settings.language === "zh"
+        ? "没有可撤销的 Task Pool 格式整理。"
+        : "There is no Task Pool format cleanup to undo.");
+      return;
+    }
+    try {
+      await this.taskPoolService.undoFormatCleanup(this.taskPoolFormatUndoToken);
+      this.taskPoolFormatUndoToken = undefined;
+      this.refreshTaskPoolTechnicalMetadata();
+      new Notice(this.settings.language === "zh" ? "已恢复整理前的 Task Pool。" : "Task Pool cleanup was undone.");
+    } catch (error) {
+      new Notice(messageForError(error));
+    }
   }
 
   private async assignTaskPoolItemToDate(
@@ -8211,6 +8806,9 @@ export default class ToWritePlugin extends Plugin {
           dueDate: item.dueDateExplicit ? item.dueDate : undefined,
           estimateMinutes: item.estimateMinutes,
           target: item.target,
+          workKind: item.workKind,
+          workRef: item.workRef,
+          workRevision: item.workRevision,
           devicePolicy: item.devicePolicy,
           goal: item.goal,
           nextStep: item.nextStep,
@@ -8470,6 +9068,7 @@ export default class ToWritePlugin extends Plugin {
       output.push(candidate);
     };
     const daily = await this.dailyPlanService.read(date);
+    const workItems = (await this.getWorkPoolSnapshot({ history: "active" })).items;
     const poolCandidates = await this.taskPoolService.candidates(
       date,
       daily.items.map((item) => ({
@@ -8495,33 +9094,45 @@ export default class ToWritePlugin extends Plugin {
       });
     }
     for (const question of this.store.query().filter((item) => item.status !== "resolved" && item.status !== "ignored")) {
+      const workItem = workItems.find((item) => item.id === `question:${question.id}`);
       append({
         id: `question:${question.id}`,
         title: question.title || question.question,
         description: question.question,
         source: question.lane === "write" ? "towrite" : "tothink",
         kind: "edit_note",
-        target: dailyWikiLink(question.source.file, question.source.blockId)
+        target: dailyWikiLink(question.source.file, question.source.blockId),
+        workKind: "question",
+        workRef: question.id,
+        workRevision: workItem?.sourceRef.revision ?? questionRevision(question)
       });
     }
     for (const item of this.getInboxSnapshot().items) {
+      const workItem = workItems.find((candidate) => candidate.id === `note:${normalizePath(item.filePath)}`);
       append({
         id: `inbox:${item.id}`,
         title: item.title,
         description: item.project || item.folder,
         source: "inbox",
         kind: "edit_note",
-        target: `[[${item.filePath}]]`
+        target: `[[${item.filePath}]]`,
+        workKind: "inbox",
+        workRef: normalizePath(item.filePath),
+        workRevision: workItem?.sourceRef.revision
       });
     }
     for (const article of this.store.getArticleSummaries().filter((item) => item.stale)) {
+      const workItem = workItems.find((candidate) => candidate.id === `note:${normalizePath(article.filePath)}`);
       append({
         id: `stale:${article.filePath}`,
         title: article.title,
         description: this.settings.language === "zh" ? "久未继续的笔记" : "Stale note",
         source: "stale",
         kind: "edit_note",
-        target: `[[${article.filePath}]]`
+        target: `[[${article.filePath}]]`,
+        workKind: workItem ? "note" : undefined,
+        workRef: workItem?.sourceRef.id,
+        workRevision: workItem?.sourceRef.revision
       });
     }
     for (const card of this.settings.echoCards) {
@@ -8945,8 +9556,8 @@ export default class ToWritePlugin extends Plugin {
   private localDailyPageCandidate(localId: string): LocalHubCandidate | undefined {
     const deck = this.currentDailyDeck();
     const isOverview = localId === deck.overview.localId;
-    const isResult = localId === deck.result.localId;
-    if (!isOverview && !isResult) return undefined;
+    const inboxCard = deck.inboxItems.find((card) => card.localId === localId);
+    if (!isOverview && !inboxCard) return undefined;
     const current = deck.currentItemId
       ? this.dailyPlanItems.find((item) => item.id === deck.currentItemId)
       : undefined;
@@ -8965,23 +9576,28 @@ export default class ToWritePlugin extends Plugin {
     if (privacy.private || privacy.excluded) return undefined;
     return {
       localId,
-      type: isOverview ? "daily_overview" : "daily_result",
+      type: isOverview ? "daily_overview" : "daily_inbox",
       display: isOverview
         ? {
-            title: deck.theme || (this.settings.language === "zh" ? "今日概要" : "Today"),
-            body: deck.overview.current?.text || "",
-            prompt: deck.overview.current?.nextStep
+            title: this.settings.language === "zh" ? "今日总览" : "Today overview",
+            body: [
+              `${compactDeviceProgressBar(deck.overview.progress.done, deck.overview.progress.total)} ${deck.overview.progress.done}/${deck.overview.progress.total}`,
+              ...deck.overview.projects.slice(0, 4).map((project) => `${project.label} ${project.done}/${project.total}`),
+              deck.overview.current?.text || ""
+            ].filter(Boolean).join("\n"),
+            prompt: `${this.settings.language === "zh" ? "电量" : "Battery"} ${deck.overview.batteryPercent ?? "--"}%`
           }
         : {
-            title: this.settings.language === "zh" ? "今日结果" : "Today result",
-            body: `${deck.result.progress.done} / ${deck.result.progress.total}`
+            title: inboxCard?.item?.title || (this.settings.language === "zh" ? "提醒 · 收件箱" : "Reminders · Inbox"),
+            body: inboxCard?.item?.detail || "",
+            prompt: inboxCard?.item?.reason
           },
       sourceLocalId: planPath,
       writeTargetLocalId: writableTargetPath,
       writeTargetAction: "append",
       writeTargetKind: isInbox ? "inbox" : "existingNote",
       allowedActions: ["open", "capture"],
-      reasonCode: isOverview ? "daily_overview" : "daily_result",
+      reasonCode: isOverview ? "daily_overview" : "daily_inbox",
       score: 100,
       privacy
     };
@@ -9571,7 +10187,10 @@ export default class ToWritePlugin extends Plugin {
     const dailyAdapters = this.dailyDeviceAdapters(preferredLocalId);
     if (this.settings.daily.enabled && this.settings.daily.includeInDeviceCandidates) {
       const deck = this.currentDailyDeck();
-      for (const pageId of [deck.overview.localId, deck.result.localId]) {
+      for (const pageId of [
+        deck.overview.localId,
+        ...deck.inboxItems.map((item) => item.localId)
+      ]) {
         const page = this.localDailyPageCandidate(pageId);
         if (!page) continue;
         candidates.push({
@@ -9870,6 +10489,18 @@ export default class ToWritePlugin extends Plugin {
     this.app.workspace.updateOptions();
   }
 
+  refreshTaskPoolTechnicalMetadata(): void {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const codeMirror = (view?.editor as unknown as {
+      cm?: { dispatch: (spec: { effects: ReturnType<typeof refreshTaskPoolTechnicalMetadata.of> }) => void };
+    } | undefined)?.cm;
+    if (codeMirror) {
+      codeMirror.dispatch({ effects: refreshTaskPoolTechnicalMetadata.of(undefined) });
+      return;
+    }
+    this.app.workspace.updateOptions();
+  }
+
   refreshNoteEditorTaskControls(): void {
     const view = this.app.workspace.getActiveViewOfType(MarkdownView);
     const codeMirror = (view?.editor as unknown as {
@@ -9922,8 +10553,7 @@ export default class ToWritePlugin extends Plugin {
       type: TOWRITE_DASHBOARD_VIEW,
       active: true,
       state: {
-        activeTab: state.activeTab ?? "today",
-        dailySurface: state.dailySurface ?? "today"
+        activeTab: state.activeTab ?? "today"
       }
     });
     await this.app.workspace.revealLeaf(leaf);
@@ -10661,6 +11291,19 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
+function taskPoolCleanupDiffSummary(before: string, after: string): string {
+  const beforeLines = before.split(/\r?\n/u);
+  const afterLines = after.split(/\r?\n/u);
+  const changed: string[] = [];
+  const length = Math.max(beforeLines.length, afterLines.length);
+  for (let index = 0; index < length && changed.length < 8; index += 1) {
+    if (beforeLines[index] === afterLines[index]) continue;
+    if (beforeLines[index] !== undefined) changed.push(`- ${beforeLines[index]}`);
+    if (afterLines[index] !== undefined) changed.push(`+ ${afterLines[index]}`);
+  }
+  return changed.join("\n");
+}
+
 function sanitizeBridgeAssetStem(fileName: string): string {
   const withoutExtension = fileName.replace(/\.[A-Za-z0-9]{1,8}$/u, "");
   return withoutExtension
@@ -10750,6 +11393,7 @@ function normalizeSettings(settings?: Partial<ToWriteSettings>): ToWriteSettings
     captureBridge: normalizeCaptureBridgeSettings(settings?.captureBridge),
     inbox: normalizeInboxSettings(settings?.inbox),
     daily: normalizeDailySettings(settings?.daily),
+    workPool: normalizeWorkPoolSettings(settings?.workPool),
     echoCards: normalizeEchoCards(settings?.echoCards),
     hub: normalizeHubSettings(settings?.hub),
     deviceProfiles: normalizeDeviceProfiles(settings?.deviceProfiles),
@@ -11072,6 +11716,41 @@ function dailyGroupDisplayLabel(group: DailyPlanGroup | undefined): string | und
     || group.links[0]?.label
     || group.links[0]?.linkText
     || undefined;
+}
+
+function cleanDailyProjectLabel(value: string | undefined): string | undefined {
+  const normalized = String(value ?? "")
+    .trim()
+    .replace(/^\[\[/u, "")
+    .replace(/\]\]$/u, "")
+    .split("|")[0]
+    .trim();
+  return normalized || undefined;
+}
+
+function dailyProjectIdentifier(value: string): string {
+  return value.trim().toLocaleLowerCase()
+    .replace(/^#+/u, "")
+    .replace(/[\\/\s]+/gu, "-")
+    .replace(/[^\p{Letter}\p{Number}_-]+/gu, "-")
+    .replace(/^-+|-+$/gu, "")
+    .slice(0, 100) || "unclassified";
+}
+
+function compactDeviceProgressBar(done: number, total: number, width = 12): string {
+  const completed = total > 0
+    ? Math.max(0, Math.min(width, Math.round((done / total) * width)))
+    : 0;
+  return `${"█".repeat(completed)}${"░".repeat(width - completed)}`;
+}
+
+function dailyInboxSourceLabel(source: string, language: ToWriteSettings["language"]): string {
+  const zh = language === "zh";
+  if (source === "ai") return zh ? "AI 推测" : "AI inference";
+  if (source === "human") return zh ? "亲友留言" : "Message";
+  if (source === "inbox") return "Inbox";
+  if (source === "system") return zh ? "系统" : "System";
+  return zh ? "规则建议" : "Suggestion";
 }
 
 function parseDailyTimerTaskKey(value: string): { id: string; date: string } {
@@ -11532,6 +12211,7 @@ function deviceCommandMessage(action: string): string {
   if (action === "resume_task") return "Resumed";
   if (action === "page_prev" || action === "page_next") return "Page queued";
   if (action === "task_prev" || action === "task_next") return "Task queued";
+  if (action === "item_prev" || action === "item_next") return "Item queued";
   return "Command handled";
 }
 

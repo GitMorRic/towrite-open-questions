@@ -1,5 +1,25 @@
 # Changelog / 更新日志
 
+## 0.3.0-beta.14 - 2026-08-05
+
+- Consolidated planning and management into one ToWrite Workbench with three top-level surfaces: Today, Work Pool, and Status. Today keeps only the active plan, while all creation, classification, scheduling, and source actions live in the Work Pool.
+- Added a unified Work Pool projection for Markdown tasks, ToThink and ToWrite questions, Inbox notes, and Workflow notes. It supports saved two-level views, project boards, source/stage/type filters, note grouping, project colors and icons, and revision-checked actions without copying source content into a hidden database.
+- Made unchecked Markdown tasks automatically discoverable and trackable, kept Task Pool technical fields hidden in Reading, Live Preview, and Source modes, and added safe formatting previews plus compact progressive task-property controls.
+- Reframed the pinned pop-out as Focus Now, with a single-task timer mode and a compact Today list. It can rotate the Daily theme, user phrases, Inbox items, questions, Echo candidates, and stale-note reminders without loading the full Work Pool on every refresh.
+- Refined the 2.7-inch e-ink Daily deck around an overview, task pages, and a reminder/inbox page, with project-aware segmented progress, battery status, displayed-first actions, and backward-compatible device event handling.
+- Fixed the Focus Now empty-state overlap in narrow Obsidian pop-outs by isolating its mode switch, message carousel, scrollable main content, and shortcut bar into explicit grid rows instead of a theme-sensitive generic footer layout.
+- Added layout, grouping, state migration, task-pool projection, Focus Now carousel, e-ink deck, and device-interaction regressions. The production suite now covers 677 tests.
+
+中文摘要：
+
+- 将重复的规划和管理入口合并为唯一的 ToWrite 工作台，一级导航固定为“今日｜工作池｜状态”；今日只负责当天承诺，任务创建、分类、安排和来源管理统一放在工作池。
+- 新增统一工作池投影，将普通 Markdown 待办、ToThink、ToWrite、Inbox 和 Workflow 笔记放在同一处管理；支持可保存的两级视图、横向项目看板、来源/阶段/类型筛选、项目颜色与图标，并继续以各自 Markdown、Sidecar 和 frontmatter 为数据真源。
+- 未完成的 Markdown checkbox 可自动进入任务池；Task Pool 技术字段在阅读、Live Preview 和 Source 模式中默认隐藏，并提供带 diff、修订检查和撤销的格式整理，以及渐进展开的任务属性控件。
+- 悬浮窗更名为“现在专注”，支持单任务计时和今日缩略两种模式；顶部可轮播今日主题、用户自定义句子、Inbox、问题、Echo 与陈旧笔记提醒，同时避免每次刷新加载完整工作池。
+- 2.7 英寸墨水屏今日卡组调整为概要、任务和提醒/收件箱页面，增加按项目分段的进度、电量状态、displayed 优先操作和兼容旧固件的设备事件处理。
+- 修复 Obsidian 窄悬浮窗中“今天还没有计划”与快捷操作重叠：模式切换、消息轮播、可滚动主内容和底部操作改为明确的独立网格行，不再使用容易被主题样式影响的通用 footer。
+- 补充工作台布局、工作池分组与迁移、Markdown 待办投影、现在专注轮播、墨水屏卡组和设备手势回归测试；生产测试套件现覆盖 677 项测试。
+
 ## 0.3.0-beta.13 - 2026-07-30
 
 - Added a Markdown-first task pool that automatically tracks unchecked note tasks, keeps completed work in history, and lets the Today planner select and schedule existing tasks without duplicating their source text.

@@ -10,6 +10,9 @@ import {
   type TaskPoolDiagnostic,
   type TaskPoolDocument,
   type TaskPoolExport,
+  type TaskPoolFormatPreview,
+  type TaskPoolFormatResult,
+  type TaskPoolFormatUndoResult,
   type TaskPoolItem,
   type TaskPoolLifecycleState,
   type TaskPoolReconciliation,
@@ -24,6 +27,7 @@ const STANDALONE_TASK_ID_RE = /^[ \t]+\^(?<id>task_[A-Za-z0-9_-]+)\s*$/u;
 const INLINE_DAILY_ID_RE = /(?:^|\s)\^(?<id>daily_[A-Za-z0-9_-]+)\s*$/u;
 const STANDALONE_DAILY_ID_RE = /^[ \t]+\^(?<id>daily_[A-Za-z0-9_-]+)\s*$/u;
 const OWNED_FIELD_RE = /^[ \t]*\[towrite-(?<key>[a-z-]+)::[ \t]*(?<value>.*)\][ \t]*$/iu;
+const OWNED_COMMENT_FIELD_RE = /^[ \t]*%%[ \t]*\[towrite-(?<key>[a-z-]+)::[ \t]*(?<value>.*)\][ \t]*%%[ \t]*$/iu;
 const TASK_REF_RE = /\[towrite-task-ref::[ \t]*(?<id>task_[A-Za-z0-9_-]+)\]/iu;
 const TASK_ID_RE = /^task_[0-9a-f]{32}$/u;
 const DAILY_ID_RE = /^daily_[0-9a-f]{32}$/u;
@@ -85,6 +89,11 @@ export class TaskPoolService {
   private readonly createTaskId: () => string;
   private readonly createAssignmentId: () => string;
   private lock: Promise<void> = Promise.resolve();
+  private formatUndo?: {
+    token: string;
+    before: string;
+    afterRevision: string;
+  };
 
   constructor(
     private readonly storage: TaskPoolStorage,
@@ -432,6 +441,62 @@ export class TaskPoolService {
     return exportTaskPoolDocument(await this.read(), at);
   }
 
+  async previewFormatCleanup(): Promise<TaskPoolFormatPreview> {
+    const before = await this.storage.readText(this.path) ?? "";
+    const document = parseTaskPoolMarkdown(before, this.path, this.heading);
+    assertWritable(document);
+    return createTaskPoolFormatPreview(before, document);
+  }
+
+  async applyFormatCleanup(expectedRevision: string): Promise<TaskPoolFormatResult> {
+    return this.withLock(async () => {
+      const before = await this.storage.readText(this.path) ?? "";
+      const document = parseTaskPoolMarkdown(before, this.path, this.heading);
+      assertWritable(document);
+      if (taskPoolMarkdownRevision(this.path, before) !== expectedRevision) {
+        throw new TaskPoolConflictError(
+          "revision-changed",
+          "Task Pool changed after the cleanup preview was generated."
+        );
+      }
+      const preview = createTaskPoolFormatPreview(before, document);
+      if (!preview.changed) return { document, changed: false };
+      await this.write(preview.after);
+      const next = parseTaskPoolMarkdown(preview.after, this.path, this.heading);
+      const token = `tpf_${contentHash128(`${this.path}\n${this.now().toISOString()}\n${next.revision}\n${before}`)}`;
+      this.formatUndo = {
+        token,
+        before,
+        afterRevision: taskPoolMarkdownRevision(this.path, preview.after)
+      };
+      return { document: next, undoToken: token, changed: true };
+    });
+  }
+
+  async undoFormatCleanup(token: string): Promise<TaskPoolFormatUndoResult> {
+    return this.withLock(async () => {
+      const undo = this.formatUndo;
+      if (!undo || undo.token !== token) {
+        throw new TaskPoolConflictError("invalid-state", "The Task Pool cleanup undo token is no longer available.");
+      }
+      const current = await this.storage.readText(this.path) ?? "";
+      const document = parseTaskPoolMarkdown(current, this.path, this.heading);
+      assertWritable(document);
+      if (taskPoolMarkdownRevision(this.path, current) !== undo.afterRevision) {
+        throw new TaskPoolConflictError(
+          "revision-changed",
+          "Task Pool changed after cleanup, so undo was refused."
+        );
+      }
+      await this.write(undo.before);
+      this.formatUndo = undefined;
+      return {
+        document: parseTaskPoolMarkdown(undo.before, this.path, this.heading),
+        restored: true
+      };
+    });
+  }
+
   private mutate(
     taskId: string,
     expectedRevision: string | TaskPoolRevision,
@@ -536,7 +601,7 @@ export function formatTaskPoolItem(item: TaskPoolItem, existingRawBlock?: string
   const mark = item.state === "done" ? "x" : " ";
   const lines = [
     `${indent}- [${mark}] ${normalizeText(item.text)}`,
-    `${continuationIndent}[towrite-state:: ${item.state}]`,
+    `${continuationIndent}%% [towrite-state:: ${item.state}] %%`,
     ...fieldLine(continuationIndent, "category", item.category),
     ...fieldLine(continuationIndent, "project", item.project, true),
     ...fieldLine(continuationIndent, "target", item.target, true),
@@ -552,6 +617,40 @@ export function formatTaskPoolItem(item: TaskPoolItem, existingRawBlock?: string
     `${continuationIndent}^${item.taskId}`
   ];
   return lines.join("\n");
+}
+
+export function createTaskPoolFormatPreview(
+  markdown: string,
+  document: TaskPoolDocument
+): TaskPoolFormatPreview {
+  const legacyItems = document.items.filter((item) => hasLegacyTaskPoolFormatting(item.rawBlock));
+  let after = markdown;
+  for (const item of [...legacyItems].sort((left, right) => right.line - left.line)) {
+    after = replaceTaskBlock(after, item, formatTaskPoolItem(item, item.rawBlock));
+  }
+  return {
+    sourcePath: document.sourcePath,
+    expectedRevision: taskPoolMarkdownRevision(document.sourcePath, markdown),
+    changed: after !== markdown,
+    legacyFieldCount: legacyItems.reduce((count, item) => count + countLegacyOwnedFields(item.rawBlock), 0),
+    affectedTaskIds: legacyItems.map((item) => item.taskId),
+    before: markdown,
+    after
+  };
+}
+
+function hasLegacyTaskPoolFormatting(rawBlock: string): boolean {
+  return countLegacyOwnedFields(rawBlock) > 0;
+}
+
+function countLegacyOwnedFields(rawBlock: string): number {
+  return rawBlock.split(/\r?\n/u).slice(1)
+    .filter((line) => OWNED_FIELD_RE.test(line.replace(/\u200b/gu, "")))
+    .length;
+}
+
+function taskPoolMarkdownRevision(sourcePath: string, markdown: string): string {
+  return `tpfrev_${contentHash128(`${sourcePath}\n${markdown}`)}`;
 }
 
 export function toDailyAssignment(task: TaskPoolItem, date: string): TaskPoolDailyAssignment {
@@ -700,7 +799,7 @@ function parseTaskBlock(
       ids.push(standaloneId);
       continue;
     }
-    const field = OWNED_FIELD_RE.exec(continuation);
+    const field = parseOwnedField(continuation);
     if (field?.groups && OWNED_KEYS.has(field.groups.key.toLowerCase())) {
       fields.set(field.groups.key.toLowerCase(), field.groups.value.trim());
       continue;
@@ -733,7 +832,13 @@ function parseTaskBlock(
     return undefined;
   }
 
-  const state = normalizeState(fields.get("state"), match.groups.mark);
+  const declaredState = normalizeState(fields.get("state"), match.groups.mark);
+  const checkboxDone = match.groups.mark.toLowerCase() === "x";
+  const state = checkboxDone
+    ? "done"
+    : declaredState === "done"
+      ? "pool"
+      : declaredState;
   if (!state) {
     diagnostics.push({
       code: "invalid-state",
@@ -745,18 +850,6 @@ function parseTaskBlock(
     });
     return undefined;
   }
-  const checkboxDone = match.groups.mark.toLowerCase() === "x";
-  if (checkboxDone !== (state === "done")) {
-    diagnostics.push({
-      code: "invalid-state",
-      severity: "error",
-      message: "Task pool checkbox and lifecycle state disagree.",
-      sourcePath,
-      line,
-      taskId
-    });
-  }
-
   const dueDate = parsedDate(fields.get("due"), "due date", taskId, sourcePath, line, diagnostics);
   const plannedDate = parsedDate(fields.get("planned"), "planned date", taskId, sourcePath, line, diagnostics);
   const returnedDate = parsedDate(fields.get("returned"), "returned date", taskId, sourcePath, line, diagnostics);
@@ -891,14 +984,18 @@ function extractUnknownLines(existingRawBlock: string | undefined, fallback: rea
   if (!existingRawBlock) return [...fallback];
   return existingRawBlock.split(/\r?\n/u).slice(1).filter((line) => {
     if (STANDALONE_TASK_ID_RE.test(line)) return false;
-    const field = OWNED_FIELD_RE.exec(line);
+    const field = parseOwnedField(line);
     return !(field?.groups && OWNED_KEYS.has(field.groups.key.toLowerCase()));
   });
 }
 
 function fieldLine(indent: string, key: string, value: string | undefined, allowWikilink = false): string[] {
   const normalized = safeField(value, allowWikilink);
-  return normalized ? [`${indent}[towrite-${key}:: ${normalized}]`] : [];
+  return normalized ? [`${indent}%% [towrite-${key}:: ${normalized}] %%`] : [];
+}
+
+function parseOwnedField(line: string): RegExpExecArray | null {
+  return OWNED_COMMENT_FIELD_RE.exec(line) ?? OWNED_FIELD_RE.exec(line);
 }
 
 function safeField(value: string | undefined, allowWikilink: boolean): string | undefined {

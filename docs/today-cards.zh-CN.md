@@ -11,10 +11,10 @@ ToWrite 把“今天承诺要做的事情”和“以后可能要做的事情”
 在 Obsidian 命令面板中搜索：
 
 - `ToWrite: Today: open dashboard`：直接打开今日编排与汇总。
-- `ToWrite: Today: open task pool`：直接打开总任务池。
-- `ToWrite: Today: open floating window`：打开独立的今日小窗；小窗可以折叠，并可 Pin 防止被其他 Obsidian 页面替换。
+- `ToWrite: Workbench: open work pool`：直接打开统一工作池。
+- `ToWrite: Focus Now: open floating window`：打开独立的“现在专注”小窗；小窗可以折叠，并可 Pin 防止被其他 Obsidian 页面替换。
 
-左侧 Ribbon 的日历勾选图标也会打开今日小窗。可以在 Obsidian 的“快捷键”设置里为上述命令绑定自己的组合键。
+左侧 Ribbon 的专注图标也会打开“现在专注”。专注模式只保留当前任务和计时；“今日缩略”模式显示当天清单。顶部信息带会轮播今日焦点、用户自定义句子和 Inbox/问题提醒；句子与间隔可在 ToWrite 的“今日”设置中修改。
 
 > Pin 是 Obsidian 的视图固定，不等同于操作系统级“永远置顶”。独立 Pop-out 可以放在桌面任意位置；是否压在其他软件上方仍由系统窗口管理器决定。
 

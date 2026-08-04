@@ -117,26 +117,42 @@ describe("Daily device card adapters", () => {
     })).toThrow(/revision/u);
   });
 
-  it("builds overview, every task page, and result in stable order", () => {
+  it("builds overview, every task page, and reminder inbox in stable order", () => {
     const deck = buildDailyDeckSnapshot({
       date: "2026-07-24",
       theme: "推进 Echo MVP",
       items: [
         task("daily_first", "写出 MVP 实验方案", {
           primary: true,
+          projectId: "echo",
+          projectLabel: "Echo",
+          projectColor: "#7c6ee6",
           goal: "判断常驻屏幕是否有效",
           nextStep: "列出 A/B 指标",
           estimateMinutes: 15
         }),
         task("daily_current", "完成问题帖初稿", {
           status: "in-progress",
+          projectId: "echo",
+          projectLabel: "Echo",
           nextStep: "先写三个小标题",
           startedAt: "2026-07-24T01:00:00.000Z"
         }),
         task("daily_next", "联系 2 位测试用户", { minimum: true }),
         task("daily_later", "整理访谈记录"),
-        task("daily_done", "准备设备", { status: "done" })
-      ]
+        task("daily_done", "准备设备", {
+          status: "done",
+          projectId: "hardware",
+          projectLabel: "硬件"
+        })
+      ],
+      inboxItems: [{
+        id: "reminder_1",
+        source: "rule",
+        title: "也许现在适合整理访谈",
+        reason: "下午的已确认习惯"
+      }],
+      batteryPercent: 76
     });
 
     expect(deck.currentItemId).toBe("daily_current");
@@ -150,8 +166,13 @@ describe("Daily device card adapters", () => {
         text: "完成问题帖初稿",
         nextStep: "先写三个小标题"
       },
-      progress: { done: 1, total: 5 }
+      progress: { done: 1, total: 5 },
+      batteryPercent: 76
     });
+    expect(deck.overview.projects).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "echo", label: "Echo", done: 0, total: 2 }),
+      expect.objectContaining({ id: "hardware", label: "硬件", done: 1, total: 1 })
+    ]));
     expect(deck.overview.upcoming.map((item) => item.id)).toEqual([
       "daily_first",
       "daily_next"
@@ -181,8 +202,14 @@ describe("Daily device card adapters", () => {
     expect(deck.pageOrder).toEqual([
       "daily_overview",
       "daily_plan_item",
-      "daily_result"
+      "daily_inbox"
     ]);
+    expect(deck.activeInboxItem).toMatchObject({
+      page: "daily_inbox",
+      position: 1,
+      total: 1,
+      item: { id: "reminder_1", source: "rule", aiGenerated: false }
+    });
     expect(deck.cards.map((card) => card.page)).toEqual([
       "daily_overview",
       "daily_plan_item",
@@ -190,7 +217,7 @@ describe("Daily device card adapters", () => {
       "daily_plan_item",
       "daily_plan_item",
       "daily_plan_item",
-      "daily_result"
+      "daily_inbox"
     ]);
   });
 

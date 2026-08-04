@@ -47,6 +47,9 @@ describe("DailyPlanService", () => {
       category: "写作与发布",
       taskRef: "task_pool_writing01",
       taskPoolRevision: poolRevision,
+      workKind: "question",
+      workRef: "question-local-1",
+      workRevision: `wq_${"b".repeat(32)}`,
       devicePolicy: "scheduled",
       scheduledDate: "2026-07-23",
       scheduledFor: "2026-07-23T09:30",
@@ -62,6 +65,9 @@ describe("DailyPlanService", () => {
       category: "写作与发布",
       taskRef: "task_pool_writing01",
       taskPoolRevision: poolRevision,
+      workKind: "question",
+      workRef: "question-local-1",
+      workRevision: `wq_${"b".repeat(32)}`,
       devicePolicy: "scheduled",
       scheduledDate: "2026-07-23",
       scheduledFor: "2026-07-23T09:30",
@@ -76,6 +82,9 @@ describe("DailyPlanService", () => {
     expect(written).toContain("[towrite-category:: 写作与发布]");
     expect(written).toContain("[towrite-task-ref:: task_pool_writing01]");
     expect(written).toContain(`[towrite-pool-revision:: ${poolRevision}]`);
+    expect(written).toContain("[towrite-work-kind:: question]");
+    expect(written).toContain("[towrite-work-ref:: question-local-1]");
+    expect(written).toContain(`[towrite-work-revision:: wq_${"b".repeat(32)}]`);
     expect(written).toContain("[towrite-scheduled:: 2026-07-23]");
     expect(written).toContain("[towrite-due:: 2026-07-24]");
     expect(written).toContain("^daily_test123");
@@ -86,6 +95,9 @@ describe("DailyPlanService", () => {
       category: "写作与发布",
       taskRef: "task_pool_writing01",
       taskPoolRevision: poolRevision,
+      workKind: "question",
+      workRef: "question-local-1",
+      workRevision: `wq_${"b".repeat(32)}`,
       devicePolicy: "scheduled",
       scheduledDate: "2026-07-23",
       scheduledFor: "2026-07-23T09:30",

@@ -1435,7 +1435,7 @@ export class ToWriteExternalApiServer {
     event: DeviceEventInput
   ): Promise<DeviceEventResult> {
     const result = this.resolveDeviceAction(request, url, event);
-    if (event.schemaVersion === 2) {
+    if (event.schemaVersion === 2 || event.schemaVersion === 3) {
       const replay = await this.options.resolveDeviceGestureReplay?.(event);
       if (replay) {
         result.action = replay.action ?? result.action;
@@ -1459,7 +1459,7 @@ export class ToWriteExternalApiServer {
         throw new ExternalApiError(409, `The displayed card changed (${tupleConflict}).`);
       }
       if (!this.options.handleDeviceGesture) {
-        throw new ExternalApiError(501, "Schema-v2 device gestures are not available.");
+        throw new ExternalApiError(501, "Schema-v2/v3 device gestures are not available.");
       }
       const outcome = await this.options.handleDeviceGesture(event);
       result.action = outcome.action ?? result.action;
@@ -1488,7 +1488,7 @@ export class ToWriteExternalApiServer {
       result.stateVersion = current.stateVersion;
       result.playlistRevision = current.playlistRevision;
     }
-    if (event.schemaVersion !== 2
+    if (event.schemaVersion !== 2 && event.schemaVersion !== 3
       && (result.action === "next" || result.action === "prev")
       && this.options.advanceDevicePage) {
       await this.options.advanceDevicePage(result.action);
@@ -2256,6 +2256,7 @@ function readDeviceIntent(value: string | null | undefined): DeviceActionIntent 
     || value === "create_note" || value === "record_reserved"
     || value === "page_prev" || value === "page_next"
     || value === "task_prev" || value === "task_next"
+    || value === "item_prev" || value === "item_next"
     ? value
     : undefined;
 }
@@ -2271,8 +2272,8 @@ function displayMessageForDeviceIntent(intent: DeviceActionIntent): string {
   if (intent === "open_current" || intent === "start_open") return "Waiting for computer";
   if (intent === "create_note") return "Opening new note";
   if (intent === "record_reserved") return "Recording is not enabled";
-  if (intent === "page_prev" || intent === "task_prev") return "Previous page";
-  if (intent === "page_next" || intent === "task_next") return "Next page";
+  if (intent === "page_prev" || intent === "task_prev" || intent === "item_prev") return "Previous item";
+  if (intent === "page_next" || intent === "task_next" || intent === "item_next") return "Next item";
   if (intent === "complete") return "Completed";
   return "Open phone input";
 }

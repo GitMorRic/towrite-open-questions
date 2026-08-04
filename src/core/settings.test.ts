@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_ARTICLE_TYPES, DEFAULT_DEVICE_PROFILES, DEFAULT_REMINDER_PRESETS, DEFAULT_SETTINGS, ensureInboxWorkflowStage, normalizeArticleTypesSettings, normalizeDailySettings, normalizeDeviceProfiles, normalizeExternalApiBindHost, normalizeExternalApiPublicBaseUrl, normalizeInboxSettings, normalizePushSettings, normalizeQuote0Settings, normalizeReminderPresets } from "./settings";
+import { DEFAULT_ARTICLE_TYPES, DEFAULT_DEVICE_PROFILES, DEFAULT_REMINDER_PRESETS, DEFAULT_SETTINGS, ensureInboxWorkflowStage, normalizeArticleTypesSettings, normalizeDailySettings, normalizeDeviceProfiles, normalizeExternalApiBindHost, normalizeExternalApiPublicBaseUrl, normalizeInboxSettings, normalizePushSettings, normalizeQuote0Settings, normalizeReminderPresets, normalizeWorkPoolSettings } from "./settings";
 
 describe("settings normalization", () => {
   it("keeps private, no-ai, and no-cloud content outside default remote scope", () => {
@@ -63,6 +63,8 @@ describe("settings normalization", () => {
       tasksCompatibilityOutput: false,
       categoryPresets: DEFAULT_SETTINGS.daily.categoryPresets,
       dashboardDefaultView: "list",
+      focusMessages: [],
+      focusMessageIntervalSeconds: 30,
       planHeading: "今日计划",
       todoHeading: "Plans",
       summaryHeading: "Review",
@@ -90,6 +92,13 @@ describe("settings normalization", () => {
       planHeading: "明日编排"
     });
     expect(normalizeDailySettings({
+      focusMessages: ["  先做最小的一步  ", "先做最小的一步", "第二句"],
+      focusMessageIntervalSeconds: 10
+    })).toMatchObject({
+      focusMessages: ["先做最小的一步", "第二句"],
+      focusMessageIntervalSeconds: 10
+    });
+    expect(normalizeDailySettings({
       taskPoolPath: " /Planning\\Ideas ",
       autoReturnUnfinished: false,
       tasksCompatibilityOutput: true,
@@ -106,6 +115,57 @@ describe("settings normalization", () => {
       categoryPresets: [
         { id: "project", label: "项目", color: "#abcdef", icon: "folder-kanban" }
       ]
+    });
+  });
+
+  it("normalizes saved two-level Work Pool views and project rules", () => {
+    expect(normalizeWorkPoolSettings(undefined)).toEqual(DEFAULT_SETTINGS.workPool);
+    expect(DEFAULT_SETTINGS.workPool.views.find((view) => view.id === "all-work")?.layout).toBe("board");
+    expect(DEFAULT_SETTINGS.workPool.views.find((view) => view.id === "by-project")?.layout).toBe("board");
+    expect(normalizeWorkPoolSettings({
+      defaultViewId: "custom",
+      views: [
+        {
+          id: " Custom ",
+          label: " My projects ",
+          primary: "project",
+          secondary: "project",
+          source: "task",
+          history: "all",
+          defaultExpanded: true
+        }
+      ],
+      projectFrontmatterKeys: [" Project ", "projects", "Project"],
+      projectTagPrefixes: ["#Project/"],
+      projectRules: [
+        { id: "Hardware", label: " Hardware ", tags: ["project/hardware"], folderPrefixes: ["Projects/Hardware"] },
+        { id: "hardware", label: "duplicate", tags: [], folderPrefixes: [] }
+      ],
+      projectAppearances: [
+        { projectId: "Hardware", color: "#AABBCC", icon: "Cpu" },
+        { projectId: "hardware", color: "invalid", icon: "book" }
+      ],
+      pageSize: 999,
+      defaultGroupsExpanded: false,
+      showTechnicalMetadata: true
+    })).toMatchObject({
+      defaultViewId: "custom",
+      views: [{
+        id: "custom",
+        label: "My projects",
+        primary: "project",
+        secondary: "none",
+        source: "task",
+        history: "all",
+        defaultExpanded: true
+      }],
+      projectFrontmatterKeys: ["project", "projects"],
+      projectTagPrefixes: ["project/"],
+      projectRules: [{ id: "hardware", label: "Hardware", tags: ["project/hardware"], folderPrefixes: ["Projects/Hardware"] }],
+      projectAppearances: [{ projectId: "hardware", color: "#aabbcc", icon: "cpu" }],
+      pageSize: 500,
+      defaultGroupsExpanded: false,
+      showTechnicalMetadata: true
     });
   });
 

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Download, RefreshCw } from "lucide-svelte";
+  import { Download, PanelTopOpen, RefreshCw } from "lucide-svelte";
   import { onDestroy } from "svelte";
   import { mergeArticleSummariesWithWorkflow } from "../core/articles";
   import type { ArticleSummary, OpenQuestion } from "../core/types";
@@ -10,15 +10,16 @@
     buildWorkflowStatusColumns
   } from "./dashboard-state";
   import DailyDashboardPanel from "./DailyDashboardPanel.svelte";
-  import type { DailyDashboardAdapter } from "./daily-dashboard-types";
+  import type { DailyDashboardAdapter, DailyDashboardConfiguration } from "./daily-dashboard-types";
+  import WorkPoolPanel from "./WorkPoolPanel.svelte";
+  import type { ToWriteWorkbenchTab } from "./workbench-state";
 
   export let api: ToWriteUiApi;
   export let dailyApi: DailyDashboardAdapter | undefined = undefined;
   export let getFullWorkflowPayload: (() => WorkflowIndexPayload) | undefined = undefined;
-  export let initialTab: DashboardTab = dailyApi ? "today" : "all";
-  export let initialDailySurface: "today" | "pool" | "review" = "today";
-
-  type DashboardTab = "today" | "all";
+  export let initialTab: ToWriteWorkbenchTab = dailyApi ? "today" : "status";
+  export let onOpenFloatingToday: (() => void) | undefined = undefined;
+  export let onActiveTabChange: ((tab: ToWriteWorkbenchTab) => void) | undefined = undefined;
 
   interface TypeAggregate {
     id: string;
@@ -28,17 +29,35 @@
     stale: number;
   }
 
-  let activeTab: DashboardTab = initialTab;
+  let activeTab: ToWriteWorkbenchTab = initialTab;
   let summaries: ArticleSummary[] = [];
   let workflowPayload: WorkflowIndexPayload = readWorkflowPayload();
   let questions: OpenQuestion[] = [];
   let statusOptions = api.getStatusOptions();
   let search = "";
+  let dailyConfiguration: DailyDashboardConfiguration = {
+    categoryPresets: [],
+    defaultView: "list",
+    focusMessages: [],
+    focusMessageIntervalSeconds: 30,
+    taskPoolPath: "Planning/Task Pool.md",
+    autoReturnUnfinished: true
+  };
+
+  function switchTab(tab: ToWriteWorkbenchTab): void {
+    activeTab = tab;
+    onActiveTabChange?.(tab);
+  }
+
+  function openWorkPool(): void {
+    switchTab("pool");
+  }
 
   const unsubscribe = api.subscribe(reload);
   onDestroy(unsubscribe);
 
   reload();
+  void loadDailyConfiguration();
 
   $: filtered = summaries.filter((summary) => {
     const needle = search.trim().toLowerCase();
@@ -81,6 +100,23 @@
       workflowPayload,
       workflowPayload.generatedAt
     );
+  }
+
+  async function loadDailyConfiguration(): Promise<void> {
+    try {
+      dailyConfiguration = await dailyApi?.getConfiguration?.() ?? dailyConfiguration;
+    } catch {
+      // The Today view remains usable with its compatibility defaults.
+    }
+  }
+
+  function todayDate(): string {
+    const now = new Date();
+    return [
+      now.getFullYear(),
+      String(now.getMonth() + 1).padStart(2, "0"),
+      String(now.getDate()).padStart(2, "0")
+    ].join("-");
   }
 
   async function refresh(): Promise<void> {
@@ -139,12 +175,20 @@
   <header class="dashboard-header">
     <div>
       <span class="eyebrow">ToWrite workspace</span>
-      <h2>{activeTab === "today" ? "今日状态" : "全部状态"}</h2>
+      <h2>ToWrite 工作台</h2>
       <p>{activeTab === "today"
-        ? "直接编辑绑定的 Markdown 待办；计划原文与 Dashboard 会保持双向同步。"
-        : `${workflowPayload.counts.uniqueFiles} 篇笔记 · ${activeQuestions.length} 个待处理问题 · ${inboxCount} 条 Inbox`}</p>
+        ? "守住今天最重要的事。任务从工作池安排，Markdown 始终是数据真源。"
+        : activeTab === "pool"
+          ? "在一个地方整理任务、问题和不同阶段的笔记。"
+          : `${workflowPayload.counts.uniqueFiles} 篇笔记 · ${activeQuestions.length} 个待处理问题 · ${inboxCount} 条 Inbox`}</p>
     </div>
     <div class="dashboard-actions">
+      {#if activeTab === "today" && onOpenFloatingToday}
+        <button class="focus-now-launch" type="button" title="打开可固定的“现在专注”" aria-label="打开现在专注悬浮窗" on:click={() => onOpenFloatingToday?.()}>
+          <PanelTopOpen size={16} />
+          <span>现在专注</span>
+        </button>
+      {/if}
       <button type="button" title="刷新索引" aria-label="刷新索引" on:click={refresh}>
         <RefreshCw size={16} />
       </button>
@@ -154,30 +198,49 @@
     </div>
   </header>
 
-  <nav class="dashboard-tabs" aria-label="Dashboard 视图">
+  <nav class="dashboard-tabs" aria-label="ToWrite 工作台视图">
     <button
       type="button"
       class:active={activeTab === "today"}
       aria-current={activeTab === "today" ? "page" : undefined}
-      on:click={() => (activeTab = "today")}
+      on:click={() => switchTab("today")}
     >
       今日
     </button>
     <button
       type="button"
-      class:active={activeTab === "all"}
-      aria-current={activeTab === "all" ? "page" : undefined}
-      on:click={() => (activeTab = "all")}
+      class:active={activeTab === "pool"}
+      aria-current={activeTab === "pool" ? "page" : undefined}
+      on:click={() => switchTab("pool")}
     >
-      全部状态
+      工作池
+    </button>
+    <button
+      type="button"
+      class:active={activeTab === "status"}
+      aria-current={activeTab === "status" ? "page" : undefined}
+      on:click={() => switchTab("status")}
+    >
+      状态
     </button>
   </nav>
 
   {#if activeTab === "today"}
     <DailyDashboardPanel
       {dailyApi}
-      initialSurface={initialDailySurface}
+      workspaceMode={true}
       onOpenCapture={() => api.openCapture()}
+      {onOpenFloatingToday}
+      onOpenWorkPool={openWorkPool}
+    />
+  {:else if activeTab === "pool" && dailyApi}
+    <WorkPoolPanel
+      {dailyApi}
+      date={todayDate()}
+      workflowStages={dailyConfiguration.workflowStages ?? []}
+      articleTypes={dailyConfiguration.articleTypes ?? []}
+      questionStatuses={dailyConfiguration.questionStatuses ?? []}
+      initialSettings={dailyConfiguration.workPool}
     />
   {:else}
     <section class="all-status" aria-label="全部状态">
@@ -210,6 +273,7 @@
             <h3>阶段 × 问题状态</h3>
             <p>笔记数量来自 Workflow 增量索引；问题按当前状态和线路统计。</p>
           </div>
+          <button type="button" on:click={openWorkPool}>返回工作池管理</button>
           {#if !workflowDetailsComplete}
             <span class="partial-badge" title="请为 Dashboard 接入不带 limit 的 Workflow payload">文件明细为局部</span>
           {/if}
@@ -387,6 +451,13 @@
   .dashboard-actions button:hover {
     color: var(--text-normal);
     background: var(--background-modifier-hover);
+  }
+
+  .dashboard-actions .focus-now-launch {
+    width: auto;
+    gap: 6px;
+    padding: 0 10px;
+    font-size: 0.76rem;
   }
 
   .dashboard-tabs {
@@ -589,7 +660,7 @@
 
     .dashboard-tabs {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: repeat(3, 1fr);
       align-self: stretch;
     }
 

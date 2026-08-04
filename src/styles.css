@@ -55,7 +55,6 @@
   box-sizing: border-box;
   height: 100%;
   min-width: 0;
-  overflow: hidden;
   color: var(--text-normal);
   background: var(--background-primary);
 }
@@ -65,7 +64,15 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
+  overflow: hidden;
   padding: 12px;
+}
+
+.towrite-dashboard {
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .towrite-sidebar-header,
@@ -5548,15 +5555,12 @@
   background: var(--background-secondary);
 }
 
-.towrite-note-task-disclosure[open] > .towrite-note-task-disclosure-content,
-.towrite-note-task-disclosure:hover > .towrite-note-task-disclosure-content,
-.towrite-note-task-disclosure:focus-within > .towrite-note-task-disclosure-content {
+.towrite-note-task-disclosure[open] > .towrite-note-task-disclosure-content {
   display: inline-flex;
 }
 
 .towrite-note-task-disclosure[open] > summary,
-.towrite-note-task-disclosure:hover > summary,
-.towrite-note-task-disclosure:focus-within > summary {
+.towrite-note-task-disclosure > summary:focus-visible {
   border-color: var(--background-modifier-border);
   color: var(--text-muted);
   background: var(--background-secondary);
@@ -5693,11 +5697,11 @@
 }
 
 /*
- * Only lines marked by the CodeMirror extension are folded, and only in Live
- * Preview. Moving the caret onto a metadata line rebuilds decorations and
- * reveals that exact source line; Source mode always shows the raw Markdown.
+ * Only lines marked by the CodeMirror extension are folded. Technical task
+ * metadata is edited through the properties modal, so Source mode and Live
+ * Preview keep the user-facing checkbox equally quiet.
  */
-.markdown-source-view.is-live-preview .cm-line.towrite-daily-owned-metadata-folded {
+.markdown-source-view .cm-line.towrite-daily-owned-metadata-folded {
   display: none;
 }
 
@@ -6216,4 +6220,17 @@
   .towrite-daily-property-summary {
     transition: none;
   }
+}
+/* Task Pool metadata remains machine-readable in Markdown but is not part of
+   the reading experience. Legacy visible fields are concealed by a scoped
+   post processor; new fields are Obsidian comments. */
+.towrite-task-pool-technical-line {
+  display: none !important;
+}
+
+/* The configured Task Pool stays readable like an ordinary checklist in both
+   editor modes. The underlying comments and stable block ids remain in the
+   document for synchronization and deep links. */
+.markdown-source-view .cm-line.towrite-task-pool-technical-folded {
+  display: none !important;
 }

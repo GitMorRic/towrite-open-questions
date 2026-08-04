@@ -11,10 +11,10 @@ ToWrite separates work committed to today from work that may be scheduled later:
 Use the Obsidian command palette:
 
 - `ToWrite: Today: open dashboard`
-- `ToWrite: Today: open task pool`
-- `ToWrite: Today: open floating window`
+- `ToWrite: Workbench: open work pool`
+- `ToWrite: Focus Now: open floating window`
 
-The calendar-check Ribbon icon opens the floating Today window. Any command can receive a custom hotkey in Obsidian settings.
+The Focus ribbon icon opens Focus Now. Focus mode shows the current task and timer; compact mode shows the Today list. Its message strip rotates the Daily focus, custom lines, and Inbox/question reminders. Configure custom lines and the interval in ToWrite's Daily settings.
 
 Pinning protects the Obsidian leaf from replacement; it is not an operating-system always-on-top permission.
 

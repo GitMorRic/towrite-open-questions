@@ -1,45 +1,64 @@
 <script lang="ts">
   import {
     Bookmark,
+    Bell,
     CalendarDays,
     Check,
+    ChevronLeft,
     ChevronDown,
+    ChevronRight,
     ChevronUp,
     ExternalLink,
-    Inbox,
+    Focus,
     LayoutDashboard,
+    ListTodo,
     Pause,
     Pin,
     PinOff,
     Play,
-    RefreshCw
+    RefreshCw,
+    Rows3,
+    Timer
   } from "lucide-svelte";
   import { onDestroy, onMount } from "svelte";
   import type { DailyPlanItem } from "../daily/types";
-  import type { TaskPoolDocument, TaskPoolItem } from "../daily/task-pool-types";
   import type { DailyTaskTimingSnapshot } from "../daily/task-timer-types";
   import { selectDailyOverview } from "./daily-dashboard-state";
-  import { floatingTaskPoolSummary } from "./today-floating-state";
   import type {
     DailyDashboardAdapter,
-    DailyDashboardSnapshot
+    DailyDashboardConfiguration,
+    DailyDashboardSnapshot,
+    DailyPlanningCandidate
   } from "./daily-dashboard-types";
+  import { buildFocusCarouselMessages, type FocusCarouselMessage } from "./focus-carousel";
 
   export let dailyApi: DailyDashboardAdapter;
   export let initialCollapsed = false;
   export let initialPinned = true;
-  export let initialSurface: "today" | "pool" = "today";
+  export let initialMode: "focus" | "list" = "focus";
   export let onCollapsedChange: ((collapsed: boolean) => void) | undefined = undefined;
   export let onPinnedChange: ((pinned: boolean) => void) | undefined = undefined;
-  export let onSurfaceChange: ((surface: "today" | "pool") => void) | undefined = undefined;
+  export let onModeChange: ((mode: "focus" | "list") => void) | undefined = undefined;
   export let onOpenDashboard: (() => void) | undefined = undefined;
   export let onOpenTaskPool: (() => void) | undefined = undefined;
 
   let snapshot: DailyDashboardSnapshot | undefined;
-  let taskPool: TaskPoolDocument | undefined;
+  let configuration: DailyDashboardConfiguration = {
+    categoryPresets: [],
+    defaultView: "list",
+    focusMessages: [],
+    focusMessageIntervalSeconds: 30,
+    taskPoolPath: "Planning/Task Pool.md",
+    autoReturnUnfinished: true
+  };
+  let candidates: DailyPlanningCandidate[] = [];
+  let carouselMessages: FocusCarouselMessage[] = [];
   let collapsed = initialCollapsed;
   let pinned = initialPinned;
-  let surface = initialSurface;
+  let mode = initialMode;
+  let messageIndex = 0;
+  let clockNow = Date.now();
+  let timingCapturedAt = Date.now();
   let busy = "";
   let message = "";
   let error = "";
@@ -47,37 +66,59 @@
   let hasCheckpoint = false;
   let unsubscribe: (() => void) | undefined;
   let loadSerial = 0;
-  const surfaceControlName = `towrite-today-surface-${Math.random().toString(36).slice(2)}`;
+  let carouselTimer = 0;
+  let clockTimer = 0;
 
   $: overview = selectDailyOverview(snapshot?.plan.items ?? []);
   $: progress = overview.total ? Math.round((overview.done / overview.total) * 100) : 0;
   $: current = overview.current;
-  $: poolSummary = floatingTaskPoolSummary(taskPool?.items ?? []);
+  $: compactItems = snapshot?.plan.items ?? [];
+  $: currentMessage = carouselMessages[messageIndex % Math.max(1, carouselMessages.length)];
+  $: activeSeconds = currentTiming
+    ? Math.floor(currentTiming.activeMs / 1_000) + (currentTiming.status === "running"
+      ? Math.max(0, Math.floor((clockNow - timingCapturedAt) / 1000))
+      : 0)
+    : 0;
 
   onMount(() => {
     unsubscribe = dailyApi.subscribe?.(() => {
       void reload();
     });
-    void reload();
+    clockTimer = window.setInterval(() => {
+      clockNow = Date.now();
+    }, 1_000);
+    void reload(true);
   });
 
-  onDestroy(() => unsubscribe?.());
+  onDestroy(() => {
+    unsubscribe?.();
+    window.clearInterval(carouselTimer);
+    window.clearInterval(clockTimer);
+  });
 
-  async function reload(): Promise<void> {
+  async function reload(refreshMessages = false): Promise<void> {
     const serial = ++loadSerial;
     try {
       const next = await dailyApi.getSnapshot();
       if (serial !== loadSerial) return;
       snapshot = next;
+      const [nextConfiguration, nextCandidates] = await Promise.all([
+        dailyApi.getConfiguration?.() ?? configuration,
+        refreshMessages || candidates.length === 0
+          ? dailyApi.listPlanningCandidates?.(next.date) ?? []
+          : candidates
+      ]);
+      if (serial !== loadSerial) return;
+      configuration = nextConfiguration;
+      candidates = nextCandidates;
+      carouselMessages = buildFocusCarouselMessages({
+        theme: next.plan.metadata?.theme,
+        customMessages: configuration.focusMessages,
+        candidates
+      });
+      messageIndex = Math.min(messageIndex, Math.max(0, carouselMessages.length - 1));
+      resetCarouselTimer();
       error = "";
-      if (dailyApi.getTaskPool) {
-        try {
-          taskPool = await dailyApi.getTaskPool();
-        } catch (cause) {
-          if (serial !== loadSerial) return;
-          error = cause instanceof Error ? cause.message : String(cause);
-        }
-      }
       const item = selectDailyOverview(next?.plan.items ?? []).current;
       const [timing, checkpoint] = item
         ? await Promise.all([
@@ -87,6 +128,7 @@
         : [undefined, false];
       if (serial !== loadSerial) return;
       currentTiming = timing;
+      timingCapturedAt = Date.now();
       hasCheckpoint = Boolean(checkpoint);
     } catch (cause) {
       if (serial !== loadSerial) return;
@@ -104,10 +146,33 @@
     onPinnedChange?.(pinned);
   }
 
-  function switchSurface(next: "today" | "pool"): void {
-    surface = next;
-    onSurfaceChange?.(next);
+  function setMode(value: "focus" | "list"): void {
+    mode = value;
+    onModeChange?.(value);
   }
+
+  function advanceMessage(direction: 1 | -1 = 1): void {
+    if (carouselMessages.length < 2) return;
+    messageIndex = (messageIndex + direction + carouselMessages.length) % carouselMessages.length;
+    resetCarouselTimer();
+  }
+
+  function resetCarouselTimer(): void {
+    window.clearInterval(carouselTimer);
+    carouselTimer = 0;
+    const seconds = configuration.focusMessageIntervalSeconds;
+    if (!seconds || carouselMessages.length < 2) return;
+    carouselTimer = window.setInterval(() => {
+      messageIndex = (messageIndex + 1) % carouselMessages.length;
+    }, seconds * 1_000);
+  }
+
+  function formatFocusTime(seconds: number): string {
+    const minutes = Math.floor(seconds / 60);
+    const remainder = Math.floor(seconds % 60);
+    return `${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
+  }
+
 
   async function run(key: string, action: () => void | Promise<void>, success: string): Promise<void> {
     if (busy) return;
@@ -154,16 +219,6 @@
     await run(`complete:${item.id}`, () => dailyApi.completeItem?.(item.id, item.revision), "已完成");
   }
 
-  async function assignToToday(item: TaskPoolItem): Promise<void> {
-    if (!dailyApi.assignPoolTask || !snapshot?.date) return;
-    await run(
-      `assign:${item.taskId}`,
-      () => dailyApi.assignPoolTask?.(item.taskId, item.revision, snapshot!.date),
-      "已加入今天"
-    );
-    surface = "today";
-    onSurfaceChange?.("today");
-  }
 
   function targetLabel(item: DailyPlanItem): string {
     return item.targetResolution?.displayLabel || item.target || "计划原文";
@@ -177,27 +232,26 @@
     if (currentTiming?.status === "paused" && item.id === current?.id) return "继续并打开";
     return item.status === "todo" ? "开始并打开" : "继续工作";
   }
+
 </script>
 
 <section
   class:collapsed
   class="today-floating"
-  aria-label="ToWrite 今日悬浮卡"
-  data-surface={surface}
+  aria-label="ToWrite 现在专注"
+  data-surface="focus-now"
 >
   <header class="widget-header">
     <button
       class="header-summary"
       type="button"
       aria-expanded={!collapsed}
-      aria-label={collapsed ? "展开今日悬浮卡" : "折叠今日悬浮卡"}
+      aria-label={collapsed ? "展开现在专注" : "折叠现在专注"}
       on:click={toggleCollapsed}
     >
-      <span class="date">{surface === "pool" ? "任务池" : snapshot?.date.slice(5).replace("-", ".") ?? "今日"}</span>
-      <strong>{surface === "pool" ? poolSummary.availableCount : `${overview.done}/${overview.total}`}</strong>
-      <span class="header-current">{surface === "pool"
-        ? `${poolSummary.planned} 已安排 · ${poolSummary.done} 已完成`
-        : current?.text ?? "今天还没有待办"}</span>
+      <span class="date">{snapshot?.date.slice(5).replace("-", ".") ?? "今日"}</span>
+      <strong>{overview.done}/{overview.total}</strong>
+      <span class="header-current">{current?.text ?? "今天还没有待办"}</span>
     </button>
     <button
       class:active={pinned}
@@ -221,8 +275,7 @@
     </button>
   </header>
 
-  {#if surface === "today"}
-    <div
+  <div
       class="progress"
       role="progressbar"
       aria-label="今日进度"
@@ -231,63 +284,50 @@
       aria-valuenow={overview.done}
     >
       <i style={`--today-progress:${progress}%`}></i>
-    </div>
-  {:else}
-    <div class="progress pool-divider" aria-hidden="true"></div>
-  {/if}
+  </div>
 
   {#if !collapsed}
     <div class="widget-body">
-      <nav class="surface-switcher" aria-label="今日与任务池">
-        <input
-          id={`${surfaceControlName}-today`}
-          class="surface-radio"
-          type="radio"
-          name={surfaceControlName}
-          value="today"
-          bind:group={surface}
-          on:change={() => switchSurface("today")}
-        />
-        <label
-          for={`${surfaceControlName}-today`}
-          class:active={surface === "today"}
-          on:pointerdown|stopPropagation={() => switchSurface("today")}
-        >
-          今日 <span>{overview.total}</span>
-        </label>
-        <input
-          id={`${surfaceControlName}-pool`}
-          class="surface-radio"
-          type="radio"
-          name={surfaceControlName}
-          value="pool"
-          bind:group={surface}
-          on:change={() => switchSurface("pool")}
-        />
-        <label
-          for={`${surfaceControlName}-pool`}
-          class:active={surface === "pool"}
-          on:pointerdown|stopPropagation={() => switchSurface("pool")}
-        >
-          任务池 <span>{poolSummary.availableCount}</span>
-        </label>
-      </nav>
-
-      {#key surface}
-      {#if surface === "today"}
       <div class="surface-content today-surface">
-        <div class="theme-row">
-        <span>今日主题</span>
-        <strong>{snapshot?.plan.metadata?.theme || "守住今天最重要的一件事"}</strong>
-        </div>
+        <nav class="focus-mode-switcher" aria-label="现在专注显示方式">
+          <button class:active={mode === "focus"} type="button" on:click={() => setMode("focus")}>
+            <Focus size={14} />现在专注
+          </button>
+          <button class:active={mode === "list"} type="button" on:click={() => setMode("list")}>
+            <Rows3 size={14} />今日缩略
+          </button>
+        </nav>
 
-        {#if current}
+        {#if currentMessage}
+          <section class="message-carousel" aria-label="焦点与提醒轮播">
+            <button class="icon-button" type="button" disabled={carouselMessages.length < 2} aria-label="上一条提醒" on:click={() => advanceMessage(-1)}>
+              <ChevronLeft size={15} />
+            </button>
+            <div>
+              <span><Bell size={12} />{currentMessage.source}{carouselMessages.length > 1 ? ` · ${messageIndex + 1}/${carouselMessages.length}` : ""}</span>
+              <strong>{currentMessage.text}</strong>
+              {#if currentMessage.detail}<small>{currentMessage.detail}</small>{/if}
+            </div>
+            <button class="icon-button" type="button" disabled={carouselMessages.length < 2} aria-label="下一条提醒" on:click={() => advanceMessage(1)}>
+              <ChevronRight size={15} />
+            </button>
+          </section>
+        {/if}
+
+        <div class="focus-content">
+        {#if mode === "focus" && current}
         <article class="current-card">
           <div class="current-label">
             <span>{currentTiming?.status === "paused" ? "已暂停" : current.status === "in-progress" ? "进行中" : "当前"}</span>
             {#if current.lineage?.groups?.length}
               <small>{current.lineage.groups.map((group) => group.text).join(" / ")}</small>
             {/if}
+          </div>
+
+          <div class="focus-clock" aria-label="当前任务投入时间">
+            <Timer size={16} />
+            <strong>{formatFocusTime(activeSeconds)}</strong>
+            <small>{current.estimateMinutes ? `预计 ${current.estimateMinutes} 分钟` : "未设置预计时间"}</small>
           </div>
 
           <button
@@ -338,124 +378,53 @@
             {/if}
           </div>
         </article>
+        {:else if mode === "list"}
+          {#if compactItems.length}
+            <section class="compact-tasks" aria-label="今日任务缩略列表">
+              {#each compactItems as item, index (item.id)}
+                <button
+                  class:done={item.status === "done"}
+                  type="button"
+                  disabled={Boolean(busy)}
+                  on:click={() => item.status === "done" ? openOnly(item) : startAndOpen(item)}
+                >
+                  <span class="compact-status">{item.status === "done" ? "✓" : item.status === "in-progress" ? "●" : index + 1}</span>
+                  <span><strong>{item.text}</strong><small>{item.nextStep || targetLabel(item)}</small></span>
+                  <ExternalLink size={13} />
+                </button>
+              {/each}
+            </section>
+          {:else}
+            <div class="empty-state compact-empty"><strong>今天还没有计划</strong></div>
+          {/if}
         {:else}
         <div class="empty-state">
           <span class="empty-icon" aria-hidden="true"><CalendarDays size={20} /></span>
           <strong>{overview.total ? "今天的任务已经完成" : "今天还没有计划"}</strong>
-          <small>{poolSummary.availableCount
-            ? `任务池里有 ${poolSummary.availableCount} 条待安排事项`
-            : "先在笔记里写一个待办，或打开完整计划进行编排"}</small>
-          {#if poolSummary.availableCount}
-            <button type="button" on:click={() => switchSurface("pool")}>从任务池选择</button>
-          {/if}
+          <small>可以前往工作池，从任务、问题和笔记中安排今天。</small>
+          {#if onOpenTaskPool}<button type="button" on:click={() => onOpenTaskPool?.()}>从工作池安排</button>{/if}
           <button type="button" on:click={() => onOpenDashboard?.()}>打开今日计划</button>
         </div>
         {/if}
+        </div>
 
-        {#if overview.upcoming.length}
-        <section class="upcoming" aria-label="接下来">
-          <h3>接下来</h3>
-          {#each overview.upcoming as item, index (item.id)}
-            <div class="upcoming-row">
-              <span class="order">{index + 2}</span>
-              <button type="button" disabled={Boolean(busy)} on:click={() => startAndOpen(item)}>
-                <strong>{item.text}</strong>
-                <small>{targetLabel(item)}</small>
-              </button>
-              <button
-                class="icon-button"
-                type="button"
-                disabled={Boolean(busy)}
-                aria-label={`打开 ${item.text}`}
-                title="只打开"
-                on:click={() => openOnly(item)}
-              >
-                <ExternalLink size={14} />
-              </button>
-            </div>
-          {/each}
-        </section>
-        {/if}
-
-        <footer>
+        <div class="focus-footer" role="navigation" aria-label="现在专注快捷操作">
         <button type="button" on:click={() => onOpenDashboard?.()}>
-          <LayoutDashboard size={14} />打开完整今日计划
+          <LayoutDashboard size={14} />打开工作台
         </button>
+        {#if onOpenTaskPool}<button type="button" on:click={() => onOpenTaskPool?.()}><ListTodo size={14} />工作池</button>{/if}
         <button
           class="icon-button"
           type="button"
           aria-label="刷新"
           title="刷新"
           disabled={Boolean(busy)}
-          on:click={() => reload()}
+          on:click={() => reload(true)}
         >
           <RefreshCw size={14} />
         </button>
-        </footer>
+        </div>
       </div>
-      {:else}
-      <div class="surface-content pool-surface">
-        <section class="pool-panel" aria-label="总任务池">
-          <header>
-            <span>
-              <Inbox size={16} />
-              <strong>总任务池</strong>
-            </span>
-            <small>{poolSummary.availableCount} 待安排 · {poolSummary.planned} 已安排 · {poolSummary.done} 已完成</small>
-          </header>
-
-          {#if poolSummary.available.length}
-            <div class="pool-list">
-              {#each poolSummary.available as item (item.taskId)}
-                <article>
-                  <div>
-                    <strong>{item.text}</strong>
-                    <small>
-                      {[item.category, item.project, item.dueDate ? `截止 ${item.dueDate}` : undefined]
-                        .filter(Boolean)
-                        .join(" · ") || "尚未安排日期"}
-                    </small>
-                  </div>
-                  <button
-                    type="button"
-                    disabled={Boolean(busy) || !dailyApi.assignPoolTask}
-                    on:click={() => assignToToday(item)}
-                  >
-                    加入今天
-                  </button>
-                </article>
-              {/each}
-            </div>
-            {#if poolSummary.availableCount > poolSummary.available.length}
-              <p class="pool-more">还有 {poolSummary.availableCount - poolSummary.available.length} 条，请在完整任务池中查看。</p>
-            {/if}
-          {:else}
-            <div class="empty-state pool-empty">
-              <span class="empty-icon" aria-hidden="true"><Inbox size={20} /></span>
-              <strong>任务池中没有待安排项目</strong>
-              <small>普通笔记里的未完成 checkbox 保存后会自动登记到这里。</small>
-            </div>
-          {/if}
-        </section>
-
-        <footer>
-          <button type="button" on:click={() => onOpenTaskPool?.()}>
-            <LayoutDashboard size={14} />打开完整任务池
-          </button>
-          <button
-            class="icon-button"
-            type="button"
-            aria-label="刷新"
-            title="刷新"
-            disabled={Boolean(busy)}
-            on:click={() => reload()}
-          >
-            <RefreshCw size={14} />
-          </button>
-        </footer>
-      </div>
-      {/if}
-      {/key}
 
       <div class="status-region" aria-live="polite">
         {#if error}<span class="error" role="alert">{error}</span>{:else if message}<span>{message}</span>{/if}
@@ -572,10 +541,6 @@
     transition: width 180ms ease;
   }
 
-  .pool-divider {
-    background: var(--background-modifier-border);
-  }
-
   .widget-body {
     display: flex;
     flex: 1;
@@ -587,16 +552,25 @@
   }
 
   .surface-content {
-    display: flex;
+    display: grid;
     flex: 1;
-    flex-direction: column;
-    gap: 12px;
-    overflow: auto;
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
+    gap: 10px;
+    overflow: hidden;
     min-height: 0;
     padding: 1px;
   }
 
-  .surface-switcher {
+  .focus-content {
+    display: flex;
+    flex-direction: column;
+    overflow: auto;
+    min-height: 0;
+    padding: 1px;
+    scrollbar-gutter: stable;
+  }
+
+  .focus-mode-switcher {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 3px;
@@ -605,72 +579,80 @@
     background: var(--background-secondary);
   }
 
-  .surface-radio {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    opacity: 0;
-    pointer-events: none;
-  }
-
-  .surface-switcher label {
+  .focus-mode-switcher button {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 6px;
-    min-height: 30px;
+    gap: 5px;
+    min-height: 31px;
     border: 0;
     color: var(--text-muted);
     background: transparent;
     box-shadow: none;
     font-size: 0.72rem;
-    cursor: pointer;
-    user-select: none;
   }
 
-  .surface-switcher label:hover {
-    color: var(--text-normal);
-    background: var(--background-modifier-hover);
-  }
-
-  .surface-switcher label.active {
+  .focus-mode-switcher button.active {
     color: var(--text-normal);
     background: var(--background-primary);
-    box-shadow: 0 1px 3px rgb(0 0 0 / 0.08);
-    font-weight: 650;
+    box-shadow: 0 1px 3px rgb(0 0 0 / 9%);
   }
 
-  .surface-radio:focus-visible + label {
-    outline: 2px solid var(--interactive-accent);
-    outline-offset: 1px;
+  .message-carousel {
+    display: grid;
+    grid-template-columns: 32px minmax(0, 1fr) 32px;
+    align-items: center;
+    gap: 6px;
+    min-height: 72px;
+    padding: 8px 4px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 10px;
+    background: var(--background-secondary-alt);
+    overflow: hidden;
   }
 
-  .surface-switcher label span {
-    min-width: 18px;
-    padding: 1px 5px;
-    border-radius: 999px;
-    color: var(--text-muted);
-    background: var(--background-modifier-hover);
-    font-size: 0.62rem;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .theme-row {
+  .message-carousel > div {
     display: grid;
     gap: 3px;
+    min-width: 0;
+    text-align: center;
   }
 
-  .theme-row span,
-  .current-label span,
-  .upcoming h3 {
+  .message-carousel span {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    color: var(--text-muted);
+    font-size: 0.64rem;
+  }
+
+  .message-carousel strong,
+  .message-carousel small {
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+
+  .message-carousel strong {
+    -webkit-line-clamp: 2;
+    font-size: 0.83rem;
+    line-height: 1.35;
+  }
+
+  .message-carousel small {
+    -webkit-line-clamp: 1;
+    color: var(--text-faint);
+    font-size: 0.65rem;
+  }
+
+  .current-label span {
     color: var(--text-muted);
     font-size: 0.68rem;
     font-weight: 600;
     letter-spacing: 0.04em;
-  }
-
-  .theme-row strong {
-    font-size: 0.88rem;
   }
 
   .current-card {
@@ -681,6 +663,90 @@
     border-left: 3px solid var(--interactive-accent);
     border-radius: 10px;
     background: var(--background-secondary);
+  }
+
+  .focus-clock {
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr);
+    align-items: center;
+    gap: 6px;
+    padding: 7px 9px;
+    border-radius: 8px;
+    color: var(--text-muted);
+    background: var(--background-primary);
+  }
+
+  .focus-clock strong {
+    color: var(--text-normal);
+    font-variant-numeric: tabular-nums;
+    font-size: 1rem;
+  }
+
+  .focus-clock small {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .compact-tasks {
+    display: grid;
+    gap: 5px;
+  }
+
+  .compact-tasks > button {
+    display: grid;
+    grid-template-columns: 24px minmax(0, 1fr) 18px;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    min-height: 48px;
+    padding: 6px 8px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    color: var(--text-normal);
+    background: var(--background-primary);
+    box-shadow: none;
+    text-align: left;
+  }
+
+  .compact-tasks > button:hover {
+    border-color: var(--interactive-accent);
+    background: var(--background-modifier-hover);
+  }
+
+  .compact-tasks > button.done {
+    opacity: 0.58;
+  }
+
+  .compact-tasks > button > span:not(.compact-status) {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .compact-tasks strong,
+  .compact-tasks small {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .compact-tasks strong {
+    font-size: 0.76rem;
+  }
+
+  .compact-tasks small,
+  .compact-status {
+    color: var(--text-muted);
+    font-size: 0.65rem;
+  }
+
+  .compact-status {
+    text-align: center;
+  }
+
+  .compact-empty {
+    min-height: 120px;
   }
 
   .current-label {
@@ -766,71 +832,13 @@
     flex: 1;
   }
 
-  .upcoming {
-    display: grid;
-    gap: 6px;
-  }
-
-  .upcoming h3 {
-    margin: 0;
-  }
-
-  .upcoming-row {
-    display: grid;
-    grid-template-columns: 22px minmax(0, 1fr) 32px;
-    align-items: center;
-    gap: 5px;
-    min-height: 46px;
-    padding: 4px;
-    border: 1px solid var(--background-modifier-border);
-    border-radius: 8px;
-  }
-
-  .upcoming-row .order {
-    color: var(--text-faint);
-    font-size: 0.7rem;
-    text-align: center;
-  }
-
-  .upcoming-row > button:not(.icon-button) {
-    display: grid;
-    gap: 2px;
-    min-width: 0;
-    padding: 6px;
-    border: 0;
-    color: var(--text-normal);
-    background: transparent;
-    box-shadow: none;
-    text-align: left;
-  }
-
-  .upcoming-row > button:not(.icon-button):hover {
-    background: var(--background-modifier-hover);
-  }
-
-  .upcoming-row strong,
-  .upcoming-row small {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .upcoming-row strong {
-    font-size: 0.76rem;
-  }
-
-  .upcoming-row small {
-    color: var(--text-muted);
-    font-size: 0.65rem;
-  }
-
   .empty-state {
     display: grid;
     flex: 1;
     align-content: center;
     justify-items: center;
     gap: 8px;
-    min-height: 190px;
+    min-height: 210px;
     padding: 24px 12px;
     color: var(--text-muted);
     text-align: center;
@@ -855,104 +863,25 @@
     background: var(--background-secondary);
   }
 
-  .pool-panel {
-    display: grid;
-    flex: 1;
-    align-content: start;
-    grid-template-rows: auto minmax(0, 1fr) auto;
-    gap: 8px;
-    min-height: 0;
-  }
-
-  .pool-panel > header {
-    display: grid;
-    gap: 3px;
-  }
-
-  .pool-panel > header > span {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-  }
-
-  .pool-panel > header small,
-  .pool-list small,
-  .pool-empty small {
-    color: var(--text-muted);
-    font-size: 0.66rem;
-  }
-
-  .pool-list {
-    display: grid;
-    align-content: start;
-    gap: 6px;
-    overflow: auto;
-    min-height: 0;
-  }
-
-  .pool-more {
-    margin: 0;
-    color: var(--text-muted);
-    font-size: 0.66rem;
-    text-align: center;
-  }
-
-  .pool-list article {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 9px;
-    border: 1px solid var(--background-modifier-border);
-    border-radius: 8px;
-    background: var(--background-secondary);
-  }
-
-  .pool-list article > div {
-    display: grid;
-    gap: 2px;
-    min-width: 0;
-  }
-
-  .pool-list strong,
-  .pool-list small {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .pool-list strong {
-    font-size: 0.76rem;
-  }
-
-  .pool-list button {
-    min-height: 29px;
-    padding: 4px 8px;
-    white-space: nowrap;
-    font-size: 0.68rem;
-  }
-
-  .pool-empty {
-    padding: 30px 12px;
-  }
-
   .empty-state button,
-  footer > button:not(.icon-button) {
+  .focus-footer > button:not(.icon-button) {
     display: inline-flex;
     align-items: center;
     gap: 5px;
   }
 
-  footer {
+  .focus-footer {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
+    min-height: 36px;
     padding-top: 3px;
     border-top: 1px solid var(--background-modifier-border);
+    background: var(--background-primary);
   }
 
-  footer > button:not(.icon-button) {
+  .focus-footer > button:not(.icon-button) {
     min-height: 32px;
     color: var(--text-muted);
     background: transparent;

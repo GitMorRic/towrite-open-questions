@@ -117,9 +117,9 @@ describe("ordinary note task controls", () => {
     expect(trailingTaskIdRange("- [ ] 正文 ^task_short")).toBeUndefined();
   });
 
-  it("always hides the technical ID in Live Preview and leaves it visible in Source mode", () => {
+  it("always hides the technical ID in Live Preview and Source mode", () => {
     expect(shouldHideTaskIdRange(true)).toBe(true);
-    expect(shouldHideTaskIdRange(false)).toBe(false);
+    expect(shouldHideTaskIdRange(false)).toBe(true);
   });
 
   it("keeps the action tray open until an outside click or Escape", () => {

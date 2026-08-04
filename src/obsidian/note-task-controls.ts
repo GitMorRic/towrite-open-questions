@@ -7,7 +7,6 @@ import {
   WidgetType,
   type ViewUpdate
 } from "@codemirror/view";
-import { editorLivePreviewField } from "obsidian";
 import type {
   DailyTaskTimingSnapshot,
   NoteTaskCandidate,
@@ -90,13 +89,6 @@ function buildControls(view: EditorView, options: NoteTaskControlsOptions): Deco
   if (!activePath || !document || document.sourcePath !== activePath) return builder.finish();
 
   const entries: Array<{ from: number; to: number; decoration: Decoration }> = [];
-  const livePreview = view.state.field(editorLivePreviewField, false) === true;
-  const selectedLines = new Set<number>();
-  for (const selection of view.state.selection.ranges) {
-    selectedLines.add(view.state.doc.lineAt(selection.anchor).number);
-    selectedLines.add(view.state.doc.lineAt(selection.head).number);
-  }
-
   for (const item of document.tasks) {
     if (item.line < 1 || item.line > view.state.doc.lines) continue;
     const line = view.state.doc.line(item.line);
@@ -114,10 +106,10 @@ function buildControls(view: EditorView, options: NoteTaskControlsOptions): Deco
       })
     });
     const taskIdRange = trailingTaskIdRange(line.text);
-    if (livePreview && taskIdRange) {
+    if (taskIdRange) {
       const from = line.from + taskIdRange.from;
       const to = line.from + taskIdRange.to;
-      if (shouldHideTaskIdRange(livePreview)) {
+      if (shouldHideTaskIdRange()) {
         entries.push({
           from,
           to,
@@ -139,7 +131,6 @@ function buildControls(view: EditorView, options: NoteTaskControlsOptions): Deco
       if (
         lineNumber < 1
         || lineNumber > view.state.doc.lines
-        || selectedLines.has(lineNumber)
       ) {
         continue;
       }
@@ -222,8 +213,8 @@ class TrackedNoteTaskWidget extends WidgetType {
       ? `${timingMinuteBucket(this.timing)}m`
       : "···";
     disclosureToggle.title = this.timing.status === "running"
-      ? "任务正在计时；悬停或点击查看操作"
-      : "悬停或点击查看任务状态、属性和操作";
+      ? "任务正在计时；点击查看操作"
+      : "点击查看任务状态、属性和操作";
     disclosureToggle.setAttribute("aria-label", "展开 ToWrite 任务操作");
     disclosure.append(disclosureToggle);
     const details = doc.createElement("span");
@@ -313,9 +304,9 @@ export function trailingTaskIdRange(value: string): NoteTaskTextRange | undefine
 }
 
 export function shouldHideTaskIdRange(
-  livePreview: boolean
+  _livePreview?: boolean
 ): boolean {
-  return livePreview;
+  return true;
 }
 
 class NoteTaskCandidateWidget extends WidgetType {

@@ -21,6 +21,7 @@
     ListTodo,
     MoreHorizontal,
     MonitorUp,
+    PanelTopOpen,
     Pause,
     PenLine,
     Play,
@@ -75,10 +76,23 @@
     selectDailyOverview,
     type DailyPlanningDay
   } from "./daily-dashboard-state";
+  import WorkPoolPanel from "./WorkPoolPanel.svelte";
 
   export let dailyApi: DailyDashboardAdapter | undefined = undefined;
   export let onOpenCapture: (() => void) | undefined = undefined;
+  export let onOpenFloatingToday: (() => void) | undefined = undefined;
+  export let onOpenWorkPool: (() => void) | undefined = undefined;
+  export let workspaceMode = false;
+  export let onSurfaceChange: ((surface: "today" | "pool" | "review") => void) | undefined = undefined;
   export let initialSurface: "today" | "pool" | "review" = "today";
+
+  interface DailyProjectProgressSegment {
+    id: string;
+    label: string;
+    color: string;
+    items: DailyPlanItemPresentation[];
+    done: number;
+  }
 
   let surface: "today" | "pool" | "review" = initialSurface;
   let planningDay: DailyPlanningDay = "today";
@@ -89,26 +103,23 @@
   let configuration: DailyDashboardConfiguration = {
     categoryPresets: [],
     defaultView: "list",
+    focusMessages: [],
+    focusMessageIntervalSeconds: 30,
     taskPoolPath: "Planning/Task Pool.md",
     autoReturnUnfinished: true
   };
   let configurationLoaded = false;
   let taskPool: TaskPoolDocument | undefined;
-  let poolDraftText = "";
-  let poolDraftCategory = "";
-  let poolDraftDueDate = "";
-  let poolDraftEstimate = "";
-  let poolDraftTarget = "";
-  let poolCategoryFilter = "";
   let poolPickerSearch = "";
   let loading = true;
   let error = "";
   let busy = "";
   let plannerExpanded = false;
-  let previewExpanded = false;
+  let previewExpanded = workspaceMode;
   let candidatesExpanded = false;
   let previewItemId = "";
-  let previewPage: "overview" | "item" | "result" = "overview";
+  let previewPage: "overview" | "item" | "inbox" = "overview";
+  let previewInboxIndex = 0;
   let themeDraft = "";
   let draftText = "";
   let draftKind: DailyPlanItemKind = "task";
@@ -150,8 +161,14 @@
   let correctionEventByItem: Record<string, string> = {};
   let correctionTimeByItem: Record<string, string> = {};
   let correctionReasonByItem: Record<string, string> = {};
+  let originStageByItem: Record<string, string> = {};
   let unsubscribe: (() => void) | undefined;
   let refreshSequence = 0;
+
+  function switchSurface(next: "today" | "pool" | "review"): void {
+    surface = next;
+    onSurfaceChange?.(next);
+  }
 
   onMount(() => {
     unsubscribe = dailyApi?.subscribe?.(() => {
@@ -174,12 +191,15 @@
     ...(taskPool?.items.map((item) => item.category).filter((value): value is string => Boolean(value)) ?? [])
   ])];
   $: poolItems = taskPool?.items ?? [];
+  $: poolTaskById = new Map(poolItems.map((item) => [item.taskId, item]));
+  $: projectProgress = buildDailyProjectProgress(
+    items,
+    poolTaskById,
+    configuration.workPool?.projectAppearances ?? []
+  );
   $: availablePoolItems = filterAvailableTaskPoolItems(poolItems);
   $: visiblePoolPickerItems = filterAvailableTaskPoolItems(poolItems, poolPickerSearch);
   $: otherCandidates = candidates.filter((candidate) => candidate.source !== "pool");
-  $: filteredPoolItems = poolItems.filter((item) =>
-    !poolCategoryFilter || item.category === poolCategoryFilter
-  );
   $: filteredItems = filterDailyItemsByCategory(items, selectedCategory);
   $: groupedItems = groupDailyItems(filteredItems, hierarchy, items);
   $: unnormalizedTaskCount = hierarchy?.tasks.filter((task) => task.normalizationRequired).length ?? 0;
@@ -209,18 +229,95 @@
           estimateMinutes: item.estimateMinutes,
           target: item.target,
           startedAt: item.startedAt,
-           groupLabel: dailyGroupLabel(item.lineage?.groups.at(-1)),
+          groupLabel: dailyGroupLabel(item.lineage?.groups.at(-1)),
+          projectId: normalizedProjectId(dailyProjectLabel(item, poolTaskById)),
+          projectLabel: dailyProjectLabel(item, poolTaskById),
+          projectColor: projectColorForId(normalizedProjectId(dailyProjectLabel(item, poolTaskById))),
           targetLabel: item.targetResolution?.displayLabel,
           targetProvenance: item.targetResolution?.source,
           lineageRevision: item.lineageRevision,
           timing: timingForDeck(timingByItem[item.id])
-        }))
+        })),
+        inboxItems: otherCandidates.slice(0, 12).map((candidate) => ({
+          id: candidate.id,
+          source: candidate.source === "inbox" ? "inbox" as const : "rule" as const,
+          title: candidate.title,
+          detail: candidate.description,
+          reason: candidateSourceLabel(candidate.source)
+        })),
+        batteryPercent: configuration.deviceBatteryPercent
       })
     : undefined;
   $: previewTaskCard = deck?.planItems.find((card) => card.item.id === previewItem?.id)
     ?? deck?.planItems[0];
+  $: previewInboxCard = deck?.inboxItems[Math.min(previewInboxIndex, Math.max(0, (deck?.inboxItems.length ?? 1) - 1))]
+    ?? deck?.activeInboxItem;
   $: summary = generatedSummary
     ?? (snapshot?.summary ? { ...snapshot.summary, source: "rules" } : undefined);
+
+  function buildDailyProjectProgress(
+    planItems: DailyPlanItemPresentation[],
+    poolById: Map<string, TaskPoolItem>,
+    appearances: Array<{ projectId: string; color: string }>
+  ): DailyProjectProgressSegment[] {
+    const byProject = new Map<string, DailyProjectProgressSegment>();
+    const appearanceById = new Map(appearances.map((appearance) => [appearance.projectId, appearance]));
+    for (const item of planItems) {
+      const label = dailyProjectLabel(item, poolById);
+      const id = normalizedProjectId(label);
+      const existing = byProject.get(id);
+      if (existing) {
+        existing.items.push(item);
+        if (item.status === "done") existing.done += 1;
+        continue;
+      }
+      byProject.set(id, {
+        id,
+        label,
+        color: appearanceById.get(id)?.color ?? projectFallbackColor(id),
+        items: [item],
+        done: item.status === "done" ? 1 : 0
+      });
+    }
+    return [...byProject.values()];
+  }
+
+  function dailyProjectLabel(item: DailyPlanItemPresentation, poolById: Map<string, TaskPoolItem>): string {
+    const explicit = item.taskRef ? poolById.get(item.taskRef)?.project : undefined;
+    const lineageGroup = item.lineage?.groups.at(-1);
+    const lineage = lineageGroup ? dailyGroupLabel(lineageGroup) : undefined;
+    return cleanProjectLabel(explicit) || cleanProjectLabel(lineage) || dailyItemCategory(item) || "未分类";
+  }
+
+  function cleanProjectLabel(value: string | undefined): string {
+    return String(value ?? "")
+      .trim()
+      .replace(/^\[\[/u, "")
+      .replace(/\]\]$/u, "")
+      .split("|")[0]
+      .trim();
+  }
+
+  function normalizedProjectId(value: string): string {
+    return value.trim().toLocaleLowerCase()
+      .replace(/^#+/u, "")
+      .replace(/[\\/\s]+/gu, "-")
+      .replace(/[^\p{Letter}\p{Number}_-]+/gu, "-")
+      .replace(/^-+|-+$/gu, "")
+      .slice(0, 100) || "unclassified";
+  }
+
+  function projectFallbackColor(value: string): string {
+    const palette = ["#7c6ee6", "#3f8fcf", "#35a078", "#d68b35", "#cf5c74", "#6f8f3d", "#a660c2", "#4b96a6"];
+    let hash = 0;
+    for (const character of value) hash = ((hash << 5) - hash + character.codePointAt(0)!) | 0;
+    return palette[Math.abs(hash) % palette.length];
+  }
+
+  function projectColorForId(projectId: string): string {
+    return configuration.workPool?.projectAppearances.find((appearance) => appearance.projectId === projectId)?.color
+      ?? projectFallbackColor(projectId);
+  }
 
   async function switchDay(day: DailyPlanningDay): Promise<void> {
     if (planningDay === day) return;
@@ -253,7 +350,7 @@
       const [nextSnapshot, nextMetadata, nextCandidates, nextHierarchy, nextConfiguration, nextTaskPool] = await Promise.all([
         dailyApi.getSnapshot(date),
         dailyApi.getPlanMetadata?.(date) ?? Promise.resolve({}),
-        candidatesExpanded
+        workspaceMode || candidatesExpanded
           ? dailyApi.listPlanningCandidates?.(date) ?? Promise.resolve([])
           : Promise.resolve(candidates),
         dailyApi.getPlanHierarchy?.(date) ?? Promise.resolve(undefined),
@@ -287,7 +384,7 @@
       configuration = nextConfiguration;
       taskPool = nextTaskPool;
       if (!configurationLoaded) {
-        dashboardView = nextConfiguration.defaultView;
+        dashboardView = workspaceMode ? "list" : nextConfiguration.defaultView;
         configurationLoaded = true;
       }
       timingByItem = Object.fromEntries(
@@ -360,6 +457,20 @@
     await run(`complete:${item.id}`, () => dailyApi?.completeItem?.(item.id, item.revision));
   }
 
+  async function completeWithOrigin(item: DailyPlanItemPresentation): Promise<void> {
+    if (!dailyApi?.completeItemAndApplyOrigin) return;
+    const stageId = item.workKind === "note" || item.workKind === "inbox"
+      ? originStageByItem[item.id]
+      : undefined;
+    if ((item.workKind === "note" || item.workKind === "inbox") && !stageId) {
+      error = "先选择要推进到的 Workflow 阶段。";
+      return;
+    }
+    await run(`complete-origin:${item.id}`, () =>
+      dailyApi?.completeItemAndApplyOrigin?.(item.id, item.revision, { stageId })
+    );
+  }
+
   async function createItem(): Promise<void> {
     const text = draftText.trim();
     if (!text || !dailyApi?.createItem) return;
@@ -402,45 +513,16 @@
     if (draftPolicy !== "scheduled") draftSchedule = "";
   }
 
-  async function createPoolTask(): Promise<void> {
-    const text = poolDraftText.trim();
-    if (!text || !dailyApi?.createPoolTask) return;
-    await run("pool:create", async () => {
-      await dailyApi?.createPoolTask?.({
-        text,
-        category: poolDraftCategory.trim() || undefined,
-        target: poolDraftTarget.trim() || undefined,
-        dueDate: poolDraftDueDate || undefined,
-        estimateMinutes: positiveNumber(poolDraftEstimate)
-      });
-      poolDraftText = "";
-      poolDraftCategory = "";
-      poolDraftTarget = "";
-      poolDraftDueDate = "";
-      poolDraftEstimate = "";
-    });
-  }
-
   async function assignPoolTask(item: TaskPoolItem, day: DailyPlanningDay): Promise<void> {
     if (!dailyApi?.assignPoolTask) return;
     const date = dailyDateForPlanningDay(day);
-    surface = "today";
+    switchSurface("today");
     planningDay = day;
     await run(
       `pool:assign:${item.taskId}`,
       () => dailyApi?.assignPoolTask?.(item.taskId, item.revision, date),
       date
     );
-  }
-
-  function poolStateLabel(item: TaskPoolItem): string {
-    return {
-      pool: "任务池",
-      planned: item.plannedDate ? `已安排 ${item.plannedDate}` : "已安排",
-      returned: item.returnedDate ? `已回池 ${item.returnedDate}` : "已回池",
-      dropped: "不再追踪",
-      done: "已完成"
-    }[item.state];
   }
 
   function beginEdit(item: DailyPlanItem): void {
@@ -697,7 +779,7 @@
 
   function candidateSourceLabel(source: DailyPlanningCandidate["source"]): string {
     return {
-      pool: "任务池",
+      pool: "工作池",
       tothink: "ToThink",
       towrite: "ToWrite",
       inbox: "Inbox",
@@ -913,18 +995,25 @@
       <div class="daily-error" role="alert">{error}</div>
     {/if}
 
+    {#if !workspaceMode}
     <nav class="surface-switcher" aria-label="每日工作区">
-      <button type="button" class:active={surface === "today"} on:click={() => (surface = "today")}>
+      <button type="button" class:active={surface === "today"} on:click={() => switchSurface("today")}>
         <CalendarDays size={14} />今日
       </button>
-      <button type="button" class:active={surface === "pool"} on:click={() => (surface = "pool")}>
-        <ListTodo size={14} />任务池
+      <button type="button" class:active={surface === "pool"} on:click={() => switchSurface("pool")}>
+        <ListTodo size={14} />工作池
         <em>{poolItems.filter((item) => item.state === "pool" || item.state === "returned").length}</em>
       </button>
-      <button type="button" class:active={surface === "review"} on:click={() => (surface = "review")}>
+      <button type="button" class:active={surface === "review"} on:click={() => switchSurface("review")}>
         <BarChart3 size={14} />复盘
       </button>
+      {#if onOpenFloatingToday}
+        <button class="surface-utility" type="button" on:click={() => onOpenFloatingToday?.()}>
+          <PanelTopOpen size={14} />悬浮今日
+        </button>
+      {/if}
     </nav>
+    {/if}
 
     {#if surface === "today"}
     <nav class="day-switcher" aria-label="计划日期">
@@ -941,6 +1030,18 @@
         on:click={() => switchDay("tomorrow")}
       >明日</button>
       <span class="selected-date">{selectedDate}</span>
+      {#if workspaceMode}
+        <details class="source-utility">
+          <summary><BookOpen size={14} />Markdown</summary>
+          <div>
+            <strong>{metadata.sourcePath || "计划来源"}</strong>
+            <small>{metadata.sourceExists === false ? "文件尚未创建" : "与工作台双向同步"}</small>
+            {#if metadata.sourceExists === false && dailyApi.ensurePlanSource}<button type="button" on:click={() => run("ensure-source", () => dailyApi?.ensurePlanSource?.(selectedDate))}>创建计划页</button>{/if}
+            {#if dailyApi.openPlanSource}<button type="button" disabled={metadata.sourceExists === false} on:click={() => dailyApi?.openPlanSource?.(selectedDate)}>打开原文</button>{/if}
+            {#if dailyApi.openPlanSettings}<button type="button" on:click={() => dailyApi?.openPlanSettings?.()}>更改来源</button>{/if}
+          </div>
+        </details>
+      {:else}
       <div
         class="source-state"
         class:missing={metadata.sourceExists === false}
@@ -995,13 +1096,15 @@
           更改来源
         </button>
       {/if}
+      {/if}
     </nav>
 
     <section class="focus-card" aria-label={planningDay === "today" ? "今日概要" : "明日概要"}>
       <header>
-        <div>
-          <span>{planningDay === "today" ? "今日主题" : "明日主题"}</span>
-          <strong>{metadata.theme || "还没有设定主题"}</strong>
+        <div class="focus-heading">
+          <span>{planningDay === "today" ? "今日进度" : "明日计划"}</span>
+          <strong>{overview.total ? `${overview.total} 项安排` : "还没有安排任务"}</strong>
+          {#if metadata.theme}<em title="可选的当日焦点">焦点 · {metadata.theme}</em>{/if}
         </div>
         <div class="focus-progress">
           <strong>{overview.done} / {overview.total}</strong>
@@ -1037,9 +1140,32 @@
       {:else}
         <div class="focus-empty">这一天还没有待推进的计划。</div>
       {/if}
-      <div class="focus-progress-bar"><i style={`--progress: ${overview.total ? Math.round((overview.done / overview.total) * 100) : 0}%`}></i></div>
+      <div
+        class="project-progress-battery"
+        role="progressbar"
+        aria-label={`${planningDay === "today" ? "今日" : "明日"}任务进度`}
+        aria-valuemin="0"
+        aria-valuemax={overview.total}
+        aria-valuenow={overview.done}
+      >
+        {#each projectProgress as segment (segment.id)}
+          <div class="battery-project" style={`--project-color:${segment.color};--project-weight:${segment.items.length}`} title={`${segment.label} · ${segment.done}/${segment.items.length}`}>
+            {#each segment.items as item (item.id)}<i class:done={item.status === "done"}></i>{/each}
+          </div>
+        {:else}
+          <span></span>
+        {/each}
+      </div>
+      {#if projectProgress.length}
+        <div class="project-progress-legend">
+          {#each projectProgress as segment (segment.id)}
+            <span style={`--project-color:${segment.color}`}><i></i>{segment.label}<em>{segment.done}/{segment.items.length}</em></span>
+          {/each}
+        </div>
+      {/if}
     </section>
 
+    {#if !workspaceMode}
     <section class="planner-card">
       <button class="planner-heading" type="button" aria-expanded={plannerExpanded} on:click={() => (plannerExpanded = !plannerExpanded)}>
         <span>
@@ -1151,8 +1277,8 @@
           </div>
         </form>
 
-        <section class="planner-pool-picker" aria-label="从任务池选择">
-          <header>
+        <details class="planner-pool-picker" aria-label="从任务池选择">
+          <summary>
             <span>
               <ListTodo size={15} />
               <span>
@@ -1160,8 +1286,10 @@
                 <small>{availablePoolItems.length} 条尚未承诺日期的任务</small>
               </span>
             </span>
-            <button type="button" on:click={() => (surface = "pool")}>打开完整任务池</button>
-          </header>
+            <ChevronDown size={15} />
+          </summary>
+          <div class="pool-picker-body">
+            <button class="open-pool-button" type="button" on:click={() => switchSurface("pool")}>打开完整任务池</button>
           {#if availablePoolItems.length === 0}
             <p>任务池目前为空。长期任务先放进任务池，需要时再安排到今天或明天。</p>
           {:else}
@@ -1198,7 +1326,8 @@
               <p>没有匹配的任务。</p>
             {/if}
           {/if}
-        </section>
+          </div>
+        </details>
 
         <section class="candidate-slot">
           <button type="button" aria-expanded={candidatesExpanded} on:click={toggleCandidates}>
@@ -1226,6 +1355,17 @@
         </section>
       {/if}
     </section>
+    {:else}
+      <div class="workspace-arrange-bar">
+        <div>
+          <strong>{planningDay === "today" ? "今天要推进什么？" : "明天准备推进什么？"}</strong>
+          <small>新任务统一进入工作池，再安排到具体日期。</small>
+        </div>
+        <button class="primary" type="button" on:click={() => onOpenWorkPool?.()}>
+          <ListTodo size={15} />从工作池安排
+        </button>
+      </div>
+    {/if}
 
     <div class="daily-main-grid" class:preview-open={previewExpanded}>
       <section class="plan-list-card">
@@ -1235,6 +1375,16 @@
             <p>Markdown 顺序就是设备顺序；普通任务不自动迁移，任务池引用会在日期结束后回池。</p>
           </div>
           <div class="list-header-actions">
+            {#if workspaceMode}
+              <button class:active={previewExpanded} type="button" title={previewExpanded ? "收起 2.7 英寸墨水屏预览" : "打开 2.7 英寸墨水屏预览"} on:click={() => (previewExpanded = !previewExpanded)}><MonitorUp size={15} />2.7″ 预览</button>
+              <button type="button" title="刷新计划" aria-label="刷新计划" on:click={() => refresh()}><RefreshCw size={15} /></button>
+              <details class="list-more-actions">
+                <summary aria-label="更多清单操作"><MoreHorizontal size={15} /></summary>
+                <div>
+                  {#if dailyApi.getNormalizationPreview}<button type="button" disabled={Boolean(busy)} on:click={previewNormalizationForPlan}><FileDiff size={15} />规范化清单</button>{/if}
+                </div>
+              </details>
+            {:else}
             {#if normalizationUndoToken && dailyApi.undoNormalization}
               <button type="button" title="安全撤销刚才的规范化" disabled={Boolean(busy)} on:click={undoNormalization}>
                 <Undo2 size={15} />
@@ -1259,9 +1409,11 @@
             <button type="button" title="刷新计划" aria-label="刷新计划" on:click={() => refresh()}>
               <RefreshCw size={15} />
             </button>
+            {/if}
           </div>
         </header>
 
+        {#if !workspaceMode}
         <div class="dashboard-view-toolbar">
           <div class="view-switcher" role="group" aria-label="清单视图">
             <button class:active={dashboardView === "list"} type="button" title="列表视图" on:click={() => (dashboardView = "list")}><LayoutList size={14} />列表</button>
@@ -1297,6 +1449,7 @@
             添加
           </button>
         </form>
+        {/if}
 
         {#if normalizationPreview}
           <section class="normalization-preview" aria-label="规范化预览">
@@ -1510,6 +1663,22 @@
                     {/if}
                     {#if item.status !== "done" && directChildTasks(item).length === 0 && dailyApi.dropDailyItem}
                       <button type="button" class="danger" on:click={() => run(`drop:${item.id}`, () => dailyApi?.dropDailyItem?.(item.id, item.revision))}><Trash2 size={14} />不再追踪</button>
+                    {/if}
+                    {#if item.status !== "done" && item.workKind && dailyApi.completeItemAndApplyOrigin}
+                      {#if item.workKind === "note" || item.workKind === "inbox"}
+                        <label class="origin-stage-picker">
+                          <span>完成后推进到</span>
+                          <select bind:value={originStageByItem[item.id]}>
+                            <option value="">选择阶段</option>
+                            {#each configuration.workflowStages ?? [] as stage}
+                              <option value={stage.id}>{stage.label}</option>
+                            {/each}
+                          </select>
+                        </label>
+                      {/if}
+                      <button class="primary" type="button" on:click={() => completeWithOrigin(item)}>
+                        <Check size={14} />{item.workKind === "question" ? "完成并解决问题" : "完成并推进笔记"}
+                      </button>
                     {/if}
                   </div>
                 </details>
@@ -1733,26 +1902,35 @@
       <aside class="preview-column">
         <section class="eink-card">
           <header>
-            <span>2.7″ E-ink preview</span>
+            <span>2.7″ 墨水屏预览</span>
             <small>{deck?.pageOrder.length ?? 0} 页 · {deck?.planItems.length ?? 0} 张任务卡</small>
           </header>
           <nav class="preview-tabs" aria-label="设备页面预览">
-            <button class:active={previewPage === "overview"} type="button" on:click={() => (previewPage = "overview")}>概要</button>
+            <button class:active={previewPage === "overview"} type="button" on:click={() => (previewPage = "overview")}>总览</button>
             <button class:active={previewPage === "item"} type="button" on:click={() => (previewPage = "item")}>任务</button>
-            <button class:active={previewPage === "result"} type="button" on:click={() => (previewPage = "result")}>结果</button>
+            <button class:active={previewPage === "inbox"} type="button" on:click={() => (previewPage = "inbox")}>提醒</button>
           </nav>
           <div class="eink-screen">
             {#if previewPage === "overview" && deck}
-              <div class="eink-meta"><strong>{deck.date.slice(5).replace("-", "月")}日</strong><span>今日概要</span></div>
-              <h4>{deck.theme || "今天最重要的是什么？"}</h4>
+              <div class="eink-meta">
+                <strong>{deck.date.slice(5).replace("-", "月")}日 · 今日</strong>
+                <span class="eink-battery">电量 {deck.overview.batteryPercent ?? "--"}%</span>
+              </div>
+              <div class="eink-total-progress" aria-label={`今日完成 ${deck.overview.progress.done} / ${deck.overview.progress.total}`}>
+                <span style={`width:${deck.overview.progress.total > 0 ? (deck.overview.progress.done / deck.overview.progress.total) * 100 : 0}%`}></span>
+              </div>
+              <div class="eink-project-stats">
+                {#each deck.overview.projects.slice(0, 4) as project}
+                  <div><i style={`--project-color:${project.color || "#222"}`}></i><span>{project.label}</span><strong>{project.done}/{project.total}</strong></div>
+                {/each}
+              </div>
               {#if deck.overview.current}
-                <p class="eink-current">● {deck.overview.current.text}</p>
-                <small>{deck.overview.current.nextStep ? `下一步：${deck.overview.current.nextStep}` : "还没有最小下一步"}</small>
-                {#each deck.overview.upcoming as item}<p class="eink-next">○ {item.text}</p>{/each}
+                <small>当前</small>
+                <p class="eink-current">{deck.overview.current.text}</p>
               {:else}
-                <p class="eink-empty">今天没有待推进项目</p>
+                <p class="eink-empty compact">今天没有待推进任务</p>
               {/if}
-              <footer><span>◀ 切换</span><strong>{deck.overview.progress.done} / {deck.overview.progress.total}</strong><span>开始</span></footer>
+              <footer><span>左：页面</span><strong>{deck.overview.progress.done}/{deck.overview.progress.total}</strong><span>主键：开始</span></footer>
             {:else if previewPage === "item" && previewTaskCard}
               <div class="eink-meta">
                 <strong>{previewTaskCard.item.groupLabel || "未分类"} · {previewTaskCard.position}/{previewTaskCard.total}</strong>
@@ -1771,13 +1949,29 @@
                   / {previewTaskCard.item.estimateMinutes ? `${previewTaskCard.item.estimateMinutes} 分钟` : "无预计"}
                 </p>
               {/if}
-              <footer><span>切换</span><span>打开</span><span>✓ 完成</span></footer>
-            {:else if previewPage === "result" && deck}
-              <div class="eink-meta"><strong>今日结果</strong><span>{deck.result.progress.done}/{deck.result.progress.total}</span></div>
-              {#each deck.result.completed.slice(0, 3) as item}<p class="eink-next">✓ {item.text}</p>{/each}
-              {#each deck.result.remaining.slice(0, 3) as item}<p class="eink-next">→ {item.text}</p>{/each}
-              {#if deck.result.progress.total === 0}<p class="eink-empty">还没有计划</p>{/if}
-              <footer><span>◀ 切换</span><span>打开计划</span><span>继续</span></footer>
+              <footer><span>左：页面</span><span>主键：打开</span><span>右长按：完成</span></footer>
+            {:else if previewPage === "inbox" && previewInboxCard}
+              <div class="eink-meta">
+                <strong>提醒 · 收件箱</strong>
+                <span>{previewInboxCard.total > 0 ? `${previewInboxCard.position}/${previewInboxCard.total}` : "0"}</span>
+              </div>
+              {#if previewInboxCard.item}
+                <small class="eink-source-badge">
+                  {previewInboxCard.item.source === "ai"
+                    ? "AI 推测"
+                    : previewInboxCard.item.source === "human"
+                      ? "亲友留言"
+                      : previewInboxCard.item.source === "inbox"
+                        ? "Inbox"
+                        : "规则建议"}
+                </small>
+                <h4>{previewInboxCard.item.title}</h4>
+                {#if previewInboxCard.item.detail}<p>{previewInboxCard.item.detail}</p>{/if}
+                {#if previewInboxCard.item.reason}<small>此刻出现：{previewInboxCard.item.reason}</small>{/if}
+              {:else}
+                <p class="eink-empty">现在没有新提醒</p>
+              {/if}
+              <footer><span>左：页面</span><span>右：下一条</span><span>主键：确认</span></footer>
             {:else}
               <div class="eink-placeholder"><MonitorUp size={22} /><span>暂无设备页面</span></div>
             {/if}
@@ -1796,105 +1990,36 @@
       {/if}
     </div>
 
-    {:else if surface === "pool"}
-      <section class="task-pool-card">
-        <header class="task-pool-heading">
-          <div>
-            <span>Markdown 任务池</span>
-            <h2>先收集，再决定哪天承诺</h2>
-            <p>{configuration.taskPoolPath} · 今日只保存稳定引用；计时仍在独立 JSONL 账本。</p>
-          </div>
-          <div>
-            {#if dailyApi.openTaskPoolSource}
-              <button type="button" on:click={() => dailyApi?.openTaskPoolSource?.()}><BookOpen size={14} />打开原文</button>
-            {/if}
-            <button type="button" on:click={() => refresh()}><RefreshCw size={14} />刷新</button>
-          </div>
-        </header>
-
-        <form class="pool-create-form" on:submit|preventDefault={createPoolTask}>
-          <label class="wide"><span>任务</span><input bind:value={poolDraftText} placeholder="准备推进什么？可以绑定 [[笔记]]" required /></label>
-          <label><span>类别</span><input bind:value={poolDraftCategory} list="daily-category-options" placeholder="项目" /></label>
-          <label><span>目标笔记</span><input bind:value={poolDraftTarget} placeholder="[[Echo MVP]]" /></label>
-          <label class="pool-due">
-            <span>截止日期</span>
-            <input bind:value={poolDraftDueDate} type="date" />
-            <span class="date-shortcuts">
-              <button type="button" on:click={() => (poolDraftDueDate = dailyDueDateForShortcut("today"))}>今天</button>
-              <button type="button" on:click={() => (poolDraftDueDate = dailyDueDateForShortcut("tomorrow"))}>明天</button>
-              <button type="button" on:click={() => (poolDraftDueDate = dailyDueDateForShortcut("friday"))}>本周五</button>
-              <button type="button" on:click={() => (poolDraftDueDate = "")}>清除</button>
-            </span>
-          </label>
-          <label><span>预计分钟</span><input bind:value={poolDraftEstimate} type="number" min="1" max="1440" placeholder="30" /></label>
-          <button class="primary" type="submit" disabled={!poolDraftText.trim() || !dailyApi.createPoolTask || Boolean(busy)}>
-            <Plus size={14} />加入任务池
-          </button>
-        </form>
-        <datalist id="daily-category-options">
-          {#each categoryChoices as category}<option value={category}></option>{/each}
-        </datalist>
-
-        <div class="pool-toolbar">
-          <div>
-            <strong>{filteredPoolItems.length}</strong>
-            <span>条任务</span>
-            <small>{poolItems.filter((item) => item.state === "pool" || item.state === "returned").length} 条可安排</small>
-          </div>
-          <label>
-            <span>类别</span>
-            <select bind:value={poolCategoryFilter}>
-              <option value="">全部类别</option>
-              {#each categoryChoices as category}<option value={category}>{category}</option>{/each}
-            </select>
-          </label>
+    {#if workspaceMode}
+      <details class="review-card workspace-review">
+        <summary>
+          <span><BarChart3 size={16} /><strong>今日复盘</strong><small>统计与总结默认收起，不占用当前任务的注意力。</small></span>
+          <ChevronDown size={16} />
+        </summary>
+        <div class="daily-metrics compact-metrics">
+          <article><span>新增写作单位</span><strong>{snapshot?.activity.positiveWritingUnits ?? 0}</strong></article>
+          <article><span>净增</span><strong class:negative={(snapshot?.activity.netWritingUnits ?? 0) < 0}>{formatSigned(snapshot?.activity.netWritingUnits ?? 0)}</strong></article>
+          <article><span>完成事项</span><strong>{Math.max(snapshot?.plan.done ?? 0, snapshot?.activity.tasksCompleted ?? 0)}</strong></article>
+          <article><span>Capture</span><strong>{snapshot?.activity.capturesCommitted ?? 0}</strong></article>
         </div>
-
-        {#if taskPool?.diagnostics.some((diagnostic) => diagnostic.severity === "error")}
-          <div class="daily-error" role="alert">
-            任务池存在重复 ID 或无效字段，请先打开原文修复；为避免覆盖，写入已暂停。
-          </div>
+        {#if summary}
+          <div class="workspace-summary"><strong>{summary.headline}</strong>{#each summary.lines as line}<span>{line}</span>{/each}</div>
         {/if}
-
-        <div class="pool-grid">
-          {#each ["pool", "returned", "planned", "done", "dropped"] as state}
-            {@const stateItems = filteredPoolItems.filter((item) => item.state === state)}
-            {#if stateItems.length}
-              <section class={`pool-column state-${state}`}>
-                <header><strong>{poolStateLabel(stateItems[0])}</strong><span>{stateItems.length}</span></header>
-                <div>
-                  {#each stateItems as item (item.taskId)}
-                    <article>
-                      <span class="pool-state">{poolStateLabel(item)}</span>
-                      <strong>{item.text}</strong>
-                      <small>{[item.category, item.project].filter(Boolean).join(" · ") || "未分类"}</small>
-                      <div class="pool-properties">
-                        {#if item.dueDate}<time datetime={item.dueDate}>截止 {item.dueDate}</time>{/if}
-                        {#if item.estimateMinutes}<span>预计 {item.estimateMinutes} 分钟</span>{/if}
-                        {#if item.target}<span>{item.target}</span>{/if}
-                        {#if item.source && item.source !== item.target}<span>来源 {item.source}</span>{/if}
-                      </div>
-                      {#if (item.state === "pool" || item.state === "returned") && dailyApi.assignPoolTask}
-                        <footer>
-                          <button class="primary" type="button" disabled={Boolean(busy)} on:click={() => assignPoolTask(item, "today")}>加入今天</button>
-                          <button type="button" disabled={Boolean(busy)} on:click={() => assignPoolTask(item, "tomorrow")}>加入明天</button>
-                        </footer>
-                      {/if}
-                    </article>
-                  {/each}
-                </div>
-              </section>
-            {/if}
-          {/each}
-          {#if filteredPoolItems.length === 0}
-            <div class="daily-empty">
-              <ListTodo size={24} />
-              <strong>任务池还是空的</strong>
-              <p>先在上方写一条，或把 ToThink、ToWrite、Inbox 候选加入今天。</p>
-            </div>
-          {/if}
+        <div class="review-actions">
+          {#if dailyApi.generateSummary}<button type="button" disabled={Boolean(busy)} on:click={() => generateSummary("rules")}><RefreshCw size={14} />生成总结</button>{/if}
+          {#if dailyApi.writeSummary && summary}<button type="button" disabled={Boolean(busy)} on:click={() => run("write-summary", writeCurrentSummary)}><FilePlus2 size={14} />写回日记</button>{/if}
         </div>
-      </section>
+      </details>
+    {/if}
+
+    {:else if surface === "pool"}
+      <WorkPoolPanel
+        {dailyApi}
+        date={selectedDate}
+        workflowStages={configuration.workflowStages ?? []}
+        articleTypes={configuration.articleTypes ?? []}
+        questionStatuses={configuration.questionStatuses ?? []}
+      />
     {:else}
       <details class="review-card" open>
         <summary>
@@ -2146,151 +2271,8 @@
     to { opacity: 1; }
   }
 
-  .task-pool-card {
-    display: grid;
-    gap: 14px;
-    padding: 16px;
-  }
-
-  .task-pool-heading,
-  .pool-toolbar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-  }
-
-  .task-pool-heading h2,
-  .task-pool-heading p {
-    margin: 2px 0 0;
-  }
-
-  .task-pool-heading > div:last-child,
-  .pool-toolbar > div,
-  .pool-toolbar label,
-  .pool-create-form > button,
-  .pool-column article footer {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-  }
-
-  .task-pool-heading button,
-  .pool-column button {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-  }
-
-  .pool-create-form {
-    display: grid;
-    grid-template-columns: minmax(220px, 2fr) repeat(4, minmax(120px, 1fr)) auto;
-    gap: 8px;
-    padding: 12px;
-    border: 1px solid var(--daily-border);
-    border-radius: 11px;
-    background: var(--daily-soft);
-  }
-
-  .pool-create-form label,
-  .pool-toolbar label {
-    display: grid;
-    gap: 4px;
-    min-width: 0;
-    color: var(--text-muted);
-    font-size: 0.7rem;
-  }
-
-  .pool-create-form input,
-  .pool-toolbar select {
-    width: 100%;
-  }
-
-  .pool-due .date-shortcuts {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 3px;
-  }
-
-  .pool-due .date-shortcuts button {
-    padding: 2px 5px;
-    font-size: 0.64rem;
-  }
-
-  .pool-toolbar {
-    padding-top: 2px;
-  }
-
-  .pool-toolbar > div strong {
-    font-size: 1.15rem;
-  }
-
-  .pool-toolbar small {
-    color: var(--text-muted);
-  }
-
-  .pool-grid {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(210px, 1fr));
-    gap: 10px;
-    align-items: start;
-  }
-
-  .pool-column {
-    overflow: hidden;
-    border: 1px solid var(--daily-border);
-    border-radius: 11px;
-    background: var(--daily-soft);
-  }
-
-  .pool-column > header {
-    display: flex;
-    justify-content: space-between;
-    padding: 9px 10px;
-    border-bottom: 1px solid var(--daily-border);
-  }
-
-  .pool-column > header span,
-  .pool-state {
-    color: var(--text-muted);
-    font-size: 0.68rem;
-  }
-
-  .pool-column > div {
-    display: grid;
-    gap: 7px;
-    padding: 7px;
-  }
-
-  .pool-column article {
-    display: grid;
-    gap: 5px;
-    padding: 9px;
-    border: 1px solid var(--daily-border);
-    border-radius: 9px;
-    background: var(--daily-raised);
-  }
-
-  .pool-column article > small,
-  .pool-properties {
-    color: var(--text-muted);
-    font-size: 0.7rem;
-  }
-
-  .pool-properties {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px 9px;
-  }
-
-  .pool-column.state-done,
-  .pool-column.state-dropped {
-    opacity: 0.72;
-  }
-
   .focus-card,
   .eink-card,
-  .task-pool-card,
   .review-card {
     border: 1px solid var(--daily-border);
     border-radius: 13px;
@@ -2308,7 +2290,7 @@
     gap: 16px;
   }
 
-  .focus-card > header > div:first-child,
+  .focus-heading,
   .focus-progress {
     display: grid;
     gap: 2px;
@@ -2321,8 +2303,14 @@
     font-size: 0.72rem;
   }
 
-  .focus-card > header > div:first-child strong {
+  .focus-heading strong {
     font-size: 1.05rem;
+  }
+
+  .focus-heading em {
+    color: var(--text-muted);
+    font-size: 0.68rem;
+    font-style: normal;
   }
 
   .focus-progress {
@@ -2393,19 +2381,81 @@
     color: var(--text-muted);
   }
 
-  .focus-progress-bar {
-    overflow: hidden;
-    height: 4px;
-    margin-top: 9px;
-    border-radius: 999px;
-    background: var(--daily-border);
+  .project-progress-battery {
+    position: relative;
+    display: flex;
+    gap: 3px;
+    min-height: 15px;
+    margin: 12px 7px 0 0;
+    padding: 3px;
+    border: 1.5px solid var(--text-muted);
+    border-radius: 5px;
+    background: var(--background-primary);
   }
 
-  .focus-progress-bar i {
-    display: block;
-    width: var(--progress);
-    height: 100%;
-    background: var(--interactive-accent);
+  .project-progress-battery::after {
+    position: absolute;
+    top: 4px;
+    right: -7px;
+    width: 4px;
+    height: calc(100% - 8px);
+    border-radius: 0 3px 3px 0;
+    background: var(--text-muted);
+    content: "";
+  }
+
+  .project-progress-battery > span {
+    flex: 1;
+    border-radius: 2px;
+    background: var(--daily-soft);
+  }
+
+  .battery-project {
+    display: flex;
+    flex: var(--project-weight) 1 24px;
+    gap: 2px;
+    min-width: 12px;
+  }
+
+  .battery-project i {
+    flex: 1;
+    min-width: 3px;
+    border-radius: 2px;
+    background: color-mix(in srgb, var(--project-color) 17%, var(--background-primary));
+  }
+
+  .battery-project i.done {
+    background: var(--project-color);
+  }
+
+  .project-progress-legend {
+    display: flex;
+    gap: 6px 12px;
+    overflow-x: auto;
+    margin-top: 7px;
+    padding-bottom: 2px;
+    scrollbar-width: thin;
+  }
+
+  .project-progress-legend > span {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex: none;
+    color: var(--text-muted);
+    font-size: 0.65rem;
+  }
+
+  .project-progress-legend > span > i {
+    width: 7px;
+    height: 7px;
+    border-radius: 2px;
+    background: var(--project-color);
+  }
+
+  .project-progress-legend em {
+    font-style: normal;
+    opacity: 0.75;
   }
 
   .planner-heading,
@@ -2552,42 +2602,52 @@
   }
 
   .planner-pool-picker {
-    display: grid;
-    gap: 8px;
     padding: 11px 12px;
     border-top: 1px solid var(--daily-border);
     background: color-mix(in srgb, var(--background-secondary) 38%, transparent);
   }
 
-  .planner-pool-picker > header,
-  .planner-pool-picker > header > span {
+  .planner-pool-picker > summary,
+  .planner-pool-picker > summary > span {
     display: flex;
     align-items: center;
     gap: 8px;
   }
 
-  .planner-pool-picker > header {
+  .planner-pool-picker > summary {
     justify-content: space-between;
+    cursor: pointer;
+    list-style: none;
   }
 
-  .planner-pool-picker > header > span > span {
+  .planner-pool-picker > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .planner-pool-picker > summary > span > span {
     display: grid;
     min-width: 0;
   }
 
-  .planner-pool-picker > header small,
-  .planner-pool-picker > p,
+  .planner-pool-picker > summary small,
+  .pool-picker-body > p,
   .pool-picker-list small {
     color: var(--text-muted);
     font-size: 0.7rem;
   }
 
-  .planner-pool-picker > p {
+  .pool-picker-body > p {
     margin: 0;
   }
 
-  .planner-pool-picker > header button {
-    flex: 0 0 auto;
+  .pool-picker-body {
+    display: grid;
+    gap: 8px;
+    padding-top: 9px;
+  }
+
+  .open-pool-button {
+    justify-self: end;
     min-height: 28px;
     color: var(--text-muted);
     background: transparent;
@@ -3580,6 +3640,8 @@
 
   .preview-column {
     min-width: 0;
+    position: sticky;
+    top: 8px;
   }
 
   .eink-card > header span {
@@ -3613,8 +3675,10 @@
   .eink-screen {
     display: flex;
     flex-direction: column;
-    min-height: 280px;
-    padding: 16px;
+    aspect-ratio: 264 / 176;
+    min-height: 0;
+    overflow: hidden;
+    padding: 13px;
     color: #151515;
     background: #f4f2e9;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -3644,7 +3708,72 @@
     font-size: 0.68rem;
   }
 
+  .eink-battery {
+    white-space: nowrap;
+  }
+
+  .eink-total-progress {
+    height: 7px;
+    margin: 8px 0 6px;
+    overflow: hidden;
+    border: 1px solid #222;
+    border-radius: 1px;
+    background: transparent;
+  }
+
+  .eink-total-progress span {
+    display: block;
+    height: 100%;
+    background: #222;
+  }
+
+  .eink-project-stats {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 3px 9px;
+    margin-bottom: 7px;
+  }
+
+  .eink-project-stats div {
+    display: grid;
+    grid-template-columns: 5px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    font-size: 0.62rem;
+  }
+
+  .eink-project-stats i {
+    width: 5px;
+    height: 10px;
+    background: var(--project-color);
+  }
+
+  .eink-project-stats span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .eink-project-stats strong {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .eink-source-badge {
+    align-self: flex-start;
+    margin-top: 9px;
+    padding: 2px 5px;
+    border: 1px solid #555;
+    border-radius: 2px;
+    color: #222 !important;
+    font-weight: 700;
+  }
+
   .eink-current {
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
     font-weight: 700;
   }
 
@@ -3674,6 +3803,10 @@
     place-items: center;
     color: #555;
     text-align: center;
+  }
+
+  .eink-empty.compact {
+    min-height: 34px;
   }
 
   .eink-screen footer {
@@ -3771,9 +3904,48 @@
     border-top: 1px solid var(--daily-border);
   }
 
-  @media (min-width: 1100px) {
+  .workspace-arrange-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 11px 13px;
+    border: 1px solid var(--daily-border);
+    border-radius: 12px;
+    background: var(--daily-soft);
+  }
+
+  .source-utility { position: relative; margin-left: auto; }
+  .source-utility > summary { display:flex; align-items:center; gap:5px; cursor:pointer; list-style:none; color:var(--text-muted); }
+  .source-utility > summary::-webkit-details-marker { display:none; }
+  .source-utility > div { position:absolute; z-index:12; top:calc(100% + 7px); right:0; display:grid; gap:7px; min-width:220px; padding:11px; border:1px solid var(--daily-border); border-radius:11px; background:var(--background-primary); box-shadow:var(--shadow-s); }
+  .source-utility small { color:var(--text-muted); }
+  .list-more-actions { position:relative; }
+  .list-more-actions > summary { display:grid; place-items:center; cursor:pointer; list-style:none; }
+  .list-more-actions > summary::-webkit-details-marker { display:none; }
+  .list-more-actions > div { position:absolute; z-index:12; top:calc(100% + 6px); right:0; display:grid; min-width:160px; padding:6px; border:1px solid var(--daily-border); border-radius:9px; background:var(--background-primary); box-shadow:var(--shadow-s); }
+  .list-more-actions > div button { justify-content:flex-start; border:0; box-shadow:none; background:transparent; }
+
+  .workspace-arrange-bar > div,
+  .workspace-summary {
+    display: grid;
+    gap: 2px;
+  }
+
+  .workspace-arrange-bar small,
+  .workspace-summary span {
+    color: var(--text-muted);
+    font-size: 0.72rem;
+  }
+
+  .workspace-review { margin-top: 2px; }
+  .compact-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .workspace-summary { padding: 0 14px 12px; }
+  .review-actions { display: flex; flex-wrap: wrap; gap: 7px; padding: 0 14px 14px; }
+
+  @media (min-width: 900px) {
     .daily-main-grid.preview-open {
-      grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.72fr);
+      grid-template-columns: minmax(0, 1fr) minmax(300px, 340px);
     }
   }
 
@@ -3794,15 +3966,17 @@
     }
 
     .pool-grid {
-      grid-template-columns: repeat(2, minmax(210px, 1fr));
+      grid-template-columns: 1fr;
     }
   }
 
   @media (max-width: 560px) {
+    .workspace-arrange-bar { align-items: stretch; flex-direction: column; }
+    .compact-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .surface-switcher {
       display: grid;
       width: 100%;
-      grid-template-columns: repeat(3, 1fr);
+      grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
     }
 
     .surface-switcher button {
@@ -3878,8 +4052,7 @@
     }
 
     .task-pool-heading,
-    .pool-toolbar,
-    .planner-pool-picker > header {
+    .pool-toolbar {
       align-items: stretch;
       flex-direction: column;
     }

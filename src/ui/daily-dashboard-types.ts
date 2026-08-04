@@ -24,6 +24,15 @@ import type {
   TaskPoolRevision,
   TaskPoolUpdate
 } from "../daily/task-pool-types";
+import type {
+  WorkPoolAction,
+  WorkPoolItem,
+  WorkPoolQuery,
+  WorkPoolSnapshot,
+  WorkPoolViewPreset,
+  WorkPoolProjectRule,
+  WorkPoolProjectAppearance
+} from "../work-pool";
 
 export type {
   DailyDashboardSnapshot,
@@ -49,6 +58,20 @@ export type {
   TaskPoolRevision,
   TaskPoolUpdate
 } from "../daily/task-pool-types";
+export type {
+  WorkPoolAction,
+  WorkPoolGroup,
+  WorkPoolHistoryMode,
+  WorkPoolItem,
+  WorkPoolQuery,
+  WorkPoolSnapshot,
+  WorkPoolSourceTab,
+  WorkPoolGroupingDimension,
+  WorkPoolViewPreset,
+  WorkPoolProjectRule,
+  WorkPoolProjectAppearance,
+  WorkPoolGroupNode
+} from "../work-pool";
 
 /** UI-only provenance. The Markdown written by DailyPlanService remains deterministic. */
 export type DailySummaryPresentation = DailySummary & {
@@ -79,6 +102,9 @@ export interface DailyPlanningCandidate {
   dueDate?: string;
   estimateMinutes?: number;
   poolRevision?: TaskPoolRevision;
+  workKind?: DailyPlanItem["workKind"];
+  workRef?: string;
+  workRevision?: string;
 }
 
 export interface DailyCategoryPresetPresentation {
@@ -91,8 +117,28 @@ export interface DailyCategoryPresetPresentation {
 export interface DailyDashboardConfiguration {
   categoryPresets: DailyCategoryPresetPresentation[];
   defaultView: DailyDashboardView;
+  focusMessages: string[];
+  focusMessageIntervalSeconds: 0 | 10 | 30 | 60;
   taskPoolPath: string;
   autoReturnUnfinished: boolean;
+  workflowStages?: Array<{ id: string; label: string }>;
+  articleTypes?: Array<{ id: string; label: string }>;
+  questionStatuses?: Array<{ id: string; label: string }>;
+  workPool?: WorkPoolPresentationSettings;
+  /** Latest optional telemetry from a displayed ESP32 card. */
+  deviceBatteryPercent?: number;
+}
+
+export interface WorkPoolPresentationSettings {
+  defaultViewId: string;
+  views: WorkPoolViewPreset[];
+  projectFrontmatterKeys: string[];
+  projectTagPrefixes: string[];
+  projectRules: WorkPoolProjectRule[];
+  projectAppearances: WorkPoolProjectAppearance[];
+  pageSize: number;
+  defaultGroupsExpanded: boolean;
+  showTechnicalMetadata: boolean;
 }
 
 export interface DailyTimingCorrectionInput {
@@ -137,7 +183,21 @@ export interface DailyDashboardAdapter {
   getSnapshot(date?: string): DailyDashboardSnapshot | undefined | Promise<DailyDashboardSnapshot | undefined>;
   getConfiguration?(): DailyDashboardConfiguration | Promise<DailyDashboardConfiguration>;
   getTaskPool?(): TaskPoolDocument | Promise<TaskPoolDocument>;
+  getWorkPool?(query?: WorkPoolQuery): WorkPoolSnapshot | Promise<WorkPoolSnapshot>;
+  actOnWorkPoolItem?(
+    item: WorkPoolItem,
+    action: WorkPoolAction,
+    options?: { date?: string; stageId?: string; status?: string }
+  ): void | Promise<void>;
   createPoolTask?(input: TaskPoolCreateInput): TaskPoolItem | void | Promise<TaskPoolItem | void>;
+  updateWorkPoolSettings?(
+    patch: Partial<WorkPoolPresentationSettings>
+  ): void | Promise<void>;
+  syncMarkdownTasks?(): Promise<{
+    filesScanned: number;
+    tasksRegistered: number;
+    filesFailed: number;
+  }>;
   updatePoolTask?(
     id: string,
     revision: TaskPoolRevision,
@@ -182,6 +242,11 @@ export interface DailyDashboardAdapter {
     timingRevision?: string
   ): void | Promise<void>;
   completeItem?(id: string, revision: DailyTaskRevision): void | Promise<void>;
+  completeItemAndApplyOrigin?(
+    id: string,
+    revision: DailyTaskRevision,
+    options?: { stageId?: string }
+  ): void | Promise<void>;
   reopenItem?(id: string, revision: DailyTaskRevision): void | Promise<void>;
   getItemTiming?(
     id: string,

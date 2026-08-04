@@ -1,11 +1,16 @@
 # ToWrite Open Questions
 
-## Floating Today window
+## Focus Now window
 
-Run `ToWrite: Today: open floating window` or use the `calendar-check`
+Run `ToWrite: Focus Now: open floating window` or use the `focus`
 ribbon icon. The pop-out is an Obsidian pinned leaf and can collapse to one
 line. Pinning prevents leaf replacement; it is not an operating-system
 always-on-top flag.
+
+Focus mode shows only the active task and elapsed time; compact mode shows the
+whole Today list. A calm message strip rotates the Daily focus, user-authored
+lines, and Inbox/question reminders. Custom lines and the interval are stored
+in ToWrite's Daily settings and never modify the Daily Markdown file.
 
 - Clicking a task row starts or resumes the current Markdown revision, then
   opens the freshly resolved target.

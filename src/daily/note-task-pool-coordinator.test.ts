@@ -76,6 +76,23 @@ describe("NoteTaskPoolCoordinator", () => {
     expect((await pool.list())).toHaveLength(1);
   });
 
+  it("inherits a category from the source note when the task has no explicit category", async () => {
+    const storage = new MemoryStorage();
+    const notes = new NoteTaskService(storage, () => NOTE_TASK);
+    const pool = new TaskPoolService(storage, {
+      path: POOL_PATH,
+      createTaskId: () => POOL_TASK
+    });
+    const coordinator = new NoteTaskPoolCoordinator(notes, pool, {
+      resolveCategory: () => "记录和搞懂"
+    });
+    const candidate = (await notes.inspect(NOTE_PATH)).candidates[0];
+
+    const registered = await coordinator.register(candidate);
+
+    expect(registered.poolTask.category).toBe("记录和搞懂");
+  });
+
   it("moves a linked task into the pool Done lane when the source checkbox completes", async () => {
     const storage = new MemoryStorage();
     const { notes, pool, coordinator } = services(storage);

@@ -81,9 +81,39 @@ describe("device interaction protocol", () => {
     expect(event.action).toBe(action);
     expect(isDeviceGestureEvent(event)).toBe(true);
     if (isDeviceGestureEvent(event)) {
-      expectTypeOf(event.schemaVersion).toEqualTypeOf<2>();
+      expectTypeOf(event.schemaVersion).toEqualTypeOf<2 | 3>();
       expectTypeOf(event.button).toEqualTypeOf<"primary" | "left" | "right">();
     }
+  });
+
+  it.each([
+    ["primary", "single", "open_current"],
+    ["primary", "double", "create_note"],
+    ["primary", "long", "record_reserved"],
+    ["left", "single", "page_next"],
+    ["left", "double", "page_prev"],
+    ["left", "long", "toggle_timer"],
+    ["right", "single", "item_next"],
+    ["right", "double", "item_prev"],
+    ["right", "long", "complete"]
+  ])("maps schema-v3 %s %s to page, item, or confirm roles", (button, gesture, action) => {
+    const event = normalizeDeviceEventInput({
+      schemaVersion: 3,
+      eventId: `evt_v3_${button}_${gesture}`,
+      targetId: "target-ink",
+      deviceId: "dev_0123456789abcdef0123456789abcdef",
+      selectionId: "sel_0123456789abcdef0123456789abcdef",
+      contentId: "cnt_0123456789abcdef0123456789abcdef",
+      revisionId: "rev_0123456789abcdef0123456789abcdef",
+      button,
+      gesture,
+      action: "later",
+      cardId: "daily-plan:daily_abc",
+      stateVersion: 7,
+      playlistRevision: "einkrev_0123abcd"
+    }, DEFAULT_DEVICE_BUTTON_MAPPINGS);
+    expect(event.action).toBe(action);
+    expect(isDeviceGestureEvent(event)).toBe(true);
   });
 
   it("does not narrow an incomplete v2 event and exposes the command acknowledgement contract", () => {
@@ -121,12 +151,14 @@ describe("device interaction protocol", () => {
       revision_id: "rev_0123456789abcdef0123456789abcdef",
       card_id: "daily-plan:daily_abc",
       playlist_revision: "einkrev_0123abcd",
-      displayed_at: "2026-07-24T08:00:00+08:00"
+      displayed_at: "2026-07-24T08:00:00+08:00",
+      battery_percent: 76.4
     })).toMatchObject({
       eventId: "evt_ack_1",
       cardId: "daily-plan:daily_abc",
       stateVersion: 7,
-      displayedAt: "2026-07-24T00:00:00.000Z"
+      displayedAt: "2026-07-24T00:00:00.000Z",
+      batteryPercent: 76
     });
   });
 

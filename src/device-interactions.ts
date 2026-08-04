@@ -14,7 +14,9 @@ export type DeviceCommandAction =
   | "page_prev"
   | "page_next"
   | "task_prev"
-  | "task_next";
+  | "task_next"
+  | "item_prev"
+  | "item_next";
 export type DeviceActionIntent =
   | "respond"
   | "capture"
@@ -43,9 +45,9 @@ export interface DeviceDisplayedTuple {
   playlistRevision: string;
 }
 
-/** Strict schema-v2 gesture bound to the exact card rendered by the device. */
+/** Strict schema-v2/v3 gesture bound to the exact card rendered by the device. */
 export interface DeviceGestureEvent extends DeviceDisplayedTuple {
-  schemaVersion: 2;
+  schemaVersion: 2 | 3;
   eventId: string;
   targetId: string;
   button: DevicePhysicalButton;
@@ -68,6 +70,8 @@ export interface DeviceDisplayAcknowledgement extends DeviceDisplayedTuple {
   eventId: string;
   displayedAt?: string;
   renderHash?: string;
+  /** Optional ESP32 telemetry. It is presentation data, never an auth signal. */
+  batteryPercent?: number;
 }
 
 export interface DeviceCompletionGuard {
@@ -227,12 +231,14 @@ export function normalizeDeviceEventInput(body: Record<string, unknown>, mapping
   const schemaVersion = normalizeSchemaVersion(body.schemaVersion ?? body.schema_version);
   const button = normalizeShort(body.button, 80);
   const gesture = normalizeDeviceGesture(body.gesture);
-  const action = schemaVersion === 2
-    ? resolveDeviceGestureAction(button, gesture)
+  const action = schemaVersion === 2 || schemaVersion === 3
+    ? schemaVersion === 3
+      ? resolveDeviceGestureActionV3(button, gesture)
+      : resolveDeviceGestureAction(button, gesture)
     : normalizeDeviceIntent(body.action) ?? resolveButtonIntent(button, mappings);
   if (!action) {
-    throw new Error(schemaVersion === 2
-      ? "Schema v2 requires a supported button and gesture."
+    throw new Error(schemaVersion === 2 || schemaVersion === 3
+      ? `Schema v${schemaVersion} requires a supported button and gesture.`
       : "Missing action or mapped button.");
   }
   const candidateType = normalizeCandidateType(body.candidateType);
@@ -251,7 +257,7 @@ export function normalizeDeviceEventInput(body: Record<string, unknown>, mapping
     occurredAt,
     note: normalizeShort(body.note, 500)
   };
-  if (schemaVersion === 2) {
+  if (schemaVersion === 2 || schemaVersion === 3) {
     const displayed = normalizeDisplayedTuple(body);
     result.deviceId = displayed.deviceId;
     result.selectionId = displayed.selectionId;
@@ -270,7 +276,7 @@ export function normalizeDeviceEventInput(body: Record<string, unknown>, mapping
 }
 
 export function isDeviceGestureEvent(event: DeviceEventInput): event is DeviceGestureEvent {
-  return event.schemaVersion === 2
+  return (event.schemaVersion === 2 || event.schemaVersion === 3)
     && Boolean(event.eventId)
     && Boolean(event.targetId)
     && (event.button === "primary" || event.button === "left" || event.button === "right")
@@ -286,7 +292,9 @@ export function isDeviceGestureEvent(event: DeviceEventInput): event is DeviceGe
       || event.action === "page_prev"
       || event.action === "page_next"
       || event.action === "task_prev"
-      || event.action === "task_next")
+      || event.action === "task_next"
+      || event.action === "item_prev"
+      || event.action === "item_next")
     && Boolean(event.deviceId)
     && Boolean(event.selectionId)
     && Number.isSafeInteger(event.stateVersion)
@@ -309,8 +317,16 @@ export function normalizeDeviceDisplayAcknowledgement(
     eventId,
     ...displayed,
     displayedAt: normalizeIso(body.displayedAt ?? body.displayed_at),
-    renderHash: normalizeHash(body.renderHash ?? body.render_hash)
+    renderHash: normalizeHash(body.renderHash ?? body.render_hash),
+    batteryPercent: normalizeBatteryPercent(body.batteryPercent ?? body.battery_percent)
   };
+}
+
+function normalizeBatteryPercent(value: unknown): number | undefined {
+  const number = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(number) && number >= 0 && number <= 100
+    ? Math.round(number)
+    : undefined;
 }
 
 export function resolveDeviceGestureAction(
@@ -330,6 +346,33 @@ export function resolveDeviceGestureAction(
   if (button === "right") {
     if (gesture === "single") return "page_next";
     if (gesture === "double") return "task_next";
+    if (gesture === "long") return "complete";
+  }
+  return undefined;
+}
+
+/**
+ * Schema v3 turns the three physical buttons into stable roles:
+ * left chooses a page type, right chooses an item on that page, and primary
+ * confirms/opens. Long presses retain timing, completion, and future audio.
+ */
+export function resolveDeviceGestureActionV3(
+  button: string | undefined,
+  gesture: DeviceGesture | undefined
+): DeviceActionIntent | undefined {
+  if (button === "primary") {
+    if (gesture === "single") return "open_current";
+    if (gesture === "double") return "create_note";
+    if (gesture === "long") return "record_reserved";
+  }
+  if (button === "left") {
+    if (gesture === "single") return "page_next";
+    if (gesture === "double") return "page_prev";
+    if (gesture === "long") return "toggle_timer";
+  }
+  if (button === "right") {
+    if (gesture === "single") return "item_next";
+    if (gesture === "double") return "item_prev";
     if (gesture === "long") return "complete";
   }
   return undefined;
@@ -495,6 +538,7 @@ function normalizeDeviceIntent(value: unknown): DeviceActionIntent | undefined {
     || value === "toggle_timer" || value === "pause_task" || value === "resume_task"
     || value === "page_prev" || value === "page_next"
     || value === "task_prev" || value === "task_next"
+    || value === "item_prev" || value === "item_next"
     ? value
     : undefined;
 }
@@ -519,7 +563,7 @@ function normalizeDisplayedTuple(body: Record<string, unknown>): DeviceDisplayed
   if (!deviceId || !selectionId || !contentId || !revisionId || !cardId
     || !playlistRevision || stateVersion === undefined) {
     throw new Error(
-      "Schema v2 requires deviceId, selectionId, stateVersion, contentId, revisionId, cardId, and playlistRevision."
+      "Schema v2/v3 requires deviceId, selectionId, stateVersion, contentId, revisionId, cardId, and playlistRevision."
     );
   }
   return {
@@ -548,7 +592,7 @@ function normalizeCompletionGuard(body: Record<string, unknown>): DeviceCompleti
 
 function normalizeSchemaVersion(value: unknown): number | undefined {
   const version = Number(value);
-  return version === 1 || version === 2 ? version : undefined;
+  return version === 1 || version === 2 || version === 3 ? version : undefined;
 }
 
 function normalizePositiveInteger(value: unknown): number | undefined {

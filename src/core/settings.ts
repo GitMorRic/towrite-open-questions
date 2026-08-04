@@ -9,6 +9,11 @@ import type { CaptureBridgeSettings } from "../capture-bridge/types";
 import type { LocalTapSelectionState } from "../capture-bridge/selection";
 import type { EchoCard } from "../hub/echo-cards";
 import type { DailyActivityState } from "../daily";
+import type {
+  WorkPoolProjectRule,
+  WorkPoolProjectAppearance,
+  WorkPoolViewPreset
+} from "../work-pool/types";
 
 export type ToWriteLanguage = "zh" | "en";
 
@@ -220,6 +225,10 @@ export interface ToWriteDailySettings {
   /** User-owned category presets used by the planner and task-pool board. */
   categoryPresets: ToWriteDailyCategoryPreset[];
   dashboardDefaultView: "list" | "board" | "table" | "calendar";
+  /** User-authored lines shown in the compact focus-window message carousel. */
+  focusMessages: string[];
+  /** Zero disables automatic carousel advance. */
+  focusMessageIntervalSeconds: 0 | 10 | 30 | 60;
   /** Date section heading in a fixed planner document remains YYYY-MM-DD. */
   planHeading: string;
   todoHeading: string;
@@ -253,6 +262,18 @@ export interface ToWriteDailyCategoryPreset {
   icon?: string;
 }
 
+export interface ToWriteWorkPoolSettings {
+  defaultViewId: string;
+  views: WorkPoolViewPreset[];
+  projectFrontmatterKeys: string[];
+  projectTagPrefixes: string[];
+  projectRules: WorkPoolProjectRule[];
+  projectAppearances: WorkPoolProjectAppearance[];
+  pageSize: number;
+  defaultGroupsExpanded: boolean;
+  showTechnicalMetadata: boolean;
+}
+
 export interface ToWriteSettings {
   language: ToWriteLanguage;
   exportDirectory: string;
@@ -273,6 +294,7 @@ export interface ToWriteSettings {
   captureBridge: CaptureBridgeSettings;
   inbox: ToWriteInboxSettings;
   daily: ToWriteDailySettings;
+  workPool: ToWriteWorkPoolSettings;
   /** User-authored e-ink cards. Built-in examples are immutable presets and are not persisted here. */
   echoCards: EchoCard[];
   hub: ToWriteHubSettings;
@@ -645,6 +667,8 @@ export const DEFAULT_SETTINGS: ToWriteSettings = {
       { id: "other", label: "其他", color: "#7b8494", icon: "shapes" }
     ],
     dashboardDefaultView: "list",
+    focusMessages: [],
+    focusMessageIntervalSeconds: 30,
     planHeading: "\u4eca\u65e5\u8ba1\u5212",
     todoHeading: "ToDo",
     summaryHeading: "\u4eca\u65e5\u603b\u7ed3",
@@ -658,6 +682,52 @@ export const DEFAULT_SETTINGS: ToWriteSettings = {
     includeInDeviceCandidates: true,
     summaryDevicePolicy: "none",
     writerMode: "auto"
+  },
+  workPool: {
+    defaultViewId: "all-work",
+    views: [
+      {
+        id: "all-work",
+        label: "全部工作",
+        layout: "board",
+        primary: "workType",
+        secondary: "project",
+        history: "active",
+        defaultExpanded: true
+      },
+      {
+        id: "by-project",
+        label: "按项目",
+        layout: "board",
+        primary: "project",
+        secondary: "note",
+        history: "active",
+        defaultExpanded: true
+      },
+      {
+        id: "by-workflow",
+        label: "按流程",
+        layout: "list",
+        primary: "stage",
+        secondary: "articleType",
+        history: "active"
+      },
+      {
+        id: "by-source",
+        label: "按来源",
+        layout: "list",
+        primary: "source",
+        secondary: "note",
+        history: "active"
+      }
+    ],
+    projectFrontmatterKeys: ["project", "projects"],
+    projectTagPrefixes: ["project/"],
+    projectRules: [],
+    projectAppearances: [],
+    pageSize: 80,
+    defaultGroupsExpanded: true,
+    showTechnicalMetadata: false
   },
   echoCards: [],
   hub: {
@@ -760,6 +830,8 @@ export function normalizeDailySettings(settings?: Partial<ToWriteDailySettings>)
       || settings?.dashboardDefaultView === "calendar"
       ? settings.dashboardDefaultView
       : "list",
+    focusMessages: normalizeFocusMessages(settings?.focusMessages),
+    focusMessageIntervalSeconds: normalizeFocusMessageInterval(settings?.focusMessageIntervalSeconds),
     planHeading: normalizeHeadingSetting(settings?.planHeading, defaults.planHeading),
     todoHeading: normalizeHeadingSetting(settings?.todoHeading, defaults.todoHeading),
     summaryHeading: normalizeHeadingSetting(settings?.summaryHeading, defaults.summaryHeading),
@@ -792,6 +864,156 @@ export function normalizeDailySettings(settings?: Partial<ToWriteDailySettings>)
   };
 }
 
+export function normalizeWorkPoolSettings(
+  settings?: Partial<ToWriteWorkPoolSettings>
+): ToWriteWorkPoolSettings {
+  const defaults = DEFAULT_SETTINGS.workPool;
+  const views = normalizeWorkPoolViews(settings?.views, defaults.views);
+  const defaultViewId = views.some((view) => view.id === settings?.defaultViewId)
+    ? String(settings?.defaultViewId)
+    : views.some((view) => view.id === defaults.defaultViewId)
+      ? defaults.defaultViewId
+      : views[0].id;
+  return {
+    defaultViewId,
+    views,
+    projectFrontmatterKeys: [...new Set(normalizedSimpleList(
+      settings?.projectFrontmatterKeys,
+      defaults.projectFrontmatterKeys
+    ).map((value) => value.toLocaleLowerCase()))],
+    projectTagPrefixes: [...new Set(normalizedSimpleList(
+      settings?.projectTagPrefixes,
+      defaults.projectTagPrefixes
+    ).map((value) => value.replace(/^#+/u, "").toLocaleLowerCase()))],
+    projectRules: normalizeWorkPoolProjectRules(settings?.projectRules),
+    projectAppearances: normalizeWorkPoolProjectAppearances(settings?.projectAppearances),
+    pageSize: clampIntegerSetting(settings?.pageSize, 20, 500, defaults.pageSize),
+    defaultGroupsExpanded: settings?.defaultGroupsExpanded !== false,
+    showTechnicalMetadata: settings?.showTechnicalMetadata === true
+  };
+}
+
+function normalizeWorkPoolViews(
+  value: unknown,
+  fallback: WorkPoolViewPreset[]
+): WorkPoolViewPreset[] {
+  if (!Array.isArray(value)) return fallback.map((view) => ({ ...view }));
+  const output: WorkPoolViewPreset[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Partial<WorkPoolViewPreset>;
+    const id = normalizedSettingId(record.id ?? record.label);
+    const label = String(record.label ?? "").trim().replace(/\s+/gu, " ").slice(0, 60);
+    if (!id || !label || seen.has(id)) continue;
+    const primary = normalizeWorkPoolDimension(record.primary, "workType");
+    let secondary = normalizeWorkPoolDimension(record.secondary, "none");
+    if (secondary === primary) secondary = "none";
+    seen.add(id);
+    output.push({
+      id,
+      label,
+      layout: record.layout === "board" || record.layout === "list"
+        ? record.layout
+        : (id === "all-work" || primary === "project" ? "board" : "list"),
+      primary,
+      secondary,
+      ...(isWorkPoolSource(record.source) ? { source: record.source } : {}),
+      ...(record.history === "history" || record.history === "all"
+        ? { history: record.history }
+        : { history: "active" }),
+      ...optionalTextFields(record, ["stageId", "typeId", "status", "workType", "project"]),
+      defaultExpanded: record.defaultExpanded === true
+    });
+  }
+  return (output.length ? output : fallback).map((view) => ({ ...view }));
+}
+
+function normalizeWorkPoolProjectRules(value: unknown): WorkPoolProjectRule[] {
+  if (!Array.isArray(value)) return [];
+  const output: WorkPoolProjectRule[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Partial<WorkPoolProjectRule>;
+    const id = normalizedSettingId(record.id ?? record.label);
+    const label = String(record.label ?? "").trim().replace(/\s+/gu, " ").slice(0, 80);
+    if (!id || !label || seen.has(id)) continue;
+    seen.add(id);
+    output.push({
+      id,
+      label,
+      tags: normalizedSimpleList(record.tags, []),
+      folderPrefixes: normalizedSimpleList(record.folderPrefixes, [])
+    });
+  }
+  return output;
+}
+
+function normalizeWorkPoolProjectAppearances(value: unknown): WorkPoolProjectAppearance[] {
+  if (!Array.isArray(value)) return [];
+  const output: WorkPoolProjectAppearance[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Partial<WorkPoolProjectAppearance>;
+    const projectId = normalizedSettingId(record.projectId);
+    const color = /^#[0-9a-f]{6}$/iu.test(String(record.color ?? ""))
+      ? String(record.color).toLocaleLowerCase()
+      : "#7c6ee6";
+    const icon = String(record.icon ?? "folder-kanban").trim().toLocaleLowerCase().slice(0, 40);
+    if (!projectId || seen.has(projectId)) continue;
+    seen.add(projectId);
+    output.push({ projectId, color, icon: icon || "folder-kanban" });
+  }
+  return output;
+}
+
+function normalizeWorkPoolDimension(
+  value: unknown,
+  fallback: WorkPoolViewPreset["primary"]
+): WorkPoolViewPreset["primary"] {
+  return value === "workType" || value === "project" || value === "source"
+    || value === "stage" || value === "articleType" || value === "note"
+    || value === "status" || value === "category" || value === "none"
+    ? value
+    : fallback;
+}
+
+function isWorkPoolSource(value: unknown): value is NonNullable<WorkPoolViewPreset["source"]> {
+  return value === "all" || value === "task" || value === "tothink"
+    || value === "towrite" || value === "inbox" || value === "note";
+}
+
+function normalizedSimpleList(value: unknown, fallback: string[]): string[] {
+  if (!Array.isArray(value)) return [...fallback];
+  const normalized = [...new Set(value
+    .map((entry) => String(entry ?? "").trim())
+    .filter(Boolean))];
+  return normalized.length ? normalized : [...fallback];
+}
+
+function normalizedSettingId(value: unknown): string {
+  return String(value ?? "")
+    .trim()
+    .toLocaleLowerCase()
+    .replace(/[^\p{Letter}\p{Number}_-]+/gu, "-")
+    .replace(/^-+|-+$/gu, "")
+    .slice(0, 60);
+}
+
+function optionalTextFields<T extends object, K extends keyof T>(
+  record: T,
+  keys: readonly K[]
+): Partial<Pick<T, K>> {
+  const output: Partial<Pick<T, K>> = {};
+  for (const key of keys) {
+    const value = String(record[key] ?? "").trim();
+    if (value) output[key] = value as T[K];
+  }
+  return output;
+}
+
 function normalizeDailyCategoryPresets(
   value: unknown,
   fallback: ToWriteDailyCategoryPreset[]
@@ -822,6 +1044,18 @@ function normalizeDailyCategoryPresets(
 
 function normalizeRunningCardRefreshMinutes(value: unknown): 0 | 5 | 15 | 30 {
   return value === 0 || value === 5 || value === 30 ? value : 15;
+}
+
+function normalizeFocusMessages(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value
+    .map((entry) => String(entry ?? "").replace(/\s+/gu, " ").trim().slice(0, 180))
+    .filter(Boolean))]
+    .slice(0, 30);
+}
+
+function normalizeFocusMessageInterval(value: unknown): 0 | 10 | 30 | 60 {
+  return value === 0 || value === 10 || value === 60 ? value : 30;
 }
 
 export function normalizeArticleTypeList(types: ArticleTypeSettings[]): ArticleTypeSettings[] {

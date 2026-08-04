@@ -1481,6 +1481,41 @@ export class ToWriteSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
+      .setName(zh ? "“现在专注”轮播句子" : "Focus-window carousel messages")
+      .setDesc(zh
+        ? "每行一句。悬浮窗会与今日焦点、Inbox/问题提醒一起轮播；不会写入 Daily Markdown。"
+        : "One message per line. The focus window rotates these with the daily focus and Inbox/question reminders; Daily Markdown is not changed.")
+      .addTextArea((text) => text
+        .setValue(daily.focusMessages.join("\n"))
+        .setPlaceholder(zh ? "先完成最小可交付版本\n抬头看看远处，休息一分钟" : "Ship the smallest useful version\nLook away from the screen for a minute")
+        .onChange(async (value) => {
+          daily.focusMessages = [...new Set(value
+            .split(/\r?\n/gu)
+            .map((line) => line.replace(/\s+/gu, " ").trim().slice(0, 180))
+            .filter(Boolean))]
+            .slice(0, 30);
+          await this.plugin.savePluginData();
+          this.plugin.notifyUi();
+        }));
+
+    new Setting(containerEl)
+      .setName(zh ? "轮播间隔" : "Carousel interval")
+      .setDesc(zh ? "只更新界面，不写文件，也不会触发网络请求。" : "UI-only; it does not write files or trigger network requests.")
+      .addDropdown((dropdown) => dropdown
+        .addOption("0", zh ? "不自动轮播" : "Manual only")
+        .addOption("10", zh ? "10 秒" : "10 seconds")
+        .addOption("30", zh ? "30 秒" : "30 seconds")
+        .addOption("60", zh ? "60 秒" : "60 seconds")
+        .setValue(String(daily.focusMessageIntervalSeconds))
+        .onChange(async (value) => {
+          daily.focusMessageIntervalSeconds = value === "0" || value === "10" || value === "60"
+            ? Number(value) as 0 | 10 | 60
+            : 30;
+          await this.plugin.savePluginData();
+          this.plugin.notifyUi();
+        }));
+
+    new Setting(containerEl)
       .setName(zh ? "任务类别预设" : "Task category presets")
       .setDesc(zh
         ? "每行：ID | 显示名 | #颜色 | Lucide 图标。没有显式类别时仍会继承 Markdown 父列表。"

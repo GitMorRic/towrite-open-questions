@@ -15,6 +15,7 @@ export type DailyPlanDeviceKind = "task" | "create_note" | "edit_note" | "send_c
 export type DailyDeckPageKind =
   | "daily_overview"
   | "daily_plan_item"
+  | "daily_inbox"
   | "daily_result";
 
 export interface DailyDeckTimingInput {
@@ -42,6 +43,9 @@ export interface DailyDeckPlanItemInput {
   target?: string;
   startedAt?: string;
   groupLabel?: string;
+  projectId?: string;
+  projectLabel?: string;
+  projectColor?: string;
   targetLabel?: string;
   targetProvenance?: "explicit" | "task-link" | "ancestor-link" | "task-block" | "dashboard";
   lineageRevision?: string;
@@ -55,7 +59,25 @@ export interface DailyDeckTaskSummary {
   primary: boolean;
   minimum: boolean;
   groupLabel?: string;
+  projectId?: string;
+  projectLabel?: string;
+  projectColor?: string;
   targetLabel?: string;
+}
+
+export type DailyInboxItemSource = "rule" | "ai" | "human" | "inbox" | "system";
+
+export interface DailyDeckInboxItemInput {
+  id: string;
+  source: DailyInboxItemSource;
+  title: string;
+  detail?: string;
+  reason?: string;
+  generatedAt?: string;
+}
+
+export interface DailyInboxItemSummary extends DailyDeckInboxItemInput {
+  aiGenerated: boolean;
 }
 
 export interface DailyOverviewCard {
@@ -79,6 +101,15 @@ export interface DailyOverviewCard {
     done: number;
     total: number;
   };
+  projects: Array<{
+    id: string;
+    label: string;
+    color?: string;
+    done: number;
+    total: number;
+  }>;
+  /** Optional telemetry reported by the device; absent renders as `--%`. */
+  batteryPercent?: number;
 }
 
 export interface DailyPlanItemCard {
@@ -119,6 +150,16 @@ export interface DailyResultCard {
   };
 }
 
+export interface DailyInboxCard {
+  page: "daily_inbox";
+  localId: string;
+  cardId: string;
+  date: string;
+  position: number;
+  total: number;
+  item?: DailyInboxItemSummary;
+}
+
 export interface DailyDeckSnapshot {
   schemaVersion: 1;
   date: string;
@@ -128,17 +169,22 @@ export interface DailyDeckSnapshot {
   planItems: DailyPlanItemCard[];
   /** The task card initially shown on the single task page. */
   activePlanItem?: DailyPlanItemCard;
+  inboxItems: DailyInboxCard[];
+  activeInboxItem: DailyInboxCard;
+  /** Legacy aggregate kept for API compatibility; it is no longer a device page. */
   result: DailyResultCard;
-  /** Exactly three device page modes; task double-click changes its card. */
-  pageOrder: readonly ["daily_overview", "daily_plan_item", "daily_result"];
+  /** Exactly three device page modes; item navigation changes task/inbox cards. */
+  pageOrder: readonly ["daily_overview", "daily_plan_item", "daily_inbox"];
   /** Every generated card; unlike pageOrder this includes all task cards. */
-  cards: Array<DailyOverviewCard | DailyPlanItemCard | DailyResultCard>;
+  cards: Array<DailyOverviewCard | DailyPlanItemCard | DailyInboxCard>;
 }
 
 export interface DailyDeckBuildInput {
   date: string;
   theme?: string;
   items: readonly DailyDeckPlanItemInput[];
+  inboxItems?: readonly DailyDeckInboxItemInput[];
+  batteryPercent?: number;
 }
 
 export interface DailyPlanDeviceInput {
@@ -221,6 +267,7 @@ export function buildDailyDeckSnapshot(input: DailyDeckBuildInput): DailyDeckSna
   const summaries = new Map(items.map((item) => [item.id, summarizeDeckItem(item)]));
   const done = items.filter((item) => item.status === "done").length;
   const progress = { done, total: items.length };
+  const projects = buildProjectProgress(items);
   const overviewLocalId = dailyOverviewCardLocalId(date);
   const overview: DailyOverviewCard = {
     page: "daily_overview",
@@ -240,7 +287,9 @@ export function buildDailyDeckSnapshot(input: DailyDeckBuildInput): DailyDeckSna
         }
       : undefined,
     upcoming: orderedUpcoming.slice(1, 3).map((item) => summaries.get(item.id)!),
-    progress
+    progress,
+    projects,
+    batteryPercent: normalizedBatteryPercent(input.batteryPercent)
   };
   const planItems: DailyPlanItemCard[] = items.map((item, index) => {
     const localId = dailyDevicePagingLocalId({
@@ -283,6 +332,28 @@ export function buildDailyDeckSnapshot(input: DailyDeckBuildInput): DailyDeckSna
     remaining: unfinished.map((item) => summaries.get(item.id)!),
     progress
   };
+  const inboxInputs = (input.inboxItems ?? []).map(normalizeInboxItem);
+  const inboxItems: DailyInboxCard[] = inboxInputs.length
+    ? inboxInputs.map((item, index) => {
+        const localId = dailyInboxCardLocalId(date, item.id);
+        return {
+          page: "daily_inbox" as const,
+          localId,
+          cardId: localId,
+          date,
+          position: index + 1,
+          total: inboxInputs.length,
+          item
+        };
+      })
+    : [{
+        page: "daily_inbox",
+        localId: dailyInboxCardLocalId(date, "empty"),
+        cardId: dailyInboxCardLocalId(date, "empty"),
+        date,
+        position: 0,
+        total: 0
+      }];
   return {
     schemaVersion: 1,
     date,
@@ -293,9 +364,11 @@ export function buildDailyDeckSnapshot(input: DailyDeckBuildInput): DailyDeckSna
     activePlanItem: current
       ? planItems.find((card) => card.item.id === current.id)
       : planItems[0],
+    inboxItems,
+    activeInboxItem: inboxItems[0],
     result,
-    pageOrder: ["daily_overview", "daily_plan_item", "daily_result"],
-    cards: [overview, ...planItems, result]
+    pageOrder: ["daily_overview", "daily_plan_item", "daily_inbox"],
+    cards: [overview, ...planItems, ...inboxItems]
   };
 }
 
@@ -305,6 +378,62 @@ export function dailyOverviewCardLocalId(date: string): string {
 
 export function dailyResultCardLocalId(date: string): string {
   return `daily-result:${requiredDate(date)}`;
+}
+
+export function dailyInboxCardLocalId(date: string, itemId: string): string {
+  return `daily-inbox:${requiredDate(date)}:${stableFragment(itemId)}`;
+}
+
+function buildProjectProgress(items: readonly DailyDeckPlanItemInput[]): DailyOverviewCard["projects"] {
+  const projects = new Map<string, DailyOverviewCard["projects"][number]>();
+  for (const item of items) {
+    const label = optionalLine(item.projectLabel) || optionalLine(item.groupLabel) || "未分类";
+    const id = normalizedProjectIdentifier(item.projectId) || stableFragment(label);
+    const existing = projects.get(id);
+    if (existing) {
+      existing.total += 1;
+      if (item.status === "done") existing.done += 1;
+      continue;
+    }
+    projects.set(id, {
+      id,
+      label,
+      color: normalizedColor(item.projectColor),
+      done: item.status === "done" ? 1 : 0,
+      total: 1
+    });
+  }
+  return [...projects.values()];
+}
+
+function normalizeInboxItem(item: DailyDeckInboxItemInput): DailyInboxItemSummary {
+  return {
+    id: item.id.trim() || "empty",
+    source: item.source,
+    title: optionalLine(item.title) || "提醒",
+    detail: optionalLine(item.detail),
+    reason: optionalLine(item.reason),
+    generatedAt: optionalIsoDateTime(item.generatedAt),
+    aiGenerated: item.source === "ai"
+  };
+}
+
+function normalizedBatteryPercent(value: number | undefined): number | undefined {
+  return Number.isFinite(value) ? Math.max(0, Math.min(100, Math.round(value!))) : undefined;
+}
+
+function normalizedColor(value: string | undefined): string | undefined {
+  const normalized = value?.trim().toLocaleLowerCase();
+  return normalized && /^#[0-9a-f]{6}$/u.test(normalized) ? normalized : undefined;
+}
+
+function stableFragment(value: string): string {
+  let hash = 0x811c9dc5;
+  for (const character of value) {
+    hash ^= character.codePointAt(0)!;
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
 /**
@@ -447,6 +576,9 @@ function normalizeDeckItem(
     id,
     taskRevision,
     text,
+    projectId: normalizedProjectIdentifier(item.projectId),
+    projectLabel: optionalLine(item.projectLabel),
+    projectColor: normalizedColor(item.projectColor),
     primary: item.primary === true,
     minimum: item.minimum === true
   };
@@ -460,8 +592,17 @@ function summarizeDeckItem(item: DailyDeckPlanItemInput): DailyDeckTaskSummary {
     primary: item.primary === true,
     minimum: item.minimum === true,
     groupLabel: optionalLine(item.groupLabel),
+    projectId: item.projectId,
+    projectLabel: optionalLine(item.projectLabel),
+    projectColor: normalizedColor(item.projectColor),
     targetLabel: optionalLine(item.targetLabel)
   };
+}
+
+function normalizedProjectIdentifier(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  if (!normalized) return undefined;
+  return /^[A-Za-z0-9._:-]+$/u.test(normalized) ? normalized : stableFragment(normalized);
 }
 
 function optionalLine(value: string | undefined): string | undefined {

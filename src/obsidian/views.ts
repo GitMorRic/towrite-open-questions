@@ -6,6 +6,7 @@ import TodayFloatingView from "../ui/TodayFloatingView.svelte";
 import type { DailyDashboardAdapter } from "../ui/daily-dashboard-types";
 import type { ToWriteUiApi } from "../ui/api";
 import type { WorkflowIndexPayload } from "../workflow";
+import { migrateWorkbenchTab, type ToWriteWorkbenchTab } from "../ui/workbench-state";
 
 export const TOWRITE_SIDEBAR_VIEW = "towrite-open-questions-sidebar";
 export const TOWRITE_DASHBOARD_VIEW = "towrite-open-questions-dashboard";
@@ -16,11 +17,11 @@ export interface ToWriteDashboardViewOptions {
   dailyApi?: DailyDashboardAdapter;
   /** Must return `files` without a result limit so aggregate matrices stay exact. */
   getFullWorkflowPayload?: () => WorkflowIndexPayload;
+  onOpenFloatingToday?: () => void;
 }
 
 export interface ToWriteDashboardViewState {
-  activeTab: "today" | "all";
-  dailySurface: "today" | "pool" | "review";
+  activeTab: ToWriteWorkbenchTab;
 }
 
 export interface ToWriteSidebarViewOptions {
@@ -73,8 +74,7 @@ export class ToWriteSidebarItemView extends ItemView {
 export class ToWriteDashboardItemView extends ItemView {
   private component?: SvelteComponent;
   private state: ToWriteDashboardViewState = {
-    activeTab: "today",
-    dailySurface: "today"
+    activeTab: "today"
   };
 
   constructor(
@@ -90,7 +90,7 @@ export class ToWriteDashboardItemView extends ItemView {
   }
 
   getDisplayText(): string {
-    return "ToWrite Dashboard";
+    return "ToWrite 工作台";
   }
 
   getIcon(): string {
@@ -102,12 +102,8 @@ export class ToWriteDashboardItemView extends ItemView {
   }
 
   async setState(state: unknown): Promise<void> {
-    const next = state as Partial<ToWriteDashboardViewState> | null;
     this.state = {
-      activeTab: next?.activeTab === "all" ? "all" : "today",
-      dailySurface: next?.dailySurface === "pool" || next?.dailySurface === "review"
-        ? next.dailySurface
-        : "today"
+      activeTab: migrateWorkbenchTab(state)
     };
     this.mount();
   }
@@ -127,7 +123,11 @@ export class ToWriteDashboardItemView extends ItemView {
         dailyApi: this.options.dailyApi,
         getFullWorkflowPayload: this.options.getFullWorkflowPayload,
         initialTab: this.state.activeTab,
-        initialDailySurface: this.state.dailySurface
+        onOpenFloatingToday: this.options.onOpenFloatingToday,
+        onActiveTabChange: (activeTab: ToWriteDashboardViewState["activeTab"]) => {
+          this.state = { ...this.state, activeTab };
+          this.app.workspace.requestSaveLayout();
+        }
       }
     });
   }
@@ -146,7 +146,7 @@ export interface ToWriteTodayFloatingViewOptions {
 
 interface TodayFloatingViewState {
   collapsed: boolean;
-  surface?: "today" | "pool";
+  mode?: "focus" | "list";
   expandedWidth?: number;
   expandedHeight?: number;
 }
@@ -173,7 +173,7 @@ export class ToWriteTodayFloatingItemView extends ItemView {
   }
 
   getDisplayText(): string {
-    return "ToWrite Today";
+    return "ToWrite 现在专注";
   }
 
   getIcon(): string {
@@ -188,7 +188,7 @@ export class ToWriteTodayFloatingItemView extends ItemView {
     const value = state as Partial<TodayFloatingViewState> | null;
     this.state = {
       collapsed: Boolean(value?.collapsed),
-      surface: value?.surface === "pool" ? "pool" : "today",
+      mode: value?.mode === "list" ? "list" : "focus",
       expandedWidth: finiteWindowSize(value?.expandedWidth),
       expandedHeight: finiteWindowSize(value?.expandedHeight)
     };
@@ -215,7 +215,7 @@ export class ToWriteTodayFloatingItemView extends ItemView {
         dailyApi: this.options.dailyApi,
         initialCollapsed: this.state.collapsed,
         initialPinned: this.pinned,
-        initialSurface: this.state.surface ?? "today",
+        initialMode: this.state.mode ?? "focus",
         onCollapsedChange: (collapsed: boolean) => {
           this.resizePopout(collapsed);
           this.state = { ...this.state, collapsed };
@@ -226,11 +226,9 @@ export class ToWriteTodayFloatingItemView extends ItemView {
           this.leaf.setPinned(pinned);
           this.app.workspace.requestSaveLayout();
         },
-        onSurfaceChange: (surface: "today" | "pool") => {
-          this.state = { ...this.state, surface };
-          // Do not request an immediate layout save here. Some Obsidian
-          // versions replay the previous leaf state while saving a Pop-out,
-          // which remounts the Svelte view and makes the tab appear inert.
+        onModeChange: (mode: "focus" | "list") => {
+          this.state = { ...this.state, mode };
+          this.app.workspace.requestSaveLayout();
         },
         onOpenDashboard: this.options.onOpenDashboard,
         onOpenTaskPool: this.options.onOpenTaskPool

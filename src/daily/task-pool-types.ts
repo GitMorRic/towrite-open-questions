@@ -169,3 +169,24 @@ export interface TaskPoolExport {
     revision: string;
   }>;
 }
+
+export interface TaskPoolFormatPreview {
+  sourcePath: string;
+  expectedRevision: string;
+  changed: boolean;
+  legacyFieldCount: number;
+  affectedTaskIds: string[];
+  before: string;
+  after: string;
+}
+
+export interface TaskPoolFormatResult {
+  document: TaskPoolDocument;
+  undoToken?: string;
+  changed: boolean;
+}
+
+export interface TaskPoolFormatUndoResult {
+  document: TaskPoolDocument;
+  restored: boolean;
+}

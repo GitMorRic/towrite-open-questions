@@ -56,6 +56,7 @@ export type DailyDevicePolicy = "none" | "manual" | "scheduled" | "rotation" | "
 export type DailySummaryDevicePolicy = Exclude<DailyDevicePolicy, "scheduled">;
 export type DailyPlanStatus = "todo" | "in-progress" | "done";
 export type DailyPlanPriority = "highest" | "high" | "normal" | "low" | "lowest";
+export type DailyWorkKind = "question" | "note" | "inbox";
 
 export interface DailyTaskRevision {
   value: string;
@@ -91,6 +92,12 @@ export interface DailyPlanItem {
   taskRef?: string;
   /** Frozen Task Pool revision used to reject stale cross-document writes. */
   taskPoolRevision?: string;
+  /** Native source kind for a non-Task-Pool item added from the unified Work Pool. */
+  workKind?: DailyWorkKind;
+  /** Stable source id: question id or normalized Vault note path. */
+  workRef?: string;
+  /** Frozen native-source revision used by explicit cross-source completion. */
+  workRevision?: string;
   /** Stable id of the nearest containing checkbox task, when one exists. */
   parentTaskId?: string;
   /** Structural list depth inside the configured ToDo section. */
@@ -309,6 +316,9 @@ export interface DailyPlanCreateInput {
   category?: string;
   taskRef?: string;
   taskPoolRevision?: string;
+  workKind?: DailyWorkKind;
+  workRef?: string;
+  workRevision?: string;
   devicePolicy?: DailyDevicePolicy;
   scheduledDate?: string;
   scheduledFor?: string;
@@ -329,6 +339,9 @@ export interface DailyPlanUpdate {
   category?: string | null;
   taskRef?: string | null;
   taskPoolRevision?: string | null;
+  workKind?: DailyWorkKind | null;
+  workRef?: string | null;
+  workRevision?: string | null;
   devicePolicy?: DailyDevicePolicy;
   scheduledDate?: string | null;
   scheduledFor?: string | null;
