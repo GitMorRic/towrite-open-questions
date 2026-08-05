@@ -79,6 +79,7 @@ import {
   createTaskPoolTechnicalMetadataExtension,
   refreshTaskPoolTechnicalMetadata
 } from "./obsidian/task-pool-editor";
+import { readObsidianDailyNotesConfiguration } from "./obsidian/daily-notes";
 import { AiQuestionService } from "./ai/service";
 import {
   BackendEnhancementClient,
@@ -132,6 +133,7 @@ import {
   JsonDailyTimerTransitionJournal,
   PersistentDailyTaskTimer,
   predictDailyPlanItemStatusRevision,
+  parseDailyMarkdownTargets,
   resolveDailyTarget,
   dailyDeviceScore,
   dailyCreateOnlyTitle,
@@ -290,6 +292,7 @@ import { WorkflowIndex } from "./workflow";
 import { InboxIndex } from "./inbox";
 import {
   WorkPoolService,
+  isWorkPoolSourceExcluded,
   questionRevision,
   type WorkPoolAction,
   type WorkPoolItem,
@@ -1132,6 +1135,9 @@ export default class ToWritePlugin extends Plugin {
       void this.runSuggestionNotifications();
     }, 15 * 60 * 1000));
     this.registerInterval(window.setInterval(() => {
+      if (this.settings.daily.enabled) void this.syncMarkdownTasksToWorkPool();
+    }, 10 * 60 * 1000));
+    this.registerInterval(window.setInterval(() => {
       if (
         this.activeNoteTaskDocument?.tasks.some((item) =>
           this.noteTaskTimingSnapshot(item).status === "running"
@@ -1156,6 +1162,9 @@ export default class ToWritePlugin extends Plugin {
     this.app.workspace.onLayoutReady(() => {
       void this.refreshIndex();
       void this.refreshActiveNoteTaskCache();
+      window.setTimeout(() => {
+        if (this.settings.daily.enabled) void this.syncMarkdownTasksToWorkPool();
+      }, 2_000);
       if (this.settings.autoOpenSidebar) {
         window.setTimeout(() => {
           void this.activateSidebar();
@@ -5681,14 +5690,57 @@ export default class ToWritePlugin extends Plugin {
   private dailyPlanSourceSetting() {
     return this.settings.daily.planSourceMode === "fixed-document"
       ? { kind: "fixed-document" as const, path: this.settings.daily.fixedPlanPath }
-      : { kind: "daily-note" as const, dailyRoot: this.settings.daily.dailyNoteRoot };
+      : {
+          kind: "daily-note" as const,
+          dailyRoot: this.resolvedDailyNoteConfiguration().folder,
+          dateFormat: this.resolvedDailyNoteConfiguration().format
+        };
+  }
+
+  private resolvedDailyNoteConfiguration(): {
+    source: "obsidian" | "custom";
+    enabled: boolean;
+    folder: string;
+    format: string;
+    template: string;
+    templateExists: boolean;
+  } {
+    const core = readObsidianDailyNotesConfiguration(this.app);
+    const useCore = this.settings.daily.dailyNoteSource === "obsidian" && core.enabled;
+    const folder = (useCore ? core.folder : this.settings.daily.dailyNoteRoot) || "Daily";
+    const format = (useCore ? core.format : this.settings.daily.dailyNoteFormat) || "YYYY-MM-DD";
+    const templatePath = core.template
+      ? normalizePath(core.template.toLowerCase().endsWith(".md") ? core.template : `${core.template}.md`)
+      : "";
+    return {
+      source: useCore ? "obsidian" : "custom",
+      enabled: core.enabled,
+      folder,
+      format,
+      template: templatePath,
+      templateExists: Boolean(templatePath && this.app.vault.getFileByPath(templatePath))
+    };
   }
 
   private createDailyPlanStorage(): DailyPlanStorage {
     return {
       readText: async (path) => {
         const file = this.app.vault.getAbstractFileByPath(normalizePath(path));
-        if (!file) return undefined;
+        if (!file) {
+          const daily = this.resolvedDailyNoteConfiguration();
+          const normalized = normalizePath(path);
+          const root = `${normalizePath(daily.folder)}/`;
+          if (
+            this.settings.daily.planSourceMode === "daily-note"
+            && normalized.startsWith(root)
+            && normalized.toLowerCase().endsWith(".md")
+            && daily.templateExists
+          ) {
+            const template = this.app.vault.getFileByPath(daily.template);
+            if (template) return this.app.vault.read(template);
+          }
+          return undefined;
+        }
         if (!(file instanceof TFile) || file.extension.toLowerCase() !== "md") {
           throw new Error(`${path} is not a Markdown file.`);
         }
@@ -8004,11 +8056,12 @@ export default class ToWritePlugin extends Plugin {
     try {
       const status = await this.backendClient.getDailyOpsStatus();
       const expectedPlanSource = this.settings.daily.planSourceMode === "fixed-document" ? "fixed" : "daily";
+      const localDaily = this.resolvedDailyNoteConfiguration();
       const sourceCompatible = status.planSource === expectedPlanSource
         && (expectedPlanSource === "fixed"
           ? normalizeVaultPath(status.planDocument) === normalizeVaultPath(this.settings.daily.fixedPlanPath)
-          : normalizeFolderPath(status.dailyNoteRoot) === normalizeFolderPath(this.settings.daily.dailyNoteRoot)
-            && status.dailyNoteFormat === this.settings.daily.dailyNoteFormat);
+          : normalizeFolderPath(status.dailyNoteRoot) === normalizeFolderPath(localDaily.folder)
+            && status.dailyNoteFormat.replace(/\.md$/iu, "") === localDaily.format.replace(/\.md$/iu, ""));
       const compatible = status.protocolVersion === "towrite-daily-ops/v2"
         && status.markdownContract === "towrite-daily-plan/v2"
         && status.enabled
@@ -8085,6 +8138,10 @@ export default class ToWritePlugin extends Plugin {
         projectFrontmatterKeys: this.settings.workPool.projectFrontmatterKeys,
         projectTagPrefixes: this.settings.workPool.projectTagPrefixes,
         projectRules: this.settings.workPool.projectRules
+      },
+      visibility: {
+        hiddenItemIds: this.settings.workPool.hiddenItemIds,
+        excludedSourcePaths: this.settings.workPool.excludedSourcePaths
       }
     }, query);
   }
@@ -8101,33 +8158,12 @@ export default class ToWritePlugin extends Plugin {
       if (
         normalizePath(file.path) === normalizePath(this.taskPoolService.path)
         || this.isTrackedDailyPlanPath(file.path)
+        || isWorkPoolSourceExcluded(file.path, this.settings.workPool.excludedSourcePaths)
       ) {
         continue;
       }
       try {
-        let inspected = await this.noteTaskService.inspect(file.path);
-        const automatic = inspected.candidates
-          .filter((candidate) => candidate.status !== "done")
-          .slice(0, 500);
-        if (automatic.length > 0) {
-          const adopted = await this.noteTaskService.adoptMany(automatic.map((candidate) => ({
-            candidate,
-            patch: { poolTaskRef: candidate.proposedTaskId }
-          })));
-          for (const item of adopted) await this.noteTaskPoolCoordinator.ensureRegistered(item);
-          inspected = await this.noteTaskService.inspect(file.path);
-        }
-        while (true) {
-          const local = inspected.tasks.find((item) => item.status !== "done" && !item.poolTaskRef);
-          if (!local) break;
-          const linked = await this.noteTaskService.update(local, { poolTaskRef: local.taskId });
-          await this.noteTaskPoolCoordinator.ensureRegistered(linked);
-          inspected = await this.noteTaskService.inspect(file.path);
-        }
-        for (const item of inspected.tasks) {
-          if (item.status === "done") await this.noteTaskPoolCoordinator.complete(item);
-          else await this.noteTaskPoolCoordinator.ensureRegistered(item);
-        }
+        await this.syncMarkdownTasksForFile(file.path);
         filesScanned += 1;
       } catch (error) {
         filesFailed += 1;
@@ -8144,6 +8180,37 @@ export default class ToWritePlugin extends Plugin {
       filesFailed,
       tasksRegistered: after.filter((item) => !beforeIds.has(item.taskId)).length
     };
+  }
+
+  private async syncMarkdownTasksForFile(path: string): Promise<void> {
+    if (
+      normalizePath(path) === normalizePath(this.taskPoolService.path)
+      || this.isTrackedDailyPlanPath(path)
+      || isWorkPoolSourceExcluded(path, this.settings.workPool.excludedSourcePaths)
+    ) return;
+    let inspected = await this.noteTaskService.inspect(path);
+    const automatic = inspected.candidates
+      .filter((candidate) => candidate.status !== "done")
+      .slice(0, 500);
+    if (automatic.length > 0) {
+      const adopted = await this.noteTaskService.adoptMany(automatic.map((candidate) => ({
+        candidate,
+        patch: { poolTaskRef: candidate.proposedTaskId }
+      })));
+      for (const item of adopted) await this.noteTaskPoolCoordinator.ensureRegistered(item);
+      inspected = await this.noteTaskService.inspect(path);
+    }
+    while (true) {
+      const local = inspected.tasks.find((item) => item.status !== "done" && !item.poolTaskRef);
+      if (!local) break;
+      const linked = await this.noteTaskService.update(local, { poolTaskRef: local.taskId });
+      await this.noteTaskPoolCoordinator.ensureRegistered(linked);
+      inspected = await this.noteTaskService.inspect(path);
+    }
+    for (const item of inspected.tasks) {
+      if (item.status === "done") await this.noteTaskPoolCoordinator.complete(item);
+      else await this.noteTaskPoolCoordinator.ensureRegistered(item);
+    }
   }
 
   private async currentWorkPoolItem(item: WorkPoolItem): Promise<WorkPoolItem> {
@@ -8395,6 +8462,17 @@ export default class ToWritePlugin extends Plugin {
           label: status.label
         })),
         deviceBatteryPercent: this.lastLocalDeviceBatteryPercent,
+        dailyNoteIntegration: (() => {
+          const daily = this.resolvedDailyNoteConfiguration();
+          return {
+            source: daily.source,
+            corePluginEnabled: daily.enabled,
+            folder: daily.folder,
+            format: daily.format,
+            template: daily.template,
+            templateExists: daily.templateExists
+          };
+        })(),
         workPool: {
           ...this.settings.workPool,
           views: this.settings.workPool.views.map((view) => ({ ...view })),
@@ -8407,7 +8485,9 @@ export default class ToWritePlugin extends Plugin {
           })),
           projectAppearances: this.settings.workPool.projectAppearances.map((appearance) => ({
             ...appearance
-          }))
+          })),
+          hiddenItemIds: [...this.settings.workPool.hiddenItemIds],
+          excludedSourcePaths: [...this.settings.workPool.excludedSourcePaths]
         }
       }),
       getTaskPool: () => this.taskPoolService.read(),
@@ -8591,6 +8671,7 @@ export default class ToWritePlugin extends Plugin {
       },
       openTaskPoolSource: async () => { await this.openTaskPoolSource(); },
       listPlanningCandidates: (date) => this.listDailyPlanningCandidates(date),
+      openPlanningCandidate: (candidate) => this.openDailyPlanningCandidate(candidate),
       addPlanningCandidate: async (date, candidate) => {
         if (candidate.source === "pool" && candidate.taskRef && candidate.poolRevision) {
           await this.assignTaskPoolItemToDate(candidate.taskRef, candidate.poolRevision, date);
@@ -9148,6 +9229,37 @@ export default class ToWritePlugin extends Plugin {
       });
     }
     return output.slice(0, 100);
+  }
+
+  private async openDailyPlanningCandidate(candidate: DailyPlanningCandidate): Promise<void> {
+    if (candidate.workKind === "question" && candidate.workRef) {
+      await this.jumpToQuestion(candidate.workRef);
+      return;
+    }
+    if (candidate.taskRef) {
+      const item = (await this.getWorkPoolSnapshot({ history: "all" })).items
+        .find((entry) => entry.taskId === candidate.taskRef);
+      if (item) {
+        await this.openWorkPoolItem(item);
+        return;
+      }
+    }
+    if ((candidate.workKind === "note" || candidate.workKind === "inbox") && candidate.workRef) {
+      const path = normalizePath(candidate.workRef.replace(/^note:/u, ""));
+      if (this.app.vault.getFileByPath(path)) {
+        await this.openFile(path);
+        return;
+      }
+    }
+    const target = candidate.target
+      ? parseDailyMarkdownTargets(candidate.target, { sourcePath: this.dailyPlanService.pathForDate() })[0]
+      : undefined;
+    const file = target ? this.resolveDailyMarkdownTargetFile(target, this.dailyPlanService.pathForDate()) : undefined;
+    if (file) {
+      await this.openFile(file.path);
+      return;
+    }
+    await this.activateDashboard({ activeTab: "pool" });
   }
 
   async exportDailyActivity(): Promise<void> {
@@ -10596,6 +10708,11 @@ export default class ToWritePlugin extends Plugin {
     const notifyActiveContext = debounce(() => {
       this.notifyActiveContext();
     }, 120, true);
+    const refreshTaskSuggestionsAfterTyping = debounce(() => {
+      void this.refreshActiveNoteTaskCache().catch((error: unknown) => {
+        console.error("ToWrite could not refresh task suggestions after typing", error);
+      });
+    }, 900, true);
     const rebuildInboxAfterFolderChange = debounce(() => {
       this.inboxIndex.rebuild();
       this.store.notify();
@@ -10628,6 +10745,33 @@ export default class ToWritePlugin extends Plugin {
         console.error("ToWrite could not refresh the Task Pool search cache", error);
       });
     }, 250, true);
+    const pendingMarkdownTaskPaths = new Set<string>();
+    const syncChangedMarkdownTasks = debounce(() => {
+      const paths = [...pendingMarkdownTaskPaths];
+      pendingMarkdownTaskPaths.clear();
+      void (async () => {
+        for (const path of paths) {
+          try {
+            if (this.app.vault.getFileByPath(path)) await this.syncMarkdownTasksForFile(path);
+          } catch (error) {
+            console.error(`ToWrite could not update the Work Pool from ${path}`, error);
+          }
+        }
+        if (paths.length > 0) {
+          await this.refreshActiveTaskPoolCache(false);
+          this.notifyUi();
+        }
+      })();
+    }, 1_200, true);
+
+    const queueMarkdownTaskSync = (file: TFile): void => {
+      if (!this.settings.daily.enabled || file.extension !== "md") return;
+      if (normalizePath(file.path) === normalizePath(this.taskPoolService.path)) return;
+      if (this.isTrackedDailyPlanPath(file.path)) return;
+      if (isWorkPoolSourceExcluded(file.path, this.settings.workPool.excludedSourcePaths)) return;
+      pendingMarkdownTaskPaths.add(file.path);
+      syncChangedMarkdownTasks();
+    };
 
     this.registerEvent(
       this.app.metadataCache.on("changed", (file) => {
@@ -10658,6 +10802,7 @@ export default class ToWritePlugin extends Plugin {
           } else if (file.path === this.getActiveFile() || file.path === this.activeNoteTaskDocument?.sourcePath) {
             refreshActiveNoteTasksAfterVaultChange();
           }
+          queueMarkdownTaskSync(file);
           this.recordEditPresenceLearning(file);
           this.deviceHub?.recordEditPresence();
           reindexFile(file);
@@ -10685,6 +10830,7 @@ export default class ToWritePlugin extends Plugin {
           } else if (file.path === this.getActiveFile() || file.path === this.activeNoteTaskDocument?.sourcePath) {
             refreshActiveNoteTasksAfterVaultChange();
           }
+          queueMarkdownTaskSync(file);
           void this.autoApplyInboxMetadata(file)
             .catch((error: unknown) => console.error("ToWrite could not apply Inbox metadata", error))
             .finally(() => reindexFile(file));
@@ -10758,6 +10904,7 @@ export default class ToWritePlugin extends Plugin {
               console.error("ToWrite could not apply Inbox metadata after a rename", error);
             }
             reindexFile(file);
+            queueMarkdownTaskSync(file);
           } else {
             this.store.notify();
           }
@@ -10779,6 +10926,7 @@ export default class ToWritePlugin extends Plugin {
       this.app.workspace.on("editor-change", () => {
         this.lastEditorActivityAt = Date.now();
         notifyActiveContext();
+        refreshTaskSuggestionsAfterTyping();
       })
     );
 

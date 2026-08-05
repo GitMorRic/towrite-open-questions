@@ -16,6 +16,7 @@ import {
   type WorkPoolSnapshot,
   type WorkPoolSourceTab
 } from "./types";
+import { isWorkPoolItemVisible, type WorkPoolVisibilityRules } from "./visibility";
 
 export interface WorkPoolBuildInput {
   tasks: readonly TaskPoolItem[];
@@ -24,11 +25,12 @@ export interface WorkPoolBuildInput {
   workflowFiles: readonly WorkflowFileSummary[];
   generatedAt?: string;
   classification?: WorkPoolClassificationOptions;
+  visibility?: WorkPoolVisibilityRules;
 }
 
 export class WorkPoolService {
   build(input: WorkPoolBuildInput, query: WorkPoolQuery = {}): WorkPoolSnapshot {
-    const items = buildWorkPoolItems(input);
+    const items = buildWorkPoolItems(input).filter((item) => isWorkPoolItemVisible(item, input.visibility));
     const filtered = filterWorkPoolItems(items, query);
     return {
       schemaVersion: WORK_POOL_SCHEMA_VERSION,

@@ -208,9 +208,11 @@ export interface ToWriteDailySettings {
   enabled: boolean;
   /** Exactly one Markdown source is active at a time. */
   planSourceMode: "daily-note" | "fixed-document";
+  /** Prefer the Obsidian core Daily Notes folder/format/template when available. */
+  dailyNoteSource: "obsidian" | "custom";
   /** Vault-relative root containing YYYY-MM-DD daily notes. */
   dailyNoteRoot: string;
-  dailyNoteFormat: "YYYY-MM-DD.md";
+  dailyNoteFormat: string;
   /** Fixed planner document used when planSourceMode is fixed-document. */
   fixedPlanPath: string;
   /** Markdown truth source for reusable work that has not been assigned to a day. */
@@ -272,6 +274,8 @@ export interface ToWriteWorkPoolSettings {
   pageSize: number;
   defaultGroupsExpanded: boolean;
   showTechnicalMetadata: boolean;
+  hiddenItemIds: string[];
+  excludedSourcePaths: string[];
 }
 
 export interface ToWriteSettings {
@@ -654,8 +658,9 @@ export const DEFAULT_SETTINGS: ToWriteSettings = {
   daily: {
     enabled: true,
     planSourceMode: "daily-note",
+    dailyNoteSource: "obsidian",
     dailyNoteRoot: "Daily",
-    dailyNoteFormat: "YYYY-MM-DD.md",
+    dailyNoteFormat: "YYYY-MM-DD",
     fixedPlanPath: "Planning/Daily Plans.md",
     taskPoolPath: "Planning/Task Pool.md",
     autoReturnUnfinished: true,
@@ -727,7 +732,9 @@ export const DEFAULT_SETTINGS: ToWriteSettings = {
     projectAppearances: [],
     pageSize: 80,
     defaultGroupsExpanded: true,
-    showTechnicalMetadata: false
+    showTechnicalMetadata: false,
+    hiddenItemIds: [],
+    excludedSourcePaths: []
   },
   echoCards: [],
   hub: {
@@ -818,8 +825,9 @@ export function normalizeDailySettings(settings?: Partial<ToWriteDailySettings>)
   return {
     enabled: settings?.enabled !== false,
     planSourceMode: settings?.planSourceMode === "fixed-document" ? "fixed-document" : "daily-note",
+    dailyNoteSource: settings?.dailyNoteSource === "custom" ? "custom" : "obsidian",
     dailyNoteRoot: normalizeVaultFolderSetting(settings?.dailyNoteRoot, defaults.dailyNoteRoot),
-    dailyNoteFormat: "YYYY-MM-DD.md",
+    dailyNoteFormat: normalizeDailyNoteFormatSetting(settings?.dailyNoteFormat),
     fixedPlanPath: normalizeVaultFileSetting(settings?.fixedPlanPath, defaults.fixedPlanPath),
     taskPoolPath: normalizeVaultFileSetting(settings?.taskPoolPath, defaults.taskPoolPath),
     autoReturnUnfinished: settings?.autoReturnUnfinished !== false,
@@ -889,8 +897,26 @@ export function normalizeWorkPoolSettings(
     projectAppearances: normalizeWorkPoolProjectAppearances(settings?.projectAppearances),
     pageSize: clampIntegerSetting(settings?.pageSize, 20, 500, defaults.pageSize),
     defaultGroupsExpanded: settings?.defaultGroupsExpanded !== false,
-    showTechnicalMetadata: settings?.showTechnicalMetadata === true
+    showTechnicalMetadata: settings?.showTechnicalMetadata === true,
+    hiddenItemIds: normalizeWorkPoolHiddenItemIds(settings?.hiddenItemIds),
+    excludedSourcePaths: normalizeWorkPoolExcludedSourcePaths(settings?.excludedSourcePaths)
   };
+}
+
+function normalizeWorkPoolHiddenItemIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => entry.trim().slice(0, 512))
+    .filter(Boolean))];
+}
+
+function normalizeWorkPoolExcludedSourcePaths(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => entry.trim().replace(/\\/gu, "/").replace(/^\/+|\/+$/gu, "").replace(/\/{2,}/gu, "/"))
+    .filter((entry) => Boolean(entry) && !/(?:^|\/)\.\.?($|\/)/u.test(entry)))];
 }
 
 function normalizeWorkPoolViews(
@@ -1486,6 +1512,14 @@ function normalizeVaultFileSetting(value: unknown, fallback: string): string {
     .replace(/^\/+|\/+$/gu, "");
   const candidate = normalized || fallback;
   return candidate.toLowerCase().endsWith(".md") ? candidate : `${candidate}.md`;
+}
+
+function normalizeDailyNoteFormatSetting(value: unknown): string {
+  const normalized = String(value ?? "YYYY-MM-DD")
+    .trim()
+    .replace(/\.md$/iu, "");
+  if (!normalized || /[\\/:*?"<>|]/u.test(normalized)) return "YYYY-MM-DD";
+  return normalized.slice(0, 80);
 }
 
 function normalizeHeadingSetting(value: unknown, fallback: string): string {

@@ -5,6 +5,7 @@ export interface FocusCarouselMessage {
   source: string;
   text: string;
   detail?: string;
+  candidateId?: string;
 }
 
 export function buildFocusCarouselMessages(input: {
@@ -31,7 +32,8 @@ export function buildFocusCarouselMessages(input: {
       id: candidate.id,
       source: focusCandidateSource(candidate.source),
       text: candidate.title,
-      detail: candidate.description
+      detail: candidate.description,
+      candidateId: candidate.id
     }));
   if (output.length === 0) {
     append({ id: "fallback", source: "现在专注", text: "守住现在最重要的一件事" });

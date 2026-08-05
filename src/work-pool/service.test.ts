@@ -125,6 +125,26 @@ describe("WorkPoolService", () => {
     expect(groups[0].children[0].counts.total).toBe(3);
     expect(groups[0].children[0].items.map((item) => item.id)).toHaveLength(3);
   });
+
+  it("hides individual items and excludes source files or folders without mutating input", () => {
+    const sourceTask = task("a", "Legacy task", "[[Archive/Old/Legacy#^task_a]]");
+    const visibleTask = task("b", "Current task", "[[Projects/Echo#^task_b]]");
+    const service = new WorkPoolService();
+    const snapshot = service.build({
+      tasks: [sourceTask, visibleTask],
+      questions: [question("q-hidden", "think", "Projects/Echo.md")],
+      inboxItems: [],
+      workflowFiles: [],
+      visibility: {
+        hiddenItemIds: ["question:q-hidden"],
+        excludedSourcePaths: ["Archive/Old"]
+      }
+    }, { history: "all" });
+
+    expect(snapshot.items.map((item) => item.id)).toEqual([`task:${visibleTask.taskId}`]);
+    expect(snapshot.counts.tasks).toBe(1);
+    expect(sourceTask.state).toBe("pool");
+  });
 });
 
 function task(

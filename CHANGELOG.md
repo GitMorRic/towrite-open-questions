@@ -1,5 +1,21 @@
 # Changelog / 更新日志
 
+## 0.3.0-beta.15 - 2026-08-05
+
+- Fixed Focus Now controls, mode switching, navigation shortcuts, pin actions, and responsive layout so compact pop-outs remain clickable and no longer overlap at narrow widths.
+- Reused Obsidian's core Daily Notes folder, filename format, and template as the default Today-plan source, while preserving the optional ToWrite custom source and bidirectional Markdown editing.
+- Added task and note suggestions while composing Work Pool items, background Markdown-task refresh, clearer source actions, and grouped Status note details by project, Workflow stage, or article type.
+- Added non-destructive Work Pool cleanup for legacy tasks: hide individual items or exclude an entire Vault file/folder from display and future automatic organization, with restore controls in both the Work Pool manager and settings. Source Markdown is never deleted or marked complete.
+- Added regression coverage for saved visibility rules, folder matching, Work Pool filtering, Daily Notes discovery, compact Focus Now layout, and task projection. The production suite now covers 682 tests.
+
+中文摘要：
+
+- 修复“现在专注”中的模式切换、提醒翻页、快捷入口、固定操作与窄窗口自适应；缩小悬浮窗后不再重叠，所有按钮均可正常点击。
+- 默认复用 Obsidian 核心“日记”插件的目录、命名格式和模板作为今日计划原文，同时保留 ToWrite 自定义来源和 Markdown 双向编辑。
+- 新建工作项时会搜索并推荐已有任务或笔记；普通 Markdown 待办改为后台增量刷新，来源操作更明确，“状态”里的笔记明细支持按项目、Workflow 阶段或文章类型查看。
+- 新增非破坏性的遗留待办清理：可隐藏单条，或将整篇 Vault 文件/文件夹加入“不整理名单”；工作池管理器和设置页都能恢复。原 Markdown 不会被删除，也不会被标记为完成。
+- 补充隐藏规则、文件夹匹配、工作池过滤、Obsidian 日记识别、窄悬浮窗与待办投影回归测试；生产测试套件现覆盖 682 项测试。
+
 ## 0.3.0-beta.14 - 2026-08-05
 
 - Consolidated planning and management into one ToWrite Workbench with three top-level surfaces: Today, Work Pool, and Status. Today keeps only the active plan, while all creation, classification, scheduling, and source actions live in the Work Pool.

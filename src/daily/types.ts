@@ -5,7 +5,7 @@ export const DAILY_SCHEMA_VERSION = 1 as const;
 export const DAILY_PLAN_SCHEMA_VERSION = 2 as const;
 
 export type DailyPlanSource =
-  | { kind: "daily-note"; dailyRoot?: string }
+  | { kind: "daily-note"; dailyRoot?: string; dateFormat?: string }
   | { kind: "fixed-document"; path: string };
 
 export type DailyPlanDiagnosticCode =

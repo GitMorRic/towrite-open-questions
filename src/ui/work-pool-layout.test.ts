@@ -34,6 +34,9 @@ describe("single Workbench and configurable Work Pool", () => {
     expect(panel).toContain("createPoolTask");
     expect(panel).toContain("showTechnicalMetadata");
     expect(panel).toContain("syncMarkdownTasks");
+    expect(panel).toContain("隐藏此条");
+    expect(panel).toContain("不整理此来源");
+    expect(panel).toContain("隐藏与不整理名单");
   });
 
   it("uses one three-tab Workbench and keeps the floating card compact", () => {

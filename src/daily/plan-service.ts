@@ -118,6 +118,7 @@ interface ParsedTaskEntry {
 export class DailyPlanService {
   private readonly source: DailyPlanSource;
   private readonly root: string;
+  private readonly dateFormat: string;
   private readonly planHeading: string;
   private readonly todoHeading: string;
   private readonly summaryHeading: string;
@@ -134,6 +135,9 @@ export class DailyPlanService {
     this.root = this.source.kind === "daily-note"
       ? normalizeRoot(this.source.dailyRoot ?? options.dailyRoot ?? "Daily")
       : "";
+    this.dateFormat = this.source.kind === "daily-note"
+      ? normalizeDateFormat(this.source.dateFormat)
+      : "YYYY-MM-DD";
     this.planHeading = normalizeHeading(options.planHeading ?? "今日计划");
     this.todoHeading = normalizeHeading(options.todoHeading ?? "ToDo");
     this.summaryHeading = normalizeHeading(options.summaryHeading ?? "今日总结");
@@ -149,7 +153,7 @@ export class DailyPlanService {
   pathForDate(value: Date | string = this.now()): string {
     const date = normalizeDate(value);
     if (this.source.kind === "fixed-document") return normalizeVaultPath(this.source.path);
-    return `${this.root}/${date}.md`;
+    return `${this.root}/${formatDailyNoteName(date, this.dateFormat)}.md`;
   }
 
   async read(value: Date | string = this.now()): Promise<DailyPlanDocument> {
@@ -1609,20 +1613,29 @@ function normalizeSource(source: DailyPlanSource | undefined, legacyRoot: string
   }
   return {
     kind: "daily-note",
-    dailyRoot: normalizeRoot(source?.kind === "daily-note" ? source.dailyRoot ?? legacyRoot ?? "Daily" : legacyRoot ?? "Daily")
+    dailyRoot: normalizeRoot(source?.kind === "daily-note" ? source.dailyRoot ?? legacyRoot ?? "Daily" : legacyRoot ?? "Daily"),
+    dateFormat: normalizeDateFormat(source?.kind === "daily-note" ? source.dateFormat : undefined)
   };
 }
 
 function cloneSource(source: DailyPlanSource, root: string): DailyPlanSource {
   return source.kind === "fixed-document"
     ? { kind: "fixed-document", path: normalizeVaultPath(source.path) }
-    : { kind: "daily-note", dailyRoot: normalizeRoot(root || source.dailyRoot || "Daily") };
+    : {
+        kind: "daily-note",
+        dailyRoot: normalizeRoot(root || source.dailyRoot || "Daily"),
+        dateFormat: normalizeDateFormat(source.dateFormat)
+      };
 }
 
 function resolveSource(source: DailyPlanSource, sourcePath: string): ResolvedSource {
   const normalized = source.kind === "fixed-document"
     ? { kind: "fixed-document" as const, path: normalizeVaultPath(source.path || sourcePath) }
-    : { kind: "daily-note" as const, dailyRoot: normalizeRoot(source.dailyRoot ?? "Daily") };
+    : {
+        kind: "daily-note" as const,
+        dailyRoot: normalizeRoot(source.dailyRoot ?? "Daily"),
+        dateFormat: normalizeDateFormat(source.dateFormat)
+      };
   return {
     source: normalized,
     path: sourcePath,
@@ -1639,6 +1652,28 @@ function normalizeRoot(value: string): string {
   const normalized = raw.replace(/\\/gu, "/").replace(/\/+$/gu, "");
   if (!normalized || unsafeVaultSegments(normalized)) throw new Error("Daily note root is invalid.");
   return normalized;
+}
+
+export function normalizeDateFormat(value: string | undefined): string {
+  const normalized = String(value ?? "YYYY-MM-DD")
+    .trim()
+    .replace(/\.md$/iu, "");
+  if (!normalized || /[\\/:*?"<>|]/u.test(normalized)) return "YYYY-MM-DD";
+  return normalized;
+}
+
+export function formatDailyNoteName(value: Date | string, format: string): string {
+  const date = normalizeDate(value);
+  const [year, month, day] = date.split("-");
+  const replacements: Record<string, string> = {
+    YYYY: year,
+    YY: year.slice(-2),
+    MM: month,
+    M: String(Number(month)),
+    DD: day,
+    D: String(Number(day))
+  };
+  return normalizeDateFormat(format).replace(/YYYY|YY|MM|DD|M|D/gu, (token) => replacements[token] ?? token);
 }
 
 function normalizeVaultPath(value: string): string {

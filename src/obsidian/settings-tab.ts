@@ -1362,6 +1362,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
   private renderDailySettings(containerEl: HTMLElement): void {
     const zh = this.plugin.settings.language !== "en";
     const daily = this.plugin.settings.daily;
+    const workPool = this.plugin.settings.workPool;
 
     new Setting(containerEl)
       .setName(zh ? "今日计划与统计" : "Daily plan and activity")
@@ -1411,13 +1412,55 @@ export class ToWriteSettingTab extends PluginSettingTab {
         }));
     } else {
       new Setting(containerEl)
+        .setName(zh ? "日记设置来源" : "Daily Notes configuration")
+        .setDesc(zh
+          ? "推荐跟随 Obsidian 核心“日记”插件的目录、日期格式和模板；修改核心设置后刷新工作台即可生效。"
+          : "Recommended: follow the folder, date format and template configured by Obsidian's core Daily Notes plugin.")
+        .addDropdown((dropdown) => dropdown
+          .addOption("obsidian", zh ? "跟随 Obsidian 日记（推荐）" : "Follow Obsidian Daily Notes")
+          .addOption("custom", zh ? "ToWrite 自定义" : "Custom ToWrite settings")
+          .setValue(daily.dailyNoteSource)
+          .onChange(async (value) => {
+            daily.dailyNoteSource = value === "custom" ? "custom" : "obsidian";
+            await this.plugin.savePluginData();
+            await this.plugin.refreshDailyDashboard();
+            this.refreshSettingsUi();
+          }));
+
+      if (daily.dailyNoteSource === "obsidian") {
+        new Setting(containerEl)
+          .setName(zh ? "当前日记配置" : "Detected Daily Notes settings")
+          .setDesc(zh
+            ? "ToWrite 会直接使用 Obsidian 核心日记的存放位置、命名格式和模板，不再另建 Daily/YYYY-MM-DD.md。"
+            : "ToWrite uses the core Daily Notes location, naming format and template instead of creating a separate Daily folder.")
+          .addButton((button) => button
+            .setButtonText(zh ? "打开 Obsidian 日记设置" : "Open Daily Notes settings")
+            .onClick(() => {
+              const setting = (this.app as unknown as { setting?: { open(): void; openTabById(id: string): void } }).setting;
+              setting?.open();
+              setting?.openTabById("daily-notes");
+            }));
+      }
+
+      if (daily.dailyNoteSource === "custom") {
+      new Setting(containerEl)
         .setName(zh ? "日记目录" : "Daily note folder")
-        .setDesc(zh ? "默认使用 Daily/YYYY-MM-DD.md。" : "Defaults to Daily/YYYY-MM-DD.md.")
+        .setDesc(zh ? "仅在不跟随 Obsidian 日记时使用。" : "Used only when not following Obsidian Daily Notes.")
         .addText((text) => text.setValue(daily.dailyNoteRoot).setPlaceholder("Daily").onChange(async (value) => {
           daily.dailyNoteRoot = value.trim().replace(/\\/gu, "/").replace(/^\/+|\/+$/gu, "") || "Daily";
           await this.plugin.savePluginData();
           await this.plugin.refreshDailyDashboard();
         }));
+
+      new Setting(containerEl)
+        .setName(zh ? "日记文件名格式" : "Daily note format")
+        .setDesc(zh ? "支持 YYYY、MM、DD，例如 YYYYMMDD。" : "Supports YYYY, MM and DD, for example YYYYMMDD.")
+        .addText((text) => text.setValue(daily.dailyNoteFormat).setPlaceholder("YYYY-MM-DD").onChange(async (value) => {
+          daily.dailyNoteFormat = value.trim().replace(/\.md$/iu, "") || "YYYY-MM-DD";
+          await this.plugin.savePluginData();
+          await this.plugin.refreshDailyDashboard();
+        }));
+      }
     }
 
     new Setting(containerEl)
@@ -1439,6 +1482,38 @@ export class ToWriteSettingTab extends PluginSettingTab {
           daily.taskPoolPath = normalized.toLowerCase().endsWith(".md") ? normalized : `${normalized}.md`;
           await this.plugin.savePluginData();
           await this.plugin.refreshDailyDashboard();
+        }));
+
+    new Setting(containerEl)
+      .setName(zh ? "工作池不整理名单" : "Work Pool exclusions")
+      .setDesc(zh
+        ? "每行一个 Vault 文件或文件夹。匹配的普通待办不会再自动登记，也不会显示在工作池；原文不会被修改。"
+        : "One Vault file or folder per line. Matching tasks are not auto-registered or shown; source Markdown is never changed.")
+      .addTextArea((text) => text
+        .setValue(workPool.excludedSourcePaths.join("\n"))
+        .setPlaceholder(zh ? "Archive/旧项目\nNotes/不再整理.md" : "Archive/old-project\nNotes/no-longer-organized.md")
+        .onChange(async (value) => {
+          workPool.excludedSourcePaths = [...new Set(value
+            .split(/\r?\n/gu)
+            .map((entry) => entry.trim().replace(/\\/gu, "/").replace(/^\/+|\/+$/gu, "").replace(/\/{2,}/gu, "/"))
+            .filter((entry) => Boolean(entry) && !/(?:^|\/)\.\.?($|\/)/u.test(entry)))];
+          await this.plugin.savePluginData();
+          await this.plugin.refreshDailyDashboard();
+        }));
+
+    new Setting(containerEl)
+      .setName(zh ? "单条隐藏" : "Individually hidden items")
+      .setDesc(zh
+        ? `当前隐藏 ${workPool.hiddenItemIds.length} 条。可在工作池条目的“…”菜单中隐藏，并在工作池的“不整理名单”里逐条恢复。`
+        : `${workPool.hiddenItemIds.length} items hidden. Hide from an item's … menu and restore individual items in the Work Pool manager.`)
+      .addButton((button) => button
+        .setButtonText(zh ? "全部恢复" : "Restore all")
+        .setDisabled(workPool.hiddenItemIds.length === 0)
+        .onClick(async () => {
+          workPool.hiddenItemIds = [];
+          await this.plugin.savePluginData();
+          await this.plugin.refreshDailyDashboard();
+          this.refreshSettingsUi();
         }));
 
     new Setting(containerEl)

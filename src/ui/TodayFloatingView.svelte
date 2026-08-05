@@ -56,6 +56,9 @@
   let collapsed = initialCollapsed;
   let pinned = initialPinned;
   let mode = initialMode;
+  let syncedCollapsed = initialCollapsed;
+  let syncedPinned = initialPinned;
+  let syncedMode = initialMode;
   let messageIndex = 0;
   let clockNow = Date.now();
   let timingCapturedAt = Date.now();
@@ -70,6 +73,18 @@
   let clockTimer = 0;
 
   $: overview = selectDailyOverview(snapshot?.plan.items ?? []);
+  $: if (initialCollapsed !== syncedCollapsed) {
+    syncedCollapsed = initialCollapsed;
+    collapsed = initialCollapsed;
+  }
+  $: if (initialPinned !== syncedPinned) {
+    syncedPinned = initialPinned;
+    pinned = initialPinned;
+  }
+  $: if (initialMode !== syncedMode) {
+    syncedMode = initialMode;
+    mode = initialMode;
+  }
   $: progress = overview.total ? Math.round((overview.done / overview.total) * 100) : 0;
   $: current = overview.current;
   $: compactItems = snapshot?.plan.items ?? [];
@@ -155,6 +170,13 @@
     if (carouselMessages.length < 2) return;
     messageIndex = (messageIndex + direction + carouselMessages.length) % carouselMessages.length;
     resetCarouselTimer();
+  }
+
+  async function openCurrentMessage(): Promise<void> {
+    const candidateId = currentMessage?.candidateId;
+    const candidate = candidateId ? candidates.find((item) => item.id === candidateId) : undefined;
+    if (!candidate || !dailyApi.openPlanningCandidate) return;
+    await run(`message:${candidate.id}`, () => dailyApi.openPlanningCandidate?.(candidate), "已打开提醒来源");
   }
 
   function resetCarouselTimer(): void {
@@ -303,11 +325,11 @@
             <button class="icon-button" type="button" disabled={carouselMessages.length < 2} aria-label="上一条提醒" on:click={() => advanceMessage(-1)}>
               <ChevronLeft size={15} />
             </button>
-            <div>
+            <button class="message-content" type="button" disabled={!currentMessage.candidateId || !dailyApi.openPlanningCandidate} title={currentMessage.candidateId ? "打开这条提醒的来源" : undefined} on:click={openCurrentMessage}>
               <span><Bell size={12} />{currentMessage.source}{carouselMessages.length > 1 ? ` · ${messageIndex + 1}/${carouselMessages.length}` : ""}</span>
               <strong>{currentMessage.text}</strong>
               {#if currentMessage.detail}<small>{currentMessage.detail}</small>{/if}
-            </div>
+            </button>
             <button class="icon-button" type="button" disabled={carouselMessages.length < 2} aria-label="下一条提醒" on:click={() => advanceMessage(1)}>
               <ChevronRight size={15} />
             </button>
@@ -445,8 +467,11 @@
     flex-direction: column;
     min-width: 280px;
     height: 100%;
+    isolation: isolate;
     color: var(--text-normal);
     background: var(--background-primary);
+    pointer-events: auto;
+    -webkit-app-region: no-drag;
   }
 
   .today-floating.collapsed {
@@ -455,6 +480,8 @@
 
   button {
     font: inherit;
+    pointer-events: auto;
+    -webkit-app-region: no-drag;
   }
 
   button:focus-visible {
@@ -463,6 +490,8 @@
   }
 
   .widget-header {
+    position: relative;
+    z-index: 5;
     display: grid;
     grid-template-columns: minmax(0, 1fr) 34px 34px;
     align-items: center;
@@ -554,6 +583,11 @@
   .surface-content {
     display: grid;
     flex: 1;
+    grid-template-areas:
+      "modes"
+      "messages"
+      "content"
+      "actions";
     grid-template-rows: auto auto minmax(0, 1fr) auto;
     gap: 10px;
     overflow: hidden;
@@ -562,6 +596,9 @@
   }
 
   .focus-content {
+    position: relative;
+    z-index: 1;
+    grid-area: content;
     display: flex;
     flex-direction: column;
     overflow: auto;
@@ -571,6 +608,9 @@
   }
 
   .focus-mode-switcher {
+    position: relative;
+    z-index: 4;
+    grid-area: modes;
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 3px;
@@ -599,6 +639,9 @@
   }
 
   .message-carousel {
+    position: relative;
+    z-index: 3;
+    grid-area: messages;
     display: grid;
     grid-template-columns: 32px minmax(0, 1fr) 32px;
     align-items: center;
@@ -611,12 +654,19 @@
     overflow: hidden;
   }
 
-  .message-carousel > div {
+  .message-content {
     display: grid;
     gap: 3px;
     min-width: 0;
+    padding: 0;
+    border: 0;
+    box-shadow: none;
+    color: inherit;
+    background: transparent;
     text-align: center;
   }
+
+  .message-content:disabled { opacity: 1; cursor: default; }
 
   .message-carousel span {
     display: inline-flex;
@@ -871,6 +921,9 @@
   }
 
   .focus-footer {
+    position: relative;
+    z-index: 4;
+    grid-area: actions;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -901,6 +954,71 @@
   @media (prefers-reduced-motion: reduce) {
     .progress i {
       transition: none;
+    }
+  }
+
+  @media (max-height: 680px) {
+    .widget-body {
+      gap: 7px;
+      padding: 8px;
+    }
+
+    .surface-content {
+      gap: 7px;
+    }
+
+    .message-carousel {
+      min-height: 58px;
+      padding-block: 5px;
+    }
+
+    .message-carousel small {
+      display: none;
+    }
+
+    .empty-state {
+      min-height: 132px;
+      padding: 12px 8px;
+    }
+  }
+
+  @media (max-height: 500px) {
+    .message-carousel {
+      min-height: 48px;
+    }
+
+    .message-carousel strong {
+      -webkit-line-clamp: 1;
+    }
+
+    .empty-icon,
+    .empty-state small {
+      display: none;
+    }
+
+    .empty-state {
+      min-height: 88px;
+      grid-template-columns: repeat(2, minmax(0, auto));
+      align-content: start;
+    }
+
+    .empty-state strong {
+      grid-column: 1 / -1;
+    }
+  }
+
+  @media (max-width: 340px) {
+    .today-floating {
+      min-width: 240px;
+    }
+
+    .focus-mode-switcher button,
+    .focus-footer > button:not(.icon-button) {
+      font-size: 0.66rem;
+    }
+
+    .focus-footer {
+      gap: 2px;
     }
   }
 </style>

@@ -410,7 +410,11 @@ function appendUnsafeTargetDiagnostics(
 
 function normalizeSource(source: DailyPlanSource | undefined): DailyPlanSource {
   if (source?.kind === "fixed-document") return { kind: "fixed-document", path: source.path };
-  return { kind: "daily-note", dailyRoot: source?.kind === "daily-note" ? source.dailyRoot ?? "Daily" : "Daily" };
+  return {
+    kind: "daily-note",
+    dailyRoot: source?.kind === "daily-note" ? source.dailyRoot ?? "Daily" : "Daily",
+    dateFormat: source?.kind === "daily-note" ? source.dateFormat : undefined
+  };
 }
 
 function normalizeBlockId(value: string): string | undefined {

@@ -35,6 +35,10 @@
   let questions: OpenQuestion[] = [];
   let statusOptions = api.getStatusOptions();
   let search = "";
+  let noteGrouping: "all" | "folder" | "workflow" | "type" = "all";
+  let noteFolder = "";
+  let noteStage = "";
+  let noteType = "";
   let dailyConfiguration: DailyDashboardConfiguration = {
     categoryPresets: [],
     defaultView: "list",
@@ -59,7 +63,13 @@
   reload();
   void loadDailyConfiguration();
 
+  $: noteFolders = [...new Set(summaries.map((summary) => topFolder(summary.filePath)))].sort((a, b) => a.localeCompare(b, "zh-CN"));
+  $: noteStages = uniqueNotePairs(summaries.map((summary) => ({ id: summary.stageId ?? "", label: summary.stageTitle ?? "未分阶段" })));
+  $: noteTypes = uniqueNotePairs(summaries.map((summary) => ({ id: summary.typeId ?? "", label: summary.typeTitle ?? "未分类" })));
   $: filtered = summaries.filter((summary) => {
+    if (noteFolder && topFolder(summary.filePath) !== noteFolder) return false;
+    if (noteStage && (summary.stageId ?? "") !== noteStage) return false;
+    if (noteType && (summary.typeId ?? "") !== noteType) return false;
     const needle = search.trim().toLowerCase();
     if (!needle) return true;
     return [
@@ -70,6 +80,7 @@
       summary.tags?.join(" ")
     ].filter(Boolean).join(" ").toLowerCase().includes(needle);
   });
+  $: noteGroups = groupNoteSummaries(filtered, noteGrouping);
   $: workflowStatusColumns = buildWorkflowStatusColumns(statusOptions, questions);
   $: workflowRows = buildWorkflowMatrix(
     workflowPayload,
@@ -133,6 +144,40 @@
     await api.openFile(summary.filePath);
   }
 
+  function topFolder(path: string): string {
+    const normalized = path.replace(/\\/gu, "/");
+    return normalized.includes("/") ? normalized.split("/")[0] : "根目录";
+  }
+
+  function uniqueNotePairs(values: Array<{ id: string; label: string }>): Array<{ id: string; label: string }> {
+    return [...new Map(values.map((value) => [value.id, value])).values()]
+      .sort((left, right) => left.label.localeCompare(right.label, "zh-CN"));
+  }
+
+  function groupNoteSummaries(items: ArticleSummary[], grouping: typeof noteGrouping): Array<{ id: string; title: string; color: string; items: ArticleSummary[] }> {
+    if (grouping === "all") return [{ id: "all", title: "全部笔记", color: "var(--interactive-accent)", items }];
+    const groups = new Map<string, { title: string; items: ArticleSummary[] }>();
+    for (const item of items) {
+      const key = grouping === "folder"
+        ? topFolder(item.filePath)
+        : grouping === "workflow"
+          ? item.stageId || "__none__"
+          : item.typeId || "__none__";
+      const title = grouping === "folder"
+        ? key
+        : grouping === "workflow"
+          ? item.stageTitle || "未分阶段"
+          : item.typeTitle || "未分类";
+      const group = groups.get(key) ?? { title, items: [] };
+      group.items.push(item);
+      groups.set(key, group);
+    }
+    const colors = ["#4d8fd6", "#38a17a", "#8b6de8", "#d38a3e", "#cc6075", "#6e9347", "#4f98a6"];
+    return [...groups.entries()]
+      .map(([id, group], index) => ({ id, title: group.title, items: group.items, color: colors[index % colors.length] }))
+      .sort((left, right) => right.items.length - left.items.length || left.title.localeCompare(right.title, "zh-CN"));
+  }
+
   function buildTypeAggregates(
     payload: WorkflowIndexPayload,
     articleSummaries: ArticleSummary[]
@@ -189,9 +234,11 @@
           <span>现在专注</span>
         </button>
       {/if}
-      <button type="button" title="刷新索引" aria-label="刷新索引" on:click={refresh}>
-        <RefreshCw size={16} />
-      </button>
+      {#if activeTab === "status"}
+        <button type="button" title="刷新索引" aria-label="刷新索引" on:click={refresh}>
+          <RefreshCw size={16} />
+        </button>
+      {/if}
       <button type="button" title="导出数据" aria-label="导出数据" on:click={() => api.exportNow()}>
         <Download size={16} />
       </button>
@@ -343,6 +390,26 @@
           <input bind:value={search} type="search" placeholder="搜索标题、路径、标签或阶段" aria-label="筛选笔记" />
         </header>
 
+        <div class="note-view-controls">
+          <nav aria-label="笔记分类方式">
+            <button type="button" class:active={noteGrouping === "all"} on:click={() => noteGrouping = "all"}>全部</button>
+            <button type="button" class:active={noteGrouping === "folder"} on:click={() => noteGrouping = "folder"}>目录 / 项目</button>
+            <button type="button" class:active={noteGrouping === "workflow"} on:click={() => noteGrouping = "workflow"}>Workflow</button>
+            <button type="button" class:active={noteGrouping === "type"} on:click={() => noteGrouping = "type"}>文章类型</button>
+          </nav>
+          <div class="note-filters">
+            <select bind:value={noteFolder} aria-label="按目录筛选"><option value="">全部目录</option>{#each noteFolders as folder}<option value={folder}>{folder}</option>{/each}</select>
+            <select bind:value={noteStage} aria-label="按 Workflow 筛选"><option value="">全部阶段</option>{#each noteStages as stage}<option value={stage.id}>{stage.label}</option>{/each}</select>
+            <select bind:value={noteType} aria-label="按文章类型筛选"><option value="">全部类型</option>{#each noteTypes as type}<option value={type.id}>{type.label}</option>{/each}</select>
+          </div>
+        </div>
+
+        <div class="notes-groups">
+          {#each noteGroups as group (group.id)}
+          <section class="note-group" style={`--note-group-color:${group.color}`}>
+            {#if noteGrouping !== "all"}
+              <header><span class="note-group-mark"></span><strong>{group.title}</strong><span>{group.items.length} 篇</span></header>
+            {/if}
         <div class="notes-table-wrap">
           <table class="notes-table">
             <thead>
@@ -359,7 +426,7 @@
               </tr>
             </thead>
             <tbody>
-              {#each filtered as summary (summary.filePath)}
+              {#each group.items as summary (summary.filePath)}
                 <tr class:blocked={summary.needsWork} on:click={() => openFirst(summary)}>
                   <td>
                     <strong>{summary.title}</strong>
@@ -377,6 +444,9 @@
               {/each}
             </tbody>
           </table>
+        </div>
+          </section>
+          {/each}
         </div>
       </section>
     </section>
@@ -618,6 +688,65 @@
     margin: 0;
   }
 
+  .note-view-controls {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--dashboard-border);
+    background: var(--dashboard-soft);
+  }
+
+  .note-view-controls nav,
+  .note-filters {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+    overflow-x: auto;
+  }
+
+  .note-view-controls button {
+    flex: none;
+    border: 0;
+    box-shadow: none;
+    background: transparent;
+  }
+
+  .note-view-controls button.active {
+    color: var(--text-on-accent);
+    background: var(--interactive-accent);
+  }
+
+  .note-filters select {
+    min-width: 120px;
+  }
+
+  .notes-groups {
+    display: grid;
+    gap: 10px;
+    padding: 10px;
+  }
+
+  .note-group {
+    overflow: hidden;
+    border: 1px solid var(--dashboard-border);
+    border-radius: 10px;
+  }
+
+  .note-group > header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 11px;
+    background: color-mix(in srgb, var(--note-group-color) 9%, var(--dashboard-soft));
+  }
+
+  .note-group > header strong { flex: 1; }
+  .note-group > header span:last-child { color: var(--dashboard-muted); font-size: .72rem; }
+  .note-group-mark { width: 9px; height: 9px; border-radius: 3px; background: var(--note-group-color); }
+
   .notes-table tbody tr {
     cursor: pointer;
   }
@@ -657,6 +786,9 @@
     .metric-grid {
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
+
+    .note-view-controls { align-items: stretch; flex-direction: column; }
+    .note-filters select { flex: 1 0 120px; }
 
     .dashboard-tabs {
       display: grid;

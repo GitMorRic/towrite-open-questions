@@ -55,8 +55,9 @@ describe("settings normalization", () => {
     })).toEqual({
       enabled: true,
       planSourceMode: "daily-note",
+      dailyNoteSource: "obsidian",
       dailyNoteRoot: "Daily/Writing",
-      dailyNoteFormat: "YYYY-MM-DD.md",
+      dailyNoteFormat: "YYYY-MM-DD",
       fixedPlanPath: "Planning/Daily Plans.md",
       taskPoolPath: "Planning/Task Pool.md",
       autoReturnUnfinished: true,
@@ -147,7 +148,9 @@ describe("settings normalization", () => {
       ],
       pageSize: 999,
       defaultGroupsExpanded: false,
-      showTechnicalMetadata: true
+      showTechnicalMetadata: true,
+      hiddenItemIds: [" task:one ", "task:one", "", 42 as never],
+      excludedSourcePaths: [" /Archive\\Old/ ", "Archive/Old", "../unsafe"]
     })).toMatchObject({
       defaultViewId: "custom",
       views: [{
@@ -165,7 +168,9 @@ describe("settings normalization", () => {
       projectAppearances: [{ projectId: "hardware", color: "#aabbcc", icon: "cpu" }],
       pageSize: 500,
       defaultGroupsExpanded: false,
-      showTechnicalMetadata: true
+      showTechnicalMetadata: true,
+      hiddenItemIds: ["task:one"],
+      excludedSourcePaths: ["Archive/Old"]
     });
   });
 

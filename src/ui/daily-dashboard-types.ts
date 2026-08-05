@@ -127,6 +127,14 @@ export interface DailyDashboardConfiguration {
   workPool?: WorkPoolPresentationSettings;
   /** Latest optional telemetry from a displayed ESP32 card. */
   deviceBatteryPercent?: number;
+  dailyNoteIntegration?: {
+    source: "obsidian" | "custom";
+    corePluginEnabled: boolean;
+    folder: string;
+    format: string;
+    template: string;
+    templateExists: boolean;
+  };
 }
 
 export interface WorkPoolPresentationSettings {
@@ -139,6 +147,8 @@ export interface WorkPoolPresentationSettings {
   pageSize: number;
   defaultGroupsExpanded: boolean;
   showTechnicalMetadata: boolean;
+  hiddenItemIds: string[];
+  excludedSourcePaths: string[];
 }
 
 export interface DailyTimingCorrectionInput {
@@ -279,5 +289,6 @@ export interface DailyDashboardAdapter {
   openTaskPoolSource?(): void | Promise<void>;
   listPlanningCandidates?(date: string): DailyPlanningCandidate[] | Promise<DailyPlanningCandidate[]>;
   addPlanningCandidate?(date: string, candidate: DailyPlanningCandidate): void | Promise<void>;
+  openPlanningCandidate?(candidate: DailyPlanningCandidate): void | Promise<void>;
   subscribe?(listener: () => void): (() => void);
 }

@@ -9,6 +9,13 @@ import {
 } from "./plan-service";
 
 describe("DailyPlanService v2", () => {
+  it("uses the Daily Notes date format supplied by Obsidian", () => {
+    const service = new DailyPlanService(new MemoryDailyStorage(), {
+      source: { kind: "daily-note", dailyRoot: "sync/Todo_and_tosolve", dateFormat: "YYYYMMDD" }
+    });
+    expect(service.pathForDate("2026-08-05")).toBe("sync/Todo_and_tosolve/20260805.md");
+  });
+
   it("creates an empty Markdown plan scaffold without inventing a task", async () => {
     const storage = new MemoryDailyStorage();
     const service = new DailyPlanService(storage, {

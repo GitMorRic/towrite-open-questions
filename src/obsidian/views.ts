@@ -164,7 +164,7 @@ export class ToWriteTodayFloatingItemView extends ItemView {
     this.pinned = Boolean(leaf.getViewState().pinned ?? true);
     this.registerEvent(leaf.on("pinned-change", (pinned) => {
       this.pinned = pinned;
-      this.mount();
+      this.component?.$set({ initialPinned: pinned });
     }));
   }
 
@@ -192,7 +192,15 @@ export class ToWriteTodayFloatingItemView extends ItemView {
       expandedWidth: finiteWindowSize(value?.expandedWidth),
       expandedHeight: finiteWindowSize(value?.expandedHeight)
     };
-    this.mount();
+    if (this.component) {
+      this.component.$set({
+        initialCollapsed: this.state.collapsed,
+        initialPinned: this.pinned,
+        initialMode: this.state.mode ?? "focus"
+      });
+    } else {
+      this.mount();
+    }
   }
 
   async onOpen(): Promise<void> {

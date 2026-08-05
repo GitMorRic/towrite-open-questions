@@ -1036,6 +1036,12 @@
           <div>
             <strong>{metadata.sourcePath || "计划来源"}</strong>
             <small>{metadata.sourceExists === false ? "文件尚未创建" : "与工作台双向同步"}</small>
+            {#if configuration.dailyNoteIntegration?.source === "obsidian"}
+              <small>跟随 Obsidian 日记 · {configuration.dailyNoteIntegration.folder}/{configuration.dailyNoteIntegration.format}.md</small>
+              {#if configuration.dailyNoteIntegration.template && !configuration.dailyNoteIntegration.templateExists}
+                <small class="source-warning">核心日记模板不存在：{configuration.dailyNoteIntegration.template}</small>
+              {/if}
+            {/if}
             {#if metadata.sourceExists === false && dailyApi.ensurePlanSource}<button type="button" on:click={() => run("ensure-source", () => dailyApi?.ensurePlanSource?.(selectedDate))}>创建计划页</button>{/if}
             {#if dailyApi.openPlanSource}<button type="button" disabled={metadata.sourceExists === false} on:click={() => dailyApi?.openPlanSource?.(selectedDate)}>打开原文</button>{/if}
             {#if dailyApi.openPlanSettings}<button type="button" on:click={() => dailyApi?.openPlanSettings?.()}>更改来源</button>{/if}
@@ -3920,6 +3926,7 @@
   .source-utility > summary::-webkit-details-marker { display:none; }
   .source-utility > div { position:absolute; z-index:12; top:calc(100% + 7px); right:0; display:grid; gap:7px; min-width:220px; padding:11px; border:1px solid var(--daily-border); border-radius:11px; background:var(--background-primary); box-shadow:var(--shadow-s); }
   .source-utility small { color:var(--text-muted); }
+  .source-utility .source-warning { color:var(--text-warning); }
   .list-more-actions { position:relative; }
   .list-more-actions > summary { display:grid; place-items:center; cursor:pointer; list-style:none; }
   .list-more-actions > summary::-webkit-details-marker { display:none; }
