@@ -1,6 +1,7 @@
 import { contentHash128 } from "../core/hash";
 import type { OpenQuestion } from "../core/types";
 import type { TaskPoolItem } from "../daily/task-pool-types";
+import type { DailyPlanHierarchyTask } from "../daily/types";
 import type { InboxItem } from "../inbox/types";
 import type { WorkflowFileSummary } from "../workflow";
 import {
@@ -23,6 +24,12 @@ export interface WorkPoolBuildInput {
   questions: readonly OpenQuestion[];
   inboxItems: readonly InboxItem[];
   workflowFiles: readonly WorkflowFileSummary[];
+  dailyPlan?: {
+    date: string;
+    sourcePath: string;
+    revision: string;
+    tasks: readonly DailyPlanHierarchyTask[];
+  };
   generatedAt?: string;
   classification?: WorkPoolClassificationOptions;
   visibility?: WorkPoolVisibilityRules;
@@ -174,6 +181,68 @@ export function buildWorkPoolItems(input: WorkPoolBuildInput): WorkPoolItem[] {
     };
   });
 
+  const dailyTasks: WorkPoolItem[] = (input.dailyPlan?.tasks ?? [])
+    .filter((task) => !task.taskRef && !hasLinkedWorkSource(task.rawBlock))
+    .map((task) => {
+      const dailyPlan = input.dailyPlan!;
+      const target = task.targetResolution.webTarget?.url
+        ?? task.targetResolution.target?.raw;
+      const linkedPath = target ? resolveLinkPath(target, resolvablePaths) : undefined;
+      const lineageLabels = task.lineage.groups
+        .map((group) => group.text.trim())
+        .filter(Boolean);
+      const projectLabel = lineageLabels.length > 0 ? lineageLabels.join(" / ") : undefined;
+      const dailyId = task.blockId
+        ? `daily:${dailyPlan.date}:${task.blockId}`
+        : `daily:${dailyPlan.date}:line:${task.line}:${contentHash128(`${task.rawLine}\n${task.lineageRevision}`)}`;
+      const sourceRevision = `daily_${contentHash128([
+        dailyPlan.revision,
+        task.rawBlock,
+        task.lineageRevision
+      ].join("\n"))}`;
+      const notePath = linkedPath ?? normalizePath(task.sourcePath);
+      const note = noteByPath.get(notePath);
+      const workTypeLabel = task.category?.trim() || "任务";
+      return {
+        schemaVersion: WORK_POOL_SCHEMA_VERSION,
+        id: dailyId,
+        kind: "task" as const,
+        sourceRef: { kind: "task" as const, id: dailyId, revision: sourceRevision },
+        title: task.text,
+        description: [projectLabel, task.targetResolution.displayLabel].filter(Boolean).join(" · ") || undefined,
+        notePath,
+        target,
+        active: task.status !== "done",
+        category: task.category,
+        project: projectLabel,
+        inbox: note?.inbox,
+        stale: note?.stale,
+        stageId: note?.stageId,
+        stageTitle: note?.stageTitle,
+        typeId: note?.typeId,
+        typeTitle: note?.typeTitle,
+        tags: note?.tags ?? [],
+        taskState: task.status === "done" ? "done" : "planned",
+        dailyDate: dailyPlan.date,
+        dailyBlockId: task.blockId,
+        dailyLine: task.line,
+        dailyProvisional: task.normalizationRequired,
+        dailyLineageRevision: task.lineageRevision,
+        classification: {
+          workTypeId: identifier(workTypeLabel),
+          workTypeLabel,
+          workTypeSource: task.category ? "task" as const : "native" as const,
+          ...(projectLabel
+            ? {
+                projectId: identifier(projectLabel),
+                projectLabel,
+                projectSource: "native" as const
+              }
+            : {})
+        }
+      };
+    });
+
   const questions: WorkPoolItem[] = input.questions.map((question) => {
     const notePath = normalizePath(question.source.file);
     const note = noteByPath.get(notePath);
@@ -222,7 +291,11 @@ export function buildWorkPoolItems(input: WorkPoolBuildInput): WorkPoolItem[] {
     };
   });
 
-  return [...notes, ...tasks, ...questions].sort(compareWorkItems);
+  return [...notes, ...tasks, ...dailyTasks, ...questions].sort(compareWorkItems);
+}
+
+function hasLinkedWorkSource(rawBlock: string): boolean {
+  return /\[towrite-(?:task-ref|work-ref)::/iu.test(rawBlock);
 }
 
 export function filterWorkPoolItems(

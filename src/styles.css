@@ -6234,3 +6234,38 @@
 .markdown-source-view .cm-line.towrite-task-pool-technical-folded {
   display: none !important;
 }
+
+.towrite-task-input-suggestion {
+  display: grid;
+  gap: 0.16rem;
+  min-width: 0;
+}
+
+.towrite-task-input-suggestion-title {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+  font-weight: var(--font-semibold);
+}
+
+.towrite-task-input-suggestion-title > :last-child,
+.towrite-task-input-suggestion-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.towrite-task-input-suggestion-kind {
+  flex: 0 0 auto;
+  padding: 0.08rem 0.35rem;
+  border-radius: var(--radius-s);
+  background: var(--background-modifier-hover);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.towrite-task-input-suggestion-detail {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}

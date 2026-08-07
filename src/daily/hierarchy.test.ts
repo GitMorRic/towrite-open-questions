@@ -16,6 +16,58 @@ const DATE = "2026-07-24";
 const PATH = `Daily/${DATE}.md`;
 
 describe("daily hierarchy and inherited targets", () => {
+  it("falls back to the editable plan heading and treats checkbox containers as groups", () => {
+    const markdown = [
+      `# ${DATE}`,
+      "## 今日计划",
+      "- [ ] 项目",
+      "  1. [[创作辅助工具电子屏幕硬件-软硬件系统设计]]",
+      "  2. [[obsidian-待办清单]]",
+      "  3.",
+      "- [ ] 待记录和搞懂",
+      "  1. [[触屏墨水屏,手写墨水屏,屏幕的大小与方案]]",
+      "## ToDo"
+    ].join("\n");
+
+    const hierarchy = parseDailyPlanHierarchy(markdown, PATH, DATE, {
+      todoHeading: "ToDo",
+      planHeading: "今日计划"
+    });
+
+    expect(hierarchy.groups.map((group) => group.text)).toEqual(["项目", "待记录和搞懂"]);
+    expect(hierarchy.tasks.map((task) => task.text)).toEqual([
+      "[[创作辅助工具电子屏幕硬件-软硬件系统设计]]",
+      "[[obsidian-待办清单]]",
+      "[[触屏墨水屏,手写墨水屏,屏幕的大小与方案]]"
+    ]);
+    expect(hierarchy.tasks.map((task) => task.lineage.groups.at(-1)?.text))
+      .toEqual(["项目", "项目", "待记录和搞懂"]);
+  });
+
+  it("reads normalized tasks from the plan-heading fallback through DailyPlanService", async () => {
+    const storage = new MemoryStorage();
+    storage.files.set(PATH, [
+      `# ${DATE}`,
+      "## 今日计划",
+      "- [ ] 项目",
+      "  - [ ] [[obsidian-待办清单]] ^daily_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "## ToDo"
+    ].join("\n"));
+    const service = new DailyPlanService(storage, {
+      now: () => new Date("2026-07-24T10:00:00+08:00"),
+      planHeading: "今日计划",
+      todoHeading: "ToDo"
+    });
+
+    expect(await service.list(DATE)).toEqual([
+      expect.objectContaining({
+        id: "daily_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        text: "[[obsidian-待办清单]]",
+        groupId: expect.stringMatching(/^group_/u)
+      })
+    ]);
+  });
+
   it("parses the user's nested checklist, keeps categories out of tasks, and resolves inherited targets", () => {
     const hierarchy = parseDailyPlanHierarchy(userSample(), PATH, DATE);
 

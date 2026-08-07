@@ -310,6 +310,10 @@ import {
   refreshNoteTaskControls
 } from "./obsidian/note-task-controls";
 import {
+  MarkdownTaskInputSuggest,
+  type MarkdownTaskInputSuggestion
+} from "./obsidian/task-input-suggest";
+import {
   DailyTaskPropertiesModal,
   type DailyTaskPropertiesModalOptions,
   type DailyTaskPropertiesModalResult
@@ -425,6 +429,7 @@ export default class ToWritePlugin extends Plugin {
   private dailyPlanNormalizationPreviews: DailyPlanNormalizationPreview[] = [];
   private activeNoteTaskDocument?: NoteTaskDocument;
   private activeTaskPoolItems: TaskPoolItem[] = [];
+  private markdownTaskNoteSuggestions: MarkdownTaskInputSuggestion[] = [];
   private activeNoteTaskPoolMatches = new Map<string, TaskPoolItem[]>();
   private taskPoolFormatUndoToken?: string;
   private activeNoteTaskRefreshTail: Promise<void> = Promise.resolve();
@@ -551,6 +556,7 @@ export default class ToWritePlugin extends Plugin {
     await this.initializeDailyTaskTimer();
     await this.initializeNoteTaskTimer();
     await this.returnExpiredTaskPoolAssignments();
+    await this.refreshActiveTaskPoolCache(false);
     await this.refreshDailyPlanCache(false);
     this.learningService = new HabitLearningService(this.savedLearningState);
     this.learningService.setCollectionPaused(!this.settings.learning.enabled);
@@ -1127,6 +1133,11 @@ export default class ToWritePlugin extends Plugin {
       onLinkPoolTask: (candidate, item) => this.linkPendingNoteTaskToPool(candidate, item),
       onEnrich: (candidate) => this.enrichPendingNoteTask(candidate),
       onTrackOnly: (candidate) => this.trackPendingNoteTask(candidate)
+    }));
+    this.rebuildMarkdownTaskNoteSuggestions();
+    this.registerEditorSuggest(new MarkdownTaskInputSuggest(this.app, {
+      isEnabled: () => this.settings.daily.enabled && this.settings.daily.editorTaskControls,
+      getItems: () => this.markdownTaskInputSuggestions()
     }));
 
     this.addSettingTab(new ToWriteSettingTab(this.app, this));
@@ -6655,6 +6666,31 @@ export default class ToWritePlugin extends Plugin {
     if (refreshControls) this.refreshNoteEditorTaskControls();
   }
 
+  private rebuildMarkdownTaskNoteSuggestions(): void {
+    this.markdownTaskNoteSuggestions = this.app.vault.getMarkdownFiles().map((file) => ({
+      id: `note:${normalizePath(file.path)}`,
+      kind: "note",
+      label: file.basename,
+      detail: `笔记 · ${file.path}`,
+      replacement: `[[${file.path.replace(/\.md$/iu, "")}]]`,
+      searchText: `${file.basename} ${file.path}`
+    }));
+  }
+
+  private markdownTaskInputSuggestions(): readonly MarkdownTaskInputSuggestion[] {
+    const tasks: MarkdownTaskInputSuggestion[] = this.activeTaskPoolItems
+      .filter((item) => item.state !== "done" && item.state !== "dropped")
+      .map((item) => ({
+        id: `task:${item.taskId}`,
+        kind: "task",
+        label: item.text,
+        detail: ["工作池待办", item.project, item.category].filter(Boolean).join(" · "),
+        replacement: item.text,
+        searchText: [item.text, item.project, item.category, item.target, item.source].filter(Boolean).join(" ")
+      }));
+    return [...tasks, ...this.markdownTaskNoteSuggestions];
+  }
+
   private rebuildActiveNoteTaskPoolMatches(): void {
     const matches = new Map<string, TaskPoolItem[]>();
     for (const candidate of this.activeNoteTaskDocument?.candidates ?? []) {
@@ -8129,11 +8165,23 @@ export default class ToWritePlugin extends Plugin {
 
   private async getWorkPoolSnapshot(query: WorkPoolQuery = {}): Promise<WorkPoolSnapshot> {
     const taskPool = await this.taskPoolService.read();
+    const dailyDate = formatDailyInputDate(new Date());
+    const dailyHierarchy = this.settings.daily.enabled
+      ? await this.dailyPlanService.readHierarchy(dailyDate)
+      : undefined;
     return this.workPoolService.build({
       tasks: taskPool.items,
       questions: this.store.query(),
       inboxItems: this.getInboxSnapshot().items,
       workflowFiles: this.workflowIndex.getPayload({ compact: true }).files ?? [],
+      dailyPlan: dailyHierarchy
+        ? {
+            date: dailyDate,
+            sourcePath: dailyHierarchy.sourcePath,
+            revision: dailyHierarchy.revision,
+            tasks: dailyHierarchy.tasks
+          }
+        : undefined,
       classification: {
         projectFrontmatterKeys: this.settings.workPool.projectFrontmatterKeys,
         projectTagPrefixes: this.settings.workPool.projectTagPrefixes,
@@ -8238,6 +8286,24 @@ export default class ToWritePlugin extends Plugin {
       await this.openWorkPoolItem(item);
       return;
     }
+    if (item.dailyDate) {
+      if (action === "add-today" && item.dailyDate === (options.date ?? formatDailyInputDate(new Date()))) {
+        return;
+      }
+      if (action === "complete-task") {
+        const daily = await this.materializeDailyWorkPoolItem(item);
+        await this.completeDailyItem(daily.id, daily.revision, undefined, item.dailyDate);
+        this.notifyUi();
+        return;
+      }
+      if (action === "add-today" || action === "add-tomorrow") {
+        throw new DailyPlanConflictError(
+          "invalid-state",
+          "This task is already scheduled by its Daily Markdown source. Move it from the Today view instead."
+        );
+      }
+      return;
+    }
     if (action === "add-today" || action === "add-tomorrow") {
       const date = options.date ?? (() => {
         const value = new Date();
@@ -8301,6 +8367,33 @@ export default class ToWritePlugin extends Plugin {
       throw new TaskPoolConflictError("revision-changed", "The Task Pool item changed after it was loaded.");
     }
     return task;
+  }
+
+  private async materializeDailyWorkPoolItem(item: WorkPoolItem): Promise<DailyPlanItem> {
+    if (!item.dailyDate) {
+      throw new DailyPlanConflictError("invalid-state", "The Work Pool item is not a Daily task.");
+    }
+    if (item.dailyBlockId) {
+      const current = await this.dailyPlanService.get(item.dailyBlockId, item.dailyDate);
+      if (!current) throw new DailyPlanConflictError("not-found", "The Daily task no longer exists.");
+      return current;
+    }
+    if (!item.dailyProvisional || !item.dailyLine) {
+      throw new DailyPlanConflictError("invalid-state", "Normalize this Daily task before changing its state.");
+    }
+    const preview = await this.dailyPlanNormalizationService.preview(item.dailyDate);
+    const edit = preview.edits.find((candidate) => candidate.line === item.dailyLine);
+    if (!edit) {
+      throw new DailyPlanConflictError(
+        "revision-changed",
+        "The Daily task changed after the Work Pool was loaded. Refresh and try again."
+      );
+    }
+    await this.dailyPlanNormalizationService.normalizeTask(preview, edit.line);
+    await this.refreshDailyPlanCache();
+    const current = await this.dailyPlanService.get(edit.proposedBlockId, item.dailyDate);
+    if (!current) throw new DailyPlanConflictError("not-found", "The normalized Daily task could not be verified.");
+    return current;
   }
 
   private async openWorkPoolItem(item: WorkPoolItem): Promise<void> {
@@ -10813,6 +10906,7 @@ export default class ToWritePlugin extends Plugin {
     this.registerEvent(
       this.app.vault.on("create", (file) => {
         if (file instanceof TFile && file.extension === "md") {
+          this.rebuildMarkdownTaskNoteSuggestions();
           if (this.settings.daily.enabled && this.settings.daily.activityTracking) {
             this.dailyActivityService.scheduleDocumentMeasurement({
               filePath: file.path,
@@ -10842,6 +10936,7 @@ export default class ToWritePlugin extends Plugin {
       this.app.vault.on("delete", (file) => {
         if (file instanceof TFolder) rebuildInboxAfterFolderChange();
         if (file instanceof TFile) {
+          if (file.extension === "md") this.rebuildMarkdownTaskNoteSuggestions();
           this.dailyActivityService.removeDocumentBaseline(file.path);
           if (normalizePath(file.path) === normalizePath(this.taskPoolService.path)) {
             refreshTaskPoolAfterVaultChange();
@@ -10865,6 +10960,9 @@ export default class ToWritePlugin extends Plugin {
       this.app.vault.on("rename", (file, oldPath) => {
         if (file instanceof TFolder) rebuildInboxAfterFolderChange();
         if (file instanceof TFile) {
+          if (file.extension === "md" || oldPath.toLocaleLowerCase().endsWith(".md")) {
+            this.rebuildMarkdownTaskNoteSuggestions();
+          }
           this.dailyActivityService.renameDocumentBaseline(oldPath, file.path);
           if (
             normalizePath(oldPath) === normalizePath(this.taskPoolService.path)

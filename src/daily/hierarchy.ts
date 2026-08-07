@@ -25,6 +25,12 @@ const MARKDOWN_LINK_LIKE_RE = /(?<!!)\[[^\]\r\n]*\]\((?<target>[^)\r\n]+)\)/gu;
 export interface DailyPlanHierarchyParseOptions {
   source?: DailyPlanSource;
   todoHeading?: string;
+  /**
+   * Compatibility heading used by Obsidian Daily-note templates that keep
+   * their editable checklist directly under "今日计划". The canonical ToDo
+   * section still wins whenever it contains list items.
+   */
+  planHeading?: string;
   /** Optional local-vault check. It is never invoked for rejected targets. */
   targetExists?: (target: DailyMarkdownTarget) => boolean;
 }
@@ -64,13 +70,22 @@ export function parseDailyPlanHierarchy(
   const normalizedDate = normalizeDate(date);
   const source = normalizeSource(options.source);
   const lines = markdown.split(/\r?\n/u);
-  const scope = findTodoScope(lines, normalizedDate, source, options.todoHeading ?? "ToDo");
-  const nodes = scope ? parseListNodes(lines, scope) : [];
+  const canonicalScope = findTodoScope(lines, normalizedDate, source, options.todoHeading ?? "ToDo");
+  const canonicalNodes = canonicalScope ? parseListNodes(lines, canonicalScope) : [];
+  const fallbackScope = canonicalNodes.length === 0
+    ? findTodoScope(lines, normalizedDate, source, options.planHeading ?? "今日计划")
+    : undefined;
+  const scope = canonicalNodes.length > 0 ? canonicalScope : fallbackScope ?? canonicalScope;
+  const nodes = canonicalNodes.length > 0
+    ? canonicalNodes
+    : fallbackScope
+      ? parseListNodes(lines, fallbackScope)
+      : [];
   const groups: DailyPlanGroup[] = [];
   const diagnostics: DailyPlanHierarchyDiagnostic[] = [];
 
   for (const node of nodes) {
-    if (node.checkbox || node.children.length === 0) continue;
+    if (!isStructuralGroup(node)) continue;
     const parentGroup = nearestGroup(node.parent);
     const text = cleanListText(node.body);
     node.group = {
@@ -90,7 +105,7 @@ export function parseDailyPlanHierarchy(
   const tasks: DailyPlanHierarchyTask[] = [];
   const ids = new Map<string, ListNode[]>();
   for (const node of nodes) {
-    if (!node.checkbox && node.children.length > 0) continue;
+    if (isStructuralGroup(node) || !cleanListText(node.body)) continue;
     for (const id of node.blockIds) {
       const occurrences = ids.get(id) ?? [];
       occurrences.push(node);
@@ -122,7 +137,7 @@ export function parseDailyPlanHierarchy(
   }
 
   for (const node of nodes) {
-    if (!node.checkbox && node.children.length > 0) continue;
+    if (isStructuralGroup(node) || !cleanListText(node.body)) continue;
     const lineageGroups = ancestorGroups(node);
     const lineage = createDailyLineage(lineageGroups, sourcePath, normalizedDate);
     const firstChildIndex = node.children[0]?.index ?? Number.POSITIVE_INFINITY;
@@ -188,6 +203,19 @@ export function parseDailyPlanHierarchy(
     diagnostics: dedupeDiagnostics(diagnostics),
     revision: `dpr_${contentHash128(`${sourcePath}\n${normalizedDate}\n${scopedRaw}`)}`
   };
+}
+
+/**
+ * A checkbox used only as a heading/category should not inflate task counts.
+ * An authored parent without its own stable id is a structural container even
+ * after one of its leaf rows is normalized. An id-bearing checkbox containing
+ * checkbox children remains a real task so existing nested-task documents
+ * keep their semantics.
+ */
+function isStructuralGroup(node: ListNode): boolean {
+  if (node.children.length === 0) return false;
+  if (!node.checkbox || node.blockIds.length === 0) return true;
+  return node.children.every((child) => !child.checkbox);
 }
 
 function parseListNodes(lines: string[], scope: TodoScope): ListNode[] {

@@ -100,6 +100,16 @@ export interface WorkPoolItem {
   taskId?: string;
   taskState?: TaskPoolLifecycleState;
   taskRevision?: TaskPoolRevision;
+  /**
+   * A task authored directly in the configured Daily Markdown source. These
+   * fields keep the Work Pool a projection instead of copying the row into
+   * Planning/Task Pool.md.
+   */
+  dailyDate?: string;
+  dailyBlockId?: string;
+  dailyLine?: number;
+  dailyProvisional?: boolean;
+  dailyLineageRevision?: string;
   lane?: OpenQuestionLane;
   questionId?: string;
   questionStatus?: OpenQuestionStatus;

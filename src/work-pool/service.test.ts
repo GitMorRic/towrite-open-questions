@@ -3,6 +3,7 @@ import type { OpenQuestion } from "../core/types";
 import type { TaskPoolItem } from "../daily/task-pool-types";
 import type { InboxItem } from "../inbox/types";
 import type { WorkflowFileSummary } from "../workflow";
+import { parseDailyPlanHierarchy } from "../daily/hierarchy";
 import {
   WorkPoolService,
   buildWorkPoolItems,
@@ -12,6 +13,40 @@ import {
 } from "./service";
 
 describe("WorkPoolService", () => {
+  it("projects unnormalized Daily leaf rows into the Work Pool without copying their group checkbox", () => {
+    const date = "2026-08-05";
+    const sourcePath = `sync/Todo_and_tosolve/${date.replaceAll("-", "")}.md`;
+    const hierarchy = parseDailyPlanHierarchy([
+      `# ${date}`,
+      "## 今日计划",
+      "- [ ] 项目",
+      "  1. [[创作辅助工具电子屏幕硬件-软硬件系统设计]]",
+      "  2. [[obsidian-待办清单]]",
+      "## ToDo"
+    ].join("\n"), sourcePath, date, { planHeading: "今日计划" });
+
+    const items = buildWorkPoolItems({
+      tasks: [],
+      questions: [],
+      inboxItems: [],
+      workflowFiles: [workflow("obsidian-待办清单.md", "raw")],
+      dailyPlan: {
+        date,
+        sourcePath,
+        revision: hierarchy.revision,
+        tasks: hierarchy.tasks
+      }
+    });
+    const daily = items.filter((item) => item.dailyDate === date);
+
+    expect(daily).toHaveLength(2);
+    expect(daily.map((item) => item.title)).not.toContain("项目");
+    expect(daily.every((item) => item.dailyProvisional)).toBe(true);
+    expect(daily.map((item) => item.classification.projectLabel)).toEqual(["项目", "项目"]);
+    expect(daily.find((item) => item.title.includes("obsidian"))?.notePath)
+      .toBe("obsidian-待办清单.md");
+  });
+
   it("deduplicates Inbox and Workflow notes and groups their tasks and questions", () => {
     const items = buildWorkPoolItems({
       tasks: [

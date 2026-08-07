@@ -1,5 +1,13 @@
 # Changelog / 更新日志
 
+## 0.3.0-beta.16 - 2026-08-07
+
+- Added Daily-note hierarchy projection so ordinary nested checklist leaves under `今日计划` appear in the unified Work Pool while category/container rows remain groups instead of inflating task counts.
+- Added fallback compatibility for Obsidian Daily Notes templates that place editable tasks under `今日计划` while keeping a canonical but empty `ToDo` section.
+- Added cache-only task and note completion suggestions while typing an open Markdown checkbox, including partial-title matching such as `ob` to `obsidian-待办清单`.
+- Kept Daily tasks linked to their Markdown source: existing Daily rows cannot be scheduled twice, provisional rows are normalized before state changes, and completion uses revision-checked Daily mutations.
+- Added regression coverage for Daily fallback headings, nested project classification, Work Pool projection, target resolution, and Markdown task input suggestions. The production suite now covers 689 tests.
+
 ## 0.3.0-beta.15 - 2026-08-05
 
 - Fixed Focus Now controls, mode switching, navigation shortcuts, pin actions, and responsive layout so compact pop-outs remain clickable and no longer overlap at narrow widths.

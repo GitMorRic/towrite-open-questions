@@ -173,7 +173,8 @@ export class DailyPlanService {
     );
     const hierarchy = parseDailyPlanHierarchy(markdown, path, date, {
       source: this.planSource,
-      todoHeading: this.todoHeading
+      todoHeading: this.todoHeading,
+      planHeading: this.planHeading
     });
     return mergeHierarchyIntoPlanDocument(document, hierarchy, markdown);
   }
@@ -183,7 +184,8 @@ export class DailyPlanService {
     const path = this.pathForDate(date);
     return parseDailyPlanHierarchy(await this.storage.readText(path) ?? "", path, date, {
       source: this.planSource,
-      todoHeading: this.todoHeading
+      todoHeading: this.todoHeading,
+      planHeading: this.planHeading
     });
   }
 
@@ -583,7 +585,8 @@ export class DailyPlanService {
     });
     const hierarchy = parseDailyPlanHierarchy(markdown, path, date, {
       source: this.planSource,
-      todoHeading: this.todoHeading
+      todoHeading: this.todoHeading,
+      planHeading: this.planHeading
     });
     return mergeHierarchyIntoPlanDocument(document, hierarchy, markdown);
   }
@@ -638,9 +641,15 @@ export function parseDailyPlanDocumentWithDiagnostics(
   const lines = markdown.split(/\r?\n/u);
   const scope = findDateScope(lines, normalizedDate, resolved.nestedDate);
   const planHeading = normalizeHeading(options.planHeading ?? "今日计划");
-  const todo = scope
+  const canonicalTodo = scope
     ? findNamedSection(lines, todoHeading, resolved.planLevel, scope)
     : undefined;
+  const fallbackPlan = scope
+    ? findNamedSection(lines, planHeading, resolved.planLevel, scope)
+    : undefined;
+  const todo = canonicalTodo && sectionContainsTask(lines, canonicalTodo)
+    ? canonicalTodo
+    : fallbackPlan ?? canonicalTodo;
   const entries: ParsedTaskEntry[] = [];
 
   if (todo) {
@@ -657,7 +666,8 @@ export function parseDailyPlanDocumentWithDiagnostics(
   const items = entries.flatMap((entry) => entry.item ? [entry.item] : []);
   const hierarchyTasks = parseDailyPlanHierarchy(markdown, sourcePath, normalizedDate, {
     source,
-    todoHeading
+    todoHeading,
+    planHeading: options.planHeading
   }).tasks;
   for (const item of items) {
     const task = hierarchyTasks.find((entry) => entry.blockId === item.id);
@@ -735,6 +745,16 @@ export function parseDailyPlanDocumentWithDiagnostics(
     diagnostics,
     revision: `dpr_${contentHash128(`${sourcePath}\n${normalizedDate}\n${scopedRaw}`)}`
   };
+}
+
+function sectionContainsTask(
+  lines: readonly string[],
+  section: { start: number; end: number }
+): boolean {
+  for (let index = section.start; index < section.end; index += 1) {
+    if (TASK_RE.test(lines[index])) return true;
+  }
+  return false;
 }
 
 /**

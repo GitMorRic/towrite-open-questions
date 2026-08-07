@@ -58,6 +58,7 @@ export class DailyPlanNormalizationService {
     return createDailyPlanNormalizationPreview(markdown, sourcePath, date, {
       source: this.plan.planSource,
       todoHeading: this.options.todoHeading,
+      planHeading: this.options.planHeading,
       targetExists: this.options.targetExists,
       createId: this.createId
     });
@@ -119,6 +120,7 @@ export class DailyPlanNormalizationService {
       const parsed = parseDailyPlanHierarchy(current, sourcePath, preview.date, {
         source: this.plan.planSource,
         todoHeading: this.options.todoHeading,
+        planHeading: this.options.planHeading,
         targetExists: this.options.targetExists
       });
       if (parsed.revision !== preview.expectedRevision) {
@@ -167,6 +169,7 @@ export class DailyPlanNormalizationService {
       const updated = createDailyPlanNormalizationPreview(next, sourcePath, preview.date, {
         source: this.plan.planSource,
         todoHeading: this.options.todoHeading,
+        planHeading: this.options.planHeading,
         targetExists: this.options.targetExists,
         createId: this.createId
       });
@@ -194,6 +197,7 @@ export class DailyPlanNormalizationService {
       const restored = parseDailyPlanHierarchy(entry.before, entry.path, entry.date, {
         source: this.plan.planSource,
         todoHeading: this.options.todoHeading,
+        planHeading: this.options.planHeading,
         targetExists: this.options.targetExists
       });
       return { restored: true, revision: restored.revision };
