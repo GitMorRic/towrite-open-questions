@@ -1,5 +1,21 @@
 # Changelog / 更新日志
 
+## 0.3.0-beta.21 - 2026-08-10
+
+- Refined Today into compact project groups, clearer task rows, a project-weighted progress bar, and project color customization shared with the 2.7-inch preview.
+- Simplified the default task presentation by moving technical target, timing, and device details behind explicit controls; Focus Now now groups the daily outline by project.
+- Allowed an already tracked Daily task to start or complete even when newly typed sibling tasks still need stable block IDs.
+- Fixed task action popovers overlapping each other or the inline property editor. Timing and More are now mutually exclusive, and entering edit mode closes and hides both menus.
+- Added regression coverage for Daily transitions, compact layouts, project grouping, and mutually exclusive task menus. The production suite now covers 708 tests.
+
+中文摘要：
+
+- “今日”改为更紧凑的项目分组与任务行，增加按项目权重计算的进度条、项目颜色设置，并同步到 2.7 英寸墨水屏预览。
+- 技术性的目标、计时和设备策略默认收起；“现在专注”中的今日缩略也按项目归类。
+- 新输入的相邻待办尚未补齐稳定 ID 时，已有的已跟踪任务仍然可以正常开始和完成。
+- 修复任务行的“时间与进度”“更多操作”和属性编辑卡片相互重叠：两个浮层现在互斥，进入编辑状态会自动关闭并隐藏浮层。
+- 补充 Daily 状态切换、紧凑布局、项目分组和菜单互斥回归测试；当前生产测试共 708 项。
+
 ## 0.3.0-beta.20 - 2026-08-10
 
 - Tightened the free-form Daily Note fallback so ordinary numbered outlines, link indexes, reading lists, and their plain child rows no longer appear as Today tasks or Work Pool commitments.

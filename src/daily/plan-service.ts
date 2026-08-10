@@ -1927,8 +1927,14 @@ function assertRevision(item: DailyPlanItem, expectedRevision: string | DailyTas
 }
 
 function assertWritable(document: DailyPlanDocument): void {
-  if (!document.diagnostics.length) return;
-  const details = document.diagnostics
+  // A newly typed checkbox can temporarily be missing its hidden stable id.
+  // That row is excluded from managed writes until normalization, but it must
+  // not prevent an already-normalized sibling task from being started or
+  // completed. Structural ambiguity (duplicate/multiple ids) still blocks the
+  // whole document because it can make a targeted write unsafe.
+  const blocking = document.diagnostics.filter((entry) => entry.code !== "missing-block-id");
+  if (!blocking.length) return;
+  const details = blocking
     .map((entry) => `${entry.code} at line ${entry.line}`)
     .join(", ");
   throw new DailyPlanConflictError(

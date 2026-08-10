@@ -72,6 +72,12 @@
   let carouselTimer = 0;
   let clockTimer = 0;
 
+  interface CompactProjectGroup {
+    id: string;
+    label: string;
+    items: DailyPlanItem[];
+  }
+
   $: overview = selectDailyOverview(snapshot?.plan.items ?? []);
   $: if (initialCollapsed !== syncedCollapsed) {
     syncedCollapsed = initialCollapsed;
@@ -88,6 +94,7 @@
   $: progress = overview.total ? Math.round((overview.done / overview.total) * 100) : 0;
   $: current = overview.current;
   $: compactItems = snapshot?.plan.items ?? [];
+  $: compactGroups = groupCompactItems(compactItems);
   $: currentMessage = carouselMessages[messageIndex % Math.max(1, carouselMessages.length)];
   $: activeSeconds = currentTiming
     ? Math.floor(currentTiming.activeMs / 1_000) + (currentTiming.status === "running"
@@ -193,6 +200,31 @@
     const minutes = Math.floor(seconds / 60);
     const remainder = Math.floor(seconds % 60);
     return `${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
+  }
+
+  function compactTaskText(value: string): string {
+    const text = value.trim();
+    const wiki = /^\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]$/u.exec(text);
+    if (wiki) return (wiki[2] || wiki[1]).trim();
+    const markdown = /^\[([^\]]+)\]\([^\)]+\)$/u.exec(text);
+    return (markdown?.[1] ?? text).trim();
+  }
+
+  function compactProjectLabel(item: DailyPlanItem): string {
+    const group = item.lineage?.groups?.at(-1)?.text;
+    return compactTaskText(group || item.category || "未分类");
+  }
+
+  function groupCompactItems(items: DailyPlanItem[]): CompactProjectGroup[] {
+    const groups = new Map<string, CompactProjectGroup>();
+    for (const item of items) {
+      const label = compactProjectLabel(item);
+      const id = label.toLocaleLowerCase().replace(/[^\p{Letter}\p{Number}_-]+/gu, "-") || "unclassified";
+      const group = groups.get(id) ?? { id, label, items: [] };
+      group.items.push(item);
+      groups.set(id, group);
+    }
+    return [...groups.values()];
   }
 
 
@@ -316,7 +348,7 @@
             <Focus size={14} />现在专注
           </button>
           <button class:active={mode === "list"} type="button" on:click={() => setMode("list")}>
-            <Rows3 size={14} />今日缩略
+            <Rows3 size={14} />今日任务
           </button>
         </nav>
 
@@ -401,19 +433,27 @@
           </div>
         </article>
         {:else if mode === "list"}
-          {#if compactItems.length}
-            <section class="compact-tasks" aria-label="今日任务缩略列表">
-              {#each compactItems as item, index (item.id)}
-                <button
-                  class:done={item.status === "done"}
-                  type="button"
-                  disabled={Boolean(busy)}
-                  on:click={() => item.status === "done" ? openOnly(item) : startAndOpen(item)}
-                >
-                  <span class="compact-status">{item.status === "done" ? "✓" : item.status === "in-progress" ? "●" : index + 1}</span>
-                  <span><strong>{item.text}</strong><small>{item.nextStep || targetLabel(item)}</small></span>
-                  <ExternalLink size={13} />
-                </button>
+          {#if compactGroups.length}
+            <section class="compact-tasks" aria-label="按项目分组的今日任务">
+              <p class="compact-description">今天的全部任务，按项目折叠；点击任务会设为当前并打开。</p>
+              {#each compactGroups as group (group.id)}
+                <details class="compact-project" open>
+                  <summary><span>{group.label}</span><em>{group.items.filter((item) => item.status === "done").length}/{group.items.length}</em><ChevronDown size={13} /></summary>
+                  <div>
+                    {#each group.items as item, index (item.id)}
+                      <button
+                        class:done={item.status === "done"}
+                        type="button"
+                        disabled={Boolean(busy)}
+                        on:click={() => item.status === "done" ? openOnly(item) : startAndOpen(item)}
+                      >
+                        <span class="compact-status">{item.status === "done" ? "✓" : item.status === "in-progress" ? "●" : index + 1}</span>
+                        <span><strong>{compactTaskText(item.text)}</strong><small>{item.nextStep || targetLabel(item)}</small></span>
+                        <ExternalLink size={13} />
+                      </button>
+                    {/each}
+                  </div>
+                </details>
               {/each}
             </section>
           {:else}
@@ -743,7 +783,56 @@
     gap: 5px;
   }
 
-  .compact-tasks > button {
+  .compact-description {
+    margin: 0 2px 3px;
+    color: var(--text-muted);
+    font-size: 0.66rem;
+  }
+
+  .compact-project {
+    overflow: hidden;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 9px;
+    background: var(--background-primary);
+  }
+
+  .compact-project > summary {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto 16px;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 9px;
+    cursor: pointer;
+    list-style: none;
+    font-size: 0.72rem;
+    font-weight: 700;
+  }
+
+  .compact-project > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .compact-project > summary:hover {
+    background: var(--background-modifier-hover);
+  }
+
+  .compact-project > summary em {
+    color: var(--text-muted);
+    font-style: normal;
+    font-size: 0.64rem;
+  }
+
+  .compact-project[open] > summary :global(svg) {
+    transform: rotate(180deg);
+  }
+
+  .compact-project > div {
+    display: grid;
+    gap: 4px;
+    padding: 0 5px 5px;
+  }
+
+  .compact-project > div > button {
     display: grid;
     grid-template-columns: 24px minmax(0, 1fr) 18px;
     align-items: center;
@@ -759,16 +848,16 @@
     text-align: left;
   }
 
-  .compact-tasks > button:hover {
+  .compact-project > div > button:hover {
     border-color: var(--interactive-accent);
     background: var(--background-modifier-hover);
   }
 
-  .compact-tasks > button.done {
+  .compact-project > div > button.done {
     opacity: 0.58;
   }
 
-  .compact-tasks > button > span:not(.compact-status) {
+  .compact-project > div > button > span:not(.compact-status) {
     display: grid;
     gap: 2px;
     min-width: 0;

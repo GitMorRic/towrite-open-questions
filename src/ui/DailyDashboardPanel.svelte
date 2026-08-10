@@ -33,7 +33,6 @@
     Settings2,
     Sparkles,
     Table2,
-    Tag,
     Target,
     Trash2,
     Undo2
@@ -162,6 +161,9 @@
   let correctionTimeByItem: Record<string, string> = {};
   let correctionReasonByItem: Record<string, string> = {};
   let originStageByItem: Record<string, string> = {};
+  let editingProgressProjectId = "";
+  let editingProgressProjectLabel = "";
+  let editingProgressProjectColor = "#7c6ee6";
   let unsubscribe: (() => void) | undefined;
   let refreshSequence = 0;
 
@@ -317,6 +319,33 @@
   function projectColorForId(projectId: string): string {
     return configuration.workPool?.projectAppearances.find((appearance) => appearance.projectId === projectId)?.color
       ?? projectFallbackColor(projectId);
+  }
+
+  function beginProgressProjectColor(segment: DailyProjectProgressSegment, event: MouseEvent): void {
+    event.preventDefault();
+    event.stopPropagation();
+    editingProgressProjectId = segment.id;
+    editingProgressProjectLabel = segment.label;
+    editingProgressProjectColor = segment.color;
+  }
+
+  async function saveProgressProjectColor(): Promise<void> {
+    if (!editingProgressProjectId || !dailyApi?.updateWorkPoolSettings) return;
+    const current = configuration.workPool?.projectAppearances ?? [];
+    const existing = current.find((appearance) => appearance.projectId === editingProgressProjectId);
+    const projectAppearances = [
+      ...current.filter((appearance) => appearance.projectId !== editingProgressProjectId),
+      {
+        projectId: editingProgressProjectId,
+        color: editingProgressProjectColor,
+        icon: existing?.icon ?? "folder-kanban"
+      }
+    ];
+    await run("project-color", async () => {
+      await dailyApi?.updateWorkPoolSettings?.({ projectAppearances });
+      editingProgressProjectId = "";
+      editingProgressProjectLabel = "";
+    });
   }
 
   async function switchDay(day: DailyPlanningDay): Promise<void> {
@@ -525,7 +554,16 @@
     );
   }
 
-  function beginEdit(item: DailyPlanItem): void {
+  function closeItemPopovers(source?: EventTarget | null): void {
+    const element = source instanceof HTMLElement ? source : null;
+    const row = element?.closest(".plan-item");
+    row?.querySelectorAll<HTMLDetailsElement>(".item-more[open]").forEach((details) => {
+      details.open = false;
+    });
+  }
+
+  function beginEdit(item: DailyPlanItem, event?: Event): void {
+    closeItemPopovers(event?.currentTarget);
     editingItemId = item.id;
     editText = item.text;
     editGoal = item.goal ?? "";
@@ -571,6 +609,11 @@
   async function startOverviewItem(): Promise<void> {
     const item = overview.current;
     if (!item || !dailyApi?.startItem) return;
+    await run(`start:${item.id}`, () => dailyApi?.startItem?.(item.id, item.revision));
+  }
+
+  async function makeCurrent(item: DailyPlanItem): Promise<void> {
+    if (!dailyApi?.startItem) return;
     await run(`start:${item.id}`, () => dailyApi?.startItem?.(item.id, item.revision));
   }
 
@@ -697,6 +740,16 @@
     } catch (cause) {
       error = messageForError(cause);
     }
+  }
+
+  function handleItemMenuToggle(itemId: string, event: Event, loadTiming = false): void {
+    const details = event.currentTarget as HTMLDetailsElement;
+    if (!details.open) return;
+    const row = details.closest(".plan-item");
+    row?.querySelectorAll<HTMLDetailsElement>(".item-more[open]").forEach((candidate) => {
+      if (candidate !== details) candidate.open = false;
+    });
+    if (loadTiming) void loadTimerEvents(itemId, event);
   }
 
   function setCorrectionEvent(itemId: string, event: Event): void {
@@ -834,21 +887,50 @@
     }).format(new Date(timestamp));
   }
 
-  function targetSourceLabel(item: DailyPlanItem): string {
-    return {
-      explicit: "显式设置",
-      "task-link": "任务链接",
-      "ancestor-link": "父分类继承",
-      "task-block": "任务原文",
-      dashboard: "今日 Dashboard"
-    }[item.targetResolution?.source ?? "dashboard"];
-  }
-
   function targetDisplayLabel(item: DailyPlanItem): string {
     return item.targetResolution?.displayLabel
       || item.target
       || item.linkedNotes[0]
       || `${item.sourcePath}#^${item.blockId}`;
+  }
+
+  function summaryCategory(item: DailyPlanItem): string | undefined {
+    const value = dailyItemCategory(item).trim();
+    if (!value || value === "任务" || value === "未分类") return undefined;
+    const group = item.lineage?.groups.at(-1)?.text?.trim();
+    return group && compactTaskText(group) === compactTaskText(value) ? undefined : value;
+  }
+
+  function userFacingTargetLabel(item: DailyPlanItem): string | undefined {
+    if (item.targetResolution?.source === "task-block" || item.targetResolution?.source === "dashboard") {
+      return undefined;
+    }
+    const value = item.targetResolution?.displayLabel || item.target || item.linkedNotes[0];
+    if (!value || /(?:^|[#^])daily_[a-z0-9_-]+$/iu.test(value.trim())) return undefined;
+    return compactTaskText(value);
+  }
+
+  function compactTaskText(value: string): string {
+    const text = value.trim();
+    const wikiLink = /^\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]$/u.exec(text);
+    if (wikiLink) return (wikiLink[2] || wikiLink[1] || text).trim();
+    const markdownLink = /^\[([^\]]+)\]\(([^)]+)\)$/u.exec(text);
+    if (markdownLink) return markdownLink[1]?.trim() || text;
+    return text;
+  }
+
+  function normalizationDiagnosticLabel(
+    diagnostic: DailyPlanNormalizationPreview["diagnostics"][number]
+  ): string {
+    if (diagnostic.code === "broken-target") {
+      return `链接目标未找到：${diagnostic.target || "请检查原文链接"}`;
+    }
+    if (diagnostic.code === "unsafe-target") {
+      return `链接目标不安全：${diagnostic.target || "请检查原文链接"}`;
+    }
+    if (diagnostic.code === "duplicate-block-id") return "任务标识重复，需要先修复";
+    if (diagnostic.code === "multiple-block-ids") return "同一任务包含多个标识，需要先修复";
+    return diagnostic.message;
   }
 
   function timingStatusLabel(timing: DailyTaskTimingSnapshot | undefined): string {
@@ -967,7 +1049,11 @@
   }
 
   function messageForError(cause: unknown): string {
-    return cause instanceof Error ? cause.message : String(cause);
+    const value = cause instanceof Error ? cause.message : String(cause);
+    if (value.includes("missing-block-id")) {
+      return "有新写入的待办还没有稳定标识。已跟踪的任务仍可开始；请刷新，或在“整理任务”中补齐新任务标识。";
+    }
+    return value;
   }
 </script>
 
@@ -1121,7 +1207,7 @@
         <div class="focus-current">
           <span class="focus-marker">● 当前</span>
           <button type="button" on:click={() => (previewItemId = overview.current?.id ?? "")}>
-            <strong>{overview.current.text}</strong>
+            <strong>{compactTaskText(overview.current.text)}</strong>
             <small>{overview.current.nextStep ? `下一步：${overview.current.nextStep}` : "还没有写最小下一步"}</small>
           </button>
           {#if dailyApi.startItem && overview.current.status !== "in-progress"}
@@ -1138,7 +1224,8 @@
             {#each overview.upcoming as item}
               <li>
                 <span>○</span>
-                <button type="button" on:click={() => (previewItemId = item.id)}>{item.text}</button>
+                <button type="button" on:click={() => (previewItemId = item.id)}>{compactTaskText(item.text)}</button>
+                {#if dailyApi.startItem}<button class="make-current" type="button" title="设为当前任务并开始计时" on:click={() => makeCurrent(item)}>设为当前</button>{/if}
               </li>
             {/each}
           </ol>
@@ -1155,9 +1242,17 @@
         aria-valuenow={overview.done}
       >
         {#each projectProgress as segment (segment.id)}
-          <div class="battery-project" style={`--project-color:${segment.color};--project-weight:${segment.items.length}`} title={`${segment.label} · ${segment.done}/${segment.items.length}`}>
+          <button
+            type="button"
+            class="battery-project"
+            style={`--project-color:${segment.color};--project-weight:${segment.items.length}`}
+            title={`${segment.label} · ${segment.done}/${segment.items.length}；右键设置颜色`}
+            aria-label={`${segment.label}，完成 ${segment.done}/${segment.items.length}；点击或右键设置颜色`}
+            on:click={(event) => beginProgressProjectColor(segment, event)}
+            on:contextmenu={(event) => beginProgressProjectColor(segment, event)}
+          >
             {#each segment.items as item (item.id)}<i class:done={item.status === "done"}></i>{/each}
-          </div>
+          </button>
         {:else}
           <span></span>
         {/each}
@@ -1165,9 +1260,29 @@
       {#if projectProgress.length}
         <div class="project-progress-legend">
           {#each projectProgress as segment (segment.id)}
-            <span style={`--project-color:${segment.color}`}><i></i>{segment.label}<em>{segment.done}/{segment.items.length}</em></span>
+            <button
+              type="button"
+              style={`--project-color:${segment.color}`}
+              title="右键设置项目颜色"
+              on:contextmenu={(event) => beginProgressProjectColor(segment, event)}
+            ><i></i>{segment.label}<em>{segment.done}/{segment.items.length}</em></button>
           {/each}
         </div>
+        {#if editingProgressProjectId}
+          <div class="project-color-popover" role="dialog" aria-label={`设置 ${editingProgressProjectLabel} 的颜色`}>
+            <strong>{editingProgressProjectLabel}</strong>
+            <label>项目颜色 <input type="color" bind:value={editingProgressProjectColor} /></label>
+            <div class="project-color-presets">
+              {#each ["#6a5acd", "#2878b5", "#16845b", "#c46a16", "#bd3e5b", "#6b7f2b", "#8f4fb2", "#287f8d"] as color}
+                <button type="button" style={`--swatch:${color}`} aria-label={`选择颜色 ${color}`} on:click={() => (editingProgressProjectColor = color)}></button>
+              {/each}
+            </div>
+            <footer>
+              <button type="button" on:click={() => (editingProgressProjectId = "")}>取消</button>
+              <button class="primary" type="button" on:click={saveProgressProjectColor}>保存</button>
+            </footer>
+          </div>
+        {/if}
       {/if}
     </section>
 
@@ -1460,69 +1575,82 @@
         {#if normalizationPreview}
           <section class="normalization-preview" aria-label="规范化预览">
             <header>
-              <div>
-                <strong>规范化预览</strong>
+              <FileDiff size={18} />
+              <div class="normalization-heading">
+                <strong>整理为可跟踪任务</strong>
                 <small>
-                  {normalizationPreview.groups.length} 个分类 ·
-                  {normalizationPreview.tasks.length} 个叶子任务 ·
-                  {normalizationPreview.edits.length} 处改动
+                  找到 {normalizationPreview.tasks.length} 条任务，需补充 {normalizationPreview.edits.length} 处稳定标识
                 </small>
               </div>
-              <button type="button" on:click={() => (normalizationPreview = undefined)}>关闭</button>
+              <button class="normalization-close" type="button" aria-label="关闭规范化预览" title="关闭" on:click={() => (normalizationPreview = undefined)}>×</button>
             </header>
-            {#if normalizationPreview.diagnostics.length > 0}
-              <ul class="normalization-diagnostics">
-                {#each normalizationPreview.diagnostics as diagnostic}
-                  <li class:error={diagnostic.severity === "error"}>
-                    <strong>{diagnostic.severity === "error" ? "错误" : "提示"} · 第 {diagnostic.line} 行</strong>
-                    <span>{diagnostic.message}</span>
-                  </li>
-                {/each}
-              </ul>
-            {/if}
-            <div class="normalization-structure">
-              <section>
-                <strong>分类</strong>
-                {#if normalizationPreview.groups.length}
-                  <ul>
-                    {#each normalizationPreview.groups as group}
-                      <li><span>{dailyGroupLabel(group)}</span><small>第 {group.line} 行</small></li>
-                    {/each}
-                  </ul>
-                {:else}
-                  <small>没有分类节点</small>
-                {/if}
-              </section>
-              <section>
-                <strong>叶子任务</strong>
-                {#if normalizationPreview.tasks.length}
-                  <ul>
-                    {#each normalizationPreview.tasks as task}
-                      <li>
-                        <span>{task.text}</span>
-                        <small>{task.targetResolution.displayLabel} · {task.checkbox ? "已规范" : "待转换"}</small>
+            <p class="normalization-explanation">
+              只为普通 Markdown 任务补上 checkbox 与稳定标识，供完成、计时和双向同步使用；父分类、链接、缩进和手写说明保持不变。
+            </p>
+            <details class="normalization-technical-details">
+              <summary>
+                查看识别结果与 Markdown 变更
+                {#if normalizationPreview.diagnostics.length > 0}<span>{normalizationPreview.diagnostics.length} 条链接提醒</span>{/if}
+              </summary>
+              <div class="normalization-technical-content">
+                {#if normalizationPreview.diagnostics.length > 0}
+                  <ul class="normalization-diagnostics">
+                    {#each normalizationPreview.diagnostics as diagnostic}
+                      <li class:error={diagnostic.severity === "error"}>
+                        <strong>{diagnostic.severity === "error" ? "需要处理" : "链接提醒"} · 第 {diagnostic.line} 行</strong>
+                        <span>{normalizationDiagnosticLabel(diagnostic)}</span>
                       </li>
                     {/each}
                   </ul>
-                {:else}
-                  <small>没有可规范化的叶子任务</small>
                 {/if}
-              </section>
-            </div>
-            {#if normalizationPreview.diff}
-              <pre class="normalization-diff">{normalizationPreview.diff}</pre>
-            {:else}
-              <p class="normalization-clean">这份清单已经规范，无需修改 Markdown。</p>
-            {/if}
+                <div class="normalization-structure">
+                  <section>
+                    <strong>保留为分类</strong>
+                    {#if normalizationPreview.groups.length}
+                      <ul>
+                        {#each normalizationPreview.groups as group}
+                          <li><span>{dailyGroupLabel(group)}</span><small>第 {group.line} 行</small></li>
+                        {/each}
+                      </ul>
+                    {:else}
+                      <small>没有分类节点</small>
+                    {/if}
+                  </section>
+                  <section>
+                    <strong>接管为任务</strong>
+                    {#if normalizationPreview.tasks.length}
+                      <ul>
+                        {#each normalizationPreview.tasks as task}
+                          <li>
+                            <span>{compactTaskText(task.text)}</span>
+                            <small>{task.targetResolution.displayLabel} · {task.checkbox ? "已有 checkbox" : "将补充 checkbox"}</small>
+                          </li>
+                        {/each}
+                      </ul>
+                    {:else}
+                      <small>没有可整理的任务</small>
+                    {/if}
+                  </section>
+                </div>
+                {#if normalizationPreview.diff}
+                  <details class="normalization-diff-details">
+                    <summary>查看 Markdown diff</summary>
+                    <pre class="normalization-diff">{normalizationPreview.diff}</pre>
+                  </details>
+                {:else}
+                  <p class="normalization-clean">这份清单已经规范，无需修改 Markdown。</p>
+                {/if}
+              </div>
+            </details>
             <footer>
-              <span>父分类、链接、缩进和未知说明会原样保留。</span>
+              <span>{normalizationPreview.changed ? "确认后才会修改原文，并可安全撤销。" : "当前原文无需改动。"}</span>
               {#if normalizationPreview.changed && dailyApi.normalizePlan && !normalizationPreview.diagnostics.some((diagnostic) => diagnostic.severity === "error")}
                 <button class="primary" type="button" disabled={Boolean(busy)} on:click={applyNormalization}>
                   <Check size={14} />
-                  确认并规范化
+                  整理这 {normalizationPreview.edits.length} 条任务
                 </button>
               {:else if normalizationPreview.diagnostics.some((diagnostic) => diagnostic.severity === "error")}
-                <strong class="normalization-blocked">请先修复错误，再规范化</strong>
+                <strong class="normalization-blocked">请展开详情并先修复错误</strong>
               {/if}
             </footer>
           </section>
@@ -1595,6 +1723,7 @@
                 {#each group.items as row (row.item.id)}
                   {@const item = row.item}
                   {@const index = row.index}
+                  {@const timing = timingByItem[item.id]}
             <article
               class:current={item.status === "in-progress"}
               class:completed={item.status === "done"}
@@ -1615,39 +1744,91 @@
                 previewPage = "item";
                 previewExpanded = true;
               }}>
-                <span class="item-topline">
-                  <span class={`kind kind-${item.kind}`}>{kindLabel(item.kind)}</span>
+                <span class="item-title-line">
+                  <strong>{compactTaskText(item.text)}</strong>
                   {#if item.primary}<span class="flag">主线</span>{/if}
                   {#if item.minimum}<span class="flag minimum">最低承诺</span>{/if}
-                  {#if item.scheduledFor}<time datetime={item.scheduledFor}>{formatDateTime(item.scheduledFor)}</time>{/if}
                 </span>
-                <strong>{item.text}</strong>
-                <span class="item-properties">
-                  <em>{dailyItemCategory(item)}</em>
+                {#if item.kind !== "task" || summaryCategory(item) || item.nextStep || item.scheduledFor || (item.priority && item.priority !== "normal") || (item.dueDateExplicit !== false && item.dueDate) || directChildTasks(item).length}
+                <span class="item-summary-line">
+                  {#if item.kind !== "task"}<em class={`kind kind-${item.kind}`}>{kindLabel(item.kind)}</em>{/if}
+                  {#if summaryCategory(item)}<em>{summaryCategory(item)}</em>{/if}
+                  {#if item.nextStep}<span class="next-step">下一步：{item.nextStep}</span>{/if}
+                  {#if item.scheduledFor}<time datetime={item.scheduledFor}>{formatDateTime(item.scheduledFor)}</time>{/if}
                   {#if item.priority && item.priority !== "normal"}<em class={`priority priority-${item.priority}`}>{priorityLabel(item.priority)}</em>{/if}
                   {#if item.dueDateExplicit !== false && item.dueDate}<time datetime={item.dueDate}>截止 {item.dueDate}</time>{/if}
                   {#if directChildTasks(item).length}
                     <em>子任务 {directChildTasks(item).filter((child) => child.status === "done").length}/{directChildTasks(item).length}</em>
                   {/if}
-                  {#each item.tags.slice(0, 3) as tag}<em class="tag"><Tag size={10} />{tag}</em>{/each}
                 </span>
-                <small>{item.nextStep ? `下一步：${item.nextStep}` : policyLabel(item.devicePolicy)}</small>
-                <span class="resolved-target">
-                  <Target size={12} />
-                  <span>{targetDisplayLabel(item)}</span>
-                  <em>{targetSourceLabel(item)}</em>
-                </span>
+                {/if}
               </button>
+              {#if editingItemId !== item.id}
               <div class="item-actions">
                 {#if dailyApi.openItem}
                   <button type="button" title="打开目标" on:click={() => dailyApi?.openItem?.(item)}><BookOpen size={14} /></button>
                 {/if}
                 {#if dailyApi.updateItem && item.status !== "done"}
-                  <button type="button" title="编辑属性" on:click={() => beginEdit(item)}><PenLine size={14} /></button>
+                  <button type="button" title="编辑属性" on:click={(event) => beginEdit(item, event)}><PenLine size={14} /></button>
                 {/if}
-                <details class="item-more">
+                {#if dailyApi.getItemTiming || dailyApi.startItem || dailyApi.pauseItem || dailyApi.resumeItem}
+                  <details class="item-more item-timing" on:toggle={(event) => handleItemMenuToggle(item.id, event, true)}>
+                    <summary class:active={timing?.status === "running"} title={`时间与进度：${timingStatusLabel(timing)}`} aria-label={`时间与进度：${timingStatusLabel(timing)}`}><Clock3 size={15} /></summary>
+                    <div class="item-more-menu timing-popover">
+                      <header>
+                        <span><strong>时间与进度</strong><em class:review={timing?.needsReview}>{timingStatusLabel(timing)}</em></span>
+                        <strong>{formatDuration(timing?.activeMs)} / {item.estimateMinutes ? `${item.estimateMinutes} 分钟` : "无预计"}</strong>
+                      </header>
+                      <div class="timing-content">
+                        <div class="timing-metrics">
+                          <span><small>实际投入</small><strong>{formatDuration(timing?.activeMs)}</strong></span>
+                          <span><small>总跨度</small><strong>{formatDuration(timing?.wallMs)}</strong></span>
+                          <span><small>中断</small><strong>{timing?.interruptionCount ?? 0} 次</strong></span>
+                          <span><small>预计差值</small><strong>{estimateDeltaLabel(timing?.estimateDeltaMinutes)}</strong></span>
+                        </div>
+                        {#if timing?.needsReview}<p class="timing-review">此会话跨午夜或持续过久，请检查最近事件。</p>{/if}
+                        <div class="timing-actions">
+                          {#if (!timing || timing.status === "not-started") && dailyApi.startItem && item.status !== "done"}
+                            <button class="primary" type="button" disabled={Boolean(busy)} on:click={() => transitionTimer(item, "start")}><Play size={14} />开始</button>
+                          {:else if timing?.status === "running" && dailyApi.pauseItem}
+                            <button type="button" disabled={Boolean(busy)} on:click={() => transitionTimer(item, "pause")}><Pause size={14} />暂停</button>
+                          {:else if timing?.status === "paused" && dailyApi.resumeItem && item.status !== "done"}
+                            <button class="primary" type="button" disabled={Boolean(busy)} on:click={() => transitionTimer(item, "resume")}><Play size={14} />继续</button>
+                          {/if}
+                          {#if item.status !== "done" && dailyApi.completeItem}<button type="button" disabled={Boolean(busy)} on:click={() => transitionTimer(item, "complete")}><Check size={14} />完成</button>{/if}
+                        </div>
+                        {#if recentTimerEvents(item.id).length > 0}
+                          <section class="timer-history"><h4><History size={13} />最近事件</h4><ol>{#each recentTimerEvents(item.id) as event (event.eventId)}<li><span>{timerEventLabel(event.kind)}</span><time datetime={event.at}>{formatDateTime(event.at)}</time><small>{event.source}{event.automatic ? " · 自动" : ""}</small></li>{/each}</ol></section>
+                        {/if}
+                        {#if dailyApi.correctItemTiming && recentTimerEvents(item.id).length > 0}
+                          <details class="timing-correction-details">
+                            <summary>修正时间记录</summary>
+                            <form class="timing-correction" on:submit|preventDefault={() => correctTiming(item)}>
+                              <label><span>事件</span><select value={correctionEventByItem[item.id] || recentTimerEvents(item.id)[0]?.eventId} on:change={(event) => setCorrectionEvent(item.id, event)}>{#each recentTimerEvents(item.id) as event (event.eventId)}<option value={event.eventId}>{timerEventLabel(event.kind)} · {formatDateTime(event.at)}</option>{/each}</select></label>
+                              <label><span>正确时间</span><input type="datetime-local" value={correctionTimeByItem[item.id] ?? ""} on:input={(event) => setCorrectionTime(item.id, event)} required /></label>
+                              <label class="wide"><span>原因</span><input value={correctionReasonByItem[item.id] ?? ""} on:input={(event) => setCorrectionReason(item.id, event)} placeholder="例如：忘记暂停" /></label>
+                              <button type="submit" disabled={Boolean(busy)}>保存修正</button>
+                            </form>
+                          </details>
+                        {/if}
+                      </div>
+                    </div>
+                  </details>
+                {/if}
+                <details class="item-more" on:toggle={(event) => handleItemMenuToggle(item.id, event)}>
                   <summary title="更多操作" aria-label="更多操作"><MoreHorizontal size={15} /></summary>
                   <div class="item-more-menu">
+                    {#if userFacingTargetLabel(item) && dailyApi.openItem}
+                      <button type="button" on:click={() => dailyApi?.openItem?.(item)}><Target size={14} />打开：{userFacingTargetLabel(item)}</button>
+                    {/if}
+                    {#if item.status !== "done" && dailyApi.updateItem}
+                      <label class="menu-field">
+                        <span>墨水屏策略</span>
+                        <select aria-label={`更改 ${item.text} 的设备策略`} value={item.devicePolicy ?? "none"} disabled={Boolean(busy)} on:change={(event) => updatePolicyFromEvent(item, event)}>
+                          <option value="none">不发送</option><option value="manual">手动</option><option value="scheduled">定时</option><option value="rotation">轮播</option><option value="agent">Agent</option>
+                        </select>
+                      </label>
+                    {/if}
                     {#if dailyApi.moveItem}
                       <button type="button" disabled={index === 0 || Boolean(busy)} on:click={() => run(`up:${item.id}`, () => dailyApi?.moveItem?.(item.id, item.revision, "up"))}><ArrowUp size={14} />上移</button>
                       <button type="button" disabled={index === items.length - 1 || Boolean(busy)} on:click={() => run(`down:${item.id}`, () => dailyApi?.moveItem?.(item.id, item.revision, "down"))}><ArrowDown size={14} />下移</button>
@@ -1689,6 +1870,7 @@
                   </div>
                 </details>
               </div>
+              {/if}
               {#if editingItemId === item.id}
                 <form class="inline-editor" on:submit|preventDefault={() => saveItem(item)}>
                   <label class="wide"><span>内容</span><input bind:value={editText} required /></label>
@@ -1722,94 +1904,6 @@
                     <button class="primary" type="submit" disabled={Boolean(busy)}><Save size={14} />保存</button>
                   </div>
                 </form>
-              {/if}
-              {#if item.status !== "done" && dailyApi.updateItem}
-                <select
-                  class="policy-select"
-                  aria-label={`更改 ${item.text} 的设备策略`}
-                  value={item.devicePolicy ?? "none"}
-                  disabled={Boolean(busy)}
-                  on:change={(event) => updatePolicyFromEvent(item, event)}
-                >
-                  <option value="none">不发送</option>
-                  <option value="manual">手动</option>
-                  <option value="scheduled">定时</option>
-                  <option value="rotation">轮播</option>
-                  <option value="agent">Agent</option>
-                </select>
-              {/if}
-              {#if dailyApi.getItemTiming || dailyApi.startItem || dailyApi.pauseItem || dailyApi.resumeItem}
-                {@const timing = timingByItem[item.id]}
-                <details class="timing-panel" on:toggle={(event) => loadTimerEvents(item.id, event)}>
-                  <summary>
-                    <span>
-                      <Clock3 size={14} />
-                      <strong>时间与进度</strong>
-                      <em class:review={timing?.needsReview}>{timingStatusLabel(timing)}</em>
-                    </span>
-                    <span>{formatDuration(timing?.activeMs)} / {item.estimateMinutes ? `${item.estimateMinutes} 分钟` : "无预计"}</span>
-                  </summary>
-                  <div class="timing-content">
-                    <div class="timing-metrics">
-                      <span><small>实际投入</small><strong>{formatDuration(timing?.activeMs)}</strong></span>
-                      <span><small>总跨度</small><strong>{formatDuration(timing?.wallMs)}</strong></span>
-                      <span><small>中断</small><strong>{timing?.interruptionCount ?? 0} 次</strong></span>
-                      <span><small>预计差值</small><strong>{estimateDeltaLabel(timing?.estimateDeltaMinutes)}</strong></span>
-                    </div>
-                    {#if timing?.needsReview}
-                      <p class="timing-review">
-                        此会话跨午夜或连续打开超过安全阈值，暂不把无限时长计入统计。请检查最近事件。
-                      </p>
-                    {/if}
-                    <div class="timing-actions">
-                      {#if (!timing || timing.status === "not-started") && dailyApi.startItem && item.status !== "done"}
-                        <button class="primary" type="button" disabled={Boolean(busy)} on:click={() => transitionTimer(item, "start")}><Play size={14} />开始</button>
-                      {:else if timing?.status === "running" && dailyApi.pauseItem}
-                        <button type="button" disabled={Boolean(busy)} on:click={() => transitionTimer(item, "pause")}><Pause size={14} />暂停</button>
-                      {:else if timing?.status === "paused" && dailyApi.resumeItem && item.status !== "done"}
-                        <button class="primary" type="button" disabled={Boolean(busy)} on:click={() => transitionTimer(item, "resume")}><Play size={14} />继续</button>
-                      {/if}
-                      {#if item.status !== "done" && dailyApi.completeItem}
-                        <button type="button" disabled={Boolean(busy)} on:click={() => transitionTimer(item, "complete")}><Check size={14} />完成</button>
-                      {/if}
-                    </div>
-                    {#if recentTimerEvents(item.id).length > 0}
-                      <section class="timer-history">
-                        <h4><History size={13} />最近事件</h4>
-                        <ol>
-                          {#each recentTimerEvents(item.id) as event (event.eventId)}
-                            <li>
-                              <span>{timerEventLabel(event.kind)}</span>
-                              <time datetime={event.at}>{formatDateTime(event.at)}</time>
-                              <small>{event.source}{event.automatic ? " · 自动" : ""}</small>
-                            </li>
-                          {/each}
-                        </ol>
-                      </section>
-                    {/if}
-                    {#if dailyApi.correctItemTiming && recentTimerEvents(item.id).length > 0}
-                      <form class="timing-correction" on:submit|preventDefault={() => correctTiming(item)}>
-                        <label>
-                          <span>修正事件</span>
-                          <select value={correctionEventByItem[item.id] || recentTimerEvents(item.id)[0]?.eventId} on:change={(event) => setCorrectionEvent(item.id, event)}>
-                            {#each recentTimerEvents(item.id) as event (event.eventId)}
-                              <option value={event.eventId}>{timerEventLabel(event.kind)} · {formatDateTime(event.at)}</option>
-                            {/each}
-                          </select>
-                        </label>
-                        <label>
-                          <span>正确时间</span>
-                          <input type="datetime-local" value={correctionTimeByItem[item.id] ?? ""} on:input={(event) => setCorrectionTime(item.id, event)} required />
-                        </label>
-                        <label class="wide">
-                          <span>修正原因</span>
-                          <input value={correctionReasonByItem[item.id] ?? ""} on:input={(event) => setCorrectionReason(item.id, event)} placeholder="例如：忘记暂停" />
-                        </label>
-                        <button type="submit" disabled={Boolean(busy)}>保存修正</button>
-                      </form>
-                    {/if}
-                  </div>
-                </details>
               {/if}
             </article>
                 {/each}
@@ -2345,7 +2439,7 @@
   }
 
   .focus-current > button:not(.start-button),
-  .focus-upcoming button {
+  .focus-upcoming li > button:not(.make-current) {
     display: grid;
     gap: 3px;
     padding: 0;
@@ -2380,6 +2474,25 @@
 
   .focus-upcoming li > span {
     color: var(--text-muted);
+  }
+
+  .focus-upcoming .make-current {
+    margin-left: auto;
+    padding: 3px 7px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 999px;
+    color: var(--text-muted);
+    background: transparent;
+    font-size: 0.64rem;
+    opacity: 0;
+    transition: opacity 120ms ease, border-color 120ms ease, color 120ms ease;
+  }
+
+  .focus-upcoming li:hover .make-current,
+  .focus-upcoming .make-current:focus-visible {
+    border-color: var(--interactive-accent);
+    color: var(--text-accent);
+    opacity: 1;
   }
 
   .focus-empty {
@@ -2421,13 +2534,25 @@
     flex: var(--project-weight) 1 24px;
     gap: 2px;
     min-width: 12px;
+    padding: 1px;
+    border: 0;
+    border-radius: 3px;
+    background: transparent;
+    box-shadow: none;
+    cursor: context-menu;
+    transition: background 120ms ease, transform 120ms ease;
+  }
+
+  .battery-project:hover {
+    background: color-mix(in srgb, var(--project-color) 22%, transparent);
+    transform: translateY(-1px);
   }
 
   .battery-project i {
     flex: 1;
     min-width: 3px;
     border-radius: 2px;
-    background: color-mix(in srgb, var(--project-color) 17%, var(--background-primary));
+    background: color-mix(in srgb, var(--project-color) 38%, var(--background-primary));
   }
 
   .battery-project i.done {
@@ -2443,16 +2568,29 @@
     scrollbar-width: thin;
   }
 
-  .project-progress-legend > span {
+  .project-progress-legend > button {
     display: inline-flex;
     align-items: center;
     gap: 4px;
     flex: none;
+    padding: 3px 6px;
+    border: 1px solid transparent;
+    border-radius: 999px;
     color: var(--text-muted);
+    background: transparent;
     font-size: 0.65rem;
+    box-shadow: none;
+    cursor: context-menu;
   }
 
-  .project-progress-legend > span > i {
+  .project-progress-legend > button:hover,
+  .project-progress-legend > button:focus-visible {
+    border-color: color-mix(in srgb, var(--project-color) 55%, var(--background-modifier-border));
+    color: var(--text-normal);
+    background: color-mix(in srgb, var(--project-color) 12%, transparent);
+  }
+
+  .project-progress-legend > button > i {
     width: 7px;
     height: 7px;
     border-radius: 2px;
@@ -2462,6 +2600,49 @@
   .project-progress-legend em {
     font-style: normal;
     opacity: 0.75;
+  }
+
+  .project-color-popover {
+    display: grid;
+    gap: 9px;
+    width: min(320px, 100%);
+    margin-top: 8px;
+    padding: 10px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 9px;
+    background: var(--background-primary);
+    box-shadow: var(--shadow-s);
+  }
+
+  .project-color-popover label,
+  .project-color-popover footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .project-color-popover input[type="color"] {
+    width: 42px;
+    height: 28px;
+    padding: 2px;
+  }
+
+  .project-color-presets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+  }
+
+  .project-color-presets button {
+    width: 24px;
+    height: 24px;
+    min-width: 0;
+    padding: 0;
+    border: 2px solid var(--background-primary);
+    border-radius: 50%;
+    background: var(--swatch);
+    box-shadow: 0 0 0 1px var(--background-modifier-border);
   }
 
   .planner-heading,
@@ -2905,24 +3086,41 @@
   }
 
   .normalization-preview {
-    margin: 10px;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px 10px;
+    margin: 8px 10px;
+    padding: 10px 12px;
     border: 1px solid var(--daily-border);
     border-radius: 10px;
     background: var(--daily-soft);
   }
 
-  .normalization-preview > header,
-  .normalization-preview > footer {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    padding: 10px 12px;
+  .normalization-preview > header {
+    display: contents;
   }
 
-  .normalization-preview > header > div {
+  .normalization-preview > header > :global(svg) {
+    color: var(--interactive-accent);
+  }
+
+  .normalization-heading {
     display: grid;
     gap: 2px;
+    min-width: 0;
+  }
+
+  .normalization-preview > footer {
+    grid-column: 2 / -1;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+  }
+
+  .normalization-preview > footer > span {
+    margin-right: auto;
   }
 
   .normalization-preview small,
@@ -2932,11 +3130,61 @@
     font-size: 0.7rem;
   }
 
+  .normalization-close {
+    width: 26px;
+    min-height: 26px;
+    padding: 0;
+    border: 0;
+    color: var(--text-muted);
+    background: transparent;
+    font-size: 1.05rem;
+  }
+
+  .normalization-explanation {
+    grid-column: 2 / -1;
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    line-height: 1.5;
+  }
+
+  .normalization-technical-details {
+    grid-column: 2 / -1;
+    min-width: 0;
+  }
+
+  .normalization-technical-details > summary,
+  .normalization-diff-details > summary {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    width: fit-content;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.7rem;
+  }
+
+  .normalization-technical-details > summary span {
+    padding: 1px 6px;
+    border-radius: 999px;
+    color: var(--text-warning);
+    background: color-mix(in srgb, var(--color-yellow) 12%, transparent);
+    font-size: 0.62rem;
+  }
+
+  .normalization-technical-content {
+    display: grid;
+    gap: 9px;
+    margin-top: 9px;
+    padding-top: 9px;
+    border-top: 1px solid var(--daily-border);
+  }
+
   .normalization-diagnostics {
     display: grid;
     gap: 5px;
     margin: 0;
-    padding: 0 12px 10px;
+    padding: 0;
     list-style: none;
   }
 
@@ -2957,7 +3205,7 @@
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px;
-    padding: 0 12px 10px;
+    padding: 0;
   }
 
   .normalization-structure > section {
@@ -3005,7 +3253,7 @@
   .normalization-diff {
     overflow: auto;
     max-height: 240px;
-    margin: 0 12px;
+    margin: 7px 0 0;
     padding: 10px;
     border: 1px solid var(--daily-border);
     border-radius: 7px;
@@ -3018,7 +3266,7 @@
 
   .normalization-clean {
     margin: 0;
-    padding: 8px 12px;
+    padding: 4px 0;
   }
 
   .normalization-blocked {
@@ -3088,10 +3336,17 @@
     position: relative;
     display: grid;
     grid-template-columns: auto minmax(0, 1fr) auto;
-    gap: 8px;
-    padding: 9px 4px;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 4px;
     padding-left: calc(4px + var(--task-depth, 0) * 14px);
     border-bottom: 1px solid var(--daily-border);
+    transition: background 120ms ease;
+  }
+
+  .plan-item:hover,
+  .plan-item:focus-within {
+    background: var(--background-modifier-hover);
   }
 
   .plan-item.current {
@@ -3104,7 +3359,7 @@
   }
 
   .check-button {
-    align-self: start;
+    align-self: center;
     padding: 5px;
     border: 0;
     color: var(--text-muted);
@@ -3113,53 +3368,73 @@
 
   .item-main {
     display: grid;
-    gap: 4px;
+    gap: 2px;
     min-width: 0;
     padding: 0;
     border: 0;
     color: var(--text-normal);
     background: transparent;
     text-align: left;
+    align-items: start;
   }
 
-  .item-main strong {
+  .item-main strong,
+  .item-title-line,
+  .item-summary-line,
+  .next-step {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .item-main small {
-    color: var(--text-muted);
-    font-size: 0.7rem;
-  }
-
-  .item-properties {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-  }
-
-  .item-properties em,
-  .item-properties time {
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    padding: 1px 5px;
-    border-radius: 999px;
-    color: var(--text-muted);
-    background: var(--daily-soft);
-    font-size: 0.61rem;
-    font-style: normal;
-  }
-
-  .item-properties .priority-high,
-  .item-properties .priority-highest {
+  .item-summary-line .priority-high,
+  .item-summary-line .priority-highest {
     color: var(--text-error);
   }
 
-  .item-properties .priority-low,
-  .item-properties .priority-lowest {
+  .item-summary-line .priority-low,
+  .item-summary-line .priority-lowest {
     color: var(--text-faint);
+  }
+
+  .item-title-line,
+  .item-summary-line {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    gap: 5px;
+  }
+
+  .item-title-line > strong {
+    flex: 1;
+    min-width: 0;
+    text-align: left;
+  }
+
+  .item-title-line .flag {
+    flex: none;
+  }
+
+  .item-summary-line {
+    color: var(--text-muted);
+    font-size: 0.66rem;
+  }
+
+  .item-summary-line > em,
+  .item-summary-line > time {
+    flex: none;
+    color: var(--text-muted);
+    font-style: normal;
+  }
+
+  .item-summary-line .resolved-target,
+  .item-summary-line .next-step {
+    min-width: 0;
+    max-width: 34%;
+  }
+
+  .item-summary-line .resolved-target {
+    display: inline-flex;
   }
 
   .daily-board {
@@ -3352,28 +3627,6 @@
     font-size: 0.67rem;
   }
 
-  .resolved-target > span {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .resolved-target em {
-    flex: none;
-    padding: 1px 5px;
-    border-radius: 999px;
-    color: var(--text-accent);
-    background: color-mix(in srgb, var(--interactive-accent) 9%, transparent);
-    font-size: 0.62rem;
-    font-style: normal;
-  }
-
-  .item-topline {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-  }
-
   .kind {
     color: var(--text-muted);
     font-size: 0.65rem;
@@ -3384,17 +3637,18 @@
     background: color-mix(in srgb, var(--color-yellow) 12%, transparent);
   }
 
-  .item-topline time {
-    margin-left: auto;
-    color: var(--text-muted);
-    font-size: 0.65rem;
-  }
-
   .item-actions {
     position: relative;
     display: flex;
     align-items: flex-start;
     gap: 2px;
+    opacity: 0.42;
+    transition: opacity 120ms ease;
+  }
+
+  .plan-item:hover .item-actions,
+  .plan-item:focus-within .item-actions {
+    opacity: 1;
   }
 
   .item-actions button {
@@ -3419,7 +3673,8 @@
   }
 
   .item-more > summary:hover,
-  .item-more[open] > summary {
+  .item-more[open] > summary,
+  .item-more > summary.active {
     color: var(--text-normal);
     background: var(--background-modifier-hover);
   }
@@ -3459,42 +3714,41 @@
     color: var(--text-error);
   }
 
-  .policy-select {
-    grid-column: 2;
-    justify-self: start;
-    width: auto;
-    height: 27px;
+  .menu-field {
+    display: grid;
+    gap: 4px;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--daily-border);
+    color: var(--text-muted);
     font-size: 0.68rem;
   }
 
-  .timing-panel {
-    grid-column: 1 / -1;
-    margin: 2px 0 0 32px;
-    border: 1px solid var(--daily-border);
-    border-radius: 8px;
-    background: var(--background-primary);
+  .menu-field select {
+    width: 100%;
   }
 
-  .timing-panel > summary {
+  .timing-popover {
+    width: min(360px, calc(100vw - 40px));
+    padding: 0;
+  }
+
+  .timing-popover > header {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    padding: 8px 10px;
-    color: var(--text-muted);
-    cursor: pointer;
+    padding: 9px 10px;
+    border-bottom: 1px solid var(--daily-border);
     font-size: 0.7rem;
-    list-style: none;
   }
 
-  .timing-panel > summary > span,
-  .timing-panel > summary > span:first-child {
+  .timing-popover > header > span {
     display: flex;
     align-items: center;
     gap: 5px;
   }
 
-  .timing-panel > summary em {
+  .timing-popover > header em {
     padding: 1px 5px;
     border-radius: 999px;
     background: var(--daily-soft);
@@ -3502,7 +3756,13 @@
     font-style: normal;
   }
 
-  .timing-panel > summary em.review {
+  .timing-correction-details > summary {
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.68rem;
+  }
+
+  .timing-popover em.review {
     color: var(--text-warning);
   }
 
@@ -4082,14 +4342,6 @@
       grid-template-columns: 1fr;
     }
 
-    .plan-item {
-      grid-template-columns: auto minmax(0, 1fr);
-    }
-
-    .item-actions {
-      grid-column: 2;
-    }
-
     .inline-editor .wide,
     .inline-actions,
     .timing-correction .wide {
@@ -4101,9 +4353,6 @@
       justify-content: flex-end;
     }
 
-    .timing-panel {
-      margin-left: 0;
-    }
   }
 
   @keyframes spin {

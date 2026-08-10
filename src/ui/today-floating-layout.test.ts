@@ -17,8 +17,11 @@ describe("Today floating card", () => {
     expect(component).not.toContain("dailyApi.actOnWorkPoolItem");
     expect(component).toContain("onOpenTaskPool");
     expect(component).toContain("现在专注");
-    expect(component).toContain("今日缩略");
+    expect(component).toContain("今日任务");
     expect(component).toContain("compactItems");
+    expect(component).toContain("compactGroups");
+    expect(component).toContain('class="compact-project"');
+    expect(component).toContain("按项目分组的今日任务");
     expect(component).toContain("focusMessages");
     expect(component).toContain("message-carousel");
     expect(component).toContain("openCurrentMessage");

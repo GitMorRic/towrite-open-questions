@@ -243,6 +243,28 @@ describe("DailyPlanService v2", () => {
     expect(storage.files.get("Daily/2026-07-23.md")).toBe(markdown);
   });
 
+  it("lets a stable task change state while a sibling checkbox is still awaiting an id", async () => {
+    const path = "Daily/2026-07-23.md";
+    const storage = new MemoryDailyStorage();
+    storage.files.set(path, [
+      "# 2026-07-23",
+      "## ToDo",
+      "- [ ] Ready task ^daily_ready01",
+      "- [ ] Newly typed task"
+    ].join("\n"));
+    const service = new DailyPlanService(storage, {
+      now: () => new Date("2026-07-23T08:00:00+08:00")
+    });
+
+    const ready = await service.get("daily_ready01", "2026-07-23");
+    expect(ready).toBeDefined();
+    await service.start("daily_ready01", ready!.revision, "2026-07-23");
+
+    expect(storage.files.get(path)).toContain("- [/] Ready task");
+    expect(storage.files.get(path)).toContain("^daily_ready01");
+    expect(storage.files.get(path)).toContain("- [ ] Newly typed task");
+  });
+
   it("does not mistake or remove a nested child task block id", async () => {
     const markdown = [
       "# 2026-07-23",
