@@ -108,6 +108,87 @@ describe("daily hierarchy and inherited targets", () => {
       .toEqual(["项目", "项目", "待记录和搞懂"]);
   });
 
+  it("adopts a free-form Daily Note checklist when no managed heading exists", async () => {
+    const markdown = [
+      "# 20260810",
+      "从模板的演变，可以看到有些东西在发生着",
+      "- [ ] 待办",
+      "  1. [[一个待办]]",
+      "- [ ] 项目",
+      "  1. [obsidian-待办清单](obsidian-待办清单.md)",
+      "  2. [书客松](书客松.md)",
+      "- [ ] 创作",
+      "  1. [[请确认你是本人]]",
+      "- [ ] 稍后阅读和记录",
+      "  1. [[结构丝印]]",
+      "  2. [[供应商8D报告]]",
+      "  3. [[海外剧本范例]]",
+      "  4. [[封样资料要求]]",
+      "- [ ] 其他",
+      "  1. [膝关节外骨骼设计](膝关节外骨骼设计.md)",
+      "  2."
+    ].join("\n");
+    const sourcePath = "sync/Todo_and_tosolve/20260810.md";
+    const hierarchy = parseDailyPlanHierarchy(markdown, sourcePath, "2026-08-10", {
+      source: {
+        kind: "daily-note",
+        dailyRoot: "sync/Todo_and_tosolve",
+        dateFormat: "YYYYMMDD"
+      }
+    });
+
+    expect(hierarchy.groups.map((group) => group.text)).toEqual([
+      "待办",
+      "项目",
+      "创作",
+      "稍后阅读和记录",
+      "其他"
+    ]);
+    expect(hierarchy.tasks.map((task) => task.text)).toEqual([
+      "[[一个待办]]",
+      "[obsidian-待办清单](obsidian-待办清单.md)",
+      "[书客松](书客松.md)",
+      "[[请确认你是本人]]",
+      "[[结构丝印]]",
+      "[[供应商8D报告]]",
+      "[[海外剧本范例]]",
+      "[[封样资料要求]]",
+      "[膝关节外骨骼设计](膝关节外骨骼设计.md)"
+    ]);
+
+    const storage = new MemoryStorage();
+    storage.files.set(sourcePath, markdown);
+    let nextId = 1;
+    const options = {
+      source: {
+        kind: "daily-note" as const,
+        dailyRoot: "sync/Todo_and_tosolve",
+        dateFormat: "YYYYMMDD"
+      },
+      createId: () => `daily_${(nextId++).toString(16).padStart(32, "0")}`,
+      now: () => new Date("2026-08-10T16:36:00+08:00")
+    };
+    const normalizer = new DailyPlanNormalizationService(storage, options);
+    for (;;) {
+      const preview = await normalizer.preview("2026-08-10");
+      const edit = preview.edits.find((candidate) =>
+        shouldAutomaticallyNormalizeDailyEdit(candidate, sourcePath)
+      );
+      if (!edit) break;
+      await normalizer.normalizeTask(preview, edit.line);
+    }
+    const service = new DailyPlanService(storage, options);
+    const items = await service.list("2026-08-10");
+
+    expect(items).toHaveLength(9);
+    expect(items.map((item) => item.text)).toEqual(hierarchy.tasks.map((task) => task.text));
+    expect(items.map((item) => item.groupId)).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^group_/u)
+    ]));
+    expect(storage.files.get(sourcePath)).toContain("1. [ ] [[一个待办]] ^daily_");
+    expect(storage.files.get(sourcePath)).toContain("- [ ] 待办");
+  });
+
   it("reads normalized tasks from the plan-heading fallback through DailyPlanService", async () => {
     const storage = new MemoryStorage();
     storage.files.set(PATH, [

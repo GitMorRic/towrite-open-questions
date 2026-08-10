@@ -75,12 +75,28 @@ export function parseDailyPlanHierarchy(
   const fallbackScope = canonicalNodes.length === 0
     ? findTodoScope(lines, normalizedDate, source, options.planHeading ?? "今日计划")
     : undefined;
-  const scope = canonicalNodes.length > 0 ? canonicalScope : fallbackScope ?? canonicalScope;
+  const fallbackNodes = fallbackScope ? parseListNodes(lines, fallbackScope) : [];
+  // Daily Notes are often authored as a free-form journal without a dedicated
+  // ToDo heading. When neither managed section contains a list, treat the
+  // current day's document (or the current date section in fixed mode) as the
+  // editable planning surface. This fallback is deliberately limited to the
+  // configured Daily source; arbitrary Vault notes still enter through the
+  // Work Pool allowlist instead of becoming today's commitments.
+  const documentScope = canonicalNodes.length === 0 && fallbackNodes.length === 0
+    ? findDailyDocumentScope(lines, normalizedDate, source)
+    : undefined;
+  const scope = canonicalNodes.length > 0
+    ? canonicalScope
+    : fallbackNodes.length > 0
+      ? fallbackScope
+      : documentScope ?? fallbackScope ?? canonicalScope;
   const nodes = canonicalNodes.length > 0
     ? canonicalNodes
-    : fallbackScope
-      ? parseListNodes(lines, fallbackScope)
-      : [];
+    : fallbackNodes.length > 0
+      ? fallbackNodes
+      : documentScope
+        ? parseListNodes(lines, documentScope)
+        : [];
   const groups: DailyPlanGroup[] = [];
   const diagnostics: DailyPlanHierarchyDiagnostic[] = [];
 
@@ -326,6 +342,38 @@ function findTodoScope(
     end: todoEnd,
     rawStart: nested ? dateStart - 1 : 0,
     rawEnd: nested ? dateEnd : lines.length
+  };
+}
+
+function findDailyDocumentScope(
+  lines: string[],
+  date: string,
+  source: DailyPlanSource
+): TodoScope | undefined {
+  if (source.kind !== "fixed-document") {
+    return {
+      start: 0,
+      end: lines.length,
+      rawStart: 0,
+      rawEnd: lines.length
+    };
+  }
+
+  const dateHeading = lines.findIndex((line) => headingDepth(line) === 2 && headingText(line) === date);
+  if (dateHeading < 0) return undefined;
+  let dateEnd = lines.length;
+  for (let index = dateHeading + 1; index < lines.length; index += 1) {
+    const level = headingDepth(lines[index]);
+    if (level > 0 && level <= 2) {
+      dateEnd = index;
+      break;
+    }
+  }
+  return {
+    start: dateHeading + 1,
+    end: dateEnd,
+    rawStart: dateHeading,
+    rawEnd: dateEnd
   };
 }
 

@@ -649,7 +649,11 @@ export function parseDailyPlanDocumentWithDiagnostics(
     : undefined;
   const todo = canonicalTodo && sectionContainsTask(lines, canonicalTodo)
     ? canonicalTodo
-    : fallbackPlan ?? canonicalTodo;
+    : fallbackPlan && sectionContainsListItem(lines, fallbackPlan)
+      ? fallbackPlan
+      : scope
+        ? wholeDateSection(scope, resolved.planLevel)
+        : canonicalTodo;
   const entries: ParsedTaskEntry[] = [];
 
   if (todo) {
@@ -755,6 +759,25 @@ function sectionContainsTask(
     if (TASK_RE.test(lines[index])) return true;
   }
   return false;
+}
+
+function sectionContainsListItem(
+  lines: readonly string[],
+  section: { start: number; end: number }
+): boolean {
+  for (let index = section.start; index < section.end; index += 1) {
+    if (LIST_NODE_RE.test(lines[index])) return true;
+  }
+  return false;
+}
+
+function wholeDateSection(scope: DateScope, level: number): SectionRange {
+  return {
+    heading: scope.heading ?? Math.max(0, scope.start - 1),
+    start: scope.start,
+    end: scope.end,
+    level
+  };
 }
 
 /**
