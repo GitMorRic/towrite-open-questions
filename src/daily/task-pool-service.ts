@@ -295,6 +295,32 @@ export class TaskPoolService {
     return { task, releasedAssignmentId, idempotent };
   }
 
+  async reopen(
+    taskId: string,
+    expectedRevision: string | TaskPoolRevision
+  ): Promise<TaskPoolTransitionResult> {
+    let idempotent = false;
+    const task = await this.mutate(taskId, expectedRevision, (item) => {
+      if (item.state === "pool" || item.state === "returned") {
+        idempotent = true;
+        return item;
+      }
+      if (item.state !== "done") {
+        throw new TaskPoolConflictError("invalid-state", `Cannot reopen a ${item.state} task.`);
+      }
+      return {
+        ...item,
+        state: "pool",
+        plannedDate: undefined,
+        assignmentId: undefined,
+        returnedDate: undefined,
+        droppedAt: undefined,
+        completedAt: undefined
+      };
+    });
+    return { task, idempotent };
+  }
+
   async completeAssigned(
     taskId: string,
     expectedRevision: string | TaskPoolRevision,

@@ -27,6 +27,38 @@ function memoryStorage(initial: Record<string, string>): NoteTaskStorage & {
 }
 
 describe("ordinary note task recognition", () => {
+  it("indexes linked child documents below a tracked project task without copying child task text", () => {
+    const document = parseNoteTasks([
+      `- [ ] 布局 ^${firstId}`,
+      `  [towrite-pool-ref:: ${firstId}]`,
+      "  1. [[墨水屏项目与方案汇总]]",
+      "  2. [Layout](创作辅助工具电子屏幕-Layout和布局.md)",
+      `- [ ] 另一个项目 ^${secondId}`,
+      "  1. [[不应归到布局]]"
+    ].join("\n"), "Projects/创作辅助工具电子屏幕硬件.md");
+
+    expect(document.relations).toMatchObject([
+      {
+        parentTaskId: firstId,
+        parentTaskText: "布局",
+        childLinkText: "墨水屏项目与方案汇总",
+        line: 3
+      },
+      {
+        parentTaskId: firstId,
+        parentTaskText: "布局",
+        childLinkText: "创作辅助工具电子屏幕-Layout和布局.md",
+        line: 4
+      },
+      {
+        parentTaskId: secondId,
+        parentTaskText: "另一个项目",
+        childLinkText: "不应归到布局",
+        line: 6
+      }
+    ]);
+  });
+
   it("recognizes non-empty checkboxes anywhere in an ordinary Markdown note", () => {
     const document = parseNoteTasks(
       [

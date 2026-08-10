@@ -1,5 +1,25 @@
 # Changelog / 更新日志
 
+## 0.3.0-beta.17 - 2026-08-10
+
+- Changed Markdown-task discovery to a configurable allowlist: Daily sources, notes linked from Daily task blocks, Workflow/Inbox notes, and notes with active ToThink/ToWrite questions are included by default, while explicit file/folder exclusions always win.
+- Added recursive Daily-to-project note relations so linked project notes and their nested task documents remain discoverable without scanning unrelated Vault content.
+- Added settings for manual task-source allowlists and automatic Daily-link, Workflow, Inbox, and question-source inclusion.
+- Fixed plugin startup when the Work Pool suggestion cache is restored before Workflow and Inbox indexes are initialized.
+- Kept stable `^daily_*` task identities in Markdown while concealing them in Reading, Live Preview, and Source modes; Daily task actions now stay behind a compact disclosure shown only on the selected row.
+- Fixed orphaned timers from deleted or moved Daily tasks so their automatic pause no longer blocks starting the current task.
+- Added regression coverage for allowlist precedence, linked-note traversal, startup ordering, concealed Daily IDs, compact task controls, and orphaned timer coordination. The production suite now covers 699 tests.
+
+中文摘要：
+
+- 普通 Markdown 待办改为白名单发现：默认包含日记、日记任务块提及的笔记、Workflow/Inbox 笔记以及存在活跃 ToThink/ToWrite 问题的来源笔记；手动“不整理名单”始终拥有最高优先级。
+- 支持沿日记中的项目链接递归发现子文档待办，不再为了找任务扫描无关的整个 Vault。
+- 设置页新增手工白名单，以及日记链接、Workflow、Inbox、开放问题来源的自动纳入开关。
+- 修复工作池联想缓存早于 Workflow/Inbox 索引初始化时导致的插件加载失败。
+- `^daily_*` 稳定 ID 继续保存在 Markdown 真源中，但在阅读、Live Preview 和 Source 模式隐藏；任务操作只在选中行显示一个紧凑的展开入口。
+- 修复旧日记任务被删除或移动后留下的计时状态，避免它阻止当前任务开始。
+- 补充白名单优先级、链接递归、启动顺序、Daily ID 隐藏、渐进操作控件和孤立计时协调测试；生产测试套件现覆盖 699 项测试。
+
 ## 0.3.0-beta.16 - 2026-08-07
 
 - Added Daily-note hierarchy projection so ordinary nested checklist leaves under `今日计划` appear in the unified Work Pool while category/container rows remain groups instead of inflating task counts.

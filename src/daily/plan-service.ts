@@ -927,7 +927,10 @@ function parseTaskEntry(
   const metadataScheduledDate = normalizeOptionalDate(fields.scheduled);
   const metadataDueDate = normalizeOptionalDate(fields.due);
   const target = normalizeOptionalTarget(fields.target);
-  const linkedSource = `${cleanTaskText(body)} ${target ?? ""}`;
+  // A Daily checkbox often acts as a project/category row whose indented
+  // children contain the actual note links. Keep those links in the cached
+  // item so the Work Pool allowlist can follow the whole authored task block.
+  const linkedSource = `${cleanTaskText(body)} ${continuation.join(" ")} ${target ?? ""}`;
   const revision: DailyTaskRevision = {
     value: dailyTaskRevisionValue(sourcePath, date, blockId, rawBlock),
     sourcePath,

@@ -78,3 +78,19 @@ export function changedDailyMarkdownTimerTaskIds(
     return previous && previous.status !== item.status ? [item.id] : [];
   }));
 }
+
+/**
+ * Starting a new task automatically pauses the previously running timer. If
+ * that older task's Daily Markdown was deleted or moved beyond the configured
+ * plan source, there is no document left to coordinate. The append-only pause
+ * event is still safe and prevents the orphaned timer from blocking all new
+ * work. The requested task itself, and every non-pause transition, must still
+ * have an exact Markdown revision.
+ */
+export function canSkipMissingDailyTimerMarkdownTask(input: {
+  currentTaskId: string;
+  affectedTaskId: string;
+  desiredStatus: DailyPlanItem["status"] | undefined;
+}): boolean {
+  return input.affectedTaskId !== input.currentTaskId && input.desiredStatus === "todo";
+}

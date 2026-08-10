@@ -1,10 +1,31 @@
 import { describe, expect, it } from "vitest";
 import {
+  canSkipMissingDailyTimerMarkdownTask,
   changedDailyMarkdownTimerTaskIds,
   dailyMarkdownTimerEventId,
   dailyMarkdownTimerOperations,
   dailyMarkdownTimerTransactionId
 } from "./markdown-timer-sync";
+
+describe("missing timer Markdown coordination", () => {
+  it("allows only an orphaned previous task's automatic pause", () => {
+    expect(canSkipMissingDailyTimerMarkdownTask({
+      currentTaskId: "daily_new",
+      affectedTaskId: "daily_old",
+      desiredStatus: "todo"
+    })).toBe(true);
+    expect(canSkipMissingDailyTimerMarkdownTask({
+      currentTaskId: "daily_new",
+      affectedTaskId: "daily_new",
+      desiredStatus: "todo"
+    })).toBe(false);
+    expect(canSkipMissingDailyTimerMarkdownTask({
+      currentTaskId: "daily_new",
+      affectedTaskId: "daily_old",
+      desiredStatus: "done"
+    })).toBe(false);
+  });
+});
 
 describe("dailyMarkdownTimerOperations", () => {
   it("starts or resumes when Markdown is manually marked in progress", () => {

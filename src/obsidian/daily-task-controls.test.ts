@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  dailyTaskTrailingIdRange,
   getDailyTaskControlUpdateStrategy,
   isOwnedDailyMetadataLine,
   summarizeDailyProperties
@@ -61,5 +62,12 @@ describe("Daily editor task controls", () => {
       dueDate: "2026-07-29",
       dueDateExplicit: false
     })).toBe("");
+  });
+
+  it("conceals the inline stable Daily id without swallowing task text", () => {
+    expect(dailyTaskTrailingIdRange(
+      "- [ ] 这是一个待办 ^daily_1234567890abcdef1234567890abcdef"
+    )).toEqual({ from: 12, to: 52 });
+    expect(dailyTaskTrailingIdRange("- [ ] 普通内容")).toBeUndefined();
   });
 });

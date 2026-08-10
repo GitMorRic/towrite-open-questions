@@ -148,6 +148,10 @@ export interface WorkPoolPresentationSettings {
   defaultGroupsExpanded: boolean;
   showTechnicalMetadata: boolean;
   hiddenItemIds: string[];
+  includedSourcePaths: string[];
+  autoIncludeDailyLinks: boolean;
+  autoIncludeWorkflowNotes: boolean;
+  autoIncludeQuestionNotes: boolean;
   excludedSourcePaths: string[];
 }
 

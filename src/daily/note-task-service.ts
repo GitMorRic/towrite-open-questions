@@ -8,6 +8,9 @@ const OWNED_FIELD_RE = /^(?<indent>[ \t]*)\[towrite-(?<key>category|target|due|e
 const LIST_ITEM_RE = /^(?<indent>[ \t]*)(?:[-+*]|\d+[.)])[ \t]+/u;
 const SAFE_WIKI_TARGET_RE = /^\[\[[^\]\r\n]+\]\]$/u;
 const SAFE_MARKDOWN_TARGET_RE = /^(?![A-Za-z][A-Za-z0-9+.-]*:)(?![/\\])[^<>\0\r\n]+(?:\.md)?(?:#[^<>\0\r\n]+)?$/u;
+const LIST_ITEM_BODY_RE = /^(?<indent>[ \t]*)(?:[-+*]|\d+[.)])[ \t]+(?<body>.*)$/u;
+const WIKI_LINK_RE = /(?<!!)\[\[(?<target>[^\]|\r\n]+)(?:\|[^\]\r\n]*)?\]\]/gu;
+const MARKDOWN_LINK_RE = /(?<!!)\[[^\]\r\n]*\]\((?<target>[^)\r\n]+)\)/gu;
 
 export interface NoteTaskStorage {
   readText(path: string): Promise<string | undefined>;
@@ -54,6 +57,20 @@ export interface TrackedNoteTask {
   invalidOwnedMetadataLines: number[];
 }
 
+/**
+ * A structural link authored below a tracked checkbox. The linked note keeps
+ * its own task Markdown; this record only preserves the parent/project
+ * relationship needed by the unified Work Pool.
+ */
+export interface NoteTaskChildRelation {
+  parentTaskId: string;
+  parentTaskText: string;
+  parentSourcePath: string;
+  childLinkText: string;
+  line: number;
+  revision: string;
+}
+
 export interface NoteTaskSchedulePatch {
   plannedStartAt?: string | null;
   expectedFinishAt?: string | null;
@@ -69,6 +86,7 @@ export interface NoteTaskDocument {
   revision: string;
   tasks: TrackedNoteTask[];
   candidates: NoteTaskCandidate[];
+  relations: NoteTaskChildRelation[];
 }
 
 export class NoteTaskConflictError extends Error {
@@ -422,7 +440,76 @@ export function parseNoteTasks(
       invalidOwnedMetadataLines
     });
   }
-  return { sourcePath, revision, tasks, candidates };
+  return {
+    sourcePath,
+    revision,
+    tasks,
+    candidates,
+    relations: parseNoteTaskChildRelations(lines, sourcePath, tasks, ignoredLines)
+  };
+}
+
+function parseNoteTaskChildRelations(
+  lines: readonly string[],
+  sourcePath: string,
+  tasks: readonly TrackedNoteTask[],
+  ignoredLines: ReadonlySet<number>
+): NoteTaskChildRelation[] {
+  const output: NoteTaskChildRelation[] = [];
+  const seen = new Set<string>();
+  for (const task of tasks) {
+    const parent = CHECKBOX_RE.exec(task.rawLine);
+    const parentIndent = indentWidth(parent?.groups?.indent ?? "");
+    for (let index = task.line; index < lines.length; index += 1) {
+      if (ignoredLines.has(index + 1)) continue;
+      const line = lines[index];
+      const list = LIST_ITEM_BODY_RE.exec(line);
+      if (list?.groups) {
+        const childIndent = indentWidth(list.groups.indent ?? "");
+        if (childIndent <= parentIndent) break;
+        const body = list.groups.body ?? "";
+        for (const childLinkText of localNoteLinks(body)) {
+          const key = `${task.taskId}\u0000${childLinkText.toLocaleLowerCase()}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          output.push({
+            parentTaskId: task.taskId,
+            parentTaskText: task.text,
+            parentSourcePath: sourcePath,
+            childLinkText,
+            line: index + 1,
+            revision: contentHash128(`${sourcePath}\n${task.taskId}\n${line}`)
+          });
+        }
+        continue;
+      }
+      if (/^\s*$/u.test(line)) continue;
+      const leading = /^[ \t]*/u.exec(line)?.[0] ?? "";
+      if (indentWidth(leading) <= parentIndent && !OWNED_FIELD_RE.test(line)) break;
+    }
+  }
+  return output;
+}
+
+function localNoteLinks(value: string): string[] {
+  const output: string[] = [];
+  for (const match of value.matchAll(WIKI_LINK_RE)) {
+    const target = cleanLocalLinkTarget(match.groups?.target);
+    if (target) output.push(target);
+  }
+  for (const match of value.matchAll(MARKDOWN_LINK_RE)) {
+    const target = cleanLocalLinkTarget(match.groups?.target);
+    if (target) output.push(target);
+  }
+  return [...new Set(output)];
+}
+
+function cleanLocalLinkTarget(value: string | undefined): string | undefined {
+  const decoded = String(value ?? "").trim().replace(/^<|>$/gu, "");
+  if (!decoded || /^[A-Za-z][A-Za-z0-9+.-]*:/u.test(decoded) || decoded.startsWith("/")) {
+    return undefined;
+  }
+  return decoded.split("#")[0]?.trim() || undefined;
 }
 
 function parseCheckbox(line: string): {

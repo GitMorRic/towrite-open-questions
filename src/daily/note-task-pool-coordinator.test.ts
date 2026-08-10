@@ -106,4 +106,19 @@ describe("NoteTaskPoolCoordinator", () => {
     expect(completedPool?.completedAt).toBeTruthy();
     expect((await pool.list())[0].state).toBe("done");
   });
+
+  it("reopens the pool projection when the source checkbox is unchecked again", async () => {
+    const storage = new MemoryStorage();
+    const { notes, pool, coordinator } = services(storage);
+    const registered = await coordinator.register((await notes.inspect(NOTE_PATH)).candidates[0]);
+    const completedNote = await notes.setStatus(registered.noteTask, "done");
+    await coordinator.complete(completedNote);
+    const reopenedNote = await notes.setStatus(completedNote, "todo");
+
+    const reopenedPool = await coordinator.ensureRegistered(reopenedNote);
+
+    expect(reopenedPool.state).toBe("pool");
+    expect(reopenedPool.completedAt).toBeUndefined();
+    expect((await pool.list())[0].state).toBe("pool");
+  });
 });

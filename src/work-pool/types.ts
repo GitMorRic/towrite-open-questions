@@ -9,6 +9,7 @@ export type WorkPoolHistoryMode = "active" | "history" | "all";
 export type WorkPoolGroupingDimension =
   | "workType"
   | "project"
+  | "subproject"
   | "source"
   | "stage"
   | "articleType"
@@ -34,6 +35,16 @@ export interface WorkPoolClassification {
   projectLabel?: string;
   projectSource?: WorkPoolClassificationSource;
   inheritedFromNote?: boolean;
+  subprojectId?: string;
+  subprojectLabel?: string;
+}
+
+export interface WorkPoolTaskRelation {
+  parentTaskId: string;
+  parentTaskTitle: string;
+  parentSourcePath: string;
+  childNotePath: string;
+  revision: string;
 }
 
 export interface WorkPoolProjectRule {
@@ -100,6 +111,8 @@ export interface WorkPoolItem {
   taskId?: string;
   taskState?: TaskPoolLifecycleState;
   taskRevision?: TaskPoolRevision;
+  /** Structural parent(s) that include this task's source note as a child. */
+  parentRelations?: WorkPoolTaskRelation[];
   /**
    * A task authored directly in the configured Daily Markdown source. These
    * fields keep the Work Pool a projection instead of copying the row into
@@ -166,6 +179,7 @@ export type WorkPoolAction =
   | "add-today"
   | "add-tomorrow"
   | "complete-task"
+  | "reopen-task"
   | "return-task"
   | "drop-task"
   | "resolve-question"

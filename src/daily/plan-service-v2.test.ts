@@ -190,6 +190,26 @@ describe("DailyPlanService v2", () => {
     expect(written).toContain("[towrite-estimate:: 20m]");
   });
 
+  it("collects note links from indented Daily task content", async () => {
+    const storage = new MemoryDailyStorage();
+    storage.files.set("Daily/2026-07-23.md", [
+      "## ToDo",
+      "",
+      "- [ ] Project",
+      "  1. [[Project overview]]",
+      "  2. [[Obsidian task list]]",
+      "  ^daily_linkednotes01"
+    ].join("\n"));
+    const service = new DailyPlanService(storage, {
+      now: () => new Date("2026-07-23T08:00:00+08:00")
+    });
+
+    expect((await service.read()).items[0]?.linkedNotes).toEqual([
+      "Project overview",
+      "Obsidian task list"
+    ]);
+  });
+
   it("reports missing, multiple, and duplicate block ids and refuses mutation", async () => {
     const markdown = [
       "# 2026-07-23",

@@ -142,6 +142,34 @@ describe("WorkPoolService", () => {
       .toMatchObject({ projectLabel: "Echo", projectSource: "note-frontmatter", inheritedFromNote: true });
   });
 
+  it("projects child-note tasks beneath their parent project task without copying Markdown", () => {
+    const child = task("c", "磁铁布局和位置对元器件的影响", "[[Projects/Layout#^task_c]]");
+    const relation = {
+      parentTaskId: `task_${"p".repeat(32)}`,
+      parentTaskTitle: "布局",
+      parentSourcePath: "Projects/创作辅助工具电子屏幕硬件-软硬件系统设计.md",
+      childNotePath: "Projects/Layout.md",
+      revision: "ntr_parent"
+    };
+
+    const items = buildWorkPoolItems({
+      tasks: [child],
+      questions: [],
+      inboxItems: [],
+      workflowFiles: [workflow("Projects/Layout.md", "raw")],
+      taskRelations: [relation]
+    });
+    const projected = items.find((item) => item.id === `task:${child.taskId}`)!;
+
+    expect(projected.classification).toMatchObject({
+      projectLabel: "创作辅助工具电子屏幕硬件-软硬件系统设计",
+      subprojectLabel: "布局"
+    });
+    expect(projected.parentRelations).toEqual([relation]);
+    const grouped = groupWorkPoolItemsBy(items, "project", "subproject");
+    expect(grouped[0].children.some((group) => group.title === "布局")).toBe(true);
+  });
+
   it("builds saved-view style two-level groups without duplicating work", () => {
     const echo = workflow("Projects/Echo.md", "sparks");
     echo.frontmatter = { project: "Echo" };
@@ -179,6 +207,26 @@ describe("WorkPoolService", () => {
     expect(snapshot.items.map((item) => item.id)).toEqual([`task:${visibleTask.taskId}`]);
     expect(snapshot.counts.tasks).toBe(1);
     expect(sourceTask.state).toBe("pool");
+  });
+
+  it("uses a task-source allowlist while keeping standalone pool tasks and exclusions", () => {
+    const allowed = task("a", "Allowed", "[[Projects/Active/Note#^task_a]]");
+    const legacy = task("b", "Legacy", "[[Archive/Legacy#^task_b]]");
+    const excluded = task("c", "Excluded", "[[Projects/Active/Private#^task_c]]");
+    const standalone = task("d", "Standalone");
+    const snapshot = new WorkPoolService().build({
+      tasks: [allowed, legacy, excluded, standalone],
+      questions: [],
+      inboxItems: [],
+      workflowFiles: [],
+      visibility: {
+        enforceTaskSourceAllowlist: true,
+        includedTaskSourcePaths: ["Projects/Active"],
+        excludedSourcePaths: ["Projects/Active/Private.md"]
+      }
+    }, { history: "all" });
+
+    expect(snapshot.items.map((item) => item.title).sort()).toEqual(["Allowed", "Standalone"]);
   });
 });
 

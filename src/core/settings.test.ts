@@ -149,6 +149,10 @@ describe("settings normalization", () => {
       pageSize: 999,
       defaultGroupsExpanded: false,
       showTechnicalMetadata: true,
+      includedSourcePaths: [" Projects/Active ", "Projects/Active", "../unsafe"],
+      autoIncludeDailyLinks: false,
+      autoIncludeWorkflowNotes: false,
+      autoIncludeQuestionNotes: false,
       hiddenItemIds: [" task:one ", "task:one", "", 42 as never],
       excludedSourcePaths: [" /Archive\\Old/ ", "Archive/Old", "../unsafe"]
     })).toMatchObject({
@@ -169,6 +173,10 @@ describe("settings normalization", () => {
       pageSize: 500,
       defaultGroupsExpanded: false,
       showTechnicalMetadata: true,
+      includedSourcePaths: ["Projects/Active"],
+      autoIncludeDailyLinks: false,
+      autoIncludeWorkflowNotes: false,
+      autoIncludeQuestionNotes: false,
       hiddenItemIds: ["task:one"],
       excludedSourcePaths: ["Archive/Old"]
     });

@@ -15,7 +15,8 @@ import {
   type WorkPoolItem,
   type WorkPoolQuery,
   type WorkPoolSnapshot,
-  type WorkPoolSourceTab
+  type WorkPoolSourceTab,
+  type WorkPoolTaskRelation
 } from "./types";
 import { isWorkPoolItemVisible, type WorkPoolVisibilityRules } from "./visibility";
 
@@ -24,6 +25,7 @@ export interface WorkPoolBuildInput {
   questions: readonly OpenQuestion[];
   inboxItems: readonly InboxItem[];
   workflowFiles: readonly WorkflowFileSummary[];
+  taskRelations?: readonly WorkPoolTaskRelation[];
   dailyPlan?: {
     date: string;
     sourcePath: string;
@@ -51,6 +53,19 @@ export class WorkPoolService {
 
 export function buildWorkPoolItems(input: WorkPoolBuildInput): WorkPoolItem[] {
   const classificationOptions = normalizeClassificationOptions(input.classification);
+  const relationsByChild = new Map<string, WorkPoolTaskRelation[]>();
+  for (const relation of input.taskRelations ?? []) {
+    const child = normalizePath(relation.childNotePath);
+    relationsByChild.set(child, [...(relationsByChild.get(child) ?? []), {
+      ...relation,
+      parentSourcePath: normalizePath(relation.parentSourcePath),
+      childNotePath: child
+    }]);
+  }
+  for (const relations of relationsByChild.values()) {
+    relations.sort((left, right) => left.parentSourcePath.localeCompare(right.parentSourcePath, "zh-CN")
+      || left.parentTaskTitle.localeCompare(right.parentTaskTitle, "zh-CN"));
+  }
   const workflowByPath = new Map(input.workflowFiles.map((file) => [normalizePath(file.filePath), file]));
   const inboxByPath = new Map(input.inboxItems.map((item) => [normalizePath(item.filePath), item]));
   const taskLinkPaths = input.tasks.flatMap((task) =>
@@ -75,13 +90,15 @@ export function buildWorkPoolItems(input: WorkPoolBuildInput): WorkPoolItem[] {
     const title = workflow?.title || inbox?.title || basename(path);
     const active = stageId?.toLowerCase() !== "archive";
     const tags = unique([...(workflow?.tags ?? []), ...(inbox?.tags ?? [])]);
+    const parentRelations = relationsByChild.get(path) ?? [];
+    const primaryRelation = parentRelations[0];
     const project = resolveNoteProject(
       path,
       workflow?.frontmatter,
       inbox,
       tags,
       classificationOptions
-    );
+    ) ?? relationProject(primaryRelation);
     return {
       schemaVersion: WORK_POOL_SCHEMA_VERSION,
       id: `note:${path}`,
@@ -104,6 +121,7 @@ export function buildWorkPoolItems(input: WorkPoolBuildInput): WorkPoolItem[] {
       typeTitle: workflow?.typeTitle,
       tags,
       project: project?.label,
+      parentRelations,
       createdAt: workflow?.createdAt ?? inbox?.createdAt,
       updatedAt: workflow?.updatedAt ?? inbox?.updatedAt,
       classification: {
@@ -115,6 +133,12 @@ export function buildWorkPoolItems(input: WorkPoolBuildInput): WorkPoolItem[] {
               projectId: project.id,
               projectLabel: project.label,
               projectSource: project.source
+            }
+          : {}),
+        ...(primaryRelation
+          ? {
+              subprojectId: identifier(primaryRelation.parentTaskTitle),
+              subprojectLabel: primaryRelation.parentTaskTitle
             }
           : {})
       }
@@ -129,6 +153,8 @@ export function buildWorkPoolItems(input: WorkPoolBuildInput): WorkPoolItem[] {
   const tasks: WorkPoolItem[] = input.tasks.map((task) => {
     const notePath = resolveTaskNotePath(task, resolvablePaths);
     const note = notePath ? noteByPath.get(notePath) : undefined;
+    const parentRelations = notePath ? relationsByChild.get(notePath) ?? [] : [];
+    const primaryRelation = parentRelations[0];
     const explicitProject = normalizedNamedValue(task.project);
     const inheritedProject = note?.classification.projectLabel
       ? {
@@ -139,7 +165,7 @@ export function buildWorkPoolItems(input: WorkPoolBuildInput): WorkPoolItem[] {
       : undefined;
     const project = explicitProject
       ? { id: identifier(explicitProject), label: explicitProject, source: "task" as const }
-      : inheritedProject;
+      : inheritedProject ?? relationProject(primaryRelation);
     const workTypeLabel = normalizedNamedValue(task.category) || (project ? "项目" : "任务");
     return {
       schemaVersion: WORK_POOL_SCHEMA_VERSION,
@@ -153,6 +179,7 @@ export function buildWorkPoolItems(input: WorkPoolBuildInput): WorkPoolItem[] {
       active: task.state !== "done" && task.state !== "dropped",
       category: task.category,
       project: project?.label,
+      parentRelations,
       inbox: note?.inbox,
       stale: note?.stale,
       stageId: note?.stageId,
@@ -175,6 +202,12 @@ export function buildWorkPoolItems(input: WorkPoolBuildInput): WorkPoolItem[] {
               projectLabel: project.label,
               projectSource: project.source,
               inheritedFromNote: !explicitProject
+            }
+          : {}),
+        ...(primaryRelation
+          ? {
+              subprojectId: identifier(primaryRelation.parentTaskTitle),
+              subprojectLabel: primaryRelation.parentTaskTitle
             }
           : {})
       }
@@ -275,6 +308,7 @@ export function buildWorkPoolItems(input: WorkPoolBuildInput): WorkPoolItem[] {
       createdAt: question.createdAt,
       updatedAt: question.updatedAt,
       project: note?.classification.projectLabel,
+      parentRelations: note?.parentRelations,
       classification: {
         workTypeId: question.lane === "write" ? "towrite" : "tothink",
         workTypeLabel: question.lane === "write" ? "ToWrite" : "ToThink",
@@ -285,6 +319,12 @@ export function buildWorkPoolItems(input: WorkPoolBuildInput): WorkPoolItem[] {
               projectLabel: note.classification.projectLabel,
               projectSource: note.classification.projectSource,
               inheritedFromNote: true
+            }
+          : {}),
+        ...(note?.classification.subprojectLabel
+          ? {
+              subprojectId: note.classification.subprojectId,
+              subprojectLabel: note.classification.subprojectLabel
             }
           : {})
       }
@@ -414,7 +454,9 @@ function searchableText(item: WorkPoolItem): string {
   return [
     item.title, item.description, item.notePath, item.category, item.project,
     item.stageTitle, item.typeTitle, item.classification.workTypeLabel,
-    item.classification.projectLabel, item.tags.join(" ")
+    item.classification.projectLabel, item.classification.subprojectLabel,
+    item.parentRelations?.map((relation) => `${relation.parentTaskTitle} ${relation.parentSourcePath}`).join(" "),
+    item.tags.join(" ")
   ].filter(Boolean).join(" ").toLocaleLowerCase();
 }
 
@@ -495,6 +537,14 @@ interface ResolvedProject {
   id: string;
   label: string;
   source: NonNullable<WorkPoolClassification["projectSource"]>;
+}
+
+function relationProject(relation: WorkPoolTaskRelation | undefined): ResolvedProject | undefined {
+  if (!relation) return undefined;
+  const label = basename(relation.parentSourcePath).replace(/\.md$/iu, "");
+  return label
+    ? { id: identifier(label), label, source: "fallback" }
+    : undefined;
 }
 
 function normalizeClassificationOptions(
@@ -619,6 +669,12 @@ function groupDescriptor(
     return {
       key: item.classification.projectId ?? "__unclassified__",
       title: item.classification.projectLabel ?? "未归项目"
+    };
+  }
+  if (dimension === "subproject") {
+    return {
+      key: item.classification.subprojectId ?? "__no_subproject__",
+      title: item.classification.subprojectLabel ?? "未设置子项目"
     };
   }
   if (dimension === "source") return sourceDescriptor(item);

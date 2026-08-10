@@ -5518,6 +5518,12 @@
   background: transparent;
 }
 
+.towrite-daily-task-line-controls {
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+}
+
 .towrite-note-task-disclosure {
   display: inline-flex;
   align-items: center;
@@ -5703,6 +5709,10 @@
  */
 .markdown-source-view .cm-line.towrite-daily-owned-metadata-folded {
   display: none;
+}
+
+.towrite-daily-technical-id {
+  display: none !important;
 }
 
 .modal.towrite-daily-properties-modal-shell {

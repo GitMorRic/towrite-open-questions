@@ -75,6 +75,7 @@ import {
   parseDirectInteraction
 } from "./ai/interaction";
 import { concealTaskPoolTechnicalMetadata } from "./obsidian/task-pool-preview";
+import { concealDailyTaskTechnicalMetadata } from "./obsidian/daily-task-preview";
 import {
   createTaskPoolTechnicalMetadataExtension,
   refreshTaskPoolTechnicalMetadata
@@ -139,6 +140,7 @@ import {
   dailyCreateOnlyTitle,
   dailyPlanCacheInvalidationForPath,
   changedDailyMarkdownTimerTaskIds,
+  canSkipMissingDailyTimerMarkdownTask,
   dailyMarkdownTimerEventId,
   dailyMarkdownTimerOperations,
   dailyMarkdownTimerTransactionId,
@@ -293,11 +295,13 @@ import { InboxIndex } from "./inbox";
 import {
   WorkPoolService,
   isWorkPoolSourceExcluded,
+  isWorkPoolSourceIncluded,
   questionRevision,
   type WorkPoolAction,
   type WorkPoolItem,
   type WorkPoolQuery,
-  type WorkPoolSnapshot
+  type WorkPoolSnapshot,
+  type WorkPoolTaskRelation
 } from "./work-pool";
 import { applyInboxStageMetadata, materializeInboxStageMetadata, type InboxMetadataBatchResult } from "./inbox/metadata";
 import type { InboxDeviceEligibility, InboxSnapshot } from "./inbox/types";
@@ -430,7 +434,11 @@ export default class ToWritePlugin extends Plugin {
   private activeNoteTaskDocument?: NoteTaskDocument;
   private activeTaskPoolItems: TaskPoolItem[] = [];
   private markdownTaskNoteSuggestions: MarkdownTaskInputSuggestion[] = [];
+  private markdownTaskInputSuggestionCache: MarkdownTaskInputSuggestion[] = [];
+  private workPoolTaskSourceAllowlistCache: string[] = [];
+  private workPoolTaskSourceAllowlistInitialized = false;
   private activeNoteTaskPoolMatches = new Map<string, TaskPoolItem[]>();
+  private readonly noteTaskRelationsBySource = new Map<string, WorkPoolTaskRelation[]>();
   private taskPoolFormatUndoToken?: string;
   private activeNoteTaskRefreshTail: Promise<void> = Promise.resolve();
   private dailyActivityRetentionDays = 30;
@@ -861,6 +869,10 @@ export default class ToWritePlugin extends Plugin {
       if (this.settings.workPool.showTechnicalMetadata) return;
       concealTaskPoolTechnicalMetadata(el);
     });
+    this.registerMarkdownPostProcessor((el, context) => {
+      if (!this.settings.daily.enabled || !this.isTrackedDailyPlanPath(context.sourcePath)) return;
+      concealDailyTaskTechnicalMetadata(el);
+    });
 
     this.addRibbonIcon("circle-help", "Open ToWrite questions", () => {
       void this.activateSidebar();
@@ -1136,7 +1148,7 @@ export default class ToWritePlugin extends Plugin {
     }));
     this.rebuildMarkdownTaskNoteSuggestions();
     this.registerEditorSuggest(new MarkdownTaskInputSuggest(this.app, {
-      isEnabled: () => this.settings.daily.enabled && this.settings.daily.editorTaskControls,
+      isEnabled: () => this.settings.daily.enabled,
       getItems: () => this.markdownTaskInputSuggestions()
     }));
 
@@ -6292,6 +6304,11 @@ export default class ToWritePlugin extends Plugin {
         ? await this.dailyPlanService.get(current.id, current.date)
         : await this.findDailyItem(affectedId);
       if (!affected?.lineageRevision) {
+        if (canSkipMissingDailyTimerMarkdownTask({
+          currentTaskId: current.id,
+          affectedTaskId: affectedId,
+          desiredStatus: desiredDailyStatusForTimerEvents(events, affectedId)
+        })) continue;
         throw new DailyPlanConflictError(
           "not-found",
           `The active Daily task ${affectedId} cannot be safely coordinated with the Markdown edit.`
@@ -6341,6 +6358,32 @@ export default class ToWritePlugin extends Plugin {
     }
     await this.initializeDailyTaskTimer();
     await this.refreshDailyPlanCache();
+    if (await this.normalizeMissingDailyCheckboxIds()) {
+      await this.refreshDailyPlanCache();
+    }
+    this.rebuildMarkdownTaskNoteSuggestions();
+  }
+
+  /**
+   * A manually authored checkbox is already an explicit task commitment. Give
+   * only those checkbox rows a stable id so they immediately participate in
+   * Today and the Work Pool. Plain list leaves still require an explicit user
+   * normalization action and all authored text remains untouched.
+   */
+  private async normalizeMissingDailyCheckboxIds(): Promise<boolean> {
+    if (!this.settings.daily.enabled) return false;
+    let changed = false;
+    const dates = [...new Set(this.dailyPlanNormalizationPreviews.map((preview) => preview.date))];
+    for (const date of dates) {
+      for (let count = 0; count < 200; count += 1) {
+        const preview = await this.dailyPlanNormalizationService.preview(date);
+        const edit = preview.edits.find((candidate) => candidate.kind === "missing-block-id");
+        if (!edit) break;
+        await this.dailyPlanNormalizationService.normalizeTask(preview, edit.line);
+        changed = true;
+      }
+    }
+    return changed;
   }
 
   private async getDailyDashboardSnapshot(value: Date | string = new Date()): Promise<DailyDashboardSnapshot> {
@@ -6573,6 +6616,7 @@ export default class ToWritePlugin extends Plugin {
       || !path
       || this.isTrackedDailyPlanPath(path)
       || normalizePath(path) === normalizePath(this.taskPoolService.path)
+      || !this.isWorkPoolTaskSourceAllowed(path)
     ) {
       this.activeNoteTaskDocument = undefined;
       this.activeNoteTaskPoolMatches.clear();
@@ -6581,6 +6625,7 @@ export default class ToWritePlugin extends Plugin {
     }
     const file = this.app.vault.getFileByPath(normalizePath(path));
     if (!file || file.extension.toLowerCase() !== "md") {
+      if (path) this.noteTaskRelationsBySource.delete(normalizePath(path));
       this.activeNoteTaskDocument = undefined;
       this.refreshNoteEditorTaskControls();
       return;
@@ -6632,6 +6677,7 @@ export default class ToWritePlugin extends Plugin {
       }
       await this.reconcileNoteTaskTiming(inspected.tasks);
       await this.reconcileTrackedNoteTasksWithPool(inspected.tasks);
+      this.updateNoteTaskRelations(inspected);
       if (this.getActiveFile() !== file.path) return;
       for (const item of inspected.tasks) {
         if (
@@ -6662,24 +6708,43 @@ export default class ToWritePlugin extends Plugin {
       console.error("ToWrite could not refresh the Task Pool search cache", error);
       this.activeTaskPoolItems = [];
     }
+    this.rebuildMarkdownTaskInputSuggestionCache();
     this.rebuildActiveNoteTaskPoolMatches();
     if (refreshControls) this.refreshNoteEditorTaskControls();
   }
 
   private rebuildMarkdownTaskNoteSuggestions(): void {
-    this.markdownTaskNoteSuggestions = this.app.vault.getMarkdownFiles().map((file) => ({
+    const allowlist = this.rebuildWorkPoolTaskSourceAllowlistCache();
+    this.markdownTaskNoteSuggestions = this.app.vault.getMarkdownFiles()
+      .filter((file) =>
+        normalizePath(file.path) !== normalizePath(this.taskPoolService.path)
+        && !this.isTrackedDailyPlanPath(file.path)
+        && this.isWorkPoolTaskSourceAllowed(file.path, allowlist)
+      )
+      .map((file) => ({
       id: `note:${normalizePath(file.path)}`,
       kind: "note",
       label: file.basename,
       detail: `笔记 · ${file.path}`,
       replacement: `[[${file.path.replace(/\.md$/iu, "")}]]`,
       searchText: `${file.basename} ${file.path}`
-    }));
+      }));
+    this.rebuildMarkdownTaskInputSuggestionCache(allowlist);
   }
 
   private markdownTaskInputSuggestions(): readonly MarkdownTaskInputSuggestion[] {
+    return this.markdownTaskInputSuggestionCache;
+  }
+
+  private rebuildMarkdownTaskInputSuggestionCache(
+    allowlist: readonly string[] = this.workPoolTaskSourceAllowlist()
+  ): void {
     const tasks: MarkdownTaskInputSuggestion[] = this.activeTaskPoolItems
       .filter((item) => item.state !== "done" && item.state !== "dropped")
+      .filter((item) => {
+        const sourcePath = this.taskPoolItemSourcePath(item);
+        return !sourcePath || this.isWorkPoolTaskSourceAllowed(sourcePath, allowlist);
+      })
       .map((item) => ({
         id: `task:${item.taskId}`,
         kind: "task",
@@ -6688,7 +6753,98 @@ export default class ToWritePlugin extends Plugin {
         replacement: item.text,
         searchText: [item.text, item.project, item.category, item.target, item.source].filter(Boolean).join(" ")
       }));
-    return [...tasks, ...this.markdownTaskNoteSuggestions];
+    this.markdownTaskInputSuggestionCache = [...tasks, ...this.markdownTaskNoteSuggestions];
+  }
+
+  private rebuildWorkPoolTaskSourceAllowlistCache(): string[] {
+    const paths = new Set(this.settings.workPool.includedSourcePaths.map(normalizePath));
+    // This cache is also built while onload() is restoring the Task Pool. At
+    // that point the question store exists, but the Workflow and Inbox indexes
+    // are intentionally created a little later. Treat those indexes as
+    // optional startup inputs; rebuildMarkdownTaskNoteSuggestions() refreshes
+    // the cache again after every index has been initialized.
+    const workflowIndex = this.workflowIndex as WorkflowIndex | undefined;
+    const inboxIndex = this.inboxIndex as InboxIndex | undefined;
+    const questionStore = this.store as OpenQuestionStore | undefined;
+    const addPath = (path: string | undefined): void => {
+      const normalized = path ? normalizePath(path) : "";
+      if (normalized) paths.add(normalized);
+    };
+    if (this.settings.workPool.autoIncludeWorkflowNotes) {
+      for (const file of workflowIndex?.getPayload({ compact: true }).files ?? []) addPath(file.filePath);
+      for (const item of inboxIndex?.getSnapshot().items ?? []) addPath(item.filePath);
+    }
+    if (this.settings.workPool.autoIncludeQuestionNotes && questionStore) {
+      for (const question of questionStore.query()) {
+        if (question.status !== "resolved" && question.status !== "ignored") addPath(question.source.file);
+      }
+    }
+    if (this.settings.workPool.autoIncludeDailyLinks) {
+      for (const item of this.dailyEditorPlanItems) {
+        addPath(item.sourcePath);
+        for (const link of item.linkedNotes) {
+          addPath(this.app.metadataCache.getFirstLinkpathDest(link, item.sourcePath)?.path);
+        }
+      }
+      // Freshly typed Daily checkboxes may not have a stable ^daily_* id yet,
+      // so they are present in the normalization hierarchy before they become
+      // DailyPlanItems. Follow their direct and inherited note links too.
+      for (const preview of this.dailyPlanNormalizationPreviews) {
+        addPath(preview.sourcePath);
+        for (const task of preview.tasks) {
+          const targets = [
+            ...task.links,
+            ...task.lineage.groups.flatMap((group) => group.links),
+            ...(task.targetResolution.target ? [task.targetResolution.target] : [])
+          ];
+          for (const target of targets) {
+            addPath(target.path ?? this.app.metadataCache.getFirstLinkpathDest(
+              target.linkText,
+              task.sourcePath
+            )?.path);
+          }
+        }
+      }
+    }
+    let changed = true;
+    while (changed) {
+      changed = false;
+      const allowedParents = [...paths];
+      for (const relations of this.noteTaskRelationsBySource.values()) {
+        for (const relation of relations) {
+          if (!isWorkPoolSourceIncluded(relation.parentSourcePath, allowedParents)) continue;
+          const child = normalizePath(relation.childNotePath);
+          if (!paths.has(child)) {
+            paths.add(child);
+            changed = true;
+          }
+        }
+      }
+    }
+    this.workPoolTaskSourceAllowlistCache = [...paths];
+    this.workPoolTaskSourceAllowlistInitialized = true;
+    return this.workPoolTaskSourceAllowlistCache;
+  }
+
+  private workPoolTaskSourceAllowlist(): readonly string[] {
+    return this.workPoolTaskSourceAllowlistInitialized
+      ? this.workPoolTaskSourceAllowlistCache
+      : this.rebuildWorkPoolTaskSourceAllowlistCache();
+  }
+
+  private isWorkPoolTaskSourceAllowed(
+    path: string,
+    includedSourcePaths: readonly string[] = this.workPoolTaskSourceAllowlist()
+  ): boolean {
+    if (isWorkPoolSourceExcluded(path, this.settings.workPool.excludedSourcePaths)) return false;
+    return isWorkPoolSourceIncluded(path, includedSourcePaths);
+  }
+
+  private taskPoolItemSourcePath(item: TaskPoolItem): string | undefined {
+    const link = /^\[\[([^|\]#]+)(?:#[^|\]]*)?(?:\|[^\]]*)?\]\]$/u.exec(item.source?.trim() ?? "")?.[1];
+    if (!link) return undefined;
+    const file = this.app.metadataCache.getFirstLinkpathDest(link, this.taskPoolService.path);
+    return file?.path ?? normalizePath(link.endsWith(".md") ? link : `${link}.md`);
   }
 
   private rebuildActiveNoteTaskPoolMatches(): void {
@@ -7631,6 +7787,7 @@ export default class ToWritePlugin extends Plugin {
           const keyed = Object.entries(entry.expectedMarkdownRevisions)
             .find(([key]) => parseDailyTimerTaskKey(key).id === taskId);
           if (!keyed) {
+            if (desiredDailyStatusForTimerEvents(entry.events, taskId) === "todo") continue;
             throw new DailyPlanConflictError("not-found", `Timer transaction task is missing: ${taskId}`);
           }
           const identity = parseDailyTimerTaskKey(keyed[0]);
@@ -7760,6 +7917,11 @@ export default class ToWritePlugin extends Plugin {
         ? current
         : await this.findDailyItem(affectedId);
       if (!affected || !affected.lineageRevision) {
+        if (canSkipMissingDailyTimerMarkdownTask({
+          currentTaskId: current.id,
+          affectedTaskId: affectedId,
+          desiredStatus: desiredDailyStatusForTimerEvents(transition.events, affectedId)
+        })) continue;
         throw new DailyPlanConflictError(
           "not-found",
           `The active Daily task ${affectedId} cannot be safely coordinated with this transition.`
@@ -8165,6 +8327,7 @@ export default class ToWritePlugin extends Plugin {
 
   private async getWorkPoolSnapshot(query: WorkPoolQuery = {}): Promise<WorkPoolSnapshot> {
     const taskPool = await this.taskPoolService.read();
+    const taskSourceAllowlist = this.rebuildWorkPoolTaskSourceAllowlistCache();
     const dailyDate = formatDailyInputDate(new Date());
     const dailyHierarchy = this.settings.daily.enabled
       ? await this.dailyPlanService.readHierarchy(dailyDate)
@@ -8174,6 +8337,7 @@ export default class ToWritePlugin extends Plugin {
       questions: this.store.query(),
       inboxItems: this.getInboxSnapshot().items,
       workflowFiles: this.workflowIndex.getPayload({ compact: true }).files ?? [],
+      taskRelations: [...this.noteTaskRelationsBySource.values()].flat(),
       dailyPlan: dailyHierarchy
         ? {
             date: dailyDate,
@@ -8189,6 +8353,8 @@ export default class ToWritePlugin extends Plugin {
       },
       visibility: {
         hiddenItemIds: this.settings.workPool.hiddenItemIds,
+        enforceTaskSourceAllowlist: true,
+        includedTaskSourcePaths: taskSourceAllowlist,
         excludedSourcePaths: this.settings.workPool.excludedSourcePaths
       }
     }, query);
@@ -8200,18 +8366,19 @@ export default class ToWritePlugin extends Plugin {
     filesFailed: number;
   }> {
     const beforeIds = new Set((await this.taskPoolService.list()).map((item) => item.taskId));
+    const taskSourceAllowlist = this.rebuildWorkPoolTaskSourceAllowlistCache();
     let filesScanned = 0;
     let filesFailed = 0;
     for (const file of this.app.vault.getMarkdownFiles()) {
       if (
         normalizePath(file.path) === normalizePath(this.taskPoolService.path)
         || this.isTrackedDailyPlanPath(file.path)
-        || isWorkPoolSourceExcluded(file.path, this.settings.workPool.excludedSourcePaths)
+        || !this.isWorkPoolTaskSourceAllowed(file.path, taskSourceAllowlist)
       ) {
         continue;
       }
       try {
-        await this.syncMarkdownTasksForFile(file.path);
+        await this.syncMarkdownTasksForFile(file.path, new Set<string>(), taskSourceAllowlist);
         filesScanned += 1;
       } catch (error) {
         filesFailed += 1;
@@ -8220,6 +8387,7 @@ export default class ToWritePlugin extends Plugin {
       if ((filesScanned + filesFailed) % 20 === 0) await Promise.resolve();
     }
     const after = await this.taskPoolService.list();
+    this.rebuildMarkdownTaskNoteSuggestions();
     await this.refreshActiveTaskPoolCache(false);
     await this.refreshActiveNoteTaskCache();
     this.notifyUi();
@@ -8230,12 +8398,22 @@ export default class ToWritePlugin extends Plugin {
     };
   }
 
-  private async syncMarkdownTasksForFile(path: string): Promise<void> {
+  private async syncMarkdownTasksForFile(
+    path: string,
+    visited = new Set<string>(),
+    includedSourcePaths: readonly string[] = this.workPoolTaskSourceAllowlist()
+  ): Promise<void> {
+    const normalizedPath = normalizePath(path);
+    if (visited.has(normalizedPath)) return;
+    visited.add(normalizedPath);
     if (
       normalizePath(path) === normalizePath(this.taskPoolService.path)
       || this.isTrackedDailyPlanPath(path)
-      || isWorkPoolSourceExcluded(path, this.settings.workPool.excludedSourcePaths)
-    ) return;
+      || !this.isWorkPoolTaskSourceAllowed(path, includedSourcePaths)
+    ) {
+      this.noteTaskRelationsBySource.delete(normalizePath(path));
+      return;
+    }
     let inspected = await this.noteTaskService.inspect(path);
     const automatic = inspected.candidates
       .filter((candidate) => candidate.status !== "done")
@@ -8259,6 +8437,38 @@ export default class ToWritePlugin extends Plugin {
       if (item.status === "done") await this.noteTaskPoolCoordinator.complete(item);
       else await this.noteTaskPoolCoordinator.ensureRegistered(item);
     }
+    this.updateNoteTaskRelations(inspected);
+    for (const relation of this.noteTaskRelationsBySource.get(normalizedPath) ?? []) {
+      if (isWorkPoolSourceExcluded(relation.childNotePath, this.settings.workPool.excludedSourcePaths)) continue;
+      const childAllowlist = isWorkPoolSourceIncluded(relation.childNotePath, includedSourcePaths)
+        ? includedSourcePaths
+        : [...includedSourcePaths, relation.childNotePath];
+      await this.syncMarkdownTasksForFile(relation.childNotePath, visited, childAllowlist);
+    }
+  }
+
+  private updateNoteTaskRelations(document: NoteTaskDocument): void {
+    const parentSourcePath = normalizePath(document.sourcePath);
+    const relations = document.relations.flatMap((relation): WorkPoolTaskRelation[] => {
+      const child = this.app.metadataCache.getFirstLinkpathDest(
+        relation.childLinkText,
+        relation.parentSourcePath
+      );
+      if (!child || child.extension.toLocaleLowerCase() !== "md") return [];
+      return [{
+        parentTaskId: relation.parentTaskId,
+        parentTaskTitle: relation.parentTaskText,
+        parentSourcePath,
+        childNotePath: normalizePath(child.path),
+        revision: relation.revision
+      }];
+    });
+    const unique = [...new Map(relations.map((relation) => [
+      `${relation.parentTaskId}\u0000${relation.childNotePath}`,
+      relation
+    ])).values()];
+    if (unique.length > 0) this.noteTaskRelationsBySource.set(parentSourcePath, unique);
+    else this.noteTaskRelationsBySource.delete(parentSourcePath);
   }
 
   private async currentWorkPoolItem(item: WorkPoolItem): Promise<WorkPoolItem> {
@@ -8315,8 +8525,9 @@ export default class ToWritePlugin extends Plugin {
     }
     if (item.kind === "task" && item.taskId && item.taskRevision) {
       if (action === "complete-task") {
-        if (item.taskState === "planned") await this.completePlannedPoolTaskFromNote(await this.requirePoolTask(item));
-        else await this.taskPoolService.complete(item.taskId, item.taskRevision);
+        await this.completeWorkPoolTask(item);
+      } else if (action === "reopen-task") {
+        await this.reopenWorkPoolTask(item);
       } else if (action === "return-task") {
         const task = await this.requirePoolTask(item);
         if (task.state === "planned" && task.plannedDate && task.assignmentId) {
@@ -8367,6 +8578,56 @@ export default class ToWritePlugin extends Plugin {
       throw new TaskPoolConflictError("revision-changed", "The Task Pool item changed after it was loaded.");
     }
     return task;
+  }
+
+  private async sourceNoteTaskForPoolTask(task: TaskPoolItem): Promise<TrackedNoteTask | undefined> {
+    const match = /^\[\[([^|\]#]+)(?:\.md)?#\^(task_[A-Za-z0-9_-]+)(?:\|[^\]]*)?\]\]$/u.exec(task.source?.trim() ?? "");
+    if (!match) return undefined;
+    const sourcePath = normalizePath(match[1].endsWith(".md") ? match[1] : `${match[1]}.md`);
+    const document = await this.noteTaskService.inspect(sourcePath);
+    const matches = document.tasks.filter((candidate) => candidate.taskId === match[2]);
+    if (matches.length !== 1) {
+      throw new TaskPoolConflictError(
+        "revision-changed",
+        "The source checkbox was moved, removed, or duplicated. Refresh before changing it."
+      );
+    }
+    const source = matches[0];
+    if (source.poolTaskRef !== task.taskId || source.text !== task.text) {
+      throw new TaskPoolConflictError(
+        "revision-changed",
+        "The source checkbox changed before the Work Pool action was applied."
+      );
+    }
+    return source;
+  }
+
+  private async completeWorkPoolTask(item: WorkPoolItem): Promise<void> {
+    const task = await this.requirePoolTask(item);
+    const source = await this.sourceNoteTaskForPoolTask(task);
+    const completedSource = source && source.status !== "done"
+      ? await this.noteTaskService.setStatus(source, "done")
+      : source;
+    if (task.state === "planned") {
+      await this.completePlannedPoolTaskFromNote(task);
+    } else if (completedSource) {
+      await this.noteTaskPoolCoordinator.complete(completedSource);
+    } else {
+      await this.taskPoolService.complete(task.taskId, task.revision);
+    }
+    if (completedSource) await this.syncMarkdownTasksForFile(completedSource.sourcePath);
+  }
+
+  private async reopenWorkPoolTask(item: WorkPoolItem): Promise<void> {
+    const task = await this.requirePoolTask(item);
+    const source = await this.sourceNoteTaskForPoolTask(task);
+    if (source && source.status === "done") {
+      const reopenedSource = await this.noteTaskService.setStatus(source, "todo");
+      await this.noteTaskPoolCoordinator.ensureRegistered(reopenedSource);
+      await this.syncMarkdownTasksForFile(reopenedSource.sourcePath);
+      return;
+    }
+    await this.taskPoolService.reopen(task.taskId, task.revision);
   }
 
   private async materializeDailyWorkPoolItem(item: WorkPoolItem): Promise<DailyPlanItem> {
@@ -8580,6 +8841,7 @@ export default class ToWritePlugin extends Plugin {
             ...appearance
           })),
           hiddenItemIds: [...this.settings.workPool.hiddenItemIds],
+          includedSourcePaths: [...this.settings.workPool.includedSourcePaths],
           excludedSourcePaths: [...this.settings.workPool.excludedSourcePaths]
         }
       }),
@@ -10823,10 +11085,29 @@ export default class ToWritePlugin extends Plugin {
       this.queueDeviceHubSync();
     }, 180, true);
     const refreshDailyPlanAfterVaultChange = debounce(() => {
-      void this.refreshDailyPlanCache().catch((error: unknown) => {
-        console.error("ToWrite could not refresh the edited Daily plan", error);
-        new Notice(messageForError(error));
-      });
+      const previousAllowlist = new Set(this.workPoolTaskSourceAllowlist());
+      void this.refreshDailyPlanCache()
+        .then(async () => {
+          if (await this.normalizeMissingDailyCheckboxIds()) {
+            await this.refreshDailyPlanCache();
+          }
+          const nextAllowlist = this.rebuildWorkPoolTaskSourceAllowlistCache();
+          const newlyAllowed = nextAllowlist.filter((path) => !previousAllowlist.has(path));
+          for (const path of newlyAllowed) {
+            const file = this.app.vault.getFileByPath(path);
+            if (!file || file.extension !== "md" || this.isTrackedDailyPlanPath(path)) continue;
+            await this.syncMarkdownTasksForFile(path, new Set<string>(), nextAllowlist);
+          }
+          this.rebuildMarkdownTaskNoteSuggestions();
+          if (newlyAllowed.length > 0) {
+            await this.refreshActiveTaskPoolCache(false);
+            this.notifyUi();
+          }
+        })
+        .catch((error: unknown) => {
+          console.error("ToWrite could not refresh the edited Daily plan", error);
+          new Notice(messageForError(error));
+        });
     }, 700, true);
     const refreshActiveNoteTasksAfterVaultChange = debounce(() => {
       void this.refreshActiveNoteTaskCache().catch((error: unknown) => {
@@ -10843,14 +11124,18 @@ export default class ToWritePlugin extends Plugin {
       const paths = [...pendingMarkdownTaskPaths];
       pendingMarkdownTaskPaths.clear();
       void (async () => {
+        const taskSourceAllowlist = this.rebuildWorkPoolTaskSourceAllowlistCache();
         for (const path of paths) {
           try {
-            if (this.app.vault.getFileByPath(path)) await this.syncMarkdownTasksForFile(path);
+            if (this.app.vault.getFileByPath(path)) {
+              await this.syncMarkdownTasksForFile(path, new Set<string>(), taskSourceAllowlist);
+            }
           } catch (error) {
             console.error(`ToWrite could not update the Work Pool from ${path}`, error);
           }
         }
         if (paths.length > 0) {
+          this.rebuildMarkdownTaskNoteSuggestions();
           await this.refreshActiveTaskPoolCache(false);
           this.notifyUi();
         }
@@ -10861,7 +11146,6 @@ export default class ToWritePlugin extends Plugin {
       if (!this.settings.daily.enabled || file.extension !== "md") return;
       if (normalizePath(file.path) === normalizePath(this.taskPoolService.path)) return;
       if (this.isTrackedDailyPlanPath(file.path)) return;
-      if (isWorkPoolSourceExcluded(file.path, this.settings.workPool.excludedSourcePaths)) return;
       pendingMarkdownTaskPaths.add(file.path);
       syncChangedMarkdownTasks();
     };
@@ -10936,6 +11220,12 @@ export default class ToWritePlugin extends Plugin {
       this.app.vault.on("delete", (file) => {
         if (file instanceof TFolder) rebuildInboxAfterFolderChange();
         if (file instanceof TFile) {
+          this.noteTaskRelationsBySource.delete(normalizePath(file.path));
+          for (const [sourcePath, relations] of this.noteTaskRelationsBySource) {
+            const remaining = relations.filter((relation) => relation.childNotePath !== normalizePath(file.path));
+            if (remaining.length > 0) this.noteTaskRelationsBySource.set(sourcePath, remaining);
+            else this.noteTaskRelationsBySource.delete(sourcePath);
+          }
           if (file.extension === "md") this.rebuildMarkdownTaskNoteSuggestions();
           this.dailyActivityService.removeDocumentBaseline(file.path);
           if (normalizePath(file.path) === normalizePath(this.taskPoolService.path)) {
@@ -10960,6 +11250,23 @@ export default class ToWritePlugin extends Plugin {
       this.app.vault.on("rename", (file, oldPath) => {
         if (file instanceof TFolder) rebuildInboxAfterFolderChange();
         if (file instanceof TFile) {
+          const normalizedOldPath = normalizePath(oldPath);
+          const normalizedNewPath = normalizePath(file.path);
+          const sourceRelations = this.noteTaskRelationsBySource.get(normalizedOldPath);
+          this.noteTaskRelationsBySource.delete(normalizedOldPath);
+          if (sourceRelations) {
+            this.noteTaskRelationsBySource.set(normalizedNewPath, sourceRelations.map((relation) => ({
+              ...relation,
+              parentSourcePath: normalizedNewPath
+            })));
+          }
+          for (const [sourcePath, relations] of this.noteTaskRelationsBySource) {
+            this.noteTaskRelationsBySource.set(sourcePath, relations.map((relation) => (
+              relation.childNotePath === normalizedOldPath
+                ? { ...relation, childNotePath: normalizedNewPath }
+                : relation
+            )));
+          }
           if (file.extension === "md" || oldPath.toLocaleLowerCase().endsWith(".md")) {
             this.rebuildMarkdownTaskNoteSuggestions();
           }

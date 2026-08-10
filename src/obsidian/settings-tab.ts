@@ -1485,6 +1485,62 @@ export class ToWriteSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
+      .setName(zh ? "日记引用自动加入白名单" : "Allow Daily-linked notes")
+      .setDesc(zh
+        ? "日记待办本身及其缩进内容里提及的笔记，会参与普通待办整理。"
+        : "Notes referenced by a Daily task or its indented content can contribute ordinary tasks.")
+      .addToggle((toggle) => toggle
+        .setValue(workPool.autoIncludeDailyLinks)
+        .onChange(async (value) => {
+          workPool.autoIncludeDailyLinks = value;
+          await this.plugin.savePluginData();
+          await this.plugin.refreshDailyDashboard();
+        }));
+
+    new Setting(containerEl)
+      .setName(zh ? "Workflow 与 Inbox 自动加入白名单" : "Allow Workflow and Inbox notes")
+      .setDesc(zh
+        ? "已识别出 Workflow 阶段或 Inbox 状态的笔记可以贡献普通待办。"
+        : "Notes with a recognized Workflow stage or Inbox status can contribute ordinary tasks.")
+      .addToggle((toggle) => toggle
+        .setValue(workPool.autoIncludeWorkflowNotes)
+        .onChange(async (value) => {
+          workPool.autoIncludeWorkflowNotes = value;
+          await this.plugin.savePluginData();
+          await this.plugin.refreshDailyDashboard();
+        }));
+
+    new Setting(containerEl)
+      .setName(zh ? "开放问题来源自动加入白名单" : "Allow open-question source notes")
+      .setDesc(zh
+        ? "含有未解决 ToThink/ToWrite 问题的来源笔记可以贡献普通待办。"
+        : "Source notes with unresolved ToThink/ToWrite questions can contribute ordinary tasks.")
+      .addToggle((toggle) => toggle
+        .setValue(workPool.autoIncludeQuestionNotes)
+        .onChange(async (value) => {
+          workPool.autoIncludeQuestionNotes = value;
+          await this.plugin.savePluginData();
+          await this.plugin.refreshDailyDashboard();
+        }));
+
+    new Setting(containerEl)
+      .setName(zh ? "手动白名单" : "Manual Work Pool allowlist")
+      .setDesc(zh
+        ? "每行一个 Vault 文件或文件夹。这里的普通 checkbox 会进入工作池；日记引用和自动来源无需重复填写。"
+        : "One Vault file or folder per line. Ordinary checkboxes under these sources can enter the Work Pool.")
+      .addTextArea((text) => text
+        .setValue(workPool.includedSourcePaths.join("\n"))
+        .setPlaceholder(zh ? "Projects/当前项目\nNotes/需要整理.md" : "Projects/active\nNotes/to-organize.md")
+        .onChange(async (value) => {
+          workPool.includedSourcePaths = [...new Set(value
+            .split(/\r?\n/gu)
+            .map((entry) => entry.trim().replace(/\\/gu, "/").replace(/^\/+|\/+$/gu, "").replace(/\/{2,}/gu, "/"))
+            .filter((entry) => Boolean(entry) && !/(?:^|\/)\.\.?($|\/)/u.test(entry)))];
+          await this.plugin.savePluginData();
+          await this.plugin.refreshDailyDashboard();
+        }));
+
+    new Setting(containerEl)
       .setName(zh ? "工作池不整理名单" : "Work Pool exclusions")
       .setDesc(zh
         ? "每行一个 Vault 文件或文件夹。匹配的普通待办不会再自动登记，也不会显示在工作池；原文不会被修改。"
@@ -1715,8 +1771,8 @@ export class ToWriteSettingTab extends PluginSettingTab {
       new Setting(containerEl)
         .setName(zh ? "待办行尾控件" : "Task editor controls")
         .setDesc(zh
-          ? "在计划文档和当前普通笔记中识别待办；普通笔记里保存的非空未完成项会在防抖后自动登记到统一任务池，历史完成项不会导入。已登记操作默认收起，悬停、聚焦或点击后展开；输入处理链不读取文件或访问网络。"
-          : "Recognizes tasks in plan sources and ordinary notes. Saved non-empty unfinished items in ordinary notes join the shared pool automatically after debounce; historical completed items are not imported. Registered actions stay collapsed until hover, focus, or click, and the typing path performs no file or network I/O.")
+          ? "在日记和白名单笔记中识别待办。输入 - [ ] 后键入至少 2 个字符，会从已缓存的工作池任务与白名单笔记中联想；普通笔记仅在后台防抖后整理，输入链不读文件、不扫描 Vault、也不访问网络。"
+          : "Recognizes tasks in Daily and allowlisted notes. After - [ ], type at least two characters to search cached Work Pool tasks and allowed notes. Ordinary notes are organized only after a background debounce; typing performs no file reads, Vault scans, or network calls.")
         .addToggle((toggle) => toggle.setValue(daily.editorTaskControls).onChange(async (value) => {
           daily.editorTaskControls = value;
           await this.plugin.savePluginData();

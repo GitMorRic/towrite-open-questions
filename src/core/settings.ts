@@ -274,6 +274,11 @@ export interface ToWriteWorkPoolSettings {
   pageSize: number;
   defaultGroupsExpanded: boolean;
   showTechnicalMetadata: boolean;
+  /** Explicit Vault files/folders whose ordinary Markdown checkboxes may enter the Work Pool. */
+  includedSourcePaths: string[];
+  autoIncludeDailyLinks: boolean;
+  autoIncludeWorkflowNotes: boolean;
+  autoIncludeQuestionNotes: boolean;
   hiddenItemIds: string[];
   excludedSourcePaths: string[];
 }
@@ -733,6 +738,10 @@ export const DEFAULT_SETTINGS: ToWriteSettings = {
     pageSize: 80,
     defaultGroupsExpanded: true,
     showTechnicalMetadata: false,
+    includedSourcePaths: [],
+    autoIncludeDailyLinks: true,
+    autoIncludeWorkflowNotes: true,
+    autoIncludeQuestionNotes: true,
     hiddenItemIds: [],
     excludedSourcePaths: []
   },
@@ -898,6 +907,10 @@ export function normalizeWorkPoolSettings(
     pageSize: clampIntegerSetting(settings?.pageSize, 20, 500, defaults.pageSize),
     defaultGroupsExpanded: settings?.defaultGroupsExpanded !== false,
     showTechnicalMetadata: settings?.showTechnicalMetadata === true,
+    includedSourcePaths: normalizeWorkPoolSourcePaths(settings?.includedSourcePaths),
+    autoIncludeDailyLinks: settings?.autoIncludeDailyLinks !== false,
+    autoIncludeWorkflowNotes: settings?.autoIncludeWorkflowNotes !== false,
+    autoIncludeQuestionNotes: settings?.autoIncludeQuestionNotes !== false,
     hiddenItemIds: normalizeWorkPoolHiddenItemIds(settings?.hiddenItemIds),
     excludedSourcePaths: normalizeWorkPoolExcludedSourcePaths(settings?.excludedSourcePaths)
   };
@@ -912,6 +925,10 @@ function normalizeWorkPoolHiddenItemIds(value: unknown): string[] {
 }
 
 function normalizeWorkPoolExcludedSourcePaths(value: unknown): string[] {
+  return normalizeWorkPoolSourcePaths(value);
+}
+
+function normalizeWorkPoolSourcePaths(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return [...new Set(value
     .filter((entry): entry is string => typeof entry === "string")
@@ -999,7 +1016,7 @@ function normalizeWorkPoolDimension(
   value: unknown,
   fallback: WorkPoolViewPreset["primary"]
 ): WorkPoolViewPreset["primary"] {
-  return value === "workType" || value === "project" || value === "source"
+  return value === "workType" || value === "project" || value === "subproject" || value === "source"
     || value === "stage" || value === "articleType" || value === "note"
     || value === "status" || value === "category" || value === "none"
     ? value

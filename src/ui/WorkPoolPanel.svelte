@@ -54,6 +54,7 @@
   const dimensions: Array<{ id: WorkPoolGroupingDimension; label: string }> = [
     { id: "workType", label: "工作类型" },
     { id: "project", label: "具体项目" },
+    { id: "subproject", label: "父级任务 / 子项目" },
     { id: "source", label: "来源" },
     { id: "stage", label: "Workflow 阶段" },
     { id: "articleType", label: "文章类型" },
@@ -537,6 +538,7 @@
     return [
       kindLabel(item),
       item.classification.projectLabel,
+      item.classification.subprojectLabel,
       item.stageTitle,
       item.typeTitle,
       item.dueDate ? `DDL ${item.dueDate}` : ""
@@ -555,6 +557,10 @@
       defaultGroupsExpanded: true,
       showTechnicalMetadata: false,
       hiddenItemIds: [],
+      includedSourcePaths: [],
+      autoIncludeDailyLinks: true,
+      autoIncludeWorkflowNotes: true,
+      autoIncludeQuestionNotes: true,
       excludedSourcePaths: []
     };
   }
@@ -568,6 +574,7 @@
       projectRules: value.projectRules.map((rule) => ({ ...rule, tags: [...rule.tags], folderPrefixes: [...rule.folderPrefixes] })),
       projectAppearances: value.projectAppearances.map((appearance) => ({ ...appearance })),
       hiddenItemIds: [...(value.hiddenItemIds ?? [])],
+      includedSourcePaths: [...(value.includedSourcePaths ?? [])],
       excludedSourcePaths: [...(value.excludedSourcePaths ?? [])]
     };
   }
@@ -806,7 +813,7 @@
                         </button>
                         <div class="actions">
                           {#if item.active && !item.dailyDate}<button class="primary" type="button" on:click={() => act(item, "add-today", { date })}>+ 今日</button>{/if}
-                          <details><summary aria-label="更多操作"><MoreHorizontal size={15} /></summary><div>{#if item.active && !item.dailyDate}<button type="button" on:click={() => act(item, "add-tomorrow", { date: offsetDate(date, 1) })}>加入明日</button>{/if}<button type="button" on:click={() => act(item, "open")}>打开</button>{#if item.kind === "task" && item.active}<button type="button" on:click={() => act(item, "complete-task")}><Check size={13} />完成</button>{#if !item.dailyDate}<button type="button" on:click={() => act(item, "drop-task")}>放弃</button>{/if}{/if}{#if item.kind === "task" && item.taskState === "planned" && !item.dailyDate}<button type="button" on:click={() => act(item, "return-task")}><RotateCcw size={13} />退回池中</button>{/if}{#if item.kind === "question"}<button type="button" on:click={() => act(item, item.lane === "think" ? "move-to-write" : "move-to-think")}>转为 {item.lane === "think" ? "ToWrite" : "ToThink"}</button>{/if}<button type="button" on:click={() => hideItem(item)}>隐藏此条</button>{#if item.notePath}<button type="button" on:click={() => excludeSource(item)}>不整理此来源</button>{/if}</div></details>
+                          <details><summary aria-label="更多操作"><MoreHorizontal size={15} /></summary><div>{#if item.active && !item.dailyDate}<button type="button" on:click={() => act(item, "add-tomorrow", { date: offsetDate(date, 1) })}>加入明日</button>{/if}<button type="button" on:click={() => act(item, "open")}>打开</button>{#if item.kind === "task" && item.active}<button type="button" on:click={() => act(item, "complete-task")}><Check size={13} />完成</button>{#if !item.dailyDate}<button type="button" on:click={() => act(item, "drop-task")}>放弃</button>{/if}{/if}{#if item.kind === "task" && item.taskState === "done"}<button type="button" on:click={() => act(item, "reopen-task")}><RotateCcw size={13} />重新打开</button>{/if}{#if item.kind === "task" && item.taskState === "planned" && !item.dailyDate}<button type="button" on:click={() => act(item, "return-task")}><RotateCcw size={13} />退回池中</button>{/if}{#if item.kind === "question"}<button type="button" on:click={() => act(item, item.lane === "think" ? "move-to-write" : "move-to-think")}>转为 {item.lane === "think" ? "ToWrite" : "ToThink"}</button>{/if}<button type="button" on:click={() => hideItem(item)}>隐藏此条</button>{#if item.notePath}<button type="button" on:click={() => excludeSource(item)}>不整理此来源</button>{/if}</div></details>
                           {#if item.kind === "note" && workflowStages.length}<select aria-label="修改 Workflow 阶段" value={item.stageId ?? ""} on:change={(event) => selectStage(item, event)}><option value="" disabled>阶段</option>{#each workflowStages as option}<option value={option.id}>{option.label}</option>{/each}</select>{/if}
                           {#if item.kind === "question" && questionStatuses.length}<select aria-label="修改问题状态" value={item.questionStatus ?? ""} on:change={(event) => selectQuestionStatus(item, event)}>{#each questionStatuses as option}<option value={option.id}>{option.label}</option>{/each}</select>{/if}
                         </div>
@@ -821,7 +828,7 @@
                   <button class="item-main" type="button" on:click={() => act(item, "open")}><strong>{item.title}</strong><small>{itemMeta(item)}</small></button>
                   <div class="actions">
                     {#if item.active && !item.dailyDate}<button class="primary" type="button" on:click={() => act(item, "add-today", { date })}>+ 今日</button>{/if}
-                    <details><summary aria-label="更多操作"><MoreHorizontal size={15} /></summary><div>{#if item.active && !item.dailyDate}<button type="button" on:click={() => act(item, "add-tomorrow", { date: offsetDate(date, 1) })}>加入明日</button>{/if}<button type="button" on:click={() => act(item, "open")}>打开</button>{#if item.kind === "task" && item.active}<button type="button" on:click={() => act(item, "complete-task")}>完成</button>{#if !item.dailyDate}<button type="button" on:click={() => act(item, "drop-task")}>放弃</button>{/if}{/if}{#if item.kind === "question"}<button type="button" on:click={() => act(item, item.lane === "think" ? "move-to-write" : "move-to-think")}>转为 {item.lane === "think" ? "ToWrite" : "ToThink"}</button>{/if}<button type="button" on:click={() => hideItem(item)}>隐藏此条</button>{#if item.notePath}<button type="button" on:click={() => excludeSource(item)}>不整理此来源</button>{/if}</div></details>
+                    <details><summary aria-label="更多操作"><MoreHorizontal size={15} /></summary><div>{#if item.active && !item.dailyDate}<button type="button" on:click={() => act(item, "add-tomorrow", { date: offsetDate(date, 1) })}>加入明日</button>{/if}<button type="button" on:click={() => act(item, "open")}>打开</button>{#if item.kind === "task" && item.active}<button type="button" on:click={() => act(item, "complete-task")}>完成</button>{#if !item.dailyDate}<button type="button" on:click={() => act(item, "drop-task")}>放弃</button>{/if}{/if}{#if item.kind === "task" && item.taskState === "done"}<button type="button" on:click={() => act(item, "reopen-task")}><RotateCcw size={13} />重新打开</button>{/if}{#if item.kind === "question"}<button type="button" on:click={() => act(item, item.lane === "think" ? "move-to-write" : "move-to-think")}>转为 {item.lane === "think" ? "ToWrite" : "ToThink"}</button>{/if}<button type="button" on:click={() => hideItem(item)}>隐藏此条</button>{#if item.notePath}<button type="button" on:click={() => excludeSource(item)}>不整理此来源</button>{/if}</div></details>
                     {#if item.kind === "note" && workflowStages.length}<select aria-label="修改 Workflow 阶段" value={item.stageId ?? ""} on:change={(event) => selectStage(item, event)}><option value="" disabled>阶段</option>{#each workflowStages as option}<option value={option.id}>{option.label}</option>{/each}</select>{/if}
                     {#if item.kind === "question" && questionStatuses.length}<select aria-label="修改问题状态" value={item.questionStatus ?? ""} on:change={(event) => selectQuestionStatus(item, event)}>{#each questionStatuses as option}<option value={option.id}>{option.label}</option>{/each}</select>{/if}
                   </div>

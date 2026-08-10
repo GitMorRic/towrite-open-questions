@@ -376,6 +376,20 @@ describe("TaskPoolService", () => {
       items: [{ taskId: TASK_A, text: "One", state: "planned" }]
     });
   });
+
+  it("reopens a completed task without restoring stale scheduling fields", async () => {
+    const storage = new MemoryStorage();
+    const service = serviceFor(storage);
+    const created = await service.create({ text: "Reopen me" });
+    const completed = await service.complete(created.taskId, created.revision);
+
+    const reopened = await service.reopen(completed.task.taskId, completed.task.revision);
+
+    expect(reopened.task).toMatchObject({ state: "pool" });
+    expect(reopened.task.completedAt).toBeUndefined();
+    expect(reopened.task.plannedDate).toBeUndefined();
+    expect(reopened.task.assignmentId).toBeUndefined();
+  });
 });
 
 function serviceFor(storage: MemoryStorage): TaskPoolService {

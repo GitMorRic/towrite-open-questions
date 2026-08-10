@@ -102,16 +102,25 @@ function buildControls(view: EditorView, options: DailyTaskControlsOptions): Dec
         }
       })
     });
-    entries.push({
-      from: taskLine.to,
-      to: taskLine.to,
-      decoration: Decoration.widget({
-      side: 10,
-        widget: new DailyTaskControlWidget(item, timing, options)
-      })
-    });
+    const trailingId = dailyTaskTrailingIdRange(taskLine.text);
+    if (trailingId) {
+      entries.push({
+        from: taskLine.from + trailingId.from,
+        to: taskLine.from + trailingId.to,
+        decoration: Decoration.replace({ inclusive: false })
+      });
+    }
+    if (selectedLines.has(item.line)) {
+      entries.push({
+        from: taskLine.to,
+        to: taskLine.to,
+        decoration: Decoration.widget({
+          side: 10,
+          widget: new DailyTaskControlWidget(item, timing, options)
+        })
+      });
+    }
     for (const lineNumber of ownedMetadataLineNumbers(view, item)) {
-      if (selectedLines.has(lineNumber)) continue;
       const line = view.state.doc.line(lineNumber);
       entries.push({
         from: line.from,
@@ -140,14 +149,16 @@ function buildControls(view: EditorView, options: DailyTaskControlsOptions): Dec
           }
         })
       });
-      entries.push({
-        from: line.to,
-        to: line.to,
-        decoration: Decoration.widget({
-          side: 11,
-          widget: new DailyTaskEnrichmentWidget(edit, options)
-        })
-      });
+      if (selectedLines.has(edit.line)) {
+        entries.push({
+          from: line.to,
+          to: line.to,
+          decoration: Decoration.widget({
+            side: 11,
+            widget: new DailyTaskEnrichmentWidget(edit, options)
+          })
+        });
+      }
     }
   }
 
@@ -177,14 +188,27 @@ class DailyTaskControlWidget extends WidgetType {
   toDOM(view: EditorView): HTMLElement {
     const doc = view.dom.ownerDocument;
     const wrapper = doc.createElement("span");
-    wrapper.className = "towrite-daily-line-controls";
+    wrapper.className = "towrite-daily-line-controls towrite-daily-task-line-controls";
     wrapper.dataset.state = this.timing.status;
     wrapper.dataset.enriched = hasVisibleProperties(this.item) ? "true" : "false";
+
+    const disclosure = doc.createElement("details");
+    disclosure.className = "towrite-note-task-disclosure";
+    const disposeDisclosure = installDailyTaskDisclosureDismiss(disclosure);
+    const disclosureToggle = doc.createElement("summary");
+    disclosureToggle.className = "towrite-note-task-disclosure-toggle";
+    const minutes = Math.floor(Math.max(0, this.timing.activeMs) / 60_000);
+    disclosureToggle.textContent = this.timing.status === "running" ? `${minutes}m` : "···";
+    disclosureToggle.title = "查看任务状态、属性和操作";
+    disclosureToggle.setAttribute("aria-label", "展开 ToWrite 今日任务操作");
+    disclosure.append(disclosureToggle);
+    const details = doc.createElement("span");
+    details.className = "towrite-note-task-disclosure-content";
 
     const state = doc.createElement("span");
     state.className = "towrite-daily-line-state";
     state.textContent = timingLabel(this.timing);
-    wrapper.append(state);
+    details.append(state);
 
     const summary = summarizeDailyProperties(this.item);
     if (summary) {
@@ -200,23 +224,31 @@ class DailyTaskControlWidget extends WidgetType {
         void Promise.resolve(this.options.onEditProperties(this.item))
           .catch((error) => console.error("Daily task properties failed", error));
       });
-      wrapper.append(properties);
+      details.append(properties);
     } else {
       const properties = actionButton(doc, "属性", () => this.options.onEditProperties(this.item));
       properties.classList.add("towrite-daily-line-properties");
       properties.title = "补充类别、目标、日期或预计时间";
-      wrapper.append(properties);
+      details.append(properties);
     }
 
     if (this.item.status !== "done") {
       const toggle = actionButton(doc, toggleLabel(this.timing), () => this.options.onToggle(this.item));
       toggle.classList.add("towrite-daily-line-toggle");
-      wrapper.append(toggle);
-      const complete = actionButton(doc, "✓", () => this.options.onComplete(this.item));
-      complete.title = "Complete Daily task";
-      wrapper.append(complete);
+      toggle.textContent = toggleActionLabel(this.timing);
+      details.append(toggle);
+      const complete = actionButton(doc, "完成", () => this.options.onComplete(this.item));
+      complete.title = "完成今日任务";
+      details.append(complete);
     }
+    disclosure.append(details);
+    wrapper.append(disclosure);
+    dailyTaskDisclosureCleanup.set(wrapper, disposeDisclosure);
     return wrapper;
+  }
+
+  destroy(dom: HTMLElement): void {
+    disposeDailyTaskDisclosure(dom);
   }
 
   ignoreEvent(): boolean {
@@ -298,11 +330,58 @@ function toggleLabel(timing: DailyTaskTimingSnapshot): string {
 }
 
 function timingLabel(timing: DailyTaskTimingSnapshot): string {
-  if (timing.status === "completed") return "done";
+  if (timing.status === "completed") return "已完成";
   const minutes = Math.floor(timing.activeMs / 60_000);
-  if (timing.status === "running") return `${minutes}m · running`;
-  if (timing.status === "paused") return `${minutes}m · paused`;
-  return "not started";
+  if (timing.status === "running") return `${minutes}m · 进行中`;
+  if (timing.status === "paused") return `${minutes}m · 已暂停`;
+  return "未开始";
+}
+
+function toggleActionLabel(timing: DailyTaskTimingSnapshot): string {
+  if (timing.status === "running") return "暂停";
+  if (timing.status === "paused") return "继续";
+  return "开始";
+}
+
+export function dailyTaskTrailingIdRange(value: string): { from: number; to: number } | undefined {
+  const match = /\s+\^daily_[0-9a-f]{32}\s*$/u.exec(value);
+  return match ? { from: match.index, to: value.length } : undefined;
+}
+
+const dailyTaskDisclosureCleanup = new WeakMap<HTMLElement, () => void>();
+
+function disposeDailyTaskDisclosure(dom: HTMLElement): void {
+  dailyTaskDisclosureCleanup.get(dom)?.();
+  dailyTaskDisclosureCleanup.delete(dom);
+}
+
+function installDailyTaskDisclosureDismiss(disclosure: HTMLDetailsElement): () => void {
+  const doc = disclosure.ownerDocument;
+  const onDocumentPointerDown = (event: PointerEvent): void => {
+    const target = event.target;
+    if (target instanceof Node && disclosure.contains(target)) return;
+    disclosure.open = false;
+  };
+  const onDocumentKeyDown = (event: KeyboardEvent): void => {
+    if (event.key !== "Escape") return;
+    disclosure.open = false;
+    disclosure.querySelector("summary")?.focus();
+  };
+  const onToggle = (): void => {
+    if (disclosure.open) {
+      doc.addEventListener("pointerdown", onDocumentPointerDown, true);
+      doc.addEventListener("keydown", onDocumentKeyDown, true);
+    } else {
+      doc.removeEventListener("pointerdown", onDocumentPointerDown, true);
+      doc.removeEventListener("keydown", onDocumentKeyDown, true);
+    }
+  };
+  disclosure.addEventListener("toggle", onToggle);
+  return () => {
+    disclosure.removeEventListener("toggle", onToggle);
+    doc.removeEventListener("pointerdown", onDocumentPointerDown, true);
+    doc.removeEventListener("keydown", onDocumentKeyDown, true);
+  };
 }
 
 export function summarizeDailyProperties(

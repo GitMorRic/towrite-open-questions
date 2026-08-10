@@ -94,7 +94,10 @@ export class NoteTaskPoolCoordinator {
         "The Task Pool item is already bound to a different source checkbox."
       );
     }
-    if (existing.state === "done" || existing.state === "dropped") return existing;
+    if (existing.state === "dropped") return existing;
+    if (existing.state === "done") {
+      return (await this.pool.reopen(existing.taskId, existing.revision)).task;
+    }
     const patch = noteTaskPoolUpdate(noteTask, existing, source, inheritedCategory);
     if (existing.state === "planned") {
       if (!existing.plannedDate || !existing.assignmentId) {
