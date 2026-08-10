@@ -1,5 +1,14 @@
 # Changelog / 更新日志
 
+## 0.3.0-beta.18 - 2026-08-10
+
+- Added mixed Daily checklist support: checkbox category rows, numbered Markdown links, wikilinks, and nested checkbox tasks can now coexist without inflating category rows into task counts.
+- Pure local-note link leaves are adopted safely while preserving their numbered or bulleted list marker; prose rows that merely contain a link still require explicit confirmation.
+- Added stable Daily-to-linked-note relations so checkbox tasks inside linked project notes appear under the related Work Pool item without copying their Markdown source.
+- Added a compact, collapsible child-task projection beside linked Daily rows. Completing or reopening a projected task writes directly to the linked note with relation and task revision checks.
+- Kept linked-note discovery and projection refresh outside the editor keystroke path, with debounced cache refresh and per-path document deduplication.
+- Added regression coverage for mixed list syntax, numbered-link normalization, nested target inheritance, and stable linked-note references. The production suite now covers 701 tests.
+
 ## 0.3.0-beta.17 - 2026-08-10
 
 - Changed Markdown-task discovery to a configurable allowlist: Daily sources, notes linked from Daily task blocks, Workflow/Inbox notes, and notes with active ToThink/ToWrite questions are included by default, while explicit file/folder exclusions always win.

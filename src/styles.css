@@ -6152,6 +6152,83 @@
   outline-offset: 2px;
 }
 
+.towrite-daily-linked-task-projection {
+  display: inline-flex;
+  position: relative;
+  margin-inline-start: 0.45rem;
+  vertical-align: middle;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.towrite-daily-linked-task-projection > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 0.08rem 0.42rem;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 999px;
+  background: var(--background-secondary);
+  user-select: none;
+}
+
+.towrite-daily-linked-task-projection > summary::-webkit-details-marker {
+  display: none;
+}
+
+.towrite-daily-linked-task-projection-content {
+  position: absolute;
+  z-index: var(--layer-popover, 100);
+  inset-block-start: calc(100% + 0.3rem);
+  inset-inline-start: 0;
+  display: grid;
+  width: min(28rem, calc(100vw - 3rem));
+  max-height: 20rem;
+  overflow: auto;
+  gap: 0.2rem;
+  padding: 0.45rem;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-primary);
+  box-shadow: var(--shadow-s);
+}
+
+.towrite-daily-linked-task-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 0.35rem;
+  padding: 0.25rem 0.35rem;
+  border-radius: var(--radius-s);
+}
+
+.towrite-daily-linked-task-row:hover {
+  background: var(--background-secondary);
+}
+
+.towrite-daily-linked-task-row[data-state="done"] .towrite-daily-linked-task-label {
+  color: var(--text-faint);
+  text-decoration: line-through;
+}
+
+.towrite-daily-linked-task-toggle,
+.towrite-daily-linked-note-open {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-muted);
+}
+
+.towrite-daily-linked-task-toggle {
+  min-width: 1.4rem;
+  padding: 0;
+}
+
+.towrite-daily-linked-note-open {
+  justify-self: start;
+  margin-block-start: 0.2rem;
+  color: var(--text-accent);
+}
+
 @container (max-width: 560px) {
   .towrite-daily-properties-grid .setting-item {
     align-items: stretch;

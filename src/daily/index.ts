@@ -6,6 +6,7 @@ export * from "./device-priority";
 export * from "./ai-summary";
 export * from "./navigation";
 export * from "./target-resolver";
+export * from "./linked-note-references";
 export * from "./start-open";
 export * from "./hierarchy";
 export * from "./normalization-service";

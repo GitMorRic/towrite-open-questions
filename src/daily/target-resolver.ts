@@ -57,6 +57,24 @@ export function parseDailyMarkdownTargets(
   return uniqueTargets(targets.sort((left, right) => left.index - right.index).map((entry) => entry.target));
 }
 
+/**
+ * Returns true only when the authored list-item body is exactly one safe local
+ * note link. This deliberately excludes prose containing a link: those rows
+ * still need an explicit normalization choice because turning them into a task
+ * could change the author's intent.
+ */
+export function isPureDailyNoteLinkText(
+  markdown: string,
+  options: DailyTargetParseOptions = {}
+): boolean {
+  const targets = parseDailyMarkdownTargets(markdown, options);
+  if (targets.length !== 1) return false;
+  const raw = targets[0].raw;
+  const index = markdown.indexOf(raw);
+  if (index < 0) return false;
+  return `${markdown.slice(0, index)}${markdown.slice(index + raw.length)}`.trim().length === 0;
+}
+
 export function extractExplicitDailyTarget(rawBlock: string): string | undefined {
   return TARGET_FIELD_RE.exec(rawBlock)?.groups?.value.trim();
 }

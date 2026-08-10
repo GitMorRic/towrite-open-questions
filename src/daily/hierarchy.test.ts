@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import { parseDailyPlanHierarchy } from "./hierarchy";
 import {
   createDailyPlanNormalizationPreview,
-  DailyPlanNormalizationService
+  DailyPlanNormalizationService,
+  shouldAutomaticallyNormalizeDailyEdit
 } from "./normalization-service";
+import { collectDailyLinkedNoteReferences } from "./linked-note-references";
 import { DailyPlanConflictError, DailyPlanService, type DailyPlanStorage } from "./plan-service";
 import {
   createDailyLineage,
@@ -16,6 +18,68 @@ const DATE = "2026-07-24";
 const PATH = `Daily/${DATE}.md`;
 
 describe("daily hierarchy and inherited targets", () => {
+  it("supports checkbox categories, numbered note leaves, and nested linked-note tasks together", () => {
+    const markdown = [
+      `# ${DATE}`,
+      "## Plan",
+      "- [ ] Projects",
+      "  1. [Obsidian tasks](obsidian-tasks.md)",
+      "  2. [[Book sprint]]",
+      "- [ ] Other",
+      "  1. [Exoskeleton](exoskeleton.md)",
+      "     - [ ] [[Research notes]] ^daily_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "## ToDo"
+    ].join("\n");
+    const hierarchy = parseDailyPlanHierarchy(markdown, PATH, DATE, {
+      todoHeading: "ToDo",
+      planHeading: "Plan"
+    });
+
+    expect(hierarchy.groups.map((group) => group.text)).toEqual([
+      "Projects",
+      "Other",
+      "[Exoskeleton](exoskeleton.md)"
+    ]);
+    expect(hierarchy.tasks.map((task) => task.text)).toEqual([
+      "[Obsidian tasks](obsidian-tasks.md)",
+      "[[Book sprint]]",
+      "[[Research notes]]"
+    ]);
+    expect(hierarchy.tasks.at(-1)?.targetResolution.displayLabel).toBe("Research notes");
+
+    const references = collectDailyLinkedNoteReferences(hierarchy);
+    expect(references.map((reference) => reference.target.linkText)).toEqual([
+      "Daily/exoskeleton.md",
+      "Daily/obsidian-tasks.md",
+      "Book sprint",
+      "Research notes"
+    ]);
+    expect(references.find((reference) => reference.target.linkText === "Daily/exoskeleton.md")?.line).toBe(7);
+  });
+
+  it("auto-normalizes only pure local note-link leaves and preserves numbered markers", () => {
+    const markdown = [
+      `# ${DATE}`,
+      "## Plan",
+      "- [ ] Projects",
+      "  1. [Obsidian tasks](obsidian-tasks.md)",
+      "  2. Continue [[Book sprint]] tomorrow",
+      "## ToDo"
+    ].join("\n");
+    let nextId = 10;
+    const preview = createDailyPlanNormalizationPreview(markdown, PATH, DATE, {
+      todoHeading: "ToDo",
+      planHeading: "Plan",
+      createId: () => `daily_${(nextId++).toString(16).padStart(32, "b")}`
+    });
+    const pure = preview.edits.find((edit) => edit.line === 4);
+    const prose = preview.edits.find((edit) => edit.line === 5);
+
+    expect(pure?.after).toMatch(/^  1\. \[ \] \[Obsidian tasks\]/u);
+    expect(pure && shouldAutomaticallyNormalizeDailyEdit(pure, PATH)).toBe(true);
+    expect(prose && shouldAutomaticallyNormalizeDailyEdit(prose, PATH)).toBe(false);
+  });
+
   it("falls back to the editable plan heading and treats checkbox containers as groups", () => {
     const markdown = [
       `# ${DATE}`,

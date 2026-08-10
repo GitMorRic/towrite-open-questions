@@ -1,6 +1,6 @@
 import { shortHash } from "../core/hash";
 import { parseDailyPlanHierarchy, type DailyPlanHierarchyParseOptions } from "./hierarchy";
-import { resolveDailyTarget } from "./target-resolver";
+import { isPureDailyNoteLinkText, resolveDailyTarget } from "./target-resolver";
 import {
   DailyPlanConflictError,
   DailyPlanService,
@@ -31,6 +31,17 @@ interface UndoEntry {
   before: string;
   after: string;
   expiresAt: number;
+}
+
+export function shouldAutomaticallyNormalizeDailyEdit(
+  edit: DailyPlanNormalizationEdit,
+  sourcePath: string
+): boolean {
+  return edit.kind === "missing-block-id"
+    || (
+      edit.kind === "plain-leaf"
+      && isPureDailyNoteLinkText(edit.taskText, { sourcePath })
+    );
 }
 
 export class DailyPlanNormalizationService {

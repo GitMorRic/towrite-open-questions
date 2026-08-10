@@ -11,7 +11,8 @@ import type {
   DailyPlanItem,
   DailyPlanNormalizationEdit,
   DailyPlanNormalizationPreview,
-  DailyTaskTimingSnapshot
+  DailyTaskTimingSnapshot,
+  TrackedNoteTask
 } from "../daily";
 
 export const refreshDailyTaskControls = StateEffect.define<void>();
@@ -29,17 +30,30 @@ export function getDailyTaskControlUpdateStrategy(update: {
   return update.docChanged ? "map" : "keep";
 }
 
+export interface DailyLinkedTaskProjection {
+  id: string;
+  sourcePath: string;
+  line: number;
+  targetPath: string;
+  targetTitle: string;
+  relationRevision: string;
+  tasks: TrackedNoteTask[];
+}
+
 interface DailyTaskControlsOptions {
   isEnabled(): boolean;
   getActiveFilePath(): string | undefined;
   getItems(): readonly DailyPlanItem[];
   getNormalizationPreviews(): readonly DailyPlanNormalizationPreview[];
+  getLinkedTaskProjections(): readonly DailyLinkedTaskProjection[];
   getTiming(item: DailyPlanItem): DailyTaskTimingSnapshot;
   onToggle(item: DailyPlanItem): void | Promise<void>;
   onComplete(item: DailyPlanItem): void | Promise<void>;
   onEditProperties(item: DailyPlanItem): void | Promise<void>;
   onEnrich(edit: DailyPlanNormalizationEdit): void | Promise<void>;
   onTrackOnly(edit: DailyPlanNormalizationEdit): void | Promise<void>;
+  onToggleLinkedTask(projection: DailyLinkedTaskProjection, item: TrackedNoteTask): void | Promise<void>;
+  onOpenLinkedNote(projection: DailyLinkedTaskProjection): void | Promise<void>;
 }
 
 /**
@@ -162,11 +176,99 @@ function buildControls(view: EditorView, options: DailyTaskControlsOptions): Dec
     }
   }
 
+  for (const projection of options.getLinkedTaskProjections()) {
+    if (
+      projection.sourcePath !== activePath
+      || projection.line < 1
+      || projection.line > view.state.doc.lines
+      || projection.tasks.length === 0
+    ) continue;
+    const line = view.state.doc.line(projection.line);
+    entries.push({
+      from: line.to,
+      to: line.to,
+      decoration: Decoration.widget({
+        side: 20,
+        widget: new DailyLinkedTaskProjectionWidget(projection, options)
+      })
+    });
+  }
+
   entries.sort((left, right) => left.from - right.from || left.to - right.to);
   for (const entry of entries) {
     builder.add(entry.from, entry.to, entry.decoration);
   }
   return builder.finish();
+}
+
+class DailyLinkedTaskProjectionWidget extends WidgetType {
+  constructor(
+    private readonly projection: DailyLinkedTaskProjection,
+    private readonly options: DailyTaskControlsOptions
+  ) {
+    super();
+  }
+
+  eq(other: DailyLinkedTaskProjectionWidget): boolean {
+    return other.projection.id === this.projection.id
+      && other.projection.relationRevision === this.projection.relationRevision
+      && other.projection.tasks.map((task) => `${task.taskId}:${task.revision}:${task.status}`).join("|")
+        === this.projection.tasks.map((task) => `${task.taskId}:${task.revision}:${task.status}`).join("|");
+  }
+
+  toDOM(view: EditorView): HTMLElement {
+    const doc = view.dom.ownerDocument;
+    const details = doc.createElement("details");
+    details.className = "towrite-daily-linked-task-projection";
+    const completed = this.projection.tasks.filter((task) => task.status === "done").length;
+    const summary = doc.createElement("summary");
+    summary.textContent = `子任务 ${completed}/${this.projection.tasks.length}`;
+    summary.title = `显示 ${this.projection.targetTitle} 中的待办`;
+    details.append(summary);
+
+    const content = doc.createElement("span");
+    content.className = "towrite-daily-linked-task-projection-content";
+    for (const task of this.projection.tasks) {
+      const row = doc.createElement("span");
+      row.className = "towrite-daily-linked-task-row";
+      row.dataset.state = task.status;
+      const toggle = doc.createElement("button");
+      toggle.type = "button";
+      toggle.className = "towrite-daily-linked-task-toggle";
+      toggle.textContent = task.status === "done" ? "☑" : task.status === "in-progress" ? "◩" : "☐";
+      toggle.setAttribute("aria-label", `${task.status === "done" ? "重新打开" : "完成"}：${task.text}`);
+      toggle.addEventListener("mousedown", stop);
+      toggle.addEventListener("click", (event) => {
+        stop(event);
+        toggle.disabled = true;
+        void Promise.resolve(this.options.onToggleLinkedTask(this.projection, task))
+          .catch((error) => console.error("Linked Daily task toggle failed", error))
+          .finally(() => { toggle.disabled = false; });
+      });
+      const label = doc.createElement("span");
+      label.className = "towrite-daily-linked-task-label";
+      label.textContent = task.text;
+      row.append(toggle, label);
+      content.append(row);
+    }
+    const open = doc.createElement("button");
+    open.type = "button";
+    open.className = "towrite-daily-linked-note-open";
+    open.textContent = `打开 ${this.projection.targetTitle}`;
+    open.addEventListener("mousedown", stop);
+    open.addEventListener("click", (event) => {
+      stop(event);
+      void Promise.resolve(this.options.onOpenLinkedNote(this.projection))
+        .catch((error) => console.error("Linked Daily note open failed", error));
+    });
+    content.append(open);
+    details.append(content);
+    return details;
+  }
+
+  ignoreEvent(): boolean {
+    return false;
+  }
 }
 
 class DailyTaskControlWidget extends WidgetType {

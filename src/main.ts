@@ -135,6 +135,8 @@ import {
   PersistentDailyTaskTimer,
   predictDailyPlanItemStatusRevision,
   parseDailyMarkdownTargets,
+  collectDailyLinkedNoteReferences,
+  shouldAutomaticallyNormalizeDailyEdit,
   resolveDailyTarget,
   dailyDeviceScore,
   dailyCreateOnlyTitle,
@@ -162,6 +164,7 @@ import {
   type DailyPlanCreateInput,
   type DailyPlanDocument,
   type DailyPlanGroup,
+  type DailyPlanHierarchy,
   type DailyPlanItem,
   type DailyPlanMetadata,
   type DailyPlanMetadataUpdate,
@@ -307,7 +310,11 @@ import { applyInboxStageMetadata, materializeInboxStageMetadata, type InboxMetad
 import type { InboxDeviceEligibility, InboxSnapshot } from "./inbox/types";
 import { yieldToEventLoop } from "./core/async-batch";
 import { createQuestionDecorations, refreshQuestionDecorations } from "./obsidian/decorations";
-import { createDailyTaskControls, refreshDailyTaskControls } from "./obsidian/daily-task-controls";
+import {
+  createDailyTaskControls,
+  refreshDailyTaskControls,
+  type DailyLinkedTaskProjection
+} from "./obsidian/daily-task-controls";
 import {
   createNoteTaskControls,
   rankNoteTaskPoolMatches,
@@ -431,6 +438,7 @@ export default class ToWritePlugin extends Plugin {
   private dailyEditorPlanItems: DailyPlanItem[] = [];
   private dailyPlanDocument?: DailyPlanDocument;
   private dailyPlanNormalizationPreviews: DailyPlanNormalizationPreview[] = [];
+  private dailyLinkedTaskProjections: DailyLinkedTaskProjection[] = [];
   private activeNoteTaskDocument?: NoteTaskDocument;
   private activeTaskPoolItems: TaskPoolItem[] = [];
   private markdownTaskNoteSuggestions: MarkdownTaskInputSuggestion[] = [];
@@ -1080,6 +1088,7 @@ export default class ToWritePlugin extends Plugin {
       getActiveFilePath: () => this.getActiveFile() ?? undefined,
       getItems: () => this.dailyEditorPlanItems,
       getNormalizationPreviews: () => this.dailyPlanNormalizationPreviews,
+      getLinkedTaskProjections: () => this.dailyLinkedTaskProjections,
       getTiming: (item) => this.dailyTimingSnapshotForItem(item),
       onToggle: async (item) => {
         try {
@@ -1119,7 +1128,9 @@ export default class ToWritePlugin extends Plugin {
       },
       onEditProperties: (item) => this.editDailyTaskProperties(item),
       onEnrich: (edit) => this.enrichPendingDailyTask(edit),
-      onTrackOnly: (edit) => this.trackPendingDailyTask(edit)
+      onTrackOnly: (edit) => this.trackPendingDailyTask(edit),
+      onToggleLinkedTask: (projection, item) => this.toggleDailyLinkedTask(projection, item),
+      onOpenLinkedNote: (projection) => this.openFile(projection.targetPath)
     }));
     this.registerEditorExtension(createTaskPoolTechnicalMetadataExtension({
       isEnabled: () => this.settings.daily.enabled,
@@ -6366,9 +6377,10 @@ export default class ToWritePlugin extends Plugin {
 
   /**
    * A manually authored checkbox is already an explicit task commitment. Give
-   * only those checkbox rows a stable id so they immediately participate in
-   * Today and the Work Pool. Plain list leaves still require an explicit user
-   * normalization action and all authored text remains untouched.
+   * checkbox rows a stable id so they immediately participate in Today and the
+   * Work Pool. A plain numbered/bulleted leaf is also adopted automatically
+   * only when its complete body is one safe local note link. Prose leaves still
+   * require explicit confirmation and all authored list markers are preserved.
    */
   private async normalizeMissingDailyCheckboxIds(): Promise<boolean> {
     if (!this.settings.daily.enabled) return false;
@@ -6377,7 +6389,9 @@ export default class ToWritePlugin extends Plugin {
     for (const date of dates) {
       for (let count = 0; count < 200; count += 1) {
         const preview = await this.dailyPlanNormalizationService.preview(date);
-        const edit = preview.edits.find((candidate) => candidate.kind === "missing-block-id");
+        const edit = preview.edits.find((candidate) =>
+          shouldAutomaticallyNormalizeDailyEdit(candidate, preview.sourcePath)
+        );
         if (!edit) break;
         await this.dailyPlanNormalizationService.normalizeTask(preview, edit.line);
         changed = true;
@@ -8337,7 +8351,10 @@ export default class ToWritePlugin extends Plugin {
       questions: this.store.query(),
       inboxItems: this.getInboxSnapshot().items,
       workflowFiles: this.workflowIndex.getPayload({ compact: true }).files ?? [],
-      taskRelations: [...this.noteTaskRelationsBySource.values()].flat(),
+      taskRelations: [
+        ...this.noteTaskRelationsBySource.values(),
+        ...(dailyHierarchy ? [this.dailyLinkedWorkPoolRelations(dailyHierarchy)] : [])
+      ].flat(),
       dailyPlan: dailyHierarchy
         ? {
             date: dailyDate,
@@ -8390,6 +8407,7 @@ export default class ToWritePlugin extends Plugin {
     this.rebuildMarkdownTaskNoteSuggestions();
     await this.refreshActiveTaskPoolCache(false);
     await this.refreshActiveNoteTaskCache();
+    await this.rebuildDailyLinkedTaskProjectionCache();
     this.notifyUi();
     return {
       filesScanned,
@@ -8469,6 +8487,99 @@ export default class ToWritePlugin extends Plugin {
     ])).values()];
     if (unique.length > 0) this.noteTaskRelationsBySource.set(parentSourcePath, unique);
     else this.noteTaskRelationsBySource.delete(parentSourcePath);
+  }
+
+  private dailyLinkedWorkPoolRelations(hierarchy: DailyPlanHierarchy): WorkPoolTaskRelation[] {
+    return collectDailyLinkedNoteReferences(hierarchy).flatMap((reference): WorkPoolTaskRelation[] => {
+      const child = this.resolveDailyLinkedNote(reference.target, reference.sourcePath);
+      if (!child) return [];
+      return [{
+        parentTaskId: reference.parentId,
+        parentTaskTitle: reference.parentTitle,
+        parentSourcePath: normalizePath(reference.sourcePath),
+        childNotePath: normalizePath(child.path),
+        revision: reference.revision
+      }];
+    });
+  }
+
+  private resolveDailyLinkedNote(target: DailyMarkdownTarget, sourcePath: string): TFile | undefined {
+    const direct = target.path ? this.app.vault.getFileByPath(normalizePath(target.path)) : undefined;
+    if (direct instanceof TFile && direct.extension.toLocaleLowerCase() === "md") return direct;
+    const resolved = this.app.metadataCache.getFirstLinkpathDest(target.linkText, sourcePath);
+    return resolved?.extension.toLocaleLowerCase() === "md" ? resolved : undefined;
+  }
+
+  /**
+   * Builds an editor-only projection from cached Daily hierarchy references to
+   * the linked notes' canonical checkbox tasks. Nothing is copied into Daily;
+   * status changes continue to write to the linked note through NoteTaskService.
+   */
+  private async rebuildDailyLinkedTaskProjectionCache(): Promise<void> {
+    const projections: DailyLinkedTaskProjection[] = [];
+    const documents = new Map<string, Promise<NoteTaskDocument>>();
+    for (const preview of this.dailyPlanNormalizationPreviews) {
+      const hierarchy: DailyPlanHierarchy = {
+        schemaVersion: 1,
+        date: preview.date,
+        source: preview.source,
+        sourcePath: preview.sourcePath,
+        groups: preview.groups,
+        tasks: preview.tasks,
+        diagnostics: preview.diagnostics,
+        revision: preview.expectedRevision
+      };
+      for (const reference of collectDailyLinkedNoteReferences(hierarchy)) {
+        const target = this.resolveDailyLinkedNote(reference.target, reference.sourcePath);
+        if (!target || normalizePath(target.path) === normalizePath(reference.sourcePath)) continue;
+        const targetPath = normalizePath(target.path);
+        let pending = documents.get(targetPath);
+        if (!pending) {
+          pending = this.noteTaskService.inspect(targetPath);
+          documents.set(targetPath, pending);
+        }
+        const document = await pending;
+        if (document.tasks.length === 0) continue;
+        projections.push({
+          id: reference.id,
+          sourcePath: reference.sourcePath,
+          line: reference.line,
+          targetPath,
+          targetTitle: reference.target.label || target.basename,
+          relationRevision: reference.revision,
+          tasks: document.tasks.slice(0, 100)
+        });
+      }
+    }
+    this.dailyLinkedTaskProjections = projections;
+    this.refreshDailyEditorTaskControls();
+  }
+
+  private async toggleDailyLinkedTask(
+    projection: DailyLinkedTaskProjection,
+    stale: TrackedNoteTask
+  ): Promise<void> {
+    const currentProjection = this.dailyLinkedTaskProjections.find((candidate) =>
+      candidate.id === projection.id && candidate.relationRevision === projection.relationRevision
+    );
+    if (!currentProjection) {
+      throw new DailyPlanConflictError("revision-changed", "The linked Daily row changed. Refresh before updating its child task.");
+    }
+    const document = await this.noteTaskService.inspect(projection.targetPath);
+    const current = document.tasks.find((task) => task.taskId === stale.taskId);
+    if (!current || current.revision !== stale.revision) {
+      throw new DailyPlanConflictError("revision-changed", "The linked task changed. Refresh before updating it.");
+    }
+    const updated = await this.noteTaskService.setStatus(
+      current,
+      current.status === "done" ? "todo" : "done"
+    );
+    if (updated.status === "done") await this.noteTaskPoolCoordinator.complete(updated);
+    else await this.noteTaskPoolCoordinator.ensureRegistered(updated);
+    await this.syncMarkdownTasksForFile(updated.sourcePath);
+    await this.refreshActiveTaskPoolCache(false);
+    await this.rebuildDailyLinkedTaskProjectionCache();
+    this.notifyUi();
   }
 
   private async currentWorkPoolItem(item: WorkPoolItem): Promise<WorkPoolItem> {
@@ -11098,6 +11209,7 @@ export default class ToWritePlugin extends Plugin {
             if (!file || file.extension !== "md" || this.isTrackedDailyPlanPath(path)) continue;
             await this.syncMarkdownTasksForFile(path, new Set<string>(), nextAllowlist);
           }
+          await this.rebuildDailyLinkedTaskProjectionCache();
           this.rebuildMarkdownTaskNoteSuggestions();
           if (newlyAllowed.length > 0) {
             await this.refreshActiveTaskPoolCache(false);
@@ -11137,6 +11249,7 @@ export default class ToWritePlugin extends Plugin {
         if (paths.length > 0) {
           this.rebuildMarkdownTaskNoteSuggestions();
           await this.refreshActiveTaskPoolCache(false);
+          await this.rebuildDailyLinkedTaskProjectionCache();
           this.notifyUi();
         }
       })();
