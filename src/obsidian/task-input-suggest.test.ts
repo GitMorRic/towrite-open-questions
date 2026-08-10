@@ -42,6 +42,9 @@ describe("Markdown task input suggestions", () => {
 
   it("triggers only for an open Markdown checkbox", () => {
     expect(matchMarkdownTaskInput("- [ ] ob")).toEqual({ startCh: 6, query: "ob" });
+    expect(matchMarkdownTaskInput("- [ ] [[ob")).toBeUndefined();
+    expect(matchMarkdownTaskInput("- [ ] 【【ob")).toBeUndefined();
+    expect(matchMarkdownTaskInput("- [ ] [obsidian](obs")).toBeUndefined();
     expect(matchMarkdownTaskInput("- [x] ob")).toBeUndefined();
     expect(matchMarkdownTaskInput("ordinary ob")).toBeUndefined();
   });

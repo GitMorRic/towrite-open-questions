@@ -44,6 +44,17 @@ export function shouldAutomaticallyNormalizeDailyEdit(
     );
 }
 
+/**
+ * A checkbox is observed while the author is still typing. Do not append a
+ * stable block id inside an unfinished link: doing so changes the link query
+ * and can make Obsidian's native link suggester accept corrupted Markdown.
+ */
+export function hasIncompleteDailyTaskLinkSyntax(value: string): boolean {
+  return hasUnclosedPair(value, "[[", "]]")
+    || hasUnclosedPair(value, "【【", "】】")
+    || /\[[^\]\r\n]+\]\([^)\r\n]*$/u.test(value);
+}
+
 export class DailyPlanNormalizationService {
   private readonly plan: DailyPlanService;
   private readonly createId: () => string;
@@ -256,6 +267,7 @@ export function createDailyPlanNormalizationPreview(
   const edits: DailyPlanNormalizationEdit[] = [];
   for (const task of hierarchy.tasks) {
     if (!task.normalizationRequired) continue;
+    if (hasIncompleteDailyTaskLinkSyntax(task.rawLine)) continue;
     const proposedBlockId = task.blockId ?? nextUniqueId(createId, usedIds);
     const after = normalizedTaskLine(task.rawLine, task.checkbox, task.status === "done", proposedBlockId);
     if (after === task.rawLine) continue;
@@ -339,7 +351,9 @@ function assertCanonicalNormalizationEdits(
   lines: readonly string[],
   requireAll = true
 ): void {
-  const required = tasks.filter((task) => task.normalizationRequired);
+  const required = tasks.filter((task) =>
+    task.normalizationRequired && !hasIncompleteDailyTaskLinkSyntax(task.rawLine)
+  );
   if (requireAll && preview.edits.length !== required.length) {
     throw new DailyPlanConflictError(
       "invalid-document",
@@ -389,6 +403,18 @@ function assertCanonicalNormalizationEdits(
       );
     }
   }
+}
+
+function hasUnclosedPair(value: string, open: string, close: string): boolean {
+  let offset = 0;
+  while (offset < value.length) {
+    const start = value.indexOf(open, offset);
+    if (start < 0) return false;
+    const end = value.indexOf(close, start + open.length);
+    if (end < 0) return true;
+    offset = end + close.length;
+  }
+  return false;
 }
 
 function applyEnrichmentPatch(

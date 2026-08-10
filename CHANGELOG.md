@@ -1,5 +1,20 @@
 # Changelog / 更新日志
 
+## 0.3.0-beta.24 - 2026-08-10
+
+- Prevented Daily task normalization from inserting stable IDs while a wikilink or Markdown link is still being typed.
+- Deferred ToWrite task suggestions inside unfinished `[[note]]` input so Obsidian's native note-link completion remains in control; plain-text Work Pool suggestions remain available.
+- Added deterministic, higher-contrast default project colors to Today progress and made each project color editable by click or context menu.
+- Reworked the project legend into a responsive grid and changed the color picker into a compact floating panel so project groups no longer look compressed.
+- Added regression coverage for unfinished wikilinks and Markdown links. The production suite now covers 714 tests.
+
+中文摘要：
+- 日记任务中的 Wikilink 或 Markdown 链接尚未输入完成时，不再提前插入稳定 ID，避免把链接和后续列表写乱。
+- 输入未闭合的 `[[笔记]]` 时，ToWrite 会让 Obsidian 原生笔记联想接管；普通文本形式的工作池联想保持可用。
+- 今日进度中的每个项目现在自动获得稳定、对比度更高的默认颜色，也可以通过点击或右键修改。
+- 项目图例改为响应式网格，颜色选择器改为紧凑悬浮面板，不再挤压项目分类和今日卡片。
+- 增加未完成 Wikilink 与 Markdown 链接的回归测试；生产测试现覆盖 714 项。
+
 ## 0.3.0-beta.23 - 2026-08-10
 
 - Protected Daily task IDs and ToWrite-owned metadata as compact CodeMirror atomic ranges in Source and Live Preview modes, preventing accidental cursor entry or deletion while keeping Markdown as the source of truth.

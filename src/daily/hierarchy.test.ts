@@ -661,6 +661,29 @@ describe("daily target resolver", () => {
 });
 
 describe("daily plan normalization", () => {
+  it("waits for an authored note link to close before adding a stable id", () => {
+    const unfinished = createDailyPlanNormalizationPreview([
+      `# ${DATE}`,
+      "## ToDo",
+      "- [ ] Project",
+      "  1. [[obsidian"
+    ].join("\n"), PATH, DATE, { createId: idSequence() });
+
+    expect(unfinished.edits).toEqual([]);
+    expect(unfinished.diff).not.toContain("[[obsidian ^daily_");
+
+    const finished = createDailyPlanNormalizationPreview([
+      `# ${DATE}`,
+      "## ToDo",
+      "- [ ] Project",
+      "  1. [[obsidian]]"
+    ].join("\n"), PATH, DATE, { createId: idSequence() });
+
+    expect(finished.edits.map((edit) => edit.line)).toEqual([4]);
+    expect(finished.edits.find((edit) => edit.line === 4)?.after)
+      .toContain("[[obsidian]] ^daily_");
+  });
+
   it("previews minimal line edits, preserves groups and prose, and does not add metadata or completion dates", () => {
     const preview = createDailyPlanNormalizationPreview(userSample(), PATH, DATE, {
       createId: idSequence()

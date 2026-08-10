@@ -15,8 +15,18 @@ export function matchMarkdownTaskInput(
   const match = OPEN_CHECKBOX_PREFIX_RE.exec(lineBeforeCursor);
   const rawQuery = match?.groups?.query ?? "";
   const query = normalizeTaskSuggestionQuery(rawQuery);
-  if (!match?.groups?.prefix || query.length < 2 || rawQuery.includes("%%")) return undefined;
+  if (!match?.groups?.prefix
+    || query.length < 2
+    || rawQuery.includes("%%")
+    || hasOpenNoteLinkFragment(rawQuery)) return undefined;
   return { startCh: match.groups.prefix.length, query };
+}
+
+function hasOpenNoteLinkFragment(value: string): boolean {
+  const wikiStart = Math.max(value.lastIndexOf("[["), value.lastIndexOf("【【"));
+  const wikiEnd = Math.max(value.lastIndexOf("]]"), value.lastIndexOf("】】"));
+  if (wikiStart > wikiEnd) return true;
+  return /\[[^\]\r\n]+\]\([^)\r\n]*$/u.test(value);
 }
 
 export function rankMarkdownTaskInputSuggestions(

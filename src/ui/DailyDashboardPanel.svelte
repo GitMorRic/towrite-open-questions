@@ -344,7 +344,9 @@
   }
 
   function projectFallbackColor(value: string): string {
-    const palette = ["#7c6ee6", "#3f8fcf", "#35a078", "#d68b35", "#cf5c74", "#6f8f3d", "#a660c2", "#4b96a6"];
+    // Stable defaults keep projects distinguishable before the colour editor
+    // is opened, without persisting derived settings merely by viewing Today.
+    const palette = ["#6657d9", "#237db8", "#16845b", "#c96812", "#c43f61", "#657d20", "#914bb5", "#247f91"];
     let hash = 0;
     for (const character of value) hash = ((hash << 5) - hash + character.codePointAt(0)!) | 0;
     return palette[Math.abs(hash) % palette.length];
@@ -1353,6 +1355,7 @@
             <button
               type="button"
               style={`--project-color:${segment.color}`}
+              on:click={(event) => beginProgressProjectColor(segment, event)}
               title="右键设置项目颜色"
               on:contextmenu={(event) => beginProgressProjectColor(segment, event)}
             ><i></i>{segment.label}<em>{segment.done}/{segment.items.length}</em></button>
@@ -2550,6 +2553,7 @@
   }
 
   .focus-card {
+    position: relative;
     padding: 12px 14px;
   }
 
@@ -2674,7 +2678,7 @@
     position: relative;
     display: flex;
     gap: 3px;
-    min-height: 15px;
+    min-height: 20px;
     margin: 12px 7px 0 0;
     padding: 3px;
     border: 1.5px solid var(--text-muted);
@@ -2703,8 +2707,8 @@
     display: flex;
     flex: var(--project-weight) 1 24px;
     gap: 2px;
-    min-width: 12px;
-    padding: 1px;
+    min-width: 18px;
+    padding: 2px;
     border: 0;
     border-radius: 3px;
     background: transparent;
@@ -2722,7 +2726,7 @@
     flex: 1;
     min-width: 3px;
     border-radius: 2px;
-    background: color-mix(in srgb, var(--project-color) 38%, var(--background-primary));
+    background: color-mix(in srgb, var(--project-color) 62%, var(--background-primary));
   }
 
   .battery-project i.done {
@@ -2730,27 +2734,27 @@
   }
 
   .project-progress-legend {
-    display: flex;
-    gap: 6px 12px;
-    overflow-x: auto;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(138px, 1fr));
+    gap: 5px 8px;
     margin-top: 7px;
     padding-bottom: 2px;
-    scrollbar-width: thin;
   }
 
   .project-progress-legend > button {
-    display: inline-flex;
+    display: flex;
     align-items: center;
     gap: 4px;
-    flex: none;
-    padding: 3px 6px;
+    min-width: 0;
+    width: 100%;
+    padding: 5px 7px;
     border: 1px solid transparent;
     border-radius: 999px;
     color: var(--text-muted);
     background: transparent;
     font-size: 0.65rem;
     box-shadow: none;
-    cursor: context-menu;
+    cursor: pointer;
   }
 
   .project-progress-legend > button:hover,
@@ -2768,15 +2772,20 @@
   }
 
   .project-progress-legend em {
+    margin-left: auto;
     font-style: normal;
     opacity: 0.75;
   }
 
   .project-color-popover {
+    position: absolute;
+    z-index: 20;
+    right: 14px;
+    bottom: 14px;
     display: grid;
     gap: 9px;
     width: min(320px, 100%);
-    margin-top: 8px;
+    margin-top: 0;
     padding: 10px;
     border: 1px solid var(--background-modifier-border);
     border-radius: 9px;
@@ -4409,6 +4418,16 @@
   }
 
   @media (max-width: 560px) {
+    .project-progress-legend {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .project-color-popover {
+      right: 10px;
+      bottom: 10px;
+      width: calc(100% - 20px);
+    }
+
     .workspace-arrange-bar { align-items: stretch; flex-direction: column; }
     .compact-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .analytics-overview,
