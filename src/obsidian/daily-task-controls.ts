@@ -49,9 +49,11 @@ interface DailyTaskControlsOptions {
   getTiming(item: DailyPlanItem): DailyTaskTimingSnapshot;
   onToggle(item: DailyPlanItem): void | Promise<void>;
   onComplete(item: DailyPlanItem): void | Promise<void>;
+  onOpen(item: DailyPlanItem): void | Promise<void>;
   onEditProperties(item: DailyPlanItem): void | Promise<void>;
   onEnrich(edit: DailyPlanNormalizationEdit): void | Promise<void>;
   onTrackOnly(edit: DailyPlanNormalizationEdit): void | Promise<void>;
+  onOpenPending(edit: DailyPlanNormalizationEdit): void | Promise<void>;
   onToggleLinkedTask(projection: DailyLinkedTaskProjection, item: TrackedNoteTask): void | Promise<void>;
   onOpenLinkedNote(projection: DailyLinkedTaskProjection): void | Promise<void>;
 }
@@ -344,6 +346,10 @@ class DailyTaskControlWidget extends WidgetType {
       details.append(complete);
     }
     disclosure.append(details);
+    if (hasNavigableTarget(this.item.targetResolution)) {
+      const open = iconActionButton(doc, "↗", "打开关联文档", () => this.options.onOpen(this.item));
+      wrapper.append(open);
+    }
     wrapper.append(disclosure);
     dailyTaskDisclosureCleanup.set(wrapper, disposeDisclosure);
     return wrapper;
@@ -405,6 +411,10 @@ class DailyTaskEnrichmentWidget extends WidgetType {
     track.title = "只补稳定 ID，不添加任何属性";
     details.append(track);
     disclosure.append(details);
+    if (hasNavigableTarget(this.edit.targetResolution)) {
+      const open = iconActionButton(doc, "↗", "打开关联文档", () => this.options.onOpenPending(this.edit));
+      wrapper.append(open);
+    }
     wrapper.append(disclosure);
     dailyTaskDisclosureCleanup.set(wrapper, disposeDisclosure);
     return wrapper;
@@ -438,6 +448,27 @@ function actionButton(
     });
   });
   return button;
+}
+
+function iconActionButton(
+  doc: Document,
+  label: string,
+  title: string,
+  action: () => void | Promise<void>
+): HTMLButtonElement {
+  const button = actionButton(doc, label, action);
+  button.classList.add("towrite-daily-inline-open");
+  button.title = title;
+  button.setAttribute("aria-label", title);
+  return button;
+}
+
+function hasNavigableTarget(resolution: DailyPlanItem["targetResolution"]): boolean {
+  return Boolean(
+    resolution?.target
+    && resolution.source !== "task-block"
+    && resolution.source !== "dashboard"
+  );
 }
 
 function stop(event: Event): void {

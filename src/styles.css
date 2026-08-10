@@ -5538,13 +5538,41 @@
   padding: 0 0.28rem;
   border: 1px solid transparent;
   border-radius: 999px;
-  color: var(--text-faint);
-  background: transparent;
+  border-color: color-mix(in srgb, var(--text-muted) 28%, transparent);
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--background-secondary) 72%, transparent);
   cursor: pointer;
   font-size: var(--font-ui-smaller);
   line-height: 1;
   list-style: none;
-  opacity: 0.42;
+  opacity: 0.82;
+}
+
+.towrite-note-task-disclosure > summary:hover {
+  border-color: color-mix(in srgb, var(--interactive-accent) 52%, var(--background-modifier-border));
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+  opacity: 1;
+}
+
+.towrite-daily-line-controls .towrite-daily-inline-open {
+  display: inline-grid;
+  min-width: 1.55rem;
+  min-height: 1.45rem;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: transparent;
+  font-weight: 700;
+}
+
+.towrite-daily-line-controls .towrite-daily-inline-open:hover,
+.towrite-daily-line-controls .towrite-daily-inline-open:focus-visible {
+  border-color: var(--background-modifier-border);
+  color: var(--text-accent);
+  background: var(--background-modifier-hover);
 }
 
 .towrite-note-task-disclosure > summary::-webkit-details-marker {

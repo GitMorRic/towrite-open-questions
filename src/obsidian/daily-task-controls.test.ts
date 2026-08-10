@@ -22,6 +22,13 @@ describe("Daily editor task controls", () => {
       .toBeLessThan(widget.indexOf("wrapper.append(disclosure)"));
   });
 
+  it("keeps linked-note opening explicit beside the stronger disclosure control", () => {
+    const source = readFileSync(new URL("./daily-task-controls.ts", import.meta.url), "utf8");
+    expect(source).toContain('iconActionButton(doc, "↗", "打开关联文档"');
+    expect(source).toContain("onOpenPending(edit: DailyPlanNormalizationEdit)");
+    expect(source).toContain("hasNavigableTarget(this.edit.targetResolution)");
+  });
+
   it("maps cached widgets during typing instead of rebuilding the Daily plan", () => {
     expect(getDailyTaskControlUpdateStrategy({
       docChanged: true,

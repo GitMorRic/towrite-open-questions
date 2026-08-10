@@ -1126,9 +1126,19 @@ export default class ToWritePlugin extends Plugin {
           new Notice(messageForError(error));
         }
       },
+      onOpen: async (item) => { await this.openDailyItemTarget(item); },
       onEditProperties: (item) => this.editDailyTaskProperties(item),
       onEnrich: (edit) => this.enrichPendingDailyTask(edit),
       onTrackOnly: (edit) => this.trackPendingDailyTask(edit),
+      onOpenPending: async (edit) => {
+        const sourcePath = this.getActiveFile() ?? "";
+        const target = edit.targetResolution.target;
+        if (!target || !this.resolveDailyMarkdownTargetFile(target, sourcePath)) {
+          new Notice("ToWrite 找不到这条待办关联的文档。");
+          return;
+        }
+        await this.openObsidianLink(this.dailyTargetLinkText(target), sourcePath);
+      },
       onToggleLinkedTask: (projection, item) => this.toggleDailyLinkedTask(projection, item),
       onOpenLinkedNote: (projection) => this.openFile(projection.targetPath)
     }));
@@ -6056,6 +6066,7 @@ export default class ToWritePlugin extends Plugin {
     this.dailyPlanDocument = document;
     this.dailyPlanNormalizationPreviews = normalizationPreviews;
     await this.refreshDailyBackendTimingCache(next);
+    await this.rebuildDailyLinkedTaskProjectionCache();
     if (this.dailyPlanCacheInitialized && previousRevision && document?.revision !== previousRevision) {
       this.dailyDeviceStateVersion += 1;
       this.scheduleDailyStateSave();
@@ -8538,7 +8549,19 @@ export default class ToWritePlugin extends Plugin {
           pending = this.noteTaskService.inspect(targetPath);
           documents.set(targetPath, pending);
         }
-        const document = await pending;
+        let document = await pending;
+        if (document.candidates.some((candidate) => candidate.status !== "done")
+          && !isWorkPoolSourceExcluded(targetPath, this.settings.workPool.excludedSourcePaths)) {
+          const adopted = await this.noteTaskService.adoptMany(
+            document.candidates
+              .filter((candidate) => candidate.status !== "done")
+              .slice(0, 100)
+              .map((candidate) => ({ candidate, patch: { poolTaskRef: candidate.proposedTaskId } }))
+          );
+          for (const item of adopted) await this.noteTaskPoolCoordinator.ensureRegistered(item);
+          document = await this.noteTaskService.inspect(targetPath);
+          documents.set(targetPath, Promise.resolve(document));
+        }
         if (document.tasks.length === 0) continue;
         projections.push({
           id: reference.id,

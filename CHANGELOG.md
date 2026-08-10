@@ -1,5 +1,21 @@
 # Changelog / 更新日志
 
+## 0.3.0-beta.22 - 2026-08-10
+
+- Increased the contrast and hover feedback of the compact Daily task disclosure so the `···` control remains visible in light themes.
+- Added an explicit `↗` action beside linked Daily rows. It opens the associated Obsidian note directly without relying on Live Preview's edit-mode link gesture.
+- Rebuilt linked-note task projections whenever the Daily cache changes, and safely registered previously untracked checkbox tasks in Daily-linked notes before rendering the expandable `child tasks x/y` projection.
+- Kept excluded Work Pool sources excluded from automatic linked-task registration.
+- Added regression coverage for the linked-note open affordance. The production suite now covers 709 tests.
+
+中文摘要：
+
+- 提高日记任务行 `···` 按钮在浅色主题中的对比度，并增加明确的悬停反馈。
+- 关联文档任务旁新增 `↗` 快捷入口，可直接打开对应的 Obsidian 文档，不再依赖 Live Preview 编辑态的链接点击手势。
+- Daily 缓存变化时立即重建关联文档任务投影；关联文档中尚未登记的 checkbox 会先安全进入任务索引，再恢复可展开的“子任务 x/y”。
+- “不整理”来源仍不会被自动登记。
+- 补充关联文档打开入口的回归测试；当前生产测试共 709 项。
+
 ## 0.3.0-beta.21 - 2026-08-10
 
 - Refined Today into compact project groups, clearer task rows, a project-weighted progress bar, and project color customization shared with the 2.7-inch preview.
