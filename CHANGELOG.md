@@ -1,5 +1,19 @@
 # Changelog / 更新日志
 
+## 0.3.0-beta.19 - 2026-08-10
+
+- Fixed Today plans staying empty when an Obsidian Daily Note keeps its checklist in the free-form journal body instead of under a dedicated `ToDo` or `今日计划` heading.
+- Added a safe Daily-source fallback order: populated `ToDo` section, populated plan section, then the current Daily Note body (or the matching date section in fixed-document mode).
+- Parent checkbox rows with nested items remain structural categories and do not inflate progress; pure local-note leaves are normalized into tasks while preserving numbered-list markers, and empty list rows are ignored.
+- Added an exact regression fixture for categorized Chinese Daily Notes containing wikilinks and Markdown links. The production suite now covers 702 tests.
+
+中文摘要：
+
+- 修复日记中的待办没有放在 `ToDo` 或 `今日计划` 标题下时，“今日”仍显示为空的问题。
+- 解析顺序调整为：有内容的 `ToDo` → 有内容的计划区段 → 当天日记正文；固定规划文档则只回退到对应日期区段。
+- 带子项的父级 checkbox 继续作为分类，不计入进度；纯本地笔记链接叶子会保留数字列表标记并自动成为任务，空白列表项会被忽略。
+- 使用中文分类、wikilink 和 Markdown 链接的实际日记结构补充回归测试；当前生产测试共 702 项。
+
 ## 0.3.0-beta.18 - 2026-08-10
 
 - Added mixed Daily checklist support: checkbox category rows, numbered Markdown links, wikilinks, and nested checkbox tasks can now coexist without inflating category rows into task counts.
