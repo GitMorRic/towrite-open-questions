@@ -314,6 +314,22 @@
         </article>
       </div>
 
+      <details class="status-guide">
+        <summary>这些状态分别表示什么？</summary>
+        <div class="status-guide-grid">
+          <article><strong>Workflow 阶段</strong><span>笔记所处的创作流程，例如 Raw、Sparks、Processing。显式 workflow_stage 优先。</span></article>
+          <article><strong>Article Type</strong><span>笔记的内容类型，例如 Project、Tech、MindFlow；它与阶段相互独立。</span></article>
+          <article><strong>问题状态</strong><span>只作用于 ToThink / ToWrite 批注，例如 Open、Resolved、Paused。</span></article>
+          <article><strong>普通 tags</strong><span>可映射到 Workflow 阶段用于索引，不会改写原笔记。</span></article>
+        </div>
+        <footer>
+          <button type="button" on:click={() => api.openPluginSettings?.("workflow")}>配置阶段</button>
+          <button type="button" on:click={() => api.openPluginSettings?.("workflow")}>映射现有标签</button>
+          <button type="button" on:click={openWorkPool}>返回工作池</button>
+          <button type="button" on:click={refresh}><RefreshCw size={14} />刷新索引</button>
+        </footer>
+      </details>
+
       <section class="overview-card">
         <header class="section-heading">
           <div>
@@ -326,7 +342,11 @@
           {/if}
         </header>
         {#if workflowRows.length === 0}
-          <div class="empty-state">尚未配置 Workflow 阶段，或索引中还没有匹配的笔记。</div>
+          <div class="empty-state status-empty">
+            <strong>还没有可统计的 Workflow 笔记</strong>
+            <span>可能尚未启用阶段、tag 映射未匹配，或索引还没有刷新。</span>
+            <div><button type="button" on:click={() => api.openPluginSettings?.("workflow")}>配置阶段与标签映射</button><button type="button" on:click={refresh}>刷新索引</button></div>
+          </div>
         {:else}
           <div class="matrix-wrap">
             <table class="matrix">
@@ -564,6 +584,22 @@
     display: grid;
     gap: 16px;
   }
+
+  .status-guide {
+    border: 1px solid var(--dashboard-border);
+    border-radius: 12px;
+    background: var(--dashboard-raised);
+  }
+
+  .status-guide > summary { padding: 12px 14px; cursor: pointer; font-weight: 650; }
+  .status-guide-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 0 14px 12px; }
+  .status-guide-grid article { display: grid; gap: 3px; padding: 10px; border-radius: 9px; background: var(--dashboard-soft); }
+  .status-guide-grid span { color: var(--text-muted); font-size: .76rem; }
+  .status-guide footer { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 14px; border-top: 1px solid var(--dashboard-border); }
+  .status-guide footer button { display: inline-flex; align-items: center; gap: 5px; }
+  .status-empty { display: grid; place-items: center; gap: 5px; min-height: 130px; padding: 20px; text-align: center; }
+  .status-empty span { color: var(--text-muted); }
+  .status-empty div { display: flex; flex-wrap: wrap; justify-content: center; gap: 7px; }
 
   .metric-grid,
   .type-grid {

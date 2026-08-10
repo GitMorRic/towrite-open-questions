@@ -39,6 +39,78 @@ const question: OpenQuestion = {
 };
 
 describe("external server", () => {
+  it("exposes previous-task migration, focused location, and analytics through versioned Daily routes", async () => {
+    const item = makeDailyItem("todo");
+    const migratePreviousDailyItems = vi.fn(async () => [{
+      schemaVersion: 1 as const,
+      migrationId: "mig_external_1",
+      taskId: item.id,
+      fromDate: "2026-07-23",
+      toDate: "2026-07-24",
+      fromSourcePath: "Daily/2026-07-23.md",
+      toSourcePath: "Daily/2026-07-24.md",
+      migratedAt: "2026-07-23T20:00:00.000Z",
+      destinationTaskId: item.id
+    }]);
+    const analytics = {
+      schemaVersion: 1 as const,
+      from: "2026-07-01",
+      to: "2026-07-31",
+      generatedAt: "2026-07-31T12:00:00.000Z",
+      days: [],
+      totals: {
+        planned: 0, completed: 0, completionRate: 0, activeMs: 0, wallMs: 0,
+        pausedMs: 0, interruptions: 0, positiveWritingUnits: 0, netWritingUnits: 0,
+        notesCreated: 0, notesModified: 0, trackingComplete: true, needsReview: false
+      },
+      byCategory: []
+    };
+    const server = makeServer({
+      getPreviousDailyUnfinished: async () => [item],
+      migratePreviousDailyItems,
+      getDailyAnalyticsRange: async () => analytics,
+      getDailyMonthlySummary: async (month) => ({ ...analytics, month }),
+      locateCurrentFocusedTask: async () => true
+    });
+    const handle = server as unknown as {
+      handleRequest(request: FakeRequest, response: FakeResponse): Promise<void>;
+    };
+
+    const previous = new FakeResponse();
+    await handle.handleRequest(new FakeRequest(
+      "GET",
+      "/api/v1/daily/plans/2026-07-24/previous-unfinished",
+      {}
+    ), previous);
+    expect(previous.statusCode).toBe(200);
+    expect(JSON.parse(previous.body).data).toHaveLength(1);
+
+    const migrated = new FakeResponse();
+    await handle.handleRequest(new FakeRequest(
+      "POST",
+      "/api/v1/daily/plans/2026-07-24/migrate-previous",
+      { selections: [{ id: item.id, revision: item.revision }] }
+    ), migrated);
+    expect(migrated.statusCode).toBe(200);
+    expect(migratePreviousDailyItems).toHaveBeenCalledWith("2026-07-24", [{
+      id: item.id,
+      revision: item.revision
+    }]);
+
+    const range = new FakeResponse();
+    await handle.handleRequest(new FakeRequest(
+      "GET",
+      "/api/v1/daily/analytics?from=2026-07-01&to=2026-07-31",
+      {}
+    ), range);
+    expect(range.statusCode).toBe(200);
+    expect(JSON.parse(range.body).data.from).toBe("2026-07-01");
+
+    const focused = new FakeResponse();
+    await handle.handleRequest(new FakeRequest("POST", "/api/v1/daily/focus/locate", {}), focused);
+    expect(JSON.parse(focused.body)).toEqual({ data: { located: true } });
+  });
+
   it("previews and applies a date-bound Daily normalization contract", async () => {
     const preview = makeNormalizationPreview();
     const calls: Array<{ date: string; preview?: DailyPlanNormalizationPreview }> = [];

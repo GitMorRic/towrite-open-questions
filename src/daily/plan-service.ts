@@ -15,6 +15,7 @@ import {
   type DailyPlanStatus,
   type DailyPlanUpdate,
   type DailySummary,
+  type DailyTaskMigration,
   type DailyTaskRevision,
   type DailyWorkKind
 } from "./types";
@@ -70,6 +71,7 @@ export class DailyPlanConflictError extends Error {
 
 export const DAILY_SUMMARY_START_MARKER = "<!-- towrite:daily-summary:start -->";
 export const DAILY_SUMMARY_END_MARKER = "<!-- towrite:daily-summary:end -->";
+export const DAILY_MIGRATION_MARKER = "towrite:daily-task-migrated";
 
 const TASK_RE = /^(?<indent>\s*)-\s+\[(?<mark>[^\]]*)\]\s+(?<body>.*)$/u;
 const ANY_TASK_RE = /^(?<indent>\s*)(?:[-+*]|\d+[.)])(?<spacing>\s+)(?<checkbox>\[[^\]]*\]\s+.*)$/u;
@@ -449,6 +451,63 @@ export class DailyPlanService {
         throw new Error("Daily plan item could not be verified after removal.");
       }
       return target;
+    });
+  }
+
+  /**
+   * Replaces one leaf commitment with an audit-only comment after its
+   * destination has been created. The marker is deliberately not parsed as a
+   * task, so progress counts cannot include both the old and new copy.
+   */
+  async recordMigration(
+    id: string,
+    expectedRevision: string | DailyTaskRevision,
+    destination: { date: string; taskId: string; migrationId: string; migratedAt?: string },
+    value: Date | string = this.now()
+  ): Promise<DailyTaskMigration> {
+    const fromDate = normalizeDate(value);
+    const toDate = normalizeDate(destination.date);
+    const path = this.pathForDate(fromDate);
+    return this.withPathLock(path, async () => {
+      const current = await this.storage.readText(path);
+      if (current === undefined) {
+        throw new DailyPlanConflictError("not-found", `Daily plan file does not exist: ${path}`);
+      }
+      const document = this.parse(current, path, fromDate);
+      assertWritable(document);
+      const target = document.items.find((item) => item.id === id);
+      if (!target) throw new DailyPlanConflictError("not-found", `Daily plan item does not exist: ${id}`);
+      assertRevision(target, expectedRevision);
+      const node = parseMovableListNodes(current).find((entry) => entry.line === target.line);
+      if (!node) {
+        throw new DailyPlanConflictError("invalid-document", `Daily plan item is not backed by a migratable list node: ${id}`);
+      }
+      if (document.items.some((item) => item.parentTaskId === id)) {
+        throw new DailyPlanConflictError("invalid-state", "A Daily task with child tasks cannot be migrated as one leaf.");
+      }
+      const migratedAt = normalizeAbsoluteIso(destination.migratedAt ?? this.now().toISOString());
+      const indent = /^\s*/u.exec(target.rawLine)?.[0] ?? "";
+      const marker = `${indent}%% ${DAILY_MIGRATION_MARKER} from=${safeMarkerValue(id)} to=${safeMarkerValue(destination.taskId)} date=${toDate} migration=${safeMarkerValue(destination.migrationId)} at=${migratedAt} %%`;
+      const eol = current.includes("\r\n") ? "\r\n" : "\n";
+      const lines = current.split(/\r?\n/u);
+      lines.splice(node.start, Math.max(1, node.end - node.start), marker);
+      const next = lines.join(eol);
+      await this.storage.writeText(path, next);
+      await this.notify(path);
+      if (this.parse(next, path, fromDate).items.some((item) => item.id === id)) {
+        throw new Error("Migrated Daily task still participates in the source plan.");
+      }
+      return {
+        schemaVersion: 1,
+        migrationId: destination.migrationId,
+        taskId: id,
+        fromDate,
+        toDate,
+        fromSourcePath: path,
+        toSourcePath: this.pathForDate(toDate),
+        migratedAt,
+        destinationTaskId: destination.taskId
+      };
     });
   }
 
@@ -1128,7 +1187,7 @@ function formatTaskBlock(
     + (options.tasksCompatibilityOutput
       ? ` ⏳ ${item.scheduledDate || item.date} 📅 ${item.dueDate}`
       : "")
-    + `${completed}${tags}`;
+    + `${completed}${tags} ^${item.id}`;
   const controlLines = [
     `${childIndent}[towrite-kind:: ${item.kind}] [towrite-device:: ${item.devicePolicy}]`
       + (item.scheduledFor ? ` [towrite-at:: ${item.scheduledFor}]` : ""),
@@ -1163,12 +1222,31 @@ function formatTaskBlock(
     )
   ];
   const unknown = extractUnknownContinuation(existingRawBlock, item.id);
-  return [checkbox, ...controlLines, ...unknown, `${childIndent}^${item.id}`].join("\n");
+  return [checkbox, ...controlLines.map(commentOwnedFieldLine), ...unknown].join("\n");
 }
 
 function optionalFieldLine(indent: string, key: string, value: string | undefined): string[] {
   if (!value) return [];
   return [`${indent}[towrite-${key}:: ${safeFieldValue(value, key === "target")}]`];
+}
+
+function commentOwnedFieldLine(value: string): string {
+  const indent = /^\s*/u.exec(value)?.[0] ?? "";
+  return `${indent}%% ${value.slice(indent.length)} %%`;
+}
+
+function safeMarkerValue(value: string): string {
+  const normalized = value.trim().replace(/[^A-Za-z0-9_.:-]/gu, "_");
+  if (!normalized) throw new DailyPlanConflictError("invalid-document", "Migration marker value is empty.");
+  return normalized.slice(0, 180);
+}
+
+function normalizeAbsoluteIso(value: string): string {
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) {
+    throw new DailyPlanConflictError("invalid-document", "Migration time is invalid.");
+  }
+  return parsed.toISOString();
 }
 
 function hasOwnedField(rawBlock: string | undefined, key: string): boolean {
@@ -1188,7 +1266,10 @@ function extractUnknownContinuation(rawBlock: string | undefined, parentBlockId:
       pendingBlank = false;
       continue;
     }
-    const cleaned = line.replace(OWNED_FIELD_RE, "").replace(/\s+$/u, "");
+    const cleaned = line
+      .replace(OWNED_FIELD_RE, "")
+      .replace(/^\s*%%\s*%%\s*$/u, "")
+      .replace(/\s+$/u, "");
     if (!cleaned.trim()) {
       if (!line.trim() && result.length) pendingBlank = true;
       continue;

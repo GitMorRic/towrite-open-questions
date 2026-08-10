@@ -59,6 +59,7 @@ export interface ToWriteUiApi {
   openCapture(): void;
   openAiAssistant(): void;
   openCaptureForQuestion(id: string): void;
+  openPluginSettings?(section?: "workflow" | "questions"): void;
   actOnSuggestion(id: string, action: ProactiveSuggestionAction): Promise<void>;
   syncDeviceHub(): Promise<HubDeviceState | undefined>;
   sendQuestionToDeviceHub(id: string): Promise<HubDeviceState | undefined>;

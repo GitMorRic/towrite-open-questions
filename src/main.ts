@@ -128,6 +128,7 @@ import {
 } from "./capture-bridge";
 import {
   DailyActivityService,
+  buildDailyAnalyticsRange,
   DailyPlanNormalizationService,
   DailyTaskTimerService,
   DailyTimerTransitionCoordinator,
@@ -157,6 +158,8 @@ import {
   dailyAiSummaryPlaceholderInstruction,
   parseConstrainedDailyAiSummary,
   type DailyActivityState,
+  type DailyAnalyticsRange,
+  type DailyMonthlySummary,
   type DailyDashboardSnapshot,
   type DailyDevicePolicy,
   type DailyMarkdownTarget,
@@ -175,6 +178,7 @@ import {
   type DailyPlanStorage,
   type DailyPlanUpdate,
   type DailySummary,
+  type DailyTaskMigration,
   type DailyTaskTimingSnapshot,
   type DailyTimerCorrectionOptions,
   type TaskPoolCreateInput,
@@ -696,6 +700,11 @@ export default class ToWritePlugin extends Plugin {
       handleDeviceGesture: (event) => this.handleLocalDeviceGesture(event),
       getDailySnapshot: () => this.getDailyDashboardSnapshot(),
       getDailyPlan: (date) => this.dailyPlanService.read(date),
+      getPreviousDailyUnfinished: (date) => this.getPreviousDailyUnfinished(date),
+      migratePreviousDailyItems: (date, selections) => this.migratePreviousDailyItems(date, selections),
+      getDailyAnalyticsRange: (from, to) => this.getDailyAnalyticsRange(from, to),
+      getDailyMonthlySummary: (month) => this.getDailyMonthlySummary(month),
+      locateCurrentFocusedTask: () => this.locateCurrentFocusedTask(),
       previewDailyPlanNormalization: (date) => this.previewDailyPlanNormalization(date),
       normalizeDailyPlan: (date, preview) => this.normalizeDailyPlan(date, preview),
       updateDailyPlanMetadata: (date, revision, patch) => this.updateDailyPlanMetadata(date, revision, patch),
@@ -916,6 +925,22 @@ export default class ToWritePlugin extends Plugin {
       name: "Today: open dashboard",
       callback: () => {
         void this.activateDashboard({ activeTab: "today" });
+      }
+    });
+
+    this.addCommand({
+      id: "locate-current-focused-task",
+      name: "Today: locate current focused task",
+      callback: () => {
+        void this.locateCurrentFocusedTask();
+      }
+    });
+
+    this.addCommand({
+      id: "repair-current-daily-task-structure",
+      name: "Today: repair current Daily task structure",
+      callback: () => {
+        void this.repairActiveDailyTaskStructure();
       }
     });
 
@@ -4550,7 +4575,18 @@ export default class ToWritePlugin extends Plugin {
     const directPath = target.path ? normalizePath(target.path) : "";
     const direct = directPath ? this.app.vault.getFileByPath(directPath) : undefined;
     if (direct) return direct;
-    return this.app.metadataCache.getFirstLinkpathDest(target.linkText, sourcePath) ?? undefined;
+    const linked = this.app.metadataCache.getFirstLinkpathDest(target.linkText, sourcePath);
+    if (linked) return linked;
+    // Many writers use Markdown links as note-name links (the same mental
+    // model as wikilinks). Keep standards-compliant relative resolution first,
+    // then let Obsidian resolve the authored basename across the Vault.
+    if (target.kind === "markdown") {
+      const noteName = target.linkText.split("/").pop()?.replace(/\.md$/iu, "").trim();
+      if (noteName) {
+        return this.app.metadataCache.getFirstLinkpathDest(noteName, sourcePath) ?? undefined;
+      }
+    }
+    return undefined;
   }
 
   private dailyTargetLinkText(target: DailyMarkdownTarget): string {
@@ -4569,6 +4605,73 @@ export default class ToWritePlugin extends Plugin {
       await this.activateDashboard();
     }
     return bestEffortFocusObsidian();
+  }
+
+  private async locateCurrentFocusedTask(): Promise<boolean> {
+    await this.refreshDailyPlanCache(false);
+    const current = this.dailyPlanItems.find((item) => item.status === "in-progress")
+      ?? this.dailyPlanItems.find((item) => this.dailyTimingSnapshotForItem(item).status === "running");
+    if (!current) {
+      new Notice(this.settings.language === "zh"
+        ? "当前没有进行中的任务；请先在今日工作台选择并开始一项任务。"
+        : "There is no focused task. Start one from Today first.");
+      await this.activateDashboard({ activeTab: "today" });
+      return false;
+    }
+    const file = this.app.vault.getFileByPath(normalizePath(current.sourcePath));
+    if (!file) {
+      new Notice(this.settings.language === "zh" ? "当前任务的日记原文已不存在。" : "The focused task source no longer exists.");
+      return false;
+    }
+    const leaf = this.app.workspace.getLeaf(false);
+    await leaf.openFile(file, { active: true });
+    if (!(leaf.view instanceof MarkdownView)) return false;
+    const line = Math.max(0, current.line - 1);
+    leaf.view.editor.setCursor({ line, ch: 0 });
+    leaf.view.editor.scrollIntoView({ from: { line, ch: 0 }, to: { line, ch: 0 } }, true);
+    window.setTimeout(() => {
+      const selector = `[data-towrite-task="${CSS.escape(current.id)}"]`;
+      const element = leaf.view.containerEl.querySelector<HTMLElement>(selector);
+      if (!element) return;
+      element.classList.add("towrite-focused-task-flash");
+      window.setTimeout(() => element.classList.remove("towrite-focused-task-flash"), 1_500);
+    }, 40);
+    return true;
+  }
+
+  private async repairActiveDailyTaskStructure(): Promise<void> {
+    const activePath = this.app.workspace.getActiveFile()?.path;
+    if (!activePath) {
+      new Notice("Open a Daily note first.");
+      return;
+    }
+    await this.refreshDailyPlanCache(false);
+    const preview = this.dailyPlanNormalizationPreviews.find((candidate) =>
+      normalizePath(candidate.sourcePath) === normalizePath(activePath)
+    );
+    if (!preview) {
+      new Notice(this.settings.language === "zh" ? "当前笔记不是已配置的日记计划来源。" : "The active note is not a configured Daily source.");
+      return;
+    }
+    if (preview.diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
+      new Notice(this.settings.language === "zh"
+        ? "检测到重复标识或正文冲突，请在工作台查看结构预览后处理。"
+        : "Duplicate ids or content conflicts require review in the Workbench preview.");
+      await this.activateDashboard({ activeTab: "today" });
+      return;
+    }
+    let repaired = 0;
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const next = await this.dailyPlanNormalizationService.preview(preview.date);
+      const edit = next.edits.find((candidate) => shouldAutomaticallyNormalizeDailyEdit(candidate, next.sourcePath));
+      if (!edit) break;
+      await this.dailyPlanNormalizationService.normalizeTask(next, edit.line);
+      repaired += 1;
+    }
+    await this.refreshDailyPlanCache();
+    new Notice(this.settings.language === "zh"
+      ? (repaired ? `已安全修复 ${repaired} 条日记任务。` : "当前日记任务结构已经正常。")
+      : (repaired ? `Safely repaired ${repaired} Daily task(s).` : "The Daily task structure is already valid."));
   }
 
   private async openTaskPoolSource(): Promise<boolean> {
@@ -6435,6 +6538,74 @@ export default class ToWritePlugin extends Plugin {
         }))
       }
     };
+  }
+
+  private async getDailyAnalyticsRange(from: string, to: string): Promise<DailyAnalyticsRange> {
+    const dates = inclusiveDailyDates(from, to, 370);
+    const days = [];
+    for (const date of dates) {
+      const snapshot = await this.getDailyDashboardSnapshot(date);
+      days.push({
+        snapshot,
+        timings: Object.fromEntries(snapshot.plan.items.map((item) => [
+          item.id,
+          this.dailyTimingSnapshotForItem(item)
+        ]))
+      });
+    }
+    return buildDailyAnalyticsRange(
+      days,
+      this.dailyTaskTimer?.core.getEvents() ?? [],
+      new Date()
+    );
+  }
+
+  private async getDailyMonthlySummary(month: string): Promise<DailyMonthlySummary> {
+    const normalized = /^\d{4}-\d{2}$/u.test(month)
+      ? month
+      : formatDailyInputDate(new Date()).slice(0, 7);
+    const start = `${normalized}-01`;
+    const first = new Date(`${start}T12:00:00`);
+    const next = new Date(first);
+    next.setMonth(next.getMonth() + 1, 1);
+    next.setDate(next.getDate() - 1);
+    const end = formatDailyInputDate(next);
+    const range = await this.getDailyAnalyticsRange(start, end);
+    return { ...range, month: normalized };
+  }
+
+  private async getPreviousDailyUnfinished(date: string): Promise<DailyPlanItem[]> {
+    const targetDate = formatDailyInputDate(date);
+    const previous = new Date(`${targetDate}T12:00:00`);
+    previous.setDate(previous.getDate() - 1);
+    return (await this.dailyPlanService.list(formatDailyInputDate(previous)))
+      .filter((item) => item.status !== "done");
+  }
+
+  private async migratePreviousDailyItems(
+    date: string,
+    selections: Array<{ id: string; revision: DailyTaskRevision }>
+  ): Promise<DailyTaskMigration[]> {
+    const targetDate = formatDailyInputDate(date);
+    const previous = new Date(`${targetDate}T12:00:00`);
+    previous.setDate(previous.getDate() - 1);
+    const sourceDate = formatDailyInputDate(previous);
+    const validated: DailyPlanItem[] = [];
+    for (const selection of selections) {
+      const item = await this.dailyPlanService.get(selection.id, sourceDate);
+      if (!item || item.revision.value !== selection.revision.value) {
+        throw new DailyPlanConflictError(
+          "revision-changed",
+          "The previous Daily task changed after the migration preview was opened."
+        );
+      }
+      validated.push(item);
+    }
+    const migrations: DailyTaskMigration[] = [];
+    for (const item of validated) {
+      migrations.push(await this.moveDailyItemToTomorrow(item.id, item.revision));
+    }
+    return migrations;
   }
 
   private dailyTimingSnapshotForItem(
@@ -9005,6 +9176,10 @@ export default class ToWritePlugin extends Plugin {
       moveItemToTomorrow: async (id, revision) => {
         await this.moveDailyItemToTomorrow(id, revision);
       },
+      getPreviousUnfinished: (date) => this.getPreviousDailyUnfinished(formatDailyInputDate(date)),
+      migratePreviousItems: async (date, selections) => {
+        await this.migratePreviousDailyItems(formatDailyInputDate(date), selections);
+      },
       dropDailyItem: async (id, revision) => {
         await this.dropDailyItem(id, revision);
       },
@@ -9107,6 +9282,8 @@ export default class ToWritePlugin extends Plugin {
         await this.syncTaskPoolReopen(reopened);
       },
       getItemTiming: (id) => this.getDailyItemTiming(id),
+      getAnalyticsRange: (from, to) => this.getDailyAnalyticsRange(from, to),
+      getMonthlySummary: (month) => this.getDailyMonthlySummary(month),
       listItemTimerEvents: async (id) => {
         const item = await this.findDailyItem(id);
         if (!item) throw new DailyPlanConflictError("not-found", `Daily item does not exist: ${id}`);
@@ -9325,7 +9502,7 @@ export default class ToWritePlugin extends Plugin {
   private async moveDailyItemToTomorrow(
     id: string,
     revision: DailyTaskRevision
-  ): Promise<void> {
+  ): Promise<DailyTaskMigration> {
     const date = await this.dateForDailyItem(id, revision);
     const item = await this.dailyPlanService.get(id, date);
     if (!item || item.revision.value !== revision.value) {
@@ -9337,21 +9514,24 @@ export default class ToWritePlugin extends Plugin {
     const tomorrowDate = formatDailyInputDate(tomorrow);
     let createdTomorrow: DailyPlanItem | undefined;
     let reassignedPool: TaskPoolItem | undefined;
+    let migration: DailyTaskMigration | undefined;
     try {
       if (item.taskRef) {
         const poolTask = await this.taskPoolService.get(item.taskRef);
         if (!poolTask) throw new TaskPoolConflictError("not-found", `Task Pool item does not exist: ${item.taskRef}`);
         this.assertCurrentTaskPoolAssignment(poolTask, item);
-        const assignment = await this.taskPoolService.assignToDate(
+        // Preserve the Daily id when a commitment moves between dates. Timer
+        // events and already-issued device references are keyed by this id;
+        // changing it would silently split one task's history in two.
+        const assignment = await this.taskPoolService.restoreAssignment(
           poolTask.taskId,
           poolTask.revision,
-          tomorrowDate
+          tomorrowDate,
+          item.id
         );
         reassignedPool = assignment.task;
-        const dailyId = assignment.assignment.assignmentId;
-        if (!dailyId) throw new Error("Task Pool assignment did not produce a stable Daily id.");
         createdTomorrow = await this.dailyPlanService.create({
-          id: dailyId,
+          id: item.id,
           date: tomorrowDate,
           text: poolTask.text,
           kind: item.kind,
@@ -9369,6 +9549,7 @@ export default class ToWritePlugin extends Plugin {
         });
       } else {
         createdTomorrow = await this.dailyPlanService.create({
+          id: item.id,
           date: tomorrowDate,
           text: item.text,
           kind: item.kind,
@@ -9388,7 +9569,12 @@ export default class ToWritePlugin extends Plugin {
           minimum: item.minimum
         });
       }
-      await this.dailyPlanService.remove(item.id, item.revision, date);
+      if (!createdTomorrow) throw new Error("Daily migration did not create its destination task.");
+      migration = await this.dailyPlanService.recordMigration(item.id, item.revision, {
+        date: tomorrowDate,
+        taskId: createdTomorrow.id,
+        migrationId: `mig_${randomTokenFragment()}`
+      }, date);
     } catch (error) {
       if (createdTomorrow) {
         try {
@@ -9416,6 +9602,8 @@ export default class ToWritePlugin extends Plugin {
       throw error;
     }
     await this.refreshDailyPlanCache();
+    if (!migration) throw new Error("Daily migration did not produce an audit record.");
+    return migration;
   }
 
   private async dropDailyItem(id: string, revision: DailyTaskRevision): Promise<void> {
@@ -11040,6 +11228,13 @@ export default class ToWritePlugin extends Plugin {
       openCapture: () => this.openCaptureModal({ entryPoint: "sidebar" }),
       openAiAssistant: () => this.openAiAssistant(),
       openCaptureForQuestion: (id) => this.openCaptureForQuestion(id),
+      openPluginSettings: () => {
+        const setting = (this.app as unknown as {
+          setting?: { open(): void; openTabById(id: string): void };
+        }).setting;
+        setting?.open();
+        setting?.openTabById(this.manifest.id);
+      },
       actOnSuggestion: (id, action) => this.actOnSuggestion(id, action),
       syncDeviceHub: () => this.syncDeviceHub(false),
       sendQuestionToDeviceHub: (id) => this.sendQuestionToDeviceHub(id),
@@ -11480,6 +11675,11 @@ export default class ToWritePlugin extends Plugin {
       if (eventTargetsMarkdownEditor(event)) {
         notifyActiveContext();
       }
+    });
+    this.registerDomEvent(activeDocument, "dblclick", (event) => {
+      if (!isBlankMarkdownEditorDoubleClick(event)) return;
+      event.preventDefault();
+      void this.locateCurrentFocusedTask();
     });
   }
 
@@ -12682,6 +12882,20 @@ function formatDailyInputDate(value: Date | string): string {
   ].join("-");
 }
 
+function inclusiveDailyDates(from: string, to: string, maxDays: number): string[] {
+  const start = new Date(`${formatDailyInputDate(from)}T12:00:00`);
+  const end = new Date(`${formatDailyInputDate(to)}T12:00:00`);
+  if (start.getTime() > end.getTime()) {
+    throw new Error("Daily analytics range starts after it ends.");
+  }
+  const result: string[] = [];
+  for (let current = start; current.getTime() <= end.getTime(); current = new Date(current.getFullYear(), current.getMonth(), current.getDate() + 1, 12)) {
+    if (result.length >= maxDays) throw new Error(`Daily analytics range exceeds ${maxDays} days.`);
+    result.push(formatDailyInputDate(current));
+  }
+  return result;
+}
+
 function dailyDateFromPath(value: string | undefined): string | undefined {
   const match = /(?:^|\/)(\d{4}-\d{2}-\d{2})\.md$/iu.exec(value?.replace(/\\/gu, "/").trim() ?? "");
   return match?.[1];
@@ -12869,6 +13083,18 @@ function isEditorNavigationKey(key: string): boolean {
 function eventTargetsMarkdownEditor(event: Event): boolean {
   const target = event.target as { closest?: (selector: string) => Element | null } | null;
   return typeof target?.closest === "function" && Boolean(target.closest(".cm-editor"));
+}
+
+function isBlankMarkdownEditorDoubleClick(event: MouseEvent): boolean {
+  if (event.button !== 0) return false;
+  const selection = typeof window.getSelection === "function" ? window.getSelection() : null;
+  if (selection && !selection.isCollapsed) return false;
+  const target = event.target instanceof HTMLElement ? event.target : null;
+  if (!target?.closest(".markdown-source-view .cm-editor")) return false;
+  if (target.closest("a, button, input, textarea, select, [role='button'], .cm-widgetBuffer")) return false;
+  const line = target.closest<HTMLElement>(".cm-line");
+  if (line && line.textContent?.trim()) return false;
+  return Boolean(line || target.closest(".cm-content, .cm-scroller"));
 }
 
 function mergeStatusOptions(options: ToWriteSettings["statusOptions"]): ToWriteSettings["statusOptions"] {

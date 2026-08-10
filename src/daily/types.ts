@@ -308,6 +308,32 @@ export interface DailyPlanNormalizationUndoResult {
   revision: string;
 }
 
+/** A focused repair view for malformed task identities in one Daily source. */
+export interface DailyTaskRepairPreview {
+  schemaVersion: 1;
+  date: string;
+  sourcePath: string;
+  expectedRevision: string;
+  /** Missing IDs that can be added without guessing another task's identity. */
+  recoverable: DailyPlanNormalizationEdit[];
+  /** Duplicate/ambiguous identities that require the user to inspect the diff. */
+  blocked: DailyPlanHierarchyDiagnostic[];
+  diff: string;
+}
+
+/** Auditable move of one active commitment between Daily Markdown documents. */
+export interface DailyTaskMigration {
+  schemaVersion: 1;
+  migrationId: string;
+  taskId: string;
+  fromDate: string;
+  toDate: string;
+  fromSourcePath: string;
+  toSourcePath: string;
+  migratedAt: string;
+  destinationTaskId: string;
+}
+
 export interface DailyPlanCreateInput {
   id?: string;
   date?: string | Date;
@@ -496,6 +522,50 @@ export interface DailyDashboardSnapshot {
   activity: DailyActivityAggregate;
   summary: DailySummary;
   trackingStartedAt: string;
+}
+
+export interface DailyAnalyticsDay {
+  date: string;
+  planned: number;
+  completed: number;
+  completionRate: number;
+  firstStartedAt?: string;
+  lastCompletedAt?: string;
+  activeMs: number;
+  wallMs: number;
+  pausedMs: number;
+  interruptions: number;
+  positiveWritingUnits: number;
+  netWritingUnits: number;
+  notesCreated: number;
+  notesModified: number;
+  trackingComplete: boolean;
+  needsReview: boolean;
+}
+
+export interface DailyAnalyticsBreakdown {
+  id: string;
+  label: string;
+  planned: number;
+  completed: number;
+  activeMs: number;
+}
+
+export interface DailyAnalyticsRange {
+  schemaVersion: 1;
+  from: string;
+  to: string;
+  generatedAt: string;
+  days: DailyAnalyticsDay[];
+  totals: Omit<DailyAnalyticsDay, "date" | "firstStartedAt" | "lastCompletedAt"> & {
+    firstStartedAt?: string;
+    lastCompletedAt?: string;
+  };
+  byCategory: DailyAnalyticsBreakdown[];
+}
+
+export interface DailyMonthlySummary extends DailyAnalyticsRange {
+  month: string;
 }
 
 export interface DailyDocumentMeasurementRequest {

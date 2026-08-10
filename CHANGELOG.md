@@ -1,5 +1,25 @@
 # Changelog / 更新日志
 
+## 0.3.0-beta.23 - 2026-08-10
+
+- Protected Daily task IDs and ToWrite-owned metadata as compact CodeMirror atomic ranges in Source and Live Preview modes, preventing accidental cursor entry or deletion while keeping Markdown as the source of truth.
+- Added safe Daily task-structure repair, unified Obsidian/Wikilink/relative Markdown target resolution, and kept valid task transitions available when unrelated new rows are still missing stable IDs.
+- Added revision-checked migration of yesterday's unfinished work into Today, preserving task identity, timing, device references, and a compact audit marker in the previous Daily Note.
+- Added the global “locate current focused task” command and blank-editor double-click shortcut, with precise source opening, scrolling, and temporary focus highlighting.
+- Added deterministic daily and natural-month analytics for completion, active/pause time, interruptions, writing units, note activity, and project/category distribution without collecting task or note contents.
+- Clarified the Status surface with Workflow, Article Type, question-state, and tag-mapping explanations plus direct configuration, refresh, and Work Pool navigation actions.
+- Extended the versioned Daily API with previous-task migration, focus location, and daily/monthly analytics endpoints. The production suite now covers 713 tests.
+
+中文摘要：
+
+- 日记任务 ID 与 ToWrite 技术字段现在会在源码模式和实时预览中折叠为不可误入、不可误删的原子区域，同时继续保存在可读 Markdown 中。
+- 新增安全的日记任务结构修复，统一 Wikilink、相对 Markdown 链接、父分类与任务目标解析；其他新任务尚未补齐 ID 时，不再阻塞已有任务开始。
+- 新增“处理昨日未完成”，通过修订检查把任务迁移到今天，保留原任务身份、计时、设备引用，并在昨天的日记中留下紧凑迁移记录。
+- 新增“定位当前专注任务”命令和 Markdown 空白处双击定位，自动打开来源、滚动到任务并短暂高亮。
+- 新增不采集正文的每日/月度统计，包括完成率、投入与暂停时间、中断、写作单位、笔记活动及项目/类别分布。
+- 状态页补充 Workflow、文章类型、问题状态和 tag 映射说明，并提供配置、刷新及返回工作池入口。
+- Daily API 增加昨日任务迁移、专注定位和日/月统计接口；生产测试现覆盖 713 项。
+
 ## 0.3.0-beta.22 - 2026-08-10
 
 - Increased the contrast and hover feedback of the compact Daily task disclosure so the `···` control remains visible in light themes.

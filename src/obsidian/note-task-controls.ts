@@ -53,12 +53,15 @@ export interface NoteTaskControlsOptions {
  * path.
  */
 export function createNoteTaskControls(options: NoteTaskControlsOptions): Extension {
-  return ViewPlugin.fromClass(
+  const plugin = ViewPlugin.fromClass(
     class {
       decorations: DecorationSet;
+      atomic: DecorationSet;
 
       constructor(view: EditorView) {
-        this.decorations = buildControls(view, options);
+        const built = buildControls(view, options);
+        this.decorations = built.decorations;
+        this.atomic = built.atomic;
       }
 
       update(update: ViewUpdate): void {
@@ -71,24 +74,35 @@ export function createNoteTaskControls(options: NoteTaskControlsOptions): Extens
           selectionChanged: update.selectionSet
         });
         if (strategy === "rebuild") {
-          this.decorations = buildControls(update.view, options);
+          const built = buildControls(update.view, options);
+          this.decorations = built.decorations;
+          this.atomic = built.atomic;
         } else if (strategy === "map") {
           this.decorations = this.decorations.map(update.changes);
+          this.atomic = this.atomic.map(update.changes);
         }
       }
     },
     { decorations: (plugin) => plugin.decorations }
   );
+  return [plugin, EditorView.atomicRanges.of((view) => view.plugin(plugin)?.atomic ?? Decoration.none)];
 }
 
-function buildControls(view: EditorView, options: NoteTaskControlsOptions): DecorationSet {
+function buildControls(
+  view: EditorView,
+  options: NoteTaskControlsOptions
+): { decorations: DecorationSet; atomic: DecorationSet } {
   const builder = new RangeSetBuilder<Decoration>();
-  if (!options.isEnabled()) return builder.finish();
+  const atomicBuilder = new RangeSetBuilder<Decoration>();
+  if (!options.isEnabled()) return { decorations: builder.finish(), atomic: atomicBuilder.finish() };
   const activePath = options.getActiveFilePath();
   const document = options.getDocument();
-  if (!activePath || !document || document.sourcePath !== activePath) return builder.finish();
+  if (!activePath || !document || document.sourcePath !== activePath) {
+    return { decorations: builder.finish(), atomic: atomicBuilder.finish() };
+  }
 
   const entries: Array<{ from: number; to: number; decoration: Decoration }> = [];
+  const atomicEntries: Array<{ from: number; to: number; decoration: Decoration }> = [];
   for (const item of document.tasks) {
     if (item.line < 1 || item.line > view.state.doc.lines) continue;
     const line = view.state.doc.line(item.line);
@@ -117,6 +131,7 @@ function buildControls(view: EditorView, options: NoteTaskControlsOptions): Deco
             inclusive: false
           })
         });
+        atomicEntries.push({ from, to, decoration: Decoration.mark({ class: "towrite-daily-technical-atomic" }) });
       }
     }
     entries.push({
@@ -146,6 +161,13 @@ function buildControls(view: EditorView, options: NoteTaskControlsOptions): Deco
           }
         })
       });
+      if (metadataLine.to > metadataLine.from) {
+        atomicEntries.push({
+          from: metadataLine.from,
+          to: metadataLine.to,
+          decoration: Decoration.mark({ class: "towrite-daily-technical-atomic" })
+        });
+      }
     }
   }
 
@@ -175,7 +197,9 @@ function buildControls(view: EditorView, options: NoteTaskControlsOptions): Deco
 
   entries.sort((left, right) => left.from - right.from || left.to - right.to);
   for (const entry of entries) builder.add(entry.from, entry.to, entry.decoration);
-  return builder.finish();
+  atomicEntries.sort((left, right) => left.from - right.from || left.to - right.to);
+  for (const entry of atomicEntries) atomicBuilder.add(entry.from, entry.to, entry.decoration);
+  return { decorations: builder.finish(), atomic: atomicBuilder.finish() };
 }
 
 class TrackedNoteTaskWidget extends WidgetType {

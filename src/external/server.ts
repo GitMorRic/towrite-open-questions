@@ -57,6 +57,8 @@ import {
 import {
   DailyPlanConflictError,
   type DailyDashboardSnapshot,
+  type DailyAnalyticsRange,
+  type DailyMonthlySummary,
   type DailyPlanCreateInput,
   type DailyPlanDocument,
   type DailyPlanItem,
@@ -65,6 +67,7 @@ import {
   type DailyPlanNormalizationResult,
   type DailyPlanUpdate,
   type DailySummary,
+  type DailyTaskMigration,
   type DailyTaskRevision
 } from "../daily";
 import {
@@ -154,6 +157,14 @@ interface ExternalApiServerOptions {
   ): DeviceCommandExecutionResult | undefined | Promise<DeviceCommandExecutionResult | undefined>;
   getDailySnapshot?(): Promise<DailyDashboardSnapshot>;
   getDailyPlan?(date: string): Promise<DailyPlanDocument>;
+  getPreviousDailyUnfinished?(date: string): Promise<DailyPlanItem[]>;
+  migratePreviousDailyItems?(
+    date: string,
+    selections: Array<{ id: string; revision: DailyTaskRevision }>
+  ): Promise<DailyTaskMigration[]>;
+  getDailyAnalyticsRange?(from: string, to: string): Promise<DailyAnalyticsRange>;
+  getDailyMonthlySummary?(month: string): Promise<DailyMonthlySummary>;
+  locateCurrentFocusedTask?(): Promise<boolean>;
   previewDailyPlanNormalization?(date: string): Promise<DailyPlanNormalizationPreview>;
   normalizeDailyPlan?(
     date: string,
@@ -571,6 +582,40 @@ export class ToWriteExternalApiServer {
       return;
     }
 
+    const previousDailyMatch =
+      /^\/api\/v1\/daily\/plans\/(\d{4}-\d{2}-\d{2})\/previous-unfinished$/u.exec(url.pathname);
+    if (previousDailyMatch) {
+      if (!this.options.getPreviousDailyUnfinished) {
+        throw new ExternalApiError(501, "Previous Daily tasks are unavailable.");
+      }
+      this.writeJson(response, 200, {
+        data: await this.options.getPreviousDailyUnfinished(previousDailyMatch[1])
+      });
+      return;
+    }
+
+    if (url.pathname === "/api/v1/daily/analytics") {
+      if (!this.options.getDailyAnalyticsRange) {
+        throw new ExternalApiError(501, "Daily analytics are unavailable.");
+      }
+      const from = requireDateQuery(url, "from");
+      const to = requireDateQuery(url, "to");
+      this.writeJson(response, 200, { data: await this.options.getDailyAnalyticsRange(from, to) });
+      return;
+    }
+
+    if (url.pathname === "/api/v1/daily/analytics/monthly") {
+      if (!this.options.getDailyMonthlySummary) {
+        throw new ExternalApiError(501, "Monthly Daily analytics are unavailable.");
+      }
+      const month = url.searchParams.get("month")?.trim() ?? "";
+      if (!/^\d{4}-\d{2}$/u.test(month)) {
+        throw new ExternalApiError(400, "A month in YYYY-MM format is required.");
+      }
+      this.writeJson(response, 200, { data: await this.options.getDailyMonthlySummary(month) });
+      return;
+    }
+
     const dailyTimingMatch = /^\/api\/v1\/daily\/items\/([^/]+)\/timing$/u.exec(url.pathname);
     if (dailyTimingMatch) {
       if (!this.options.getDailyItemTiming) {
@@ -714,6 +759,30 @@ export class ToWriteExternalApiServer {
   }
 
   private async handlePost(request: HttpRequest, response: HttpResponse, url: URL): Promise<void> {
+    const migratePreviousMatch =
+      /^\/api\/v1\/daily\/plans\/(\d{4}-\d{2}-\d{2})\/migrate-previous$/u.exec(url.pathname);
+    if (migratePreviousMatch) {
+      if (!this.options.migratePreviousDailyItems) {
+        throw new ExternalApiError(501, "Previous Daily task migration is unavailable.");
+      }
+      const body = await readJsonBody(request);
+      const selections = readDailyMigrationSelections(body);
+      this.writeJson(response, 200, {
+        data: await this.options.migratePreviousDailyItems(migratePreviousMatch[1], selections)
+      });
+      return;
+    }
+
+    if (url.pathname === "/api/v1/daily/focus/locate") {
+      if (!this.options.locateCurrentFocusedTask) {
+        throw new ExternalApiError(501, "Focused task location is unavailable.");
+      }
+      this.writeJson(response, 200, {
+        data: { located: await this.options.locateCurrentFocusedTask() }
+      });
+      return;
+    }
+
     const normalizationPreviewMatch =
       /^\/api\/v1\/daily\/plans\/(\d{4}-\d{2}-\d{2})\/normalization-preview$/u.exec(url.pathname);
     if (normalizationPreviewMatch) {
@@ -2043,6 +2112,34 @@ function readDailyRevision(body: Record<string, unknown>): DailyTaskRevision {
     }
   }
   throw new ExternalApiError(400, "A daily task revision is required.");
+}
+
+function readDailyMigrationSelections(
+  body: Record<string, unknown>
+): Array<{ id: string; revision: DailyTaskRevision }> {
+  if (!Array.isArray(body.selections) || body.selections.length === 0) {
+    throw new ExternalApiError(400, "At least one previous Daily task selection is required.");
+  }
+  if (body.selections.length > 100) {
+    throw new ExternalApiError(400, "At most 100 Daily tasks can be migrated at once.");
+  }
+  return body.selections.map((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new ExternalApiError(400, "Each Daily migration selection must be an object.");
+    }
+    const record = value as Record<string, unknown>;
+    const id = readOptionalText(record, "id");
+    if (!id) throw new ExternalApiError(400, "Each Daily migration selection requires an id.");
+    return { id, revision: readDailyRevision(record) };
+  });
+}
+
+function requireDateQuery(url: URL, key: string): string {
+  const value = url.searchParams.get(key)?.trim() ?? "";
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(value)) {
+    throw new ExternalApiError(400, `${key} must use YYYY-MM-DD format.`);
+  }
+  return value;
 }
 
 function readDailyNormalizationPreview(value: unknown): DailyPlanNormalizationPreview {

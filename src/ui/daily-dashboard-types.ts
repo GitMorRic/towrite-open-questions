@@ -8,6 +8,8 @@ import type {
   DailyPlanNormalizationPreview,
   DailyPlanNormalizationResult,
   DailyPlanNormalizationUndoResult,
+  DailyAnalyticsRange,
+  DailyMonthlySummary,
   DailyPlanPriority,
   DailyPlanUpdate,
   DailySummary,
@@ -45,6 +47,8 @@ export type {
   DailyPlanNormalizationPreview,
   DailyPlanNormalizationResult,
   DailyPlanNormalizationUndoResult,
+  DailyAnalyticsRange,
+  DailyMonthlySummary,
   DailyPlanStatus,
   DailyPlanUpdate,
   DailyPlanPriority,
@@ -224,6 +228,11 @@ export interface DailyDashboardAdapter {
   ): void | Promise<void>;
   returnItemToPool?(id: string, revision: DailyTaskRevision): void | Promise<void>;
   moveItemToTomorrow?(id: string, revision: DailyTaskRevision): void | Promise<void>;
+  getPreviousUnfinished?(date: string): DailyPlanItem[] | Promise<DailyPlanItem[]>;
+  migratePreviousItems?(
+    date: string,
+    items: Array<{ id: string; revision: DailyTaskRevision }>
+  ): void | Promise<void>;
   dropDailyItem?(id: string, revision: DailyTaskRevision): void | Promise<void>;
   getPlanHierarchy?(date: string): DailyPlanHierarchy | Promise<DailyPlanHierarchy>;
   getNormalizationPreview?(date: string): DailyPlanNormalizationPreview | Promise<DailyPlanNormalizationPreview>;
@@ -266,6 +275,8 @@ export interface DailyDashboardAdapter {
     id: string,
     estimateMinutes?: number
   ): DailyTaskTimingSnapshot | Promise<DailyTaskTimingSnapshot>;
+  getAnalyticsRange?(from: string, to: string): DailyAnalyticsRange | Promise<DailyAnalyticsRange>;
+  getMonthlySummary?(month: string): DailyMonthlySummary | Promise<DailyMonthlySummary>;
   listItemTimerEvents?(id: string): DailyTimerEvent[] | Promise<DailyTimerEvent[]>;
   correctItemTiming?(
     id: string,

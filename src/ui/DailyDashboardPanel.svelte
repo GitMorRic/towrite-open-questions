@@ -51,6 +51,8 @@
     DailyPlanItemPresentation,
     DailyPlanMetadataPresentation,
     DailyPlanNormalizationPreview,
+    DailyAnalyticsRange,
+    DailyMonthlySummary,
     DailyPlanningCandidate,
     DailyPlanPriority,
     DailySummaryPresentation,
@@ -164,12 +166,44 @@
   let editingProgressProjectId = "";
   let editingProgressProjectLabel = "";
   let editingProgressProjectColor = "#7c6ee6";
+  let previousUnfinished: DailyPlanItem[] = [];
+  let selectedPreviousIds = new Set<string>();
+  let analyticsRange: DailyAnalyticsRange | undefined;
+  let monthlySummary: DailyMonthlySummary | undefined;
   let unsubscribe: (() => void) | undefined;
   let refreshSequence = 0;
 
   function switchSurface(next: "today" | "pool" | "review"): void {
     surface = next;
     onSurfaceChange?.(next);
+    if (next === "review") void loadAnalytics();
+  }
+
+  async function loadAnalytics(): Promise<void> {
+    if (!dailyApi) return;
+    const month = selectedDate.slice(0, 7);
+    const [range, monthly] = await Promise.all([
+      dailyApi.getAnalyticsRange?.(selectedDate, selectedDate),
+      dailyApi.getMonthlySummary?.(month)
+    ]);
+    analyticsRange = range;
+    monthlySummary = monthly;
+  }
+
+  function togglePreviousSelection(id: string): void {
+    const next = new Set(selectedPreviousIds);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    selectedPreviousIds = next;
+  }
+
+  async function migrateSelectedPrevious(): Promise<void> {
+    const selected = previousUnfinished.filter((item) => selectedPreviousIds.has(item.id));
+    if (!selected.length || !dailyApi?.migratePreviousItems) return;
+    await run("migrate-previous", () => dailyApi?.migratePreviousItems?.(
+      selectedDate,
+      selected.map((item) => ({ id: item.id, revision: item.revision }))
+    ));
   }
 
   onMount(() => {
@@ -425,6 +459,15 @@
         )
       );
       themeDraft = metadata.theme ?? "";
+      if (planningDay === "today" && dailyApi.getPreviousUnfinished) {
+        previousUnfinished = await dailyApi.getPreviousUnfinished(date);
+        const available = new Set(previousUnfinished.map((item) => item.id));
+        const retained = [...selectedPreviousIds].filter((id) => available.has(id));
+        selectedPreviousIds = new Set(retained.length ? retained : previousUnfinished.map((item) => item.id));
+      } else {
+        previousUnfinished = [];
+        selectedPreviousIds = new Set();
+      }
       if (previewItemId && !snapshot?.plan.items.some((item) => item.id === previewItemId)) {
         previewItemId = "";
       }
@@ -1037,6 +1080,24 @@
     return value > 0 ? `+${value}` : String(value);
   }
 
+  function formatAnalyticsDuration(milliseconds: number): string {
+    const minutes = Math.max(0, Math.round(milliseconds / 60_000));
+    if (minutes < 60) return `${minutes} 分钟`;
+    const hours = Math.floor(minutes / 60);
+    const rest = minutes % 60;
+    return rest ? `${hours} 小时 ${rest} 分` : `${hours} 小时`;
+  }
+
+  function formatAnalyticsClock(value: string | undefined): string {
+    if (!value) return "—";
+    const timestamp = Date.parse(value);
+    if (!Number.isFinite(timestamp)) return "—";
+    return new Intl.DateTimeFormat("zh-CN", {
+      hour: "2-digit",
+      minute: "2-digit"
+    }).format(new Date(timestamp));
+  }
+
   function formatDateTime(value: string | undefined): string {
     const timestamp = Date.parse(value ?? "");
     if (!Number.isFinite(timestamp)) return "";
@@ -1190,6 +1251,35 @@
       {/if}
       {/if}
     </nav>
+
+    {#if planningDay === "today" && previousUnfinished.length > 0 && dailyApi.migratePreviousItems}
+      <details class="previous-tasks-card">
+        <summary>
+          <span><History size={15} /><strong>处理昨日未完成</strong><small>{previousUnfinished.length} 项可迁移，原日记会保留迁移记录</small></span>
+          <ChevronDown size={15} />
+        </summary>
+        <div class="previous-task-list">
+          {#each previousUnfinished as item (item.id)}
+            <label>
+              <input
+                type="checkbox"
+                checked={selectedPreviousIds.has(item.id)}
+                on:change={() => togglePreviousSelection(item.id)}
+              />
+              <span>{compactTaskText(item.text)}</span>
+            </label>
+          {/each}
+        </div>
+        <footer>
+          <button
+            class="primary"
+            type="button"
+            disabled={Boolean(busy) || selectedPreviousIds.size === 0}
+            on:click={migrateSelectedPrevious}
+          >迁移所选 {selectedPreviousIds.size} 项到今天</button>
+        </footer>
+      </details>
+    {/if}
 
     <section class="focus-card" aria-label={planningDay === "today" ? "今日概要" : "明日概要"}>
       <header>
@@ -2126,6 +2216,34 @@
           <span><BarChart3 size={16} /><strong>数据与复盘</strong><small>写作统计、活动和今日总结放在第二层</small></span>
           <ChevronDown size={16} />
         </summary>
+        {#if analyticsRange}
+          <section class="analytics-overview" aria-label="每日投入统计">
+            <article><span>完成率</span><strong>{Math.round(analyticsRange.totals.completionRate * 100)}%</strong><small>{analyticsRange.totals.completed}/{analyticsRange.totals.planned} 项</small></article>
+            <article><span>实际投入</span><strong>{formatAnalyticsDuration(analyticsRange.totals.activeMs)}</strong><small>暂停 {formatAnalyticsDuration(analyticsRange.totals.pausedMs)}</small></article>
+            <article><span>首次开始</span><strong>{formatAnalyticsClock(analyticsRange.totals.firstStartedAt)}</strong><small>最后完成 {formatAnalyticsClock(analyticsRange.totals.lastCompletedAt)}</small></article>
+            <article><span>中断</span><strong>{analyticsRange.totals.interruptions}</strong><small>{analyticsRange.totals.needsReview ? "有待确认会话" : "计时账本正常"}</small></article>
+          </section>
+        {/if}
+        {#if monthlySummary}
+          <section class="monthly-analytics" aria-label="月度统计">
+            <header><strong>{monthlySummary.month} 月度</strong><span>{formatAnalyticsDuration(monthlySummary.totals.activeMs)} · 完成 {monthlySummary.totals.completed} 项</span></header>
+            <div class="monthly-trend">
+              {#each monthlySummary.days as day (day.date)}
+                <i
+                  title={`${day.date} · ${day.completed}/${day.planned} · ${formatAnalyticsDuration(day.activeMs)}`}
+                  style={`--day-progress:${Math.max(4, Math.round(day.completionRate * 100))}%`}
+                ></i>
+              {/each}
+            </div>
+            {#if monthlySummary.byCategory.length > 0}
+              <div class="analytics-breakdown">
+                {#each monthlySummary.byCategory.slice(0, 8) as entry (entry.id)}
+                  <span><b>{entry.label}</b><em>{entry.completed}/{entry.planned}</em><small>{formatAnalyticsDuration(entry.activeMs)}</small></span>
+                {/each}
+              </div>
+            {/if}
+          </section>
+        {/if}
         <div class="daily-metrics">
           <article><span>新增写作单位</span><strong>{snapshot?.activity.positiveWritingUnits ?? 0}</strong><small>中文按字、拉丁文本按词</small></article>
           <article><span>净增</span><strong class:negative={(snapshot?.activity.netWritingUnits ?? 0) < 0}>{formatSigned(snapshot?.activity.netWritingUnits ?? 0)}</strong><small>{snapshot?.activity.trackingComplete === false ? "从启用统计后开始" : "今日可重建聚合"}</small></article>
@@ -2197,6 +2315,58 @@
   .review-card {
     order: 5;
   }
+
+  .previous-tasks-card {
+    order: 2;
+    border: 1px solid var(--daily-border);
+    border-radius: 10px;
+    background: var(--daily-soft);
+  }
+
+  .previous-tasks-card > summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    cursor: pointer;
+    list-style: none;
+  }
+
+  .previous-tasks-card > summary > span { display: flex; align-items: center; gap: 7px; }
+  .previous-tasks-card > summary small { color: var(--text-muted); }
+  .previous-task-list { display: grid; gap: 4px; padding: 0 12px 8px; }
+  .previous-task-list label { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 7px; }
+  .previous-task-list label:hover { background: var(--background-modifier-hover); }
+  .previous-tasks-card footer { display: flex; justify-content: flex-end; padding: 0 12px 12px; }
+
+  .analytics-overview {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+    padding: 12px;
+  }
+
+  .analytics-overview article {
+    display: grid;
+    gap: 2px;
+    padding: 10px;
+    border: 1px solid var(--daily-border);
+    border-radius: 9px;
+    background: var(--daily-raised);
+  }
+
+  .analytics-overview span,
+  .analytics-overview small { color: var(--text-muted); }
+  .monthly-analytics { display: grid; gap: 9px; margin: 0 12px 12px; padding: 12px; border: 1px solid var(--daily-border); border-radius: 10px; }
+  .monthly-analytics > header { display: flex; justify-content: space-between; gap: 8px; }
+  .monthly-trend { display: flex; align-items: end; gap: 3px; height: 42px; }
+  .monthly-trend i { flex: 1 1 0; min-width: 3px; height: var(--day-progress); max-height: 100%; border-radius: 3px 3px 1px 1px; background: var(--interactive-accent); opacity: .72; }
+  .monthly-trend i:hover { opacity: 1; transform: translateY(-2px); }
+  .analytics-breakdown { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px 12px; }
+  .analytics-breakdown span { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 7px; align-items: baseline; }
+  .analytics-breakdown b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .analytics-breakdown em,
+  .analytics-breakdown small { color: var(--text-muted); font-style: normal; }
 
   button {
     box-shadow: none;
@@ -4220,6 +4390,7 @@
 
     .planning-fields,
     .daily-metrics,
+    .analytics-overview,
     .timing-metrics {
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
@@ -4240,6 +4411,8 @@
   @media (max-width: 560px) {
     .workspace-arrange-bar { align-items: stretch; flex-direction: column; }
     .compact-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .analytics-overview,
+    .analytics-breakdown { grid-template-columns: 1fr; }
     .surface-switcher {
       display: grid;
       width: 100%;

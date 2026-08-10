@@ -21,8 +21,8 @@ describe("DailyPlanService", () => {
     storage.files.set(
       path,
       storage.files.get(path)!.replace(
-        "  ^daily_revision_test",
-        "  Handwritten explanation must remain\n  ^daily_revision_test"
+        " ^daily_revision_test",
+        " ^daily_revision_test\n  Handwritten explanation must remain"
       )
     );
     const current = (await service.list("2026-07-23"))[0];
@@ -226,14 +226,14 @@ describe("DailyPlanService", () => {
 
     const completed = await service.complete(item.id, item.revision, "2026-07-23");
     const written = storage.files.get(item.sourcePath)!;
-    expect(completed).toMatchObject({ status: "done", priority: "highest", line: 5, endLine: 9 });
+    expect(completed).toMatchObject({ status: "done", priority: "highest", line: 5, endLine: 8 });
     expect(written).toContain("- [x] 补充 [[关于创作]] 🔺");
     expect(written).not.toContain("⏳");
     expect(written).not.toContain("📅");
     expect(written).toContain("[towrite-scheduled:: 2026-07-23]");
     expect(written).toContain("[towrite-due:: 2026-07-24]");
-    expect(written).toContain("\n  [towrite-kind:: edit_note]");
-    expect(written).toContain("\n  ^daily_multiline1");
+    expect(written).toContain("\n  %% [towrite-kind:: edit_note]");
+    expect(written).toContain("^daily_multiline1");
     expect(written).toContain("这行与任务无关，必须保留。");
     expect(written).toContain("^daily_other1");
     expect(written).toContain("## Notes\n正文");
@@ -365,6 +365,34 @@ describe("DailyPlanService", () => {
     });
     expect(storage.files.get("Daily/2026-07-23.md")).not.toContain("✅ 2026-07-24");
     expect(storage.files.has("Daily/2026-07-24.md")).toBe(false);
+  });
+
+  it("replaces a migrated task with an audit marker that no longer counts as active work", async () => {
+    const storage = new MemoryDailyStorage();
+    const service = new DailyPlanService(storage, {
+      createId: () => "daily_migration_source",
+      now: () => new Date("2026-07-23T08:00:00+08:00")
+    });
+    const item = await service.create({ text: "Move this commitment" });
+
+    const migration = await service.recordMigration(item.id, item.revision, {
+      date: "2026-07-24",
+      taskId: "daily_migration_destination",
+      migrationId: "mig_test_1",
+      migratedAt: "2026-07-23T20:00:00+08:00"
+    }, item.date);
+
+    expect(migration).toMatchObject({
+      taskId: item.id,
+      fromDate: "2026-07-23",
+      toDate: "2026-07-24",
+      destinationTaskId: "daily_migration_destination"
+    });
+    expect(await service.list(item.date)).toEqual([]);
+    expect(storage.files.get(item.sourcePath)).toContain(
+      "towrite:daily-task-migrated from=daily_migration_source to=daily_migration_destination"
+    );
+    expect(storage.files.get(item.sourcePath)).not.toContain("- [ ] Move this commitment");
   });
 
   it("writes the deterministic summary idempotently without disturbing ToDo", async () => {

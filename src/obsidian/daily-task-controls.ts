@@ -64,12 +64,15 @@ interface DailyTaskControlsOptions {
  * the network on the typing path.
  */
 export function createDailyTaskControls(options: DailyTaskControlsOptions): Extension {
-  return ViewPlugin.fromClass(
+  const plugin = ViewPlugin.fromClass(
     class {
       decorations: DecorationSet;
+      atomic: DecorationSet;
 
       constructor(view: EditorView) {
-        this.decorations = buildControls(view, options);
+        const built = buildControls(view, options);
+        this.decorations = built.decorations;
+        this.atomic = built.atomic;
       }
 
       update(update: ViewUpdate): void {
@@ -82,22 +85,34 @@ export function createDailyTaskControls(options: DailyTaskControlsOptions): Exte
           selectionChanged: update.selectionSet
         });
         if (strategy === "rebuild") {
-          this.decorations = buildControls(update.view, options);
+          const built = buildControls(update.view, options);
+          this.decorations = built.decorations;
+          this.atomic = built.atomic;
         } else if (strategy === "map") {
           this.decorations = this.decorations.map(update.changes);
+          this.atomic = this.atomic.map(update.changes);
         }
       }
     },
     { decorations: (plugin) => plugin.decorations }
   );
+  return [
+    plugin,
+    EditorView.atomicRanges.of((view) => view.plugin(plugin)?.atomic ?? Decoration.none)
+  ];
 }
 
-function buildControls(view: EditorView, options: DailyTaskControlsOptions): DecorationSet {
+function buildControls(
+  view: EditorView,
+  options: DailyTaskControlsOptions
+): { decorations: DecorationSet; atomic: DecorationSet } {
   const builder = new RangeSetBuilder<Decoration>();
-  if (!options.isEnabled()) return builder.finish();
+  const atomicBuilder = new RangeSetBuilder<Decoration>();
+  if (!options.isEnabled()) return { decorations: builder.finish(), atomic: atomicBuilder.finish() };
   const activePath = options.getActiveFilePath();
-  if (!activePath) return builder.finish();
+  if (!activePath) return { decorations: builder.finish(), atomic: atomicBuilder.finish() };
   const entries: Array<{ from: number; to: number; decoration: Decoration }> = [];
+  const atomicEntries: Array<{ from: number; to: number; decoration: Decoration }> = [];
   const items = options.getItems()
     .filter((item) => item.sourcePath === activePath && item.line >= 1 && item.line <= view.state.doc.lines)
     .map((item) => ({ item, timing: options.getTiming(item) }));
@@ -120,11 +135,14 @@ function buildControls(view: EditorView, options: DailyTaskControlsOptions): Dec
     });
     const trailingId = dailyTaskTrailingIdRange(taskLine.text);
     if (trailingId) {
+      const from = taskLine.from + trailingId.from;
+      const to = taskLine.from + trailingId.to;
       entries.push({
-        from: taskLine.from + trailingId.from,
-        to: taskLine.from + trailingId.to,
+        from,
+        to,
         decoration: Decoration.replace({ inclusive: false })
       });
+      atomicEntries.push({ from, to, decoration: Decoration.mark({ class: "towrite-daily-technical-atomic" }) });
     }
     if (selectedLines.has(item.line)) {
       entries.push({
@@ -148,6 +166,13 @@ function buildControls(view: EditorView, options: DailyTaskControlsOptions): Dec
           }
         })
       });
+      if (line.to > line.from) {
+        atomicEntries.push({
+          from: line.from,
+          to: line.to,
+          decoration: Decoration.mark({ class: "towrite-daily-technical-atomic" })
+        });
+      }
     }
   }
 
@@ -200,7 +225,9 @@ function buildControls(view: EditorView, options: DailyTaskControlsOptions): Dec
   for (const entry of entries) {
     builder.add(entry.from, entry.to, entry.decoration);
   }
-  return builder.finish();
+  atomicEntries.sort((left, right) => left.from - right.from || left.to - right.to);
+  for (const entry of atomicEntries) atomicBuilder.add(entry.from, entry.to, entry.decoration);
+  return { decorations: builder.finish(), atomic: atomicBuilder.finish() };
 }
 
 class DailyLinkedTaskProjectionWidget extends WidgetType {
@@ -582,8 +609,8 @@ function ownedMetadataLineNumbers(view: EditorView, item: DailyPlanItem): number
 }
 
 export function isOwnedDailyMetadataLine(value: string): boolean {
-  const line = value.trim();
+  const line = value.trim().replace(/^%%\s*/u, "").replace(/\s*%%$/u, "").trim();
   if (/^\^daily_[a-f0-9]{32}$/u.test(line)) return true;
-  return /^\[towrite-(?:kind|category|task-ref|pool-revision|device|at|scheduled|due|primary|minimum|goal|next|estimate|target|started)::/u.test(line)
+  return /^\[towrite-(?:kind|category|task-ref|pool-revision|work-kind|work-ref|work-revision|device|at|scheduled|due|primary|minimum|goal|next|estimate|target|started)::/u.test(line)
     && line.endsWith("]");
 }

@@ -6392,3 +6392,17 @@
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);
 }
+.towrite-focused-task-flash {
+  animation: towrite-focused-task-pulse 1.5s ease-out;
+}
+
+@keyframes towrite-focused-task-pulse {
+  0%, 35% {
+    background: color-mix(in srgb, var(--interactive-accent) 24%, transparent);
+    box-shadow: inset 3px 0 0 var(--interactive-accent);
+  }
+  100% {
+    background: transparent;
+    box-shadow: inset 3px 0 0 transparent;
+  }
+}
