@@ -1,5 +1,21 @@
 # Changelog / 更新日志
 
+## 0.3.0-beta.20 - 2026-08-10
+
+- Tightened the free-form Daily Note fallback so ordinary numbered outlines, link indexes, reading lists, and their plain child rows no longer appear as Today tasks or Work Pool commitments.
+- A row is now adopted from the full Daily Note body only when it is a Markdown checkbox itself or is nested beneath a checkbox category. Explicit `ToDo` and `今日计划` sections keep their existing compatibility behavior.
+- Preserved the intended compact format of checkbox categories with numbered linked children, while standalone checkbox tasks continue to work normally.
+- Kept newly detected Daily tasks on a stable single line: only a compact `···` disclosure is shown by default, and the property/skip actions expand only after an explicit click.
+- Added regression fixtures covering project directories, platform lists, valid checkbox task islands, and the compact enrichment disclosure. The production suite now covers 704 tests.
+
+中文摘要：
+
+- 收紧自由日记正文的待办识别：普通数字目录、链接索引、阅读清单及其普通子项不再进入“今日”或工作池。
+- 只有 Markdown checkbox 本身，或嵌套在 checkbox 分类下的列表项，才会从整篇日记正文中被识别；明确的 `ToDo` 和 `今日计划` 区段保持原有兼容行为。
+- 保留“checkbox 分类 + 编号链接子任务”的简洁写法，独立 checkbox 待办也继续正常工作。
+- 新识别的 Daily 待办默认只在原行显示紧凑的 `···` 入口；只有主动点击后才展开属性与跳过操作，切换任务行时不再上下跳动。
+- 使用项目目录、平台清单、有效 checkbox 任务岛与紧凑展开控件补充回归测试；当前生产测试共 704 项。
+
 ## 0.3.0-beta.19 - 2026-08-10
 
 - Fixed Today plans staying empty when an Obsidian Daily Note keeps its checklist in the free-form journal body instead of under a dedicated `ToDo` or `今日计划` heading.

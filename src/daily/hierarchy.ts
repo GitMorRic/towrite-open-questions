@@ -85,6 +85,9 @@ export function parseDailyPlanHierarchy(
   const documentScope = canonicalNodes.length === 0 && fallbackNodes.length === 0
     ? findDailyDocumentScope(lines, normalizedDate, source)
     : undefined;
+  const documentNodes = documentScope
+    ? parseListNodes(lines, documentScope).filter(isDailyChecklistNode)
+    : [];
   const scope = canonicalNodes.length > 0
     ? canonicalScope
     : fallbackNodes.length > 0
@@ -94,9 +97,7 @@ export function parseDailyPlanHierarchy(
     ? canonicalNodes
     : fallbackNodes.length > 0
       ? fallbackNodes
-      : documentScope
-        ? parseListNodes(lines, documentScope)
-        : [];
+      : documentNodes;
   const groups: DailyPlanGroup[] = [];
   const diagnostics: DailyPlanHierarchyDiagnostic[] = [];
 
@@ -232,6 +233,24 @@ function isStructuralGroup(node: ListNode): boolean {
   if (node.children.length === 0) return false;
   if (!node.checkbox || node.blockIds.length === 0) return true;
   return node.children.every((child) => !child.checkbox);
+}
+
+/**
+ * Whole-document fallback is intentionally stricter than an explicit ToDo
+ * section. A free-form Daily Note can contain numbered outlines, reading
+ * lists, indexes, and other ordinary Markdown lists. Only a checkbox itself,
+ * or a descendant nested beneath a checkbox container, belongs to the Daily
+ * checklist. This preserves checkbox categories with numbered linked children
+ * without absorbing unrelated outlines.
+ */
+function isDailyChecklistNode(node: ListNode): boolean {
+  if (node.checkbox) return true;
+  let parent = node.parent;
+  while (parent) {
+    if (parent.checkbox) return true;
+    parent = parent.parent;
+  }
+  return false;
 }
 
 function parseListNodes(lines: string[], scope: TodoScope): ListNode[] {

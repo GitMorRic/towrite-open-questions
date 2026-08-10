@@ -5600,6 +5600,14 @@
   vertical-align: middle;
 }
 
+.towrite-daily-task-enrichment-controls {
+  margin-inline-start: 0.35rem;
+}
+
+.towrite-daily-enrichment-content {
+  white-space: nowrap;
+}
+
 .towrite-note-task-candidate-controls {
   flex-wrap: wrap;
   max-width: min(760px, calc(100vw - 5rem));

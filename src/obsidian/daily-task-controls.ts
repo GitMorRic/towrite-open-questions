@@ -375,24 +375,43 @@ class DailyTaskEnrichmentWidget extends WidgetType {
   toDOM(view: EditorView): HTMLElement {
     const doc = view.dom.ownerDocument;
     const wrapper = doc.createElement("span");
-    wrapper.className = "towrite-daily-enrichment-controls";
+    wrapper.className = "towrite-daily-line-controls towrite-note-task-line-controls towrite-daily-task-enrichment-controls";
     wrapper.setAttribute("role", "group");
     wrapper.setAttribute("aria-label", "ToWrite 新待办");
 
+    const disclosure = doc.createElement("details");
+    disclosure.className = "towrite-note-task-disclosure";
+    const disposeDisclosure = installDailyTaskDisclosureDismiss(disclosure);
+    const disclosureToggle = doc.createElement("summary");
+    disclosureToggle.className = "towrite-note-task-disclosure-toggle";
+    disclosureToggle.textContent = "···";
+    disclosureToggle.title = "查看新待办操作";
+    disclosureToggle.setAttribute("aria-label", "展开 ToWrite 新待办操作");
+    disclosure.append(disclosureToggle);
+
+    const details = doc.createElement("span");
+    details.className = "towrite-note-task-disclosure-content towrite-daily-enrichment-content";
     const state = doc.createElement("span");
     state.className = "towrite-daily-enrichment-state";
     state.textContent = "新待办";
-    wrapper.append(state);
+    details.append(state);
 
     const enrich = actionButton(doc, "补充属性", () => this.options.onEnrich(this.edit));
     enrich.classList.add("towrite-daily-enrich");
-    wrapper.append(enrich);
+    details.append(enrich);
 
     const track = actionButton(doc, "跳过属性", () => this.options.onTrackOnly(this.edit));
     track.classList.add("towrite-daily-track-only");
     track.title = "只补稳定 ID，不添加任何属性";
-    wrapper.append(track);
+    details.append(track);
+    disclosure.append(details);
+    wrapper.append(disclosure);
+    dailyTaskDisclosureCleanup.set(wrapper, disposeDisclosure);
     return wrapper;
+  }
+
+  destroy(dom: HTMLElement): void {
+    disposeDailyTaskDisclosure(dom);
   }
 
   ignoreEvent(): boolean {

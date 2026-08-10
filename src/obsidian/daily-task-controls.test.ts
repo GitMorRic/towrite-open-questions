@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   dailyTaskTrailingIdRange,
@@ -7,6 +8,20 @@ import {
 } from "./daily-task-controls";
 
 describe("Daily editor task controls", () => {
+  it("keeps new-task actions behind an inline disclosure until explicitly opened", () => {
+    const source = readFileSync(new URL("./daily-task-controls.ts", import.meta.url), "utf8");
+    const widget = source.slice(
+      source.indexOf("class DailyTaskEnrichmentWidget"),
+      source.indexOf("function actionButton", source.indexOf("class DailyTaskEnrichmentWidget"))
+    );
+
+    expect(widget).toContain('doc.createElement("details")');
+    expect(widget).toContain('disclosureToggle.textContent = "···"');
+    expect(widget).toContain("towrite-note-task-disclosure-content towrite-daily-enrichment-content");
+    expect(widget.indexOf("disclosure.append(details)"))
+      .toBeLessThan(widget.indexOf("wrapper.append(disclosure)"));
+  });
+
   it("maps cached widgets during typing instead of rebuilding the Daily plan", () => {
     expect(getDailyTaskControlUpdateStrategy({
       docChanged: true,

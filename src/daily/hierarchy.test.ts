@@ -189,6 +189,48 @@ describe("daily hierarchy and inherited targets", () => {
     expect(storage.files.get(sourcePath)).toContain("- [ ] 待办");
   });
 
+  it("ignores ordinary outlines outside checkbox trees in a free-form Daily Note", () => {
+    const markdown = [
+      "# 20260810",
+      "1. [[XbotPark-肆意创作]]",
+      "   - Project",
+      "   - 产品",
+      "1. [[外骨骼]]",
+      "   - 修改模型",
+      "   - 积累",
+      "2. [[family]]",
+      "3. [[Coding Project]]",
+      "1. LINUX DO",
+      "2. Reddit",
+      "- [ ] 项目",
+      "  1. [[obsidian-待办清单]]",
+      "  2. [[书客松]]",
+      "- [ ] 独立待办"
+    ].join("\n");
+
+    const hierarchy = parseDailyPlanHierarchy(
+      markdown,
+      "sync/Todo_and_tosolve/20260810.md",
+      "2026-08-10",
+      {
+        source: {
+          kind: "daily-note",
+          dailyRoot: "sync/Todo_and_tosolve",
+          dateFormat: "YYYYMMDD"
+        }
+      }
+    );
+
+    expect(hierarchy.groups.map((group) => group.text)).toEqual(["项目"]);
+    expect(hierarchy.tasks.map((task) => task.text)).toEqual([
+      "[[obsidian-待办清单]]",
+      "[[书客松]]",
+      "独立待办"
+    ]);
+    expect(hierarchy.tasks.some((task) => task.text.includes("XbotPark"))).toBe(false);
+    expect(hierarchy.tasks.some((task) => task.text === "LINUX DO")).toBe(false);
+  });
+
   it("reads normalized tasks from the plan-heading fallback through DailyPlanService", async () => {
     const storage = new MemoryStorage();
     storage.files.set(PATH, [
