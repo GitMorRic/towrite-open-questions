@@ -17,6 +17,27 @@ import type {
 
 export type ToWriteLanguage = "zh" | "en";
 
+/** Controls only ToWrite's left Ribbon shortcuts. Commands remain available. */
+export interface ToWriteRibbonSettings {
+  workspace: boolean;
+  questions: boolean;
+  capture: boolean;
+  ai: boolean;
+  focus: boolean;
+}
+
+export function normalizeRibbonSettings(
+  settings?: Partial<ToWriteRibbonSettings>
+): ToWriteRibbonSettings {
+  return {
+    workspace: settings?.workspace !== false,
+    questions: settings?.questions === true,
+    capture: settings?.capture === true,
+    ai: settings?.ai === true,
+    focus: settings?.focus === true
+  };
+}
+
 export interface ToWriteAiSettings {
   enabled: boolean;
   baseUrl: string;
@@ -285,6 +306,7 @@ export interface ToWriteWorkPoolSettings {
 
 export interface ToWriteSettings {
   language: ToWriteLanguage;
+  ribbon: ToWriteRibbonSettings;
   exportDirectory: string;
   autoExport: boolean;
   autoOpenSidebar: boolean;
@@ -587,6 +609,13 @@ export const DEFAULT_REMINDER_PRESETS: ToWriteReminderPreset[] = [
 
 export const DEFAULT_SETTINGS: ToWriteSettings = {
   language: "zh",
+  ribbon: {
+    workspace: true,
+    questions: false,
+    capture: false,
+    ai: false,
+    focus: false
+  },
   exportDirectory: ".obsidian-open-questions",
   autoExport: true,
   autoOpenSidebar: true,

@@ -1016,6 +1016,73 @@ export class ToWriteSettingTab extends PluginSettingTab {
           });
       });
 
+    const zh = this.plugin.settings.language === "zh";
+    new Setting(containerEl)
+      .setName(zh ? "左侧 Ribbon 快捷入口" : "Left Ribbon shortcuts")
+      .setDesc(zh
+        ? "默认只显示“待办工作台”。关闭图标不会移除命令，仍可从命令面板打开。"
+        : "Only Todo Workspace is shown by default. Hidden icons remain available from the command palette.")
+      .setHeading();
+
+    const ribbonOptions: Array<{
+      key: keyof ToWriteSettings["ribbon"];
+      zh: string;
+      en: string;
+      zhDesc: string;
+      enDesc: string;
+    }> = [
+      {
+        key: "workspace",
+        zh: "待办工作台（核心）",
+        en: "Todo Workspace (core)",
+        zhDesc: "打开“今日｜工作池｜状态”工作台。",
+        enDesc: "Open the Today, Work Pool, and Status workspace."
+      },
+      {
+        key: "questions",
+        zh: "开放问题侧栏",
+        en: "Open questions sidebar",
+        zhDesc: "显示 ToThink / ToWrite 问题列表。",
+        enDesc: "Show the ToThink / ToWrite question sidebar."
+      },
+      {
+        key: "capture",
+        zh: "快速记录",
+        en: "Smart capture",
+        zhDesc: "打开原生 Capture 记录弹窗。",
+        enDesc: "Open the native Capture modal."
+      },
+      {
+        key: "ai",
+        zh: "AI 助手",
+        en: "AI assistant",
+        zhDesc: "打开 ToWrite AI 对话窗口。",
+        enDesc: "Open the ToWrite AI chat window."
+      },
+      {
+        key: "focus",
+        zh: "现在专注悬浮窗",
+        en: "Focus Now window",
+        zhDesc: "打开可固定的今日专注小窗。",
+        enDesc: "Open the pinnable Focus Now window."
+      }
+    ];
+
+    for (const option of ribbonOptions) {
+      new Setting(containerEl)
+        .setName(zh ? option.zh : option.en)
+        .setDesc(zh ? option.zhDesc : option.enDesc)
+        .addToggle((toggle) => {
+          toggle
+            .setValue(this.plugin.settings.ribbon[option.key])
+            .onChange(async (value) => {
+              this.plugin.settings.ribbon[option.key] = value;
+              this.plugin.refreshRibbonIcons();
+              await this.plugin.savePluginData();
+            });
+        });
+    }
+
 
   }
 

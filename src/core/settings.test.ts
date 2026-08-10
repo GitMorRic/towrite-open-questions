@@ -1,7 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_ARTICLE_TYPES, DEFAULT_DEVICE_PROFILES, DEFAULT_REMINDER_PRESETS, DEFAULT_SETTINGS, ensureInboxWorkflowStage, normalizeArticleTypesSettings, normalizeDailySettings, normalizeDeviceProfiles, normalizeExternalApiBindHost, normalizeExternalApiPublicBaseUrl, normalizeInboxSettings, normalizePushSettings, normalizeQuote0Settings, normalizeReminderPresets, normalizeWorkPoolSettings } from "./settings";
+import { DEFAULT_ARTICLE_TYPES, DEFAULT_DEVICE_PROFILES, DEFAULT_REMINDER_PRESETS, DEFAULT_SETTINGS, ensureInboxWorkflowStage, normalizeArticleTypesSettings, normalizeDailySettings, normalizeDeviceProfiles, normalizeExternalApiBindHost, normalizeExternalApiPublicBaseUrl, normalizeInboxSettings, normalizePushSettings, normalizeQuote0Settings, normalizeReminderPresets, normalizeRibbonSettings, normalizeWorkPoolSettings } from "./settings";
 
 describe("settings normalization", () => {
+  it("shows only the core Todo Workspace Ribbon shortcut by default", () => {
+    expect(normalizeRibbonSettings(undefined)).toEqual({
+      workspace: true,
+      questions: false,
+      capture: false,
+      ai: false,
+      focus: false
+    });
+    expect(normalizeRibbonSettings({ workspace: false, capture: true })).toEqual({
+      workspace: false,
+      questions: false,
+      capture: true,
+      ai: false,
+      focus: false
+    });
+  });
+
   it("keeps private, no-ai, and no-cloud content outside default remote scope", () => {
     expect(DEFAULT_SETTINGS.deviceCapture.excludeTags).toEqual(expect.arrayContaining(["private", "no-ai", "no-cloud"]));
     expect(DEFAULT_SETTINGS.deviceCapture.excludeFrontmatter).toEqual(expect.arrayContaining(["private", "no_ai", "no_cloud"]));

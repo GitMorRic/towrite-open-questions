@@ -1,5 +1,20 @@
 # Changelog / 更新日志
 
+## 0.3.0-beta.25 - 2026-08-11
+
+- Added configurable Obsidian Ribbon shortcuts and reduced the default Ribbon to the core Todo Workspace entry; Questions, Capture, AI, and Focus shortcuts can be enabled independently in Settings.
+- Applied Ribbon changes immediately without restarting the plugin while keeping every feature available through the Command Palette.
+- Removed Vault reads, linked-note traversal, parsing, indexing, and network work from the editor keystroke path.
+- Debounced and serialized incremental Markdown task updates, startup indexing, Work Pool reconciliation, and background exports to reduce typing latency on large Vaults.
+- Added regression coverage that prevents editor-change handlers from performing synchronous I/O or recursive task scans. The production suite now covers 717 tests.
+
+中文摘要：
+- 左侧 Ribbon 快捷入口现在可以在设置中独立开关；默认只显示核心的“待办工作台”，问题、记录、AI 与“现在专注”入口默认收起。
+- Ribbon 设置保存后立即生效，不需要重启插件；被隐藏的功能仍可从命令面板打开。
+- 编辑器按键热路径不再读取 Vault、遍历关联笔记、解析索引或发起网络请求。
+- Markdown 待办同步、启动索引、工作池校准与后台导出改为更长防抖和串行执行，降低大型 Vault 中的输入卡顿。
+- 新增性能回归测试，防止以后再次把同步 I/O 或递归扫描放回输入链路；当前生产测试共 717 项。
+
 ## 0.3.0-beta.24 - 2026-08-10
 
 - Prevented Daily task normalization from inserting stable IDs while a wikilink or Markdown link is still being typed.

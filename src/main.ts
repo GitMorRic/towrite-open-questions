@@ -34,6 +34,7 @@ import {
   normalizeDailySettings,
   normalizeDeviceProfiles,
   normalizeInboxSettings,
+  normalizeRibbonSettings,
   normalizeWorkPoolSettings,
   normalizePushSettings,
   normalizeQuote0Settings,
@@ -451,6 +452,7 @@ export default class ToWritePlugin extends Plugin {
   private workPoolTaskSourceAllowlistInitialized = false;
   private activeNoteTaskPoolMatches = new Map<string, TaskPoolItem[]>();
   private readonly noteTaskRelationsBySource = new Map<string, WorkPoolTaskRelation[]>();
+  private readonly ribbonIconElements = new Map<keyof ToWriteSettings["ribbon"], HTMLElement>();
   private taskPoolFormatUndoToken?: string;
   private activeNoteTaskRefreshTail: Promise<void> = Promise.resolve();
   private dailyActivityRetentionDays = 30;
@@ -891,18 +893,7 @@ export default class ToWritePlugin extends Plugin {
       concealDailyTaskTechnicalMetadata(el);
     });
 
-    this.addRibbonIcon("circle-help", "Open ToWrite questions", () => {
-      void this.activateSidebar();
-    });
-    this.addRibbonIcon("square-pen", "Open smart capture", () => {
-      this.openCaptureModal({ entryPoint: "ribbon" });
-    });
-    this.addRibbonIcon("bot", "Open ToWrite AI assistant", () => {
-      this.openAiAssistant();
-    });
-    this.addRibbonIcon("focus", "Open ToWrite Focus Now window", () => {
-      void this.activateTodayFloating();
-    });
+    this.refreshRibbonIcons();
 
     this.addCommand({
       id: "open-towrite-sidebar",
@@ -1203,9 +1194,11 @@ export default class ToWritePlugin extends Plugin {
     this.registerInterval(window.setInterval(() => {
       void this.runSuggestionNotifications();
     }, 15 * 60 * 1000));
+    // File changes are synchronized incrementally. This slower pass is only a
+    // reconciliation safety net for external sync tools that may skip events.
     this.registerInterval(window.setInterval(() => {
       if (this.settings.daily.enabled) void this.syncMarkdownTasksToWorkPool();
-    }, 10 * 60 * 1000));
+    }, 30 * 60 * 1000));
     this.registerInterval(window.setInterval(() => {
       if (
         this.activeNoteTaskDocument?.tasks.some((item) =>
@@ -1229,11 +1222,16 @@ export default class ToWritePlugin extends Plugin {
     void this.runDueDailyDeviceSchedule();
 
     this.app.workspace.onLayoutReady(() => {
-      void this.refreshIndex();
-      void this.refreshActiveNoteTaskCache();
-      window.setTimeout(() => {
-        if (this.settings.daily.enabled) void this.syncMarkdownTasksToWorkPool();
-      }, 2_000);
+      // Avoid starting multiple Vault readers while Obsidian restores editors.
+      void (async () => {
+        await this.refreshIndex();
+        await this.refreshActiveNoteTaskCache();
+        window.setTimeout(() => {
+          if (this.settings.daily.enabled) void this.syncMarkdownTasksToWorkPool();
+        }, 8_000);
+      })().catch((error: unknown) => {
+        console.error("ToWrite startup indexing failed", error);
+      });
       if (this.settings.autoOpenSidebar) {
         window.setTimeout(() => {
           void this.activateSidebar();
@@ -1747,6 +1745,59 @@ export default class ToWritePlugin extends Plugin {
     this.store.notify();
   }
 
+  /** Rebuild only this plugin's Ribbon shortcuts; command-palette entries are unaffected. */
+  refreshRibbonIcons(): void {
+    for (const element of this.ribbonIconElements.values()) {
+      element.remove();
+    }
+    this.ribbonIconElements.clear();
+
+    const descriptors: Array<{
+      id: keyof ToWriteSettings["ribbon"];
+      icon: string;
+      label: string;
+      action: () => void;
+    }> = [
+      {
+        id: "workspace",
+        icon: "list-checks",
+        label: "Open Todo Workspace",
+        action: () => { void this.activateDashboard({ activeTab: "today" }); }
+      },
+      {
+        id: "questions",
+        icon: "circle-help",
+        label: "Open ToWrite questions",
+        action: () => { void this.activateSidebar(); }
+      },
+      {
+        id: "capture",
+        icon: "square-pen",
+        label: "Open smart capture",
+        action: () => { this.openCaptureModal({ entryPoint: "ribbon" }); }
+      },
+      {
+        id: "ai",
+        icon: "bot",
+        label: "Open ToWrite AI assistant",
+        action: () => { this.openAiAssistant(); }
+      },
+      {
+        id: "focus",
+        icon: "focus",
+        label: "Open ToWrite Focus Now window",
+        action: () => { void this.activateTodayFloating(); }
+      }
+    ];
+
+    for (const descriptor of descriptors) {
+      if (!this.settings.ribbon[descriptor.id]) continue;
+      const element = this.addRibbonIcon(descriptor.icon, descriptor.label, descriptor.action);
+      element.dataset.towriteRibbon = descriptor.id;
+      this.ribbonIconElements.set(descriptor.id, element);
+    }
+  }
+
   async exportNow(showNotice = true, options: { rebuildWorkflow?: boolean } = {}): Promise<void> {
     if (options.rebuildWorkflow !== false) {
       await this.workflowIndex.rebuild();
@@ -1759,7 +1810,7 @@ export default class ToWritePlugin extends Plugin {
     }
   }
 
-  private scheduleBackgroundRefresh(filePath?: string, delayMs = 3500): void {
+  private scheduleBackgroundRefresh(filePath?: string, delayMs = 8000): void {
     if (filePath) {
       this.pendingWorkflowPaths.add(filePath);
     }
@@ -1777,8 +1828,8 @@ export default class ToWritePlugin extends Plugin {
       this.backgroundRefreshQueued = true;
       return;
     }
-    if (Date.now() - this.lastEditorActivityAt < 1200) {
-      this.scheduleBackgroundRefresh(undefined, 1200);
+    if (Date.now() - this.lastEditorActivityAt < 2000) {
+      this.scheduleBackgroundRefresh(undefined, 2000);
       return;
     }
 
@@ -8601,7 +8652,8 @@ export default class ToWritePlugin extends Plugin {
   private async syncMarkdownTasksForFile(
     path: string,
     visited = new Set<string>(),
-    includedSourcePaths: readonly string[] = this.workPoolTaskSourceAllowlist()
+    includedSourcePaths: readonly string[] = this.workPoolTaskSourceAllowlist(),
+    followRelations = true
   ): Promise<void> {
     const normalizedPath = normalizePath(path);
     if (visited.has(normalizedPath)) return;
@@ -8638,6 +8690,7 @@ export default class ToWritePlugin extends Plugin {
       else await this.noteTaskPoolCoordinator.ensureRegistered(item);
     }
     this.updateNoteTaskRelations(inspected);
+    if (!followRelations) return;
     for (const relation of this.noteTaskRelationsBySource.get(normalizedPath) ?? []) {
       if (isWorkPoolSourceExcluded(relation.childNotePath, this.settings.workPool.excludedSourcePaths)) continue;
       const childAllowlist = isWorkPoolSourceIncluded(relation.childNotePath, includedSourcePaths)
@@ -11392,11 +11445,6 @@ export default class ToWritePlugin extends Plugin {
     const notifyActiveContext = debounce(() => {
       this.notifyActiveContext();
     }, 120, true);
-    const refreshTaskSuggestionsAfterTyping = debounce(() => {
-      void this.refreshActiveNoteTaskCache().catch((error: unknown) => {
-        console.error("ToWrite could not refresh task suggestions after typing", error);
-      });
-    }, 900, true);
     const rebuildInboxAfterFolderChange = debounce(() => {
       this.inboxIndex.rebuild();
       this.store.notify();
@@ -11438,12 +11486,12 @@ export default class ToWritePlugin extends Plugin {
           console.error("ToWrite could not refresh the edited Daily plan", error);
           new Notice(messageForError(error));
         });
-    }, 700, true);
+    }, 1500, true);
     const refreshActiveNoteTasksAfterVaultChange = debounce(() => {
       void this.refreshActiveNoteTaskCache().catch((error: unknown) => {
         console.error("ToWrite could not refresh ordinary tasks in the active note", error);
       });
-    }, 700, true);
+    }, 1500, true);
     const refreshTaskPoolAfterVaultChange = debounce(() => {
       void this.refreshActiveTaskPoolCache().catch((error: unknown) => {
         console.error("ToWrite could not refresh the Task Pool search cache", error);
@@ -11458,20 +11506,19 @@ export default class ToWritePlugin extends Plugin {
         for (const path of paths) {
           try {
             if (this.app.vault.getFileByPath(path)) {
-              await this.syncMarkdownTasksForFile(path, new Set<string>(), taskSourceAllowlist);
+              await this.syncMarkdownTasksForFile(path, new Set<string>(), taskSourceAllowlist, false);
             }
           } catch (error) {
             console.error(`ToWrite could not update the Work Pool from ${path}`, error);
           }
         }
         if (paths.length > 0) {
-          this.rebuildMarkdownTaskNoteSuggestions();
           await this.refreshActiveTaskPoolCache(false);
           await this.rebuildDailyLinkedTaskProjectionCache();
           this.notifyUi();
         }
       })();
-    }, 1_200, true);
+    }, 2_200, true);
 
     const queueMarkdownTaskSync = (file: TFile): void => {
       if (!this.settings.daily.enabled || file.extension !== "md") return;
@@ -11660,9 +11707,10 @@ export default class ToWritePlugin extends Plugin {
 
     this.registerEvent(
       this.app.workspace.on("editor-change", () => {
+        // Keep the keystroke path constant-time. Vault modify events debounce
+        // every parser, index update, and network/export side effect.
         this.lastEditorActivityAt = Date.now();
         notifyActiveContext();
-        refreshTaskSuggestionsAfterTyping();
       })
     );
 
@@ -12270,6 +12318,7 @@ function normalizeSettings(settings?: Partial<ToWriteSettings>): ToWriteSettings
     ...DEFAULT_SETTINGS,
     ...(settings ?? {}),
     language: settings?.language === "en" ? "en" : "zh",
+    ribbon: normalizeRibbonSettings(settings?.ribbon),
     compactEditorDecorations: settings?.compactEditorDecorations === true,
     candidateTriggerWords,
     statusOptions,
