@@ -90,4 +90,8 @@ npm run build
 
 `npm run build` 会执行 Obsidian 社区规范门禁、TypeScript、生产构建、Release 文件检查和 2 MiB bundle 限制。
 
-MIT 许可。可选 Backend 独立发行，并遵循各自的许可。
+## 许可
+
+从 0.3.3 起，本项目以 [PolyForm Noncommercial License 1.0.0](LICENSE) 提供源码。个人、研究、教育、慈善及许可条款允许的其他非商业用途可以免费使用；任何商业用途都必须事先取得版权所有者的单独书面授权，详见[商业授权说明](COMMERCIAL_LICENSE.md)。
+
+0.3.3 之前已发布版本继续遵循随该版本提供的许可，本次变更不会追溯撤销此前已经授予的 MIT 权利。可选 Backend 独立发行，并遵循各自的许可。

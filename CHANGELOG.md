@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.3.3 - 2026-08-11
+
+- Changed the license for version 0.3.3 and later to PolyForm Noncommercial 1.0.0, with commercial use available only under a separate written license; earlier releases keep the license that accompanied them.
 - Removed the remaining production `fetch` calls reported by the Obsidian community scanner; Backend and Device Hub requests now share the desktop HTTP transport with explicit cancellation and response-size limits.
 - Made Ribbon and command view activation wait for workspace restoration, reconfigure existing leaves, rebuild stale leaves once, and surface failures through an Obsidian Notice instead of silently doing nothing.
 - Added regression coverage for dashboard and sidebar activation across restored, missing, and stale workspace leaves.

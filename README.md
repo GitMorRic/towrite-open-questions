@@ -90,4 +90,8 @@ npm run build
 
 `npm run build` runs the Obsidian marketplace rule gate, TypeScript checks, production bundling, release validation, and the 2 MiB bundle limit.
 
-MIT licensed. Optional Backend components are distributed separately under their own licenses.
+## License
+
+Version 0.3.3 and later is source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE). Personal, research, educational, charitable, and other permitted noncommercial uses are allowed under those terms. Commercial use requires a separate written license from the copyright holder; see [Commercial licensing](COMMERCIAL_LICENSE.md).
+
+Versions published before 0.3.3 remain under the license that accompanied those copies. This change does not revoke MIT rights already granted for earlier releases. Optional Backend components are distributed separately under their own licenses.

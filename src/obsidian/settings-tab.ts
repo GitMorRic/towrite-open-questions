@@ -4829,7 +4829,9 @@ export class ToWriteSettingTab extends PluginSettingTab {
 
     const compatibilitySetting = new Setting(containerEl)
       .setName(zh ? "兼容与许可" : "Compatibility & license")
-      .setDesc(zh ? "社区插件核心采用 MIT 许可。" : "The Community Plugin core is licensed under MIT.");
+      .setDesc(zh
+        ? "0.3.3 起采用 PolyForm Noncommercial 1.0.0；商业使用需另行取得书面授权。"
+        : "Version 0.3.3 and later uses PolyForm Noncommercial 1.0.0; commercial use requires a separate written license.");
     compatibilitySetting.controlEl.createSpan({
       cls: "towrite-about-meta",
       text: `${zh ? "最低 Obsidian" : "Minimum Obsidian"} ${this.plugin.manifest.minAppVersion}`
