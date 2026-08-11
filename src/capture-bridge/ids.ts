@@ -4,7 +4,7 @@ export function randomBase64Url(bytesLength: number): string {
   if (!Number.isInteger(bytesLength) || bytesLength < 1) {
     throw new Error("Random byte length must be a positive integer.");
   }
-  const cryptoApi = globalThis.crypto;
+  const cryptoApi = window.crypto;
   if (!cryptoApi?.getRandomValues) {
     throw new Error("Secure randomness is unavailable.");
   }

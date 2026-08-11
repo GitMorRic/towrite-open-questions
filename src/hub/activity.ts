@@ -18,7 +18,7 @@ export class DebouncedHubConnector<T> {
   private readonly maxBatchSize: number;
   private readonly onError?: (error: unknown) => void;
   private queue: T[] = [];
-  private timer: ReturnType<typeof setTimeout> | undefined;
+  private timer: number | undefined;
   private inFlight: Promise<void> | undefined;
   private disposed = false;
 
@@ -96,7 +96,7 @@ export class DebouncedHubConnector<T> {
     if (this.timer || this.disposed) {
       return;
     }
-    this.timer = globalThis.setTimeout(() => {
+    this.timer = window.setTimeout(() => {
       this.timer = undefined;
       void this.flushNow();
     }, delayMs);
@@ -104,7 +104,7 @@ export class DebouncedHubConnector<T> {
 
   private clearTimer(): void {
     if (this.timer) {
-      globalThis.clearTimeout(this.timer);
+      window.clearTimeout(this.timer);
       this.timer = undefined;
     }
   }
@@ -239,10 +239,10 @@ export class DebouncedActivityReporter {
 }
 
 function createObservationId(): string {
-  if (globalThis.crypto?.randomUUID) {
-    return `obs_${globalThis.crypto.randomUUID().replace(/-/gu, "")}`;
+  if (window.crypto?.randomUUID) {
+    return `obs_${window.crypto.randomUUID().replace(/-/gu, "")}`;
   }
-  const bytes = globalThis.crypto?.getRandomValues(new Uint8Array(16));
+  const bytes = window.crypto?.getRandomValues(new Uint8Array(16));
   if (!bytes) {
     throw new Error("Secure randomness is unavailable for Device Hub activity observations.");
   }

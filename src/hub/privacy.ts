@@ -188,7 +188,7 @@ function cleanDisplayText(value: string | undefined, limit: number): string | un
   if (typeof value !== "string") {
     return undefined;
   }
-  const cleaned = value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, "").trim();
+  const cleaned = value.replace(/\p{Cc}/gu, (character) => "\t\n\r".includes(character) ? character : "").trim();
   return cleaned ? cleaned.slice(0, limit) : undefined;
 }
 
@@ -210,10 +210,10 @@ function randomOpaqueId(crypto: Crypto): string {
 }
 
 function requireCrypto(): Crypto {
-  if (!globalThis.crypto?.subtle) {
+  if (!window.crypto?.subtle) {
     throw new Error("Web Crypto is unavailable; Device Hub privacy references cannot be generated.");
   }
-  return globalThis.crypto;
+  return window.crypto;
 }
 
 function encodeBase64Url(bytes: Uint8Array): string {

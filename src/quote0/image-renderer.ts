@@ -44,7 +44,7 @@ export function renderQuote0DashboardPng(display: PushDisplayCard, workflow: Wor
   if (typeof document === "undefined") {
     throw new Error("Quote0 dashboard image rendering needs a browser canvas.");
   }
-  const canvas = document.createElement("canvas");
+  const canvas = createEl("canvas");
   canvas.width = WIDTH;
   canvas.height = HEIGHT;
   const ctx = canvas.getContext("2d");

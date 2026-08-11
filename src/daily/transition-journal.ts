@@ -74,7 +74,7 @@ export class DailyTransitionJournal {
   month(month: string, analyticsDays: DailyAnalyticsDay[], byCategory: DailyAnalyticsBreakdown[]): DailyJournalMonthSnapshot {
     const days = analyticsDays.map((day) => ({ ...this.day(day.date, day), byCategory: [] }));
     const sum = <K extends keyof DailyJournalDaySnapshot>(key: K): number =>
-      days.reduce((total, day) => total + (typeof day[key] === "number" ? day[key] as number : 0), 0);
+      days.reduce((total, day) => total + (typeof day[key] === "number" ? day[key] : 0), 0);
     const planned = sum("planned");
     const completed = sum("completed");
     return {

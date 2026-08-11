@@ -46,7 +46,7 @@ function concealTrailingTaskIds(root: HTMLElement): void {
   for (const { node, from } of matches) {
     if (!node.parentNode) continue;
     const visible = node.data.slice(0, from);
-    const hidden = node.ownerDocument.createElement("span");
+    const hidden = createSpan();
     hidden.className = "towrite-task-pool-technical-line";
     hidden.setAttribute("aria-hidden", "true");
     hidden.textContent = node.data.slice(from);
@@ -75,7 +75,7 @@ function concealDirectLines(container: HTMLElement): void {
     if (!isTaskPoolTechnicalLine(text)) continue;
     const first = line.nodes[0];
     if (!first.parentNode || first.parentNode !== container) continue;
-    const wrapper = container.ownerDocument.createElement("span");
+    const wrapper = createSpan();
     wrapper.className = "towrite-task-pool-technical-line";
     wrapper.setAttribute("aria-hidden", "true");
     container.insertBefore(wrapper, first);

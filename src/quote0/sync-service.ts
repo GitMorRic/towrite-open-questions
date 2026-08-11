@@ -48,7 +48,7 @@ interface PreparedQuote0Content extends Quote0SyncPreview {
 
 export class Quote0SyncService {
   private readonly client: Quote0ClientLike;
-  private timer: ReturnType<typeof setTimeout> | undefined;
+  private timer: number | undefined;
   private syncing = false;
 
   constructor(
@@ -68,7 +68,7 @@ export class Quote0SyncService {
 
   stop(): void {
     if (this.timer !== undefined) {
-      clearTimeout(this.timer);
+      window.clearTimeout(this.timer);
       this.timer = undefined;
     }
   }
@@ -269,7 +269,7 @@ export class Quote0SyncService {
 
   private scheduleNext(): void {
     const seconds = this.options.getSettings().quote0.refreshSeconds;
-    this.timer = setTimeout(() => {
+    this.timer = window.setTimeout(() => {
       this.timer = undefined;
       void this.syncNext()
         .catch(() => undefined)
@@ -297,7 +297,7 @@ export class Quote0SyncService {
         payload: delivery.payload,
         display: delivery.display,
         candidateType: delivery.candidateType,
-        markSent: delivery.markSent,
+        markSent: delivery.markSent ? (...args) => delivery.markSent(...args) : undefined,
         advanceCursor: false,
         contentApi: "text"
       });
@@ -416,6 +416,7 @@ export class Quote0SyncService {
     if (settings.quote0.dashboardApi !== "image") {
       return prepared;
     }
+    const renderPng = this.options.renderQuote0DashboardImage?.bind(this.options);
     return {
       ...prepared,
       contentApi: "image",
@@ -425,7 +426,7 @@ export class Quote0SyncService {
         taskAlias: settings.quote0.imageTaskAlias,
         border: settings.quote0.imageBorder,
         ditherType: settings.quote0.imageDitherType,
-        renderPng: this.options.renderQuote0DashboardImage
+        renderPng
       })
     };
   }

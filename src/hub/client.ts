@@ -259,7 +259,7 @@ export class HubClient implements HubClientLike, HubCaptureClientLike, HubDevice
     }
     const controller = new AbortController();
     const timeoutMs = Math.max(250, Math.min(120_000, timeoutOverrideMs ?? settings.timeoutMs ?? 8_000));
-    const timer = globalThis.setTimeout(() => controller.abort(), timeoutMs);
+    const timer = window.setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await requestHub(`${baseUrl}${path}`, {
         ...init,
@@ -293,7 +293,7 @@ export class HubClient implements HubClientLike, HubCaptureClientLike, HubDevice
       }
       throw error;
     } finally {
-      globalThis.clearTimeout(timer);
+      window.clearTimeout(timer);
     }
   }
 }
@@ -465,7 +465,7 @@ function normalizePendingCaptureEncryption(value: unknown): HubPendingCaptureEnc
     version: typeof record.version === "number" && Number.isFinite(record.version) ? Math.floor(record.version) : undefined,
     algorithm: readOptionalString(record, "algorithm"),
     ephemeralPublicKey: ephemeral && typeof ephemeral === "object" && !Array.isArray(ephemeral)
-      ? ephemeral as JsonWebKey
+      ? ephemeral
       : undefined,
     salt: readOptionalString(record, "salt"),
     nonce: readOptionalString(record, "nonce", "iv"),
@@ -555,7 +555,7 @@ function normalizeBaseUrl(value: string): string {
 }
 
 function assertIdentifier(value: string, label: string): void {
-  if (!value.trim() || value.length > 160 || /[\u0000-\u001f\u007f]/u.test(value)) {
+  if (!value.trim() || value.length > 160 || /\p{Cc}/u.test(value)) {
     throw new Error(`Invalid Device Hub ${label}.`);
   }
 }
@@ -623,7 +623,7 @@ function readBoolean(record: Record<string, unknown>, ...keys: string[]): boolea
 function readOptionalBoolean(record: Record<string, unknown>, ...keys: string[]): boolean | undefined {
   for (const key of keys) {
     if (typeof record[key] === "boolean") {
-      return record[key] as boolean;
+      return record[key];
     }
   }
   return undefined;

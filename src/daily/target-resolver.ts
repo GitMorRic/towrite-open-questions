@@ -296,7 +296,7 @@ function normalizeRelativeMarkdownPath(value: string, sourcePath?: string): stri
     || !normalized.toLowerCase().endsWith(".md")
     || /^[A-Za-z][A-Za-z0-9+.-]*:/u.test(normalized)
     || /^[\\/]/u.test(normalized)
-    || /[\u0000-\u001f\u007f]/u.test(normalized)
+    || /\p{Cc}/u.test(normalized)
     || normalized.includes("?")) {
     return undefined;
   }
@@ -316,7 +316,7 @@ function resolvePathParts(base: string[], values: string[]): string[] | undefine
       result.pop();
       continue;
     }
-    if (part !== raw || /[\u0000-\u001f\u007f:*?"<>|]/u.test(part)) return undefined;
+    if (part !== raw || /[\p{Cc}:*?"<>|]/u.test(part)) return undefined;
     result.push(part);
   }
   return result.length ? result : undefined;
@@ -326,7 +326,7 @@ function isUnsafeLinkValue(value: string): boolean {
   return /^[A-Za-z][A-Za-z0-9+.-]*:/u.test(value)
     || /^[\\/]/u.test(value)
     || /^\/\//u.test(value)
-    || /[\u0000-\u001f\u007f]/u.test(value)
+    || /\p{Cc}/u.test(value)
     || value.split(/[\\/]/u).some((part) => part === "..");
 }
 
@@ -343,7 +343,7 @@ function parseFragment(value: string | undefined): { heading?: string; blockId?:
   } catch {
     return {};
   }
-  if (/[\u0000-\u001f\u007f]/u.test(fragment)) return {};
+  if (/\p{Cc}/u.test(fragment)) return {};
   return fragment.startsWith("^")
     ? { blockId: fragment.slice(1).trim() || undefined }
     : { heading: fragment };

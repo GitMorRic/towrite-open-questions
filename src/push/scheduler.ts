@@ -14,7 +14,7 @@ export interface PushSchedulerOptions {
 }
 
 export class PushScheduler {
-  private timers = new Map<string, ReturnType<typeof setTimeout>>();
+  private timers = new Map<string, number>();
   private running = new Set<string>();
 
   constructor(private readonly options: PushSchedulerOptions) {}
@@ -28,7 +28,7 @@ export class PushScheduler {
 
   stop(): void {
     for (const timer of this.timers.values()) {
-      clearTimeout(timer);
+      window.clearTimeout(timer);
     }
     this.timers.clear();
     this.running.clear();
@@ -67,7 +67,7 @@ export class PushScheduler {
 
   private schedule(target: PushTargetSettings): void {
     const delayMs = Math.max(15, target.refreshSeconds) * 1000;
-    const timer = setTimeout(() => {
+    const timer = window.setTimeout(() => {
       this.timers.delete(target.id);
       void this.runTarget(target.id)
         .catch(() => undefined)

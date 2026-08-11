@@ -28,5 +28,5 @@ export async function mapInBatches<T, R>(
 }
 
 export function yieldToEventLoop(): Promise<void> {
-  return new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+  return new Promise((resolve) => window.setTimeout(resolve, 0));
 }

@@ -551,17 +551,17 @@ function normalizeGeneratedId(value: string): string {
 }
 
 function createDailyId(): string {
-  if (globalThis.crypto?.randomUUID) {
-    return `daily_${globalThis.crypto.randomUUID().replace(/-/gu, "")}`;
+  if (window.crypto?.randomUUID) {
+    return `daily_${window.crypto.randomUUID().replace(/-/gu, "")}`;
   }
-  const bytes = globalThis.crypto?.getRandomValues?.(new Uint8Array(16));
+  const bytes = window.crypto?.getRandomValues?.(new Uint8Array(16));
   if (!bytes) throw new Error("Secure randomness is unavailable for daily task normalization.");
   return `daily_${[...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
 function createUndoToken(): string {
-  if (globalThis.crypto?.randomUUID) return `dnu_${globalThis.crypto.randomUUID().replace(/-/gu, "")}`;
-  const bytes = globalThis.crypto?.getRandomValues?.(new Uint8Array(16));
+  if (window.crypto?.randomUUID) return `dnu_${window.crypto.randomUUID().replace(/-/gu, "")}`;
+  const bytes = window.crypto?.getRandomValues?.(new Uint8Array(16));
   if (!bytes) throw new Error("Secure randomness is unavailable for normalization undo.");
   return `dnu_${[...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }

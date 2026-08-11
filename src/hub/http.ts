@@ -15,19 +15,20 @@ const MAX_HUB_RESPONSE_BYTES = 16 * 1024 * 1024;
  * redirects automatically, sends no cookies/referrer, and destroys the
  * underlying request when the caller's deadline aborts.
  *
- * Public Hub origins retain fetch so browser redirect and credential policies
- * stay intact. Tests can inject a fetch implementation for either path.
+ * The plugin is desktop-only, so every Hub origin uses the same explicit
+ * transport. This keeps request behavior independent from Chromium CORS/PNA
+ * rules and avoids the browser `fetch` API that Obsidian community plugins are
+ * asked not to call directly. Tests may still inject a compatible transport.
  */
+export type HttpRequest = (input: string, init: RequestInit) => Promise<Response>;
+
 export function requestHub(
   input: string,
   init: RequestInit,
-  injectedFetch?: typeof fetch
+  injectedRequest?: HttpRequest
 ): Promise<Response> {
-  if (injectedFetch) {
-    return injectedFetch(input, init);
-  }
-  if (!needsDesktopTransport(input)) {
-    return fetch(input, init);
+  if (injectedRequest) {
+    return injectedRequest(input, init);
   }
   return requestHubFromDesktop(input, init);
 }
@@ -74,7 +75,7 @@ function requestHubFromDesktop(input: string, init: RequestInit): Promise<Respon
       }
       settled = true;
       cleanup();
-      reject(error);
+      reject(error instanceof Error ? error : new Error(String(error)));
     };
     const onAbort = () => {
       const error = abortError();

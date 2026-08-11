@@ -254,12 +254,11 @@ class DailyPreviousMigrationWidget extends WidgetType {
   }
 
   toDOM(view: EditorView): HTMLElement {
-    const doc = view.dom.ownerDocument;
-    const wrapper = doc.createElement("aside");
+    const wrapper = createEl("aside");
     wrapper.className = "towrite-daily-previous-migration";
-    const text = doc.createElement("span");
+    const text = createSpan();
     text.textContent = `昨日还有 ${this.count} 项未完成`;
-    const button = doc.createElement("button");
+    const button = createEl("button");
     button.type = "button";
     button.textContent = "选择迁移";
     button.addEventListener("mousedown", stop);
@@ -293,22 +292,21 @@ class DailyLinkedTaskProjectionWidget extends WidgetType {
   }
 
   toDOM(view: EditorView): HTMLElement {
-    const doc = view.dom.ownerDocument;
-    const details = doc.createElement("details");
+    const details = createEl("details");
     details.className = "towrite-daily-linked-task-projection";
     const completed = this.projection.tasks.filter((task) => task.status === "done").length;
-    const summary = doc.createElement("summary");
+    const summary = createEl("summary");
     summary.textContent = `子任务 ${completed}/${this.projection.tasks.length}`;
     summary.title = `显示 ${this.projection.targetTitle} 中的待办`;
     details.append(summary);
 
-    const content = doc.createElement("span");
+    const content = createSpan();
     content.className = "towrite-daily-linked-task-projection-content";
     for (const task of this.projection.tasks) {
-      const row = doc.createElement("span");
+      const row = createSpan();
       row.className = "towrite-daily-linked-task-row";
       row.dataset.state = task.status;
-      const toggle = doc.createElement("button");
+      const toggle = createEl("button");
       toggle.type = "button";
       toggle.className = "towrite-daily-linked-task-toggle";
       toggle.textContent = task.status === "done" ? "☑" : task.status === "in-progress" ? "◩" : "☐";
@@ -321,13 +319,13 @@ class DailyLinkedTaskProjectionWidget extends WidgetType {
           .catch((error) => console.error("Linked Daily task toggle failed", error))
           .finally(() => { toggle.disabled = false; });
       });
-      const label = doc.createElement("span");
+      const label = createSpan();
       label.className = "towrite-daily-linked-task-label";
       label.textContent = task.text;
       row.append(toggle, label);
       content.append(row);
     }
-    const open = doc.createElement("button");
+    const open = createEl("button");
     open.type = "button";
     open.className = "towrite-daily-linked-note-open";
     open.textContent = `打开 ${this.projection.targetTitle}`;
@@ -365,32 +363,32 @@ class DailyTaskControlWidget extends WidgetType {
 
   toDOM(view: EditorView): HTMLElement {
     const doc = view.dom.ownerDocument;
-    const wrapper = doc.createElement("span");
+    const wrapper = createSpan();
     wrapper.className = "towrite-daily-line-controls towrite-daily-task-line-controls";
     wrapper.dataset.state = this.timing.status;
     wrapper.dataset.enriched = hasVisibleProperties(this.item) ? "true" : "false";
 
-    const disclosure = doc.createElement("details");
+    const disclosure = createEl("details");
     disclosure.className = "towrite-note-task-disclosure";
     const disposeDisclosure = installDailyTaskDisclosureDismiss(disclosure);
-    const disclosureToggle = doc.createElement("summary");
+    const disclosureToggle = createEl("summary");
     disclosureToggle.className = "towrite-note-task-disclosure-toggle";
     const minutes = Math.floor(Math.max(0, this.timing.activeMs) / 60_000);
     disclosureToggle.textContent = this.timing.status === "running" ? `${minutes}m` : "···";
     disclosureToggle.title = "查看任务状态、属性和操作";
     disclosureToggle.setAttribute("aria-label", "展开 ToWrite 今日任务操作");
     disclosure.append(disclosureToggle);
-    const details = doc.createElement("span");
+    const details = createSpan();
     details.className = "towrite-note-task-disclosure-content";
 
-    const state = doc.createElement("span");
+    const state = createSpan();
     state.className = "towrite-daily-line-state";
     state.textContent = timingLabel(this.timing);
     details.append(state);
 
     const summary = summarizeDailyProperties(this.item);
     if (summary) {
-      const properties = doc.createElement("button");
+      const properties = createEl("button");
       properties.type = "button";
       properties.className = "towrite-daily-property-summary";
       properties.textContent = summary;
@@ -454,24 +452,24 @@ class DailyTaskEnrichmentWidget extends WidgetType {
 
   toDOM(view: EditorView): HTMLElement {
     const doc = view.dom.ownerDocument;
-    const wrapper = doc.createElement("span");
+    const wrapper = createSpan();
     wrapper.className = "towrite-daily-line-controls towrite-note-task-line-controls towrite-daily-task-enrichment-controls";
     wrapper.setAttribute("role", "group");
     wrapper.setAttribute("aria-label", "ToWrite 新待办");
 
-    const disclosure = doc.createElement("details");
+    const disclosure = createEl("details");
     disclosure.className = "towrite-note-task-disclosure";
     const disposeDisclosure = installDailyTaskDisclosureDismiss(disclosure);
-    const disclosureToggle = doc.createElement("summary");
+    const disclosureToggle = createEl("summary");
     disclosureToggle.className = "towrite-note-task-disclosure-toggle";
     disclosureToggle.textContent = "···";
     disclosureToggle.title = "查看新待办操作";
     disclosureToggle.setAttribute("aria-label", "展开 ToWrite 新待办操作");
     disclosure.append(disclosureToggle);
 
-    const details = doc.createElement("span");
+    const details = createSpan();
     details.className = "towrite-note-task-disclosure-content towrite-daily-enrichment-content";
-    const state = doc.createElement("span");
+    const state = createSpan();
     state.className = "towrite-daily-enrichment-state";
     state.textContent = "新待办";
     details.append(state);
@@ -508,7 +506,7 @@ function actionButton(
   label: string,
   action: () => void | Promise<void>
 ): HTMLButtonElement {
-  const button = doc.createElement("button");
+  const button = createEl("button");
   button.type = "button";
   button.textContent = label;
   button.addEventListener("mousedown", stop);

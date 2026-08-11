@@ -57,7 +57,7 @@ export class DeviceHubConnector {
       },
       {
         debounceMs: options.activityDebounceMs ?? 1_500,
-        onError: options.onError,
+        onError: (error) => options.onError?.(error),
         now: this.now
       }
     );
@@ -265,16 +265,16 @@ function clampScore(value: number): number {
 }
 
 function cleanSemanticLabel(value: string): string | undefined {
-  const label = value.replace(/[\u0000-\u001f\u007f]/gu, "").trim().slice(0, 80);
+  const label = value.replace(/\p{Cc}/gu, "").trim().slice(0, 80);
   return label || undefined;
 }
 
 function opaqueEventId(prefix: "obs" | "evt"): string {
-  const uuid = globalThis.crypto?.randomUUID?.().replace(/-/gu, "");
+  const uuid = window.crypto?.randomUUID?.().replace(/-/gu, "");
   if (uuid) {
     return `${prefix}_${uuid}`;
   }
-  const bytes = globalThis.crypto?.getRandomValues(new Uint8Array(16));
+  const bytes = window.crypto?.getRandomValues(new Uint8Array(16));
   if (!bytes) {
     throw new Error("Secure randomness is unavailable for Device Hub events.");
   }
@@ -282,7 +282,7 @@ function opaqueEventId(prefix: "obs" | "evt"): string {
 }
 
 function structuredCloneSafe<T>(value: T): T {
-  return typeof globalThis.structuredClone === "function"
-    ? globalThis.structuredClone(value)
+  return typeof window.structuredClone === "function"
+    ? window.structuredClone(value)
     : JSON.parse(JSON.stringify(value)) as T;
 }

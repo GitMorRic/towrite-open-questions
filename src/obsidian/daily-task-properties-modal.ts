@@ -463,17 +463,21 @@ export class DailyTaskPropertiesModal extends Modal {
       cls: primary ? "mod-cta" : undefined,
       attr: { type: "button" }
     });
-    button.addEventListener("click", async () => {
-      if (!this.options.schedule?.onTimingAction) return;
-      button.disabled = true;
-      try {
-        this.timing = await this.options.schedule.onTimingAction(action);
-        this.renderSchedulePanel();
-      } catch (error) {
-        button.disabled = false;
-        this.showError(error);
-      }
+    button.addEventListener("click", () => {
+      void this.runTimingAction(button, action);
     });
+  }
+
+  private async runTimingAction(button: HTMLButtonElement, action: NoteTaskTimingAction): Promise<void> {
+    if (!this.options.schedule?.onTimingAction) return;
+    button.disabled = true;
+    try {
+      this.timing = await this.options.schedule.onTimingAction(action);
+      this.renderSchedulePanel();
+    } catch (error) {
+      button.disabled = false;
+      this.showError(error);
+    }
   }
 
   private showError(error: unknown): void {

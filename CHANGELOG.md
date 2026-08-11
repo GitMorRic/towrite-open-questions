@@ -1,5 +1,13 @@
 # Changelog / 更新日志
 
+## Unreleased
+
+- Removed the remaining production `fetch` calls reported by the Obsidian community scanner; Backend and Device Hub requests now share the desktop HTTP transport with explicit cancellation and response-size limits.
+- Made Ribbon and command view activation wait for workspace restoration, reconfigure existing leaves, rebuild stale leaves once, and surface failures through an Obsidian Notice instead of silently doing nothing.
+- Added regression coverage for dashboard and sidebar activation across restored, missing, and stale workspace leaves.
+- Replaced the outdated marketplace README and screenshot with the current Today, Work Pool, Status, Journal, and Focus Now product model in English and Simplified Chinese.
+- Cleared the full Obsidian compatibility warning report and changed the production lint gate to fail on any future warning instead of hiding warnings with `--quiet`.
+
 ## 0.3.2 - 2026-08-11
 
 - Replaced the Echo settings section's manual HTML heading with Obsidian's native `Setting.setHeading()` API, resolving the blocking community-review finding while preserving accessibility and layout.

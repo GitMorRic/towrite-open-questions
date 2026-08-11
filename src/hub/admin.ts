@@ -237,7 +237,7 @@ export class HubAdminClient {
     accountAccessToken?: string
   ): Promise<unknown> {
     const controller = new AbortController();
-    const timer = globalThis.setTimeout(() => controller.abort(), this.timeoutMs);
+    const timer = window.setTimeout(() => controller.abort(), this.timeoutMs);
     try {
       const headers: Record<string, string> = { accept: "application/json" };
       if (request.body) {
@@ -272,12 +272,12 @@ export class HubAdminClient {
       // implementations. Replace them with a stable, display-safe message.
       throw new HubAdminError(operation);
     } finally {
-      globalThis.clearTimeout(timer);
+      window.clearTimeout(timer);
     }
   }
 }
 
-const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/u;
+const CONTROL_CHARACTER = /\p{Cc}/u;
 
 function normalizeAdminBaseUrl(value: string): string {
   let parsed: URL;

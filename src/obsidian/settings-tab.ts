@@ -1,4 +1,4 @@
-import { App, Notice, PluginSettingTab, Setting, setIcon } from "obsidian";
+import { App, Notice, PluginSettingTab, Setting, setIcon, type SettingDefinitionItem } from "obsidian";
 import {
   DEFAULT_ARTICLE_TYPES,
   DEFAULT_STATUS_OPTIONS,
@@ -46,6 +46,7 @@ import {
 } from "../hub/esp32-config";
 import type { HubContentAction, HubContentType } from "../hub/types";
 import type { SmallScreenConnectionStatus } from "../device-status";
+import { confirmWithModal } from "./dialogs";
 
 type SettingsTabId = "general" | "cards" | "capture" | "inbox" | "daily" | "learning" | "workflow" | "api" | "push" | "quote0" | "ai" | "backend" | "hub" | "about";
 
@@ -845,6 +846,7 @@ const AI_PROVIDER_PRESETS = [
 ] as const;
 
 export class ToWriteSettingTab extends PluginSettingTab {
+  private settingsHostEl?: HTMLElement;
   private readonly openArticleTypeIds = new Set<string>();
   private readonly openWorkflowStageIds = new Set<string>();
   private readonly openDeviceProfileIds = new Set<string>();
@@ -880,7 +882,37 @@ export class ToWriteSettingTab extends PluginSettingTab {
   }
 
   display(): void {
+    this.settingsHostEl = this.containerEl;
     this.renderSettings(this.containerEl);
+  }
+
+  getSettingDefinitions(): SettingDefinitionItem[] {
+    const copy = COPY[this.plugin.settings.language ?? "zh"];
+    return [{
+      name: copy.title,
+      desc: this.plugin.settings.language === "zh"
+        ? "配置日记、工作池、批注、AI、设备、同步与隐私。"
+        : "Configure Daily Notes, Work Pool, annotations, AI, devices, sync, and privacy.",
+      aliases: [
+        "ToWrite",
+        "Daily Notes",
+        "Work Pool",
+        "ToThink",
+        "AI",
+        "Device Hub",
+        "Capture",
+        "privacy"
+      ],
+      render: (setting) => {
+        this.settingsHostEl = setting.settingEl;
+        this.renderSettings(setting.settingEl);
+        return () => {
+          if (this.settingsHostEl === setting.settingEl) {
+            this.settingsHostEl = undefined;
+          }
+        };
+      }
+    }];
   }
 
   private renderSettings(containerEl: HTMLElement): void {
@@ -1864,18 +1896,21 @@ export class ToWriteSettingTab extends PluginSettingTab {
           const path = await this.plugin.archiveDailyTimerLedger();
           new Notice(zh ? `已归档到 ${path}` : `Archived to ${path}`);
         }))
-        .addButton((button) => button
-          .setWarning()
-          .setButtonText(zh ? "归档并清空" : "Archive & clear")
-          .onClick(async () => {
-            if (!window.confirm(zh
+        .addButton((button) => {
+          button.buttonEl.addClass("mod-warning");
+          button
+            .setButtonText(zh ? "归档并清空" : "Archive & clear")
+            .onClick(async () => {
+            if (!await confirmWithModal(this.app, zh
               ? "确认归档并清空任务计时账本？计划 Markdown 不会被修改。"
-              : "Archive and clear the task timer ledger? Daily Markdown will not be changed.")) {
+              : "Archive and clear the task timer ledger? Daily Markdown will not be changed.",
+            zh ? "归档并清空" : "Archive and clear")) {
               return;
             }
             const path = await this.plugin.clearDailyTimerLedger();
-            new Notice(zh ? `计时账本已清空；归档位于 ${path}` : `Timer ledger cleared; archive saved to ${path}`);
-          }));
+              new Notice(zh ? `计时账本已清空；归档位于 ${path}` : `Timer ledger cleared; archive saved to ${path}`);
+            });
+        });
     }
 
     new Setting(containerEl)
@@ -1937,11 +1972,14 @@ export class ToWriteSettingTab extends PluginSettingTab {
         await this.plugin.exportDailyActivity();
         new Notice(zh ? "今日统计已导出。" : "Daily activity exported.");
       }))
-      .addButton((button) => button.setWarning().setButtonText(zh ? "清空统计" : "Clear metrics").onClick(async () => {
-        await this.plugin.clearDailyActivity();
-        new Notice(zh ? "已清空今日统计；Daily 任务未修改。" : "Daily metrics cleared; Markdown tasks were not changed.");
-        this.refreshSettingsUi();
-      }));
+      .addButton((button) => {
+        button.buttonEl.addClass("mod-warning");
+        button.setButtonText(zh ? "清空统计" : "Clear metrics").onClick(async () => {
+          await this.plugin.clearDailyActivity();
+          new Notice(zh ? "已清空今日统计；Daily 任务未修改。" : "Daily metrics cleared; Markdown tasks were not changed.");
+          this.refreshSettingsUi();
+        });
+      });
   }
 
   private renderDeviceLibrarySettings(containerEl: HTMLElement, zh: boolean): void {
@@ -2208,7 +2246,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
 
   private focusEchoCardWorkbench(): void {
     window.requestAnimationFrame(() => {
-      this.containerEl.querySelector<HTMLElement>(".towrite-echo-workbench")?.scrollIntoView({
+      (this.settingsHostEl ?? this.containerEl).querySelector<HTMLElement>(".towrite-echo-workbench")?.scrollIntoView({
         block: "start",
         behavior: "smooth"
       });
@@ -2257,7 +2295,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
     const layout = editor.createDiv({ cls: "towrite-echo-editor-layout" });
     const form = layout.createDiv({ cls: "towrite-echo-form" });
     const previewPanel = layout.createDiv({ cls: "towrite-echo-preview-panel" });
-    previewPanel.createEl("span", { cls: "towrite-echo-preview-label", text: zh ? "2.7 英寸 · 264 × 176 预览" : "2.7 inch · 264 × 176 preview" });
+    previewPanel.createSpan({ cls: "towrite-echo-preview-label", text: zh ? "2.7 英寸 · 264 × 176 预览" : "2.7 inch · 264 × 176 preview" });
     const preview = previewPanel.createDiv({ cls: "towrite-echo-preview-root" });
     const fitMessage = previewPanel.createDiv({ cls: "towrite-echo-fit-message", attr: { "aria-live": "polite" } });
 
@@ -2491,7 +2529,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
     label.createEl("strong", { text: card.typeLabel || (zh ? "卡片类型" : "Card type") });
     const disclosure = echoCardDisclosureLabel(card.disclosure, zh ? "zh-CN" : "en");
     if (disclosure) label.createSpan({ text: disclosure });
-    header.createEl("span", { text: card.subject || (zh ? "项目 / 角色" : "Project / character"), cls: card.subject ? "" : "is-placeholder" });
+    header.createSpan({ text: card.subject || (zh ? "项目 / 角色" : "Project / character"), cls: card.subject ? "" : "is-placeholder" });
     const content = screen.createDiv({ cls: "towrite-echo-screen-content" });
     if (card.context) content.createEl("p", { cls: "towrite-echo-screen-context", text: card.context });
     content.createEl("p", {
@@ -2530,7 +2568,11 @@ export class ToWriteSettingTab extends PluginSettingTab {
     const draft = this.echoCardDraft;
     if (!draft) return true;
     const dirty = !this.echoCardDraftBaseline || echoCardFingerprint(draft) !== this.echoCardDraftBaseline;
-    return !dirty || window.confirm(zh ? "放弃尚未保存的 Echo 卡片修改？" : "Discard unsaved Echo card changes?");
+    if (!dirty) return true;
+    new Notice(zh
+      ? "请先保存或取消当前 Echo 卡片修改。"
+      : "Save or cancel the current Echo card changes first.");
+    return false;
   }
 
   private async saveEchoCardDraft(draft: EchoCard, zh: boolean, send: boolean): Promise<void> {
@@ -2665,9 +2707,12 @@ export class ToWriteSettingTab extends PluginSettingTab {
       .addButton((button) => button.setButtonText(zh ? "导出" : "Export").onClick(() => {
         void this.plugin.exportLearningData();
       }))
-      .addButton((button) => button.setWarning().setButtonText(zh ? "全部清空" : "Clear all").onClick(() => {
-        void this.plugin.clearLearningData();
-      }));
+      .addButton((button) => {
+        button.buttonEl.addClass("mod-warning");
+        button.setButtonText(zh ? "全部清空" : "Clear all").onClick(() => {
+          void this.plugin.clearLearningData();
+        });
+      });
 
     new Setting(containerEl).setName(copy.pushHabits).setDesc(copy.pushHabitsDesc).setHeading();
     this.renderPushHabitEditor(containerEl, copy);
@@ -5026,7 +5071,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
   }
 
   private refreshSettingsUi(): void {
-    this.renderSettings(this.containerEl);
+    this.renderSettings(this.settingsHostEl ?? this.containerEl);
   }
 
   private resetAiDiagnostics(): void {

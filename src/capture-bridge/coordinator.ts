@@ -342,7 +342,7 @@ export class CaptureBridgeCoordinator {
 
   private trimCaptureResults(): void {
     while (this.captureResults.size > 500) {
-      const oldest = this.captureResults.keys().next().value as string | undefined;
+      const oldest = this.captureResults.keys().next().value;
       if (!oldest) break;
       this.captureResults.delete(oldest);
     }
@@ -478,7 +478,8 @@ function validateAssetUploadRequest(request: CaptureBridgeAssetUploadRequest): C
     throw new CaptureBridgeRequestError(400, "A valid asset idempotency key is required.");
   }
   const fileName = String(request.fileName ?? "")
-    .replace(/[/\\:\u0000-\u001f]/gu, "-")
+    .replace(/[/\\:]/gu, "-")
+    .replace(/\p{Cc}/gu, "-")
     .replace(/\s+/gu, " ")
     .trim()
     .slice(0, 180);
@@ -498,7 +499,7 @@ function validateAssetUploadRequest(request: CaptureBridgeAssetUploadRequest): C
 
 function decodeBase64(value: string): Uint8Array {
   try {
-    const decoded = globalThis.atob(value);
+    const decoded = window.atob(value);
     return Uint8Array.from(decoded, (character) => character.charCodeAt(0));
   } catch {
     throw new CaptureBridgeRequestError(400, "Asset base64 payload is invalid.");
@@ -507,8 +508,8 @@ function decodeBase64(value: string): Uint8Array {
 
 function generateAssetRef(): string {
   const bytes = new Uint8Array(16);
-  globalThis.crypto.getRandomValues(bytes);
-  const value = globalThis.btoa(String.fromCharCode(...bytes))
+  window.crypto.getRandomValues(bytes);
+  const value = window.btoa(String.fromCharCode(...bytes))
     .replace(/\+/gu, "-")
     .replace(/\//gu, "_")
     .replace(/=+$/gu, "");
@@ -525,7 +526,7 @@ function clampTtl(value: number): number {
 }
 
 function clone<T>(value: T): T {
-  return typeof globalThis.structuredClone === "function"
-    ? globalThis.structuredClone(value)
+  return typeof window.structuredClone === "function"
+    ? window.structuredClone(value)
     : JSON.parse(JSON.stringify(value)) as T;
 }

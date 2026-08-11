@@ -1239,7 +1239,7 @@ function normalizeTaskTarget(value: unknown): string | undefined {
     if (!target) throw new Error("Task Pool target must be a safe Vault-relative Markdown note.");
     return `[[${target}${label ? `|${label}` : ""}]]`;
   }
-  if (/[\[\]]/u.test(normalized)) {
+  if (normalized.includes("[") || normalized.includes("]")) {
     throw new Error("Task Pool target contains malformed Markdown link syntax.");
   }
   return normalized;
@@ -1395,11 +1395,11 @@ function cloneTask(item: TaskPoolItem): TaskPoolItem {
 }
 
 function randomHex128(): string {
-  if (!globalThis.crypto?.getRandomValues) {
+  if (!window.crypto?.getRandomValues) {
     throw new Error("Cryptographically secure randomness is unavailable.");
   }
   const bytes = new Uint8Array(16);
-  globalThis.crypto.getRandomValues(bytes);
+  window.crypto.getRandomValues(bytes);
   return [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("");
 }
 

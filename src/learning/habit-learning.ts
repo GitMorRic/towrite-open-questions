@@ -2,7 +2,6 @@ import { habitFingerprint, inferHabitPatterns, normalizeTimeWindow } from "./inf
 import { buildSessionSummaries, clampTimezoneOffset, SESSION_IDLE_MS } from "./sessions";
 import type {
   ActivityEvent,
-  CaptureEntryPoint,
   CaptureRouteSelection,
   CaptureTargetKind,
   HabitCandidate,
@@ -25,7 +24,7 @@ export const DISMISSED_SUPPRESSION_MS = 90 * 24 * 60 * 60 * 1000;
 export class HabitLearningService {
   private state: HabitLearningState;
 
-  constructor(initial?: Partial<HabitLearningState> | unknown) {
+  constructor(initial?: unknown) {
     this.state = normalizeHabitLearningState(initial);
   }
 
@@ -275,7 +274,7 @@ export class HabitLearningService {
   }
 }
 
-export function normalizeHabitLearningState(input?: Partial<HabitLearningState> | unknown): HabitLearningState {
+export function normalizeHabitLearningState(input?: unknown): HabitLearningState {
   const record = asRecord(input);
   const events = Array.isArray(record?.events)
     ? record.events.map(normalizeActivityEvent).filter((event): event is ActivityEvent => Boolean(event))
@@ -328,7 +327,7 @@ export function normalizeActivityEvent(input: unknown): ActivityEvent | undefine
   if (kind === "capture-route") {
     const selectedTargetId = normalizeText(record.selectedTargetId, 240);
     const selectedTargetKind = normalizeCaptureTargetKind(record.selectedTargetKind);
-    const entryPoint = normalizeText(record.entryPoint, 80) as CaptureEntryPoint | undefined;
+    const entryPoint = normalizeText(record.entryPoint, 80);
     const selection = normalizeRouteSelection(record.selection);
     if (!selectedTargetId || !selectedTargetKind || !entryPoint || !selection) {
       return undefined;
@@ -445,7 +444,7 @@ function normalizeHabitRule(input: unknown): HabitRule | undefined {
     const contextRecord = asRecord(record.context);
     const workflowStageId = normalizeIdentifier(contextRecord?.workflowStageId);
     const articleTypeId = normalizeIdentifier(contextRecord?.articleTypeId);
-    const entryPoint = normalizeText(contextRecord?.entryPoint, 80) as CaptureEntryPoint | undefined;
+    const entryPoint = normalizeText(contextRecord?.entryPoint, 80);
     const targetId = normalizeText(record.targetId, 240);
     const targetKind = normalizeCaptureTargetKind(record.targetKind);
     if ((!workflowStageId && !articleTypeId && !entryPoint) || !targetId || !targetKind) {

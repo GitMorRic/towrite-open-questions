@@ -1,134 +1,93 @@
 # ToWrite Open Questions
 
-[简体中文](README.zh-CN.md)
+[简体中文](README.zh-CN.md) · [Releases](https://github.com/GitMorRic/towrite-open-questions/releases) · [Issues](https://github.com/GitMorRic/towrite-open-questions/issues)
 
-ToWrite is a desktop-only Obsidian workspace for turning unfinished notes, open questions, and ordinary Markdown checkboxes into a calm daily plan. Markdown remains the source of truth: you can keep writing in Daily Notes and use the Workbench only when you want to arrange, start, complete, or review work.
+ToWrite is a desktop-only Obsidian workspace for turning ordinary Markdown checkboxes, open questions, Inbox notes, and workflow notes into a calm daily plan. Markdown remains the source of truth: keep writing in Daily Notes, then use the Workbench when you want to arrange, start, complete, or review work.
 
-![ToWrite sidebar and source controls](docs/assets/sidebar-current-note%20and%20selection-toolbar.png)
+![ToWrite Workbench with Today, Work Pool, Status and Journal](docs/assets/towrite-workbench-0.3.svg)
 
-## Three-minute start
+## What is in 0.3
 
-1. Enable ToWrite in **Settings → Community plugins**.
-2. Run **ToWrite: Open workspace** from the command palette.
-3. Open today's Daily Note and write normal Markdown tasks.
-4. Return to **Today** to start one task, or use **Work pool** to arrange existing notes and questions.
-5. Open **Journal** to review completed, migrated, returned, and abandoned work.
+- **Today** — arrange work from your Daily Note, start one current task, track progress, and preview the 2.7-inch device layout.
+- **Work Pool** — one filtered view of Markdown tasks, ToThink/ToWrite questions, Inbox notes, and workflow notes.
+- **Status** — understand workflow stages, article types, open-question states, and stale notes.
+- **Journal** — review completed, paused, migrated, and returned work by day or month; optionally write a summary back to your Daily Note.
+- **Focus Now** — a compact pinnable window that keeps the current task visible without loading the full Work Pool.
 
-ToWrite follows Obsidian's Daily Notes folder, filename format, and template when the core Daily Notes plugin is configured. A custom Daily folder remains available in ToWrite settings.
+## Three-minute setup
 
-## Write naturally in Daily Notes
+1. Install **ToWrite Open Questions** from Obsidian Community plugins and enable it.
+2. Open **ToWrite: Settings → Daily** and choose either Obsidian Daily Notes or a fixed planning document.
+3. Write normal Markdown in the configured `ToDo` section:
 
-No technical metadata is inserted while you type or while the Dashboard refreshes.
+   ```md
+   ## ToDo
 
-```md
-## ToDo
+   - [ ] Project
+     1. [[Write release notes]]
+     2. [[Test the capture flow]]
+   - [ ] Later reading
+     1. [[A useful paper]]
+   ```
 
-- [ ] Project
-  1. [[Echo MVP]]
-  2. [[Release notes]]
+4. Click the single default Ribbon icon, or run **Open Todo Workspace** from the Command Palette.
+5. Start, complete, migrate, or send a task only when you choose. Merely typing or refreshing never rewrites the Daily Note.
 
-- [ ] Writing
-  - [ ] Draft the introduction
-  - [ ] Verify the examples
-```
+The checkbox parent above is treated as a category when it only contains ordinary numbered links. Real child checkboxes remain tasks. ToWrite adds a stable technical ID only when an explicit action needs one, then protects that field from accidental editing in Live Preview.
 
-- A checkbox with ordinary numbered/link children is a category and does not count toward progress.
-- A nested checkbox is a task; a checkbox parent may also be a task.
-- A numbered link under a category can appear as a leaf work item, but unrelated ordinary lists are ignored.
-- A task link opens its own note; otherwise it can inherit the nearest category note.
-- An explicit `towrite-kind:: task` overrides category inference.
+## Natural Daily Notes
 
-Tasks without an ID use an in-memory reference. Only an explicit action—start, complete, edit properties, migrate, send to a device, or add to the pool—materializes a stable `^daily_*` ID on the same verified line. If the line changed, the action is cancelled instead of writing beside another task.
+ToWrite supports `[[wikilinks]]`, relative Markdown links, headings, blocks, parent categories, child tasks, and inherited targets. A task opens its own link first, otherwise the nearest linked parent, then its source block. Linked-note tasks can be projected into the Daily plan without copying their source of truth.
 
-## One workbench, four views
+Unfinished work can be reviewed and migrated to the next day with a visible record left in the previous Daily Note. It is never silently rolled forward.
 
-### Today
+## Workbench surfaces
 
-Shows today's ordered plan, current focus, project-colored progress, previous-day migration, and the optional 2.7-inch e-ink preview. The complete list stays in Markdown order.
+| Surface | Purpose |
+| --- | --- |
+| Today | Make and execute today's commitment. |
+| Work Pool | Find and arrange active work across allowed Markdown sources. |
+| Status | Inspect workflow coverage and open-question state. |
+| Journal | Review daily/monthly transitions and time invested. |
+| Focus Now | Keep one current task at the edge of attention. |
+| Open Questions sidebar | Review and edit ToThink/ToWrite annotations. |
 
-### Work pool
+## Local-first data and networking
 
-Combines active Markdown tasks, ToThink/ToWrite questions, Inbox notes, and Workflow notes without copying them into one database. Saved views can group by project, source, stage, article type, note, or native status.
+Markdown and readable JSON/JSONL files are the data sources of truth. Indexes are rebuildable. ToWrite does not record keystrokes or upload the full Vault.
 
-### Status
-
-Explains and summarizes Workflow stages, Article Types, question states, Inbox, and tags. It is an analysis view; source notes remain authoritative.
-
-### Journal
-
-Shows daily and calendar-month totals for planned/completed tasks, active and paused time, interruptions, migrations, returns, and abandoned work. Transition events are stored locally in readable JSONL. A confirmed write-back updates only the marked `ToWrite Journal` block in the Daily Note.
-
-## Focus Now
-
-Run **ToWrite: Focus Now: open floating window** for a pinned Obsidian leaf containing only the current task and compact Today summary. Clicking a task starts or resumes it and opens the resolved note, heading, block, or safe HTTPS target. **Later** pauses timing and stores a local reading checkpoint.
-
-Use **ToWrite: Locate current focused task** from the command palette or bind your own hotkey. Double-clicking blank space in a Markdown editor performs the same action; links and selected text are not intercepted.
-
-## ToThink and ToWrite annotations
-
-Select Markdown or PDF text and create a ToThink/ToWrite card. Cards can jump back to their source, keep notes in a sidecar without rewriting the document, and participate in the Work pool and device candidate list. The original annotation workflow remains available alongside Daily planning.
-
-## Markdown truth and private metadata
-
-- Notes, Daily plans, checkboxes, frontmatter, and readable JSON/JSONL are authoritative.
-- `^daily_*`, `^task_*`, and `towrite-*` fields exist only for stable references and conflict-safe updates.
-- Technical fields are atomic and hidden in Source, Live Preview, and Reading views unless the debug setting is enabled.
-- ToWrite does not record keystrokes or upload note bodies for activity statistics.
-- API keys and long-lived tokens are stored with Obsidian SecretStorage (Obsidian 1.11.4+), not in plugin `data.json`.
-
-## Optional connections and disclosure
-
-All network features are off by default.
-
-| Feature | Default | Data sent when enabled |
+| Feature | Default | Network/data behavior |
 | --- | --- | --- |
-| OpenAI-compatible AI | Off | The previewed fields and local candidate IDs needed for the selected action |
-| Trusted Backend | Off | Privacy-filtered candidate metadata; it cannot invent Vault paths |
-| External API | Off | Data requested by an authenticated local client |
-| Device Hub / NFC | Off | Approved display-card snapshots and opaque source references |
-| Quote0 / Push targets | Off | The selected card or dashboard payload |
+| Daily plan, Work Pool, Journal | On/local | No network required. |
+| AI provider | Off | Sends only the fields shown in the AI disclosure preview. |
+| Trusted Backend | Off | Optional ranking, Skills, agents, and device coordination. |
+| Device Hub / NFC | Off | Sends privacy-filtered card snapshots and opaque references. |
+| External API / Capture Bridge | Off | Desktop-only local services with scoped header tokens. |
 
-Full protocols and setup guides live in [`docs/`](docs/):
+API keys and long-lived tokens use Obsidian SecretStorage on supported versions. Tokens are not placed in URLs. Review [Privacy](PRIVACY.md), [Security](SECURITY.md), and [Architecture](ARCHITECTURE.md) before enabling connected features.
 
-- [Daily Dashboard and Markdown contract](docs/daily-dashboard.md)
-- [Navigation adapters](docs/navigation-adapters.md)
-- [Device Hub protocol](docs/device-hub-protocol.md)
-- [NTAG213 / NFC Tools](docs/ntag213-nfc-tools.md)
-- [External API (Chinese)](docs/api.zh-CN.md)
-
-## Compatibility and installation
+## Compatibility
 
 - Obsidian **1.11.4 or newer**
 - Desktop only (`isDesktopOnly: true`)
-- Windows, macOS, and Linux desktop builds supported by Obsidian
-
-Install from **Community plugins** by searching for **ToWrite Open Questions**. For manual installation, copy `main.js`, `manifest.json`, and `styles.css` from a release into:
-
-```text
-<vault>/.obsidian/plugins/towrite-open-questions/
-```
+- Release assets: `main.js`, `manifest.json`, and `styles.css`
 
 ## Troubleshooting
 
-- **Today is empty:** confirm the selected Daily Note source and that tasks are inside the configured ToDo section or supported free-form Daily area.
-- **A task changed before an action:** refresh; ToWrite deliberately refuses stale writes.
-- **A link does not open:** use a valid `[[wikilink]]` or relative Markdown link and check for duplicate note names.
-- **Typing feels slow:** disable optional editor suggestions or reduce Work pool include rules; indexing and network work are debounced and never run in the key handler.
-- **Technical fields are visible:** run the repair command and ensure the debug “show technical fields” setting is off.
-
-See [marketplace submission notes](docs/marketplace-submission.md), [security policy](SECURITY.md), and [privacy policy](PRIVACY.md) before reporting sensitive issues.
+- **A Ribbon click does nothing:** update to the latest release, open the Command Palette, and run **Open Todo Workspace**. Current builds wait for layout restoration and show a Notice when view activation fails.
+- **Today's list is empty:** verify the configured Daily Note, date format, and `ToDo` heading, then use Refresh in the Workbench.
+- **A task cannot start:** open its diagnostic message. Duplicate IDs or a changed source revision are blocked to prevent writing to the wrong line.
+- **Too many tasks appear:** configure Work Pool include rules and keep per-note ignore rules for legacy lists.
+- **Typing feels slow:** disable unused AI/Hub/API features and report a reproducible Vault path; editor keystrokes do not scan the Vault or send network requests.
 
 ## Development
 
 ```bash
 npm ci
 npm test
-npm run typecheck
 npm run build
 ```
 
-The production build validates package/manifest/versions consistency, required release assets, and a 2 MiB `main.js` limit.
+`npm run build` runs the Obsidian marketplace rule gate, TypeScript checks, production bundling, release validation, and the 2 MiB bundle limit.
 
-## License
-
-MIT. See [LICENSE](LICENSE). Optional Backend software is distributed separately under its own license.
+MIT licensed. Optional Backend components are distributed separately under their own licenses.

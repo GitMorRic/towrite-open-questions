@@ -15,7 +15,7 @@ describe("Daily editor task controls", () => {
       source.indexOf("function actionButton", source.indexOf("class DailyTaskEnrichmentWidget"))
     );
 
-    expect(widget).toContain('doc.createElement("details")');
+    expect(widget).toContain('createEl("details")');
     expect(widget).toContain('disclosureToggle.textContent = "···"');
     expect(widget).toContain("towrite-note-task-disclosure-content towrite-daily-enrichment-content");
     expect(widget.indexOf("disclosure.append(details)"))

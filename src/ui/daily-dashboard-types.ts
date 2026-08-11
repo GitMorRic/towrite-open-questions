@@ -1,6 +1,5 @@
 import type {
   DailyDashboardSnapshot,
-  DailyDevicePolicy,
   DailyPlanGroup,
   DailyPlanHierarchy,
   DailyPlanCreateInput,
@@ -13,7 +12,6 @@ import type {
   DailyJournalDaySnapshot,
   DailyJournalMonthSnapshot,
   DailyJournalWriteBackResult,
-  DailyPlanPriority,
   DailyPlanUpdate,
   DailySummary,
   DailyTaskRevision

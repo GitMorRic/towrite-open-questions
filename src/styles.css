@@ -1711,8 +1711,7 @@
   transition: background-color 120ms ease, box-shadow 120ms ease;
 }
 
-.cm-line:has(.towrite-mark:hover),
-.cm-line:has(.towrite-mark-remove:hover) {
+.cm-line:focus-within {
   border-radius: 6px;
   background: color-mix(in srgb, var(--interactive-accent) 10%, transparent);
 }
@@ -5474,7 +5473,7 @@
 }
 .towrite-invalid-input,
 .towrite-invalid-input:focus {
-  border-color: var(--text-error) !important;
+  border-color: var(--text-error);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--text-error) 35%, transparent);
 }
 
@@ -5560,7 +5559,7 @@
 
 .markdown-source-view .cm-line.towrite-daily-task-card-line:hover .towrite-daily-task-line-controls,
 .markdown-source-view .cm-line.towrite-daily-task-card-line:focus-within .towrite-daily-task-line-controls,
-.towrite-daily-task-line-controls:has(.towrite-note-task-disclosure[open]) {
+.towrite-daily-task-line-controls:focus-within {
   opacity: 1;
   pointer-events: auto;
 }
@@ -5691,7 +5690,7 @@
 }
 
 .markdown-source-view .cm-line.towrite-daily-task-candidate-line:hover .towrite-daily-task-enrichment-controls,
-.towrite-daily-task-enrichment-controls:has(.towrite-note-task-disclosure[open]) {
+.towrite-daily-task-enrichment-controls:focus-within {
   opacity: 1;
   pointer-events: auto;
 }
@@ -5812,7 +5811,7 @@
 }
 
 .towrite-daily-technical-id {
-  display: none !important;
+  display: none;
 }
 
 .modal.towrite-daily-properties-modal-shell {
@@ -6412,14 +6411,14 @@
    the reading experience. Legacy visible fields are concealed by a scoped
    post processor; new fields are Obsidian comments. */
 .towrite-task-pool-technical-line {
-  display: none !important;
+  display: none;
 }
 
 /* The configured Task Pool stays readable like an ordinary checklist in both
    editor modes. The underlying comments and stable block ids remain in the
    document for synchronization and deep links. */
 .markdown-source-view .cm-line.towrite-task-pool-technical-folded {
-  display: none !important;
+  display: none;
 }
 
 .towrite-task-input-suggestion {

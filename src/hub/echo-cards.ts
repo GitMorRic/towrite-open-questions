@@ -250,7 +250,7 @@ const REFERENCE_PRESETS: EchoCardReferencePreset[] = [
 export const ECHO_CARD_REFERENCE_PRESETS: readonly EchoCardReferencePreset[] = deepFreeze(REFERENCE_PRESETS);
 export const ECHO_CARD_REFERENCE_PRESETS_ZH_CN = ECHO_CARD_REFERENCE_PRESETS;
 
-export function createEchoCardId(crypto: Pick<Crypto, "getRandomValues"> = globalThis.crypto): string {
+export function createEchoCardId(crypto: Pick<Crypto, "getRandomValues"> = window.crypto): string {
   if (!crypto?.getRandomValues) throw new Error("Secure randomness is required to create an Echo card ID.");
   const bytes = new Uint8Array(16);
   crypto.getRandomValues(bytes);
@@ -303,7 +303,7 @@ export function clonePreset(
   }
   const id = options.id && isEchoCardId(options.id)
     ? options.id
-    : createEchoCardId(options.crypto ?? globalThis.crypto);
+    : createEchoCardId(options.crypto ?? window.crypto);
   const timestamp = normalizeDate(options.now) ?? new Date().toISOString();
   return {
     id,
@@ -334,7 +334,7 @@ export function createEmptyEchoCard(options: CreateEmptyEchoCardOptions = {}): E
   const timestamp = normalizeDate(options.now) ?? new Date().toISOString();
   const id = options.id && isEchoCardId(options.id)
     ? options.id
-    : createEchoCardId(options.crypto ?? globalThis.crypto);
+    : createEchoCardId(options.crypto ?? window.crypto);
   const contentType = CONTENT_TYPES.has(options.contentType as HubContentType)
     ? options.contentType as HubContentType
     : "blank_capture";
@@ -536,7 +536,7 @@ function checkLayoutField(issues: EchoCardLayoutIssue[], field: EchoCardLayoutIs
 
 function singleLine(value: unknown, max: number): string {
   const text = String(value ?? "")
-    .replace(/[\u0000-\u001f\u007f-\u009f]+/gu, " ")
+    .replace(/\p{Cc}+/gu, " ")
     .replace(/\s+/gu, " ")
     .trim();
   return takeCodePoints(text, max);
@@ -545,7 +545,7 @@ function singleLine(value: unknown, max: number): string {
 function multiLine(value: unknown, max: number): string {
   const text = String(value ?? "")
     .replace(/\r\n?/gu, "\n")
-    .replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/gu, "")
+    .replace(/\p{Cc}/gu, (character) => character === "\n" ? "\n" : "")
     .replace(/[ \t]+\n/gu, "\n")
     .replace(/\n{3,}/gu, "\n\n")
     .trim();

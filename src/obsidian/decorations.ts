@@ -197,11 +197,10 @@ class QuestionRemoveWidget extends WidgetType {
   }
 
   toDOM(view: EditorView): HTMLElement {
-    const doc = view.dom.ownerDocument;
-    const wrapper = doc.createElement("span");
+    const wrapper = createSpan();
     wrapper.className = "towrite-mark-remove-anchor";
 
-    const button = doc.createElement("button");
+    const button = createEl("button");
     button.type = "button";
     button.className = `towrite-mark-remove towrite-mark-remove-${this.question.color}`;
     button.textContent = "x";
@@ -246,11 +245,10 @@ class SuggestionActionsWidget extends WidgetType {
   }
 
   toDOM(view: EditorView): HTMLElement {
-    const doc = view.dom.ownerDocument;
-    const wrapper = doc.createElement("span");
+    const wrapper = createSpan();
     wrapper.className = "towrite-suggestion-actions";
 
-    const button = doc.createElement("button");
+    const button = createEl("button");
     button.type = "button";
     button.className = `towrite-suggestion-add towrite-suggestion-add-${this.suggestion.lane}`;
     button.textContent = this.suggestion.lane === "write" ? "+ ToWrite" : "+ ToThink";
@@ -272,7 +270,7 @@ class SuggestionActionsWidget extends WidgetType {
         });
     });
 
-    const ignoreButton = doc.createElement("button");
+    const ignoreButton = createEl("button");
     ignoreButton.type = "button";
     ignoreButton.className = "towrite-suggestion-ignore";
     ignoreButton.textContent = "×";

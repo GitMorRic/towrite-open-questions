@@ -23,7 +23,8 @@ export function dailyWikiLink(filePath: string, blockId?: string): string {
   const target = filePath
     .replace(/\\/gu, "/")
     .replace(/\.md$/iu, "")
-    .replace(/[\[\]]/gu, "");
+    .replaceAll("[", "")
+    .replaceAll("]", "");
   const block = blockId?.trim().replace(/^\^/u, "").replace(/[^A-Za-z0-9_-]/gu, "");
   return `[[${target}${block ? `#^${block}` : ""}]]`;
 }

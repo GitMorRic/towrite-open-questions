@@ -20,7 +20,7 @@ export function concealDailyTaskTechnicalMetadata(root: HTMLElement): void {
   for (const { node, from } of matches) {
     if (!node.parentNode) continue;
     const visible = node.data.slice(0, from);
-    const hidden = node.ownerDocument.createElement("span");
+    const hidden = createSpan();
     hidden.className = "towrite-daily-technical-id";
     hidden.setAttribute("aria-hidden", "true");
     hidden.textContent = node.data.slice(from);

@@ -2,20 +2,6 @@ import obsidianmd from "eslint-plugin-obsidianmd";
 import { defineConfig, globalIgnores } from "eslint/config";
 
 const recommended = obsidianmd.configs.recommended;
-const pluginRegistration = recommended[1];
-const typescriptParser = recommended[7];
-const obsidianTypescriptRules = recommended[11];
-
-// The community review bot treats Obsidian guideline violations separately
-// from a project's own TypeScript style rules. Keep the same separation here:
-// `tsc` owns type safety, while this gate owns blocking Obsidian API/UI rules.
-// This avoids hiding a real marketplace blocker in hundreds of unrelated
-// legacy style findings from typescript-eslint's strict preset.
-const marketplaceRules = Object.fromEntries(
-  Object.entries(obsidianTypescriptRules.rules ?? {}).filter(([ruleName]) =>
-    ruleName.startsWith("obsidianmd/")
-  )
-);
 
 export default defineConfig(
   globalIgnores([
@@ -28,19 +14,25 @@ export default defineConfig(
     "release-assets",
     "scripts",
     "site",
+    "src/test/**",
     "**/*.test.ts",
     "**/*.test.tsx"
   ]),
-  pluginRegistration,
-  typescriptParser,
+  ...recommended,
   {
     files: ["src/**/*.{ts,tsx}"],
+    rules: {
+      // These are general presentation/type-style rules, not Obsidian marketplace
+      // compatibility checks. UI copy intentionally contains product names, paths,
+      // IDs, and Chinese text that cannot be normalized as English sentence case.
+      "obsidianmd/ui/sentence-case": "off",
+      "@typescript-eslint/no-base-to-string": "off"
+    },
     languageOptions: {
       parserOptions: {
         projectService: true,
         tsconfigRootDir: import.meta.dirname
       }
-    },
-    rules: marketplaceRules
+    }
   }
 );

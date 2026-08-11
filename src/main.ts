@@ -82,6 +82,8 @@ import {
   refreshTaskPoolTechnicalMetadata
 } from "./obsidian/task-pool-editor";
 import { readObsidianDailyNotesConfiguration } from "./obsidian/daily-notes";
+import { activateWorkspaceView } from "./obsidian/view-activation";
+import { confirmWithModal, promptWithModal } from "./obsidian/dialogs";
 import { AiQuestionService } from "./ai/service";
 import {
   BackendEnhancementClient,
@@ -169,7 +171,6 @@ import {
   type DailyJournalWriteBackResult,
   type DailyTaskTransitionKind,
   type DailyDashboardSnapshot,
-  type DailyDevicePolicy,
   type DailyMarkdownTarget,
   type DailyMarkdownTimerOperation,
   type DailyPlanCreateInput,
@@ -177,7 +178,6 @@ import {
   type DailyPlanGroup,
   type DailyPlanHierarchy,
   type DailyPlanItem,
-  type DailyPlanMetadata,
   type DailyPlanMetadataUpdate,
   type DailyPlanNormalizationEdit,
   type DailyPlanNormalizationPreview,
@@ -189,17 +189,13 @@ import {
   type DailyTaskMigration,
   type DailyTaskTimingSnapshot,
   type DailyTimerCorrectionOptions,
-  type TaskPoolCreateInput,
   type TaskPoolDocument,
   type TaskPoolItem,
   type TaskPoolRevision,
-  type TaskPoolUpdate,
   type DailyTimerEvent,
   type DailyTimerEventLog,
   type DailyTimerEventSource,
   type DailyTimerTransitionAdapter,
-  type DailyTimerTransitionJournalEntry,
-  type DailyTimerTransition,
   type DailyTimerTransitionOptions,
   type DailyTaskRevision,
   NoteTaskService,
@@ -274,7 +270,6 @@ import {
 import { buildExternalEinkPlaylistPayload, type DailyEinkCard } from "./external/eink-playlist";
 import type {
   DeviceActionIntent,
-  DeviceCommandAction,
   DeviceCompletionGuard,
   DeviceDisplayAcknowledgement,
   DeviceDisplayedTuple,
@@ -865,7 +860,7 @@ export default class ToWritePlugin extends Plugin {
       (leaf) => new ToWriteSidebarItemView(leaf, this.uiApi, {
         dailyApi: dailyDashboardApi,
         onOpenDashboard: () => {
-          void this.activateDashboard();
+          this.runViewAction("ToWrite Workbench", () => this.activateDashboard());
         }
       })
     );
@@ -875,7 +870,7 @@ export default class ToWritePlugin extends Plugin {
         dailyApi: dailyDashboardApi,
         getFullWorkflowPayload: () => this.workflowIndex.getPayload({ compact: true }),
         onOpenFloatingToday: () => {
-          void this.activateTodayFloating();
+          this.runViewAction("Focus Now", () => this.activateTodayFloating());
         }
       })
     );
@@ -884,10 +879,10 @@ export default class ToWritePlugin extends Plugin {
       (leaf) => new ToWriteTodayFloatingItemView(leaf, {
         dailyApi: dailyDashboardApi,
         onOpenDashboard: () => {
-          void this.activateDashboard({ activeTab: "today" });
+          this.runViewAction("ToWrite Workbench", () => this.activateDashboard({ activeTab: "today" }));
         },
         onOpenTaskPool: () => {
-          void this.activateDashboard({ activeTab: "pool" });
+          this.runViewAction("ToWrite Workbench", () => this.activateDashboard({ activeTab: "pool" }));
         }
       })
     );
@@ -898,10 +893,10 @@ export default class ToWritePlugin extends Plugin {
           dailyApi: dailyDashboardApi,
           source,
           onOpenDashboard: () => {
-            void this.activateDashboard({ activeTab: "today" });
+            this.runViewAction("ToWrite Workbench", () => this.activateDashboard({ activeTab: "today" }));
           },
           onOpenFloating: () => {
-            void this.activateTodayFloating();
+            this.runViewAction("Focus Now", () => this.activateTodayFloating());
           }
         }
       });
@@ -923,12 +918,12 @@ export default class ToWritePlugin extends Plugin {
       ) return;
       const previewRoot = el.closest(".markdown-preview-view") ?? el.parentElement ?? el;
       if (previewRoot.querySelector("[data-towrite-previous-migration]")) return;
-      const prompt = el.ownerDocument.createElement("aside");
+      const prompt = createEl("aside");
       prompt.className = "towrite-daily-previous-migration";
       prompt.dataset.towritePreviousMigration = "true";
-      const text = el.ownerDocument.createElement("span");
+      const text = createSpan();
       text.textContent = `昨日还有 ${this.previousDailyUnfinished.length} 项未完成`;
-      const button = el.ownerDocument.createElement("button");
+      const button = createEl("button");
       button.type = "button";
       button.textContent = "选择迁移";
       button.addEventListener("click", () => {
@@ -944,7 +939,7 @@ export default class ToWritePlugin extends Plugin {
       id: "open-towrite-sidebar",
       name: "Open questions sidebar",
       callback: () => {
-        void this.activateSidebar();
+        this.runViewAction("Open Questions", () => this.activateSidebar());
       }
     });
 
@@ -952,7 +947,7 @@ export default class ToWritePlugin extends Plugin {
       id: "open-towrite-dashboard",
       name: "Open question dashboard",
       callback: () => {
-        void this.activateDashboard();
+        this.runViewAction("ToWrite Workbench", () => this.activateDashboard());
       }
     });
 
@@ -960,7 +955,7 @@ export default class ToWritePlugin extends Plugin {
       id: "open-today-dashboard",
       name: "Today: open dashboard",
       callback: () => {
-        void this.activateDashboard({ activeTab: "today" });
+        this.runViewAction("ToWrite Workbench", () => this.activateDashboard({ activeTab: "today" }));
       }
     });
 
@@ -984,7 +979,7 @@ export default class ToWritePlugin extends Plugin {
       id: "open-task-pool-dashboard",
       name: "Workbench: open work pool",
       callback: () => {
-        void this.activateDashboard({ activeTab: "pool" });
+        this.runViewAction("ToWrite Workbench", () => this.activateDashboard({ activeTab: "pool" }));
       }
     });
 
@@ -1016,7 +1011,7 @@ export default class ToWritePlugin extends Plugin {
       id: "open-today-floating-window",
       name: "Focus Now: open floating window",
       callback: () => {
-        void this.activateTodayFloating();
+        this.runViewAction("Focus Now", () => this.activateTodayFloating());
       }
     });
 
@@ -1827,13 +1822,17 @@ export default class ToWritePlugin extends Plugin {
         id: "workspace",
         icon: "list-checks",
         label: "Open Todo Workspace",
-        action: () => { void this.activateDashboard({ activeTab: "today" }); }
+        action: () => {
+          this.runViewAction("ToWrite Workbench", () => this.activateDashboard({ activeTab: "today" }));
+        }
       },
       {
         id: "questions",
         icon: "circle-help",
         label: "Open ToWrite questions",
-        action: () => { void this.activateSidebar(); }
+        action: () => {
+          this.runViewAction("Open Questions", () => this.activateSidebar());
+        }
       },
       {
         id: "capture",
@@ -1851,7 +1850,9 @@ export default class ToWritePlugin extends Plugin {
         id: "focus",
         icon: "focus",
         label: "Open ToWrite Focus Now window",
-        action: () => { void this.activateTodayFloating(); }
+        action: () => {
+          this.runViewAction("Focus Now", () => this.activateTodayFloating());
+        }
       }
     ];
 
@@ -2295,7 +2296,11 @@ export default class ToWritePlugin extends Plugin {
   }
 
   async clearLearningData(): Promise<void> {
-    if (!window.confirm("Clear all ToWrite learning events, candidates, and accepted learned habits? Manual Push rules are kept.")) {
+    if (!await confirmWithModal(
+      this.app,
+      "Clear all ToWrite learning events, candidates, and accepted learned habits? Manual Push rules are kept.",
+      "Clear learning data"
+    )) {
       return;
     }
     this.learningService.clearLearningData({ preservePause: false, preserveManualHabits: true });
@@ -2351,9 +2356,9 @@ export default class ToWritePlugin extends Plugin {
     } else if (action === "edit" && suggestion.habitId) {
       const candidate = this.learningService.getCandidates().find((item) => item.id === suggestion.habitId);
       if (candidate) {
-        const label = window.prompt("Habit label", candidate.label);
+        const label = await promptWithModal(this.app, "Habit label", candidate.label);
         if (label !== null) {
-          const description = window.prompt("Habit description", candidate.description);
+          const description = await promptWithModal(this.app, "Habit description", candidate.description);
           this.learningService.rewriteCandidateCopy(candidate.id, {
             label,
             description: description ?? candidate.description
@@ -3508,14 +3513,14 @@ export default class ToWritePlugin extends Plugin {
         );
       }
       while (this.localDeviceServedTaskRevisions.size > 128) {
-        const oldest = this.localDeviceServedTaskRevisions.keys().next().value as string | undefined;
+        const oldest = this.localDeviceServedTaskRevisions.keys().next().value;
         if (!oldest) break;
         this.localDeviceServedTaskRevisions.delete(oldest);
       }
     }
     this.legacyEinkPlaylistCache.set(cacheKey, payload);
     if (this.legacyEinkPlaylistCache.size > 32) {
-      const oldest = this.legacyEinkPlaylistCache.keys().next().value as string | undefined;
+      const oldest = this.legacyEinkPlaylistCache.keys().next().value;
       if (oldest) this.legacyEinkPlaylistCache.delete(oldest);
     }
     return payload;
@@ -3933,7 +3938,7 @@ export default class ToWritePlugin extends Plugin {
       action: existing.action as DeviceActionIntent,
       resultRevision: existing.resultRevision,
       timingRevision: existing.timingRevision,
-      displayMessage: existing.displayMessage || deviceCommandMessage(existing.action as DeviceActionIntent)
+      displayMessage: existing.displayMessage || deviceCommandMessage(existing.action)
     };
   }
 
@@ -4134,7 +4139,7 @@ export default class ToWritePlugin extends Plugin {
 
   private trimDeviceCommandJournal(): void {
     while (this.deviceCommandJournal.size > 256) {
-      const oldest = this.deviceCommandJournal.keys().next().value as string | undefined;
+      const oldest = this.deviceCommandJournal.keys().next().value;
       if (!oldest) break;
       this.deviceCommandJournal.delete(oldest);
     }
@@ -5644,7 +5649,7 @@ export default class ToWritePlugin extends Plugin {
       body: request.text.trim(),
       title: request.title?.trim() || undefined,
       tags: normalizeCaptureTags(request.tags),
-      links: Array.from(request.text.matchAll(/https?:\/\/[^\s<>{}\[\]"']+/giu)).map((match) => match[0]).slice(0, 10),
+      links: Array.from(request.text.matchAll(/https?:\/\/[^\s<>{}"']+/giu)).map((match) => match[0]).slice(0, 10),
       source: request.metadata?.source_file ? {
         file: request.metadata.source_file,
         entryPoint: "external-api",
@@ -5980,8 +5985,9 @@ export default class ToWritePlugin extends Plugin {
   private taskCategoryFromSourceNote(sourcePath: string): string | undefined {
     const file = this.app.vault.getFileByPath(sourcePath);
     if (!file) return undefined;
-    const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
-    if (!frontmatter || typeof frontmatter !== "object") return undefined;
+    const cachedFrontmatter: unknown = this.app.metadataCache.getFileCache(file)?.frontmatter;
+    if (!cachedFrontmatter || typeof cachedFrontmatter !== "object") return undefined;
+    const frontmatter = cachedFrontmatter as Record<string, unknown>;
     for (const key of [
       "towrite-category",
       "towrite_category",
@@ -5989,8 +5995,8 @@ export default class ToWritePlugin extends Plugin {
       "task_category",
       "category"
     ]) {
-      const value = (frontmatter as Record<string, unknown>)[key];
-      const candidate = Array.isArray(value) ? value[0] : value;
+      const value = frontmatter[key];
+      const candidate: unknown = Array.isArray(value) ? value[0] : value;
       if (typeof candidate !== "string") continue;
       const normalized = candidate.trim().replace(/\s+/gu, " ");
       if (normalized) return normalized.slice(0, 120);
@@ -6311,7 +6317,7 @@ export default class ToWritePlugin extends Plugin {
     }
     this.dailyScheduleOccurrenceIds.add(occurrenceId);
     while (this.dailyScheduleOccurrenceIds.size > 200) {
-      const oldest = this.dailyScheduleOccurrenceIds.values().next().value as string | undefined;
+      const oldest = this.dailyScheduleOccurrenceIds.values().next().value;
       if (!oldest) break;
       this.dailyScheduleOccurrenceIds.delete(oldest);
     }
@@ -8320,7 +8326,7 @@ export default class ToWritePlugin extends Plugin {
       request
     });
     while (this.dailyBackendTransitionRequests.size > 500) {
-      const oldest = this.dailyBackendTransitionRequests.keys().next().value as string | undefined;
+      const oldest = this.dailyBackendTransitionRequests.keys().next().value;
       if (!oldest) break;
       this.dailyBackendTransitionRequests.delete(oldest);
     }
@@ -9435,7 +9441,7 @@ export default class ToWritePlugin extends Plugin {
     }
     const file = this.app.vault.getFileByPath(item.notePath);
     if (!file) throw new DailyPlanConflictError("not-found", "The Workflow note no longer exists.");
-    await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+    await this.app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => {
       const explicit = readExplicitWorkflowStage(frontmatter);
       if (
         explicit
@@ -9502,7 +9508,7 @@ export default class ToWritePlugin extends Plugin {
         await this.completeDailyItem(id, revision, undefined, date);
       } catch (error) {
         if (noteFile) {
-          await this.app.fileManager.processFrontMatter(noteFile, (frontmatter) => {
+          await this.app.fileManager.processFrontMatter(noteFile, (frontmatter: Record<string, unknown>) => {
             if (previousExplicitStage) frontmatter[WORKFLOW_STAGE_PROPERTY] = previousExplicitStage;
             else delete frontmatter[WORKFLOW_STAGE_PROPERTY];
           }).catch((rollbackError) => {
@@ -9815,9 +9821,10 @@ export default class ToWritePlugin extends Plugin {
         return;
       }
       const sample = taskPoolCleanupDiffSummary(preview.before, preview.after);
-      const confirmed = window.confirm(this.settings.language === "zh"
+      const confirmed = await confirmWithModal(this.app, this.settings.language === "zh"
         ? `将整理 ${preview.affectedTaskIds.length} 条任务、${preview.legacyFieldCount} 行旧字段。\n\n${sample}\n\n只转换 ToWrite 字段，手写说明会保留。继续吗？`
-        : `Organize ${preview.affectedTaskIds.length} task(s) and ${preview.legacyFieldCount} legacy field line(s)?\n\n${sample}\n\nOnly ToWrite-owned fields change; handwritten text is preserved.`);
+        : `Organize ${preview.affectedTaskIds.length} task(s) and ${preview.legacyFieldCount} legacy field line(s)?\n\n${sample}\n\nOnly ToWrite-owned fields change; handwritten text is preserved.`,
+      this.settings.language === "zh" ? "整理任务池格式" : "Organize task pool format");
       if (!confirmed) return;
       const result = await this.taskPoolService.applyFormatCleanup(preview.expectedRevision);
       this.taskPoolFormatUndoToken = result.undoToken;
@@ -11776,35 +11783,32 @@ export default class ToWritePlugin extends Plugin {
   }
 
   private async activateSidebar(): Promise<void> {
-    const existing = this.app.workspace.getLeavesOfType(TOWRITE_SIDEBAR_VIEW)[0];
-    if (existing) {
-      await this.app.workspace.revealLeaf(existing);
-      return;
-    }
-
-    const leaf = this.app.workspace.getRightLeaf(false);
-    if (!leaf) {
-      return;
-    }
-
-    await leaf.setViewState({ type: TOWRITE_SIDEBAR_VIEW, active: true });
-    await this.app.workspace.revealLeaf(leaf);
+    await activateWorkspaceView(this.app.workspace, {
+      type: TOWRITE_SIDEBAR_VIEW,
+      location: "right"
+    });
   }
 
   private async activateDashboard(
     state: Partial<ToWriteDashboardViewState> = {}
   ): Promise<void> {
-    const leaf = this.app.workspace.getLeavesOfType(TOWRITE_DASHBOARD_VIEW)[0]
-      ?? this.app.workspace.getLeaf("tab");
-    await leaf.setViewState({
+    await activateWorkspaceView(this.app.workspace, {
       type: TOWRITE_DASHBOARD_VIEW,
-      active: true,
+      location: "tab",
       state: {
         activeTab: state.activeTab ?? "today"
       }
     });
-    await this.app.workspace.revealLeaf(leaf);
-    this.app.workspace.setActiveLeaf(leaf, { focus: true });
+  }
+
+  private runViewAction(label: string, action: () => Promise<void>): void {
+    void action().catch((error: unknown) => {
+      console.error(`ToWrite could not open ${label}`, error);
+      const detail = messageForError(error);
+      new Notice(this.settings.language === "zh"
+        ? `无法打开${label}：${detail}`
+        : `Could not open ${label}: ${detail}`);
+    });
   }
 
   private async activateTodayFloating(): Promise<void> {
@@ -12660,7 +12664,7 @@ function bridgeAssetExtension(fileName: string, mimeType: string): string {
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const copy = bytes.slice();
-  const digest = await globalThis.crypto.subtle.digest("SHA-256", copy.buffer);
+  const digest = await window.crypto.subtle.digest("SHA-256", copy.buffer);
   return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
 }
 
@@ -12857,12 +12861,12 @@ function normalizeOptionalIso(value: unknown): string {
 }
 
 function normalizeScheduleOccurrenceIds(value: unknown, legacyLast = ""): string[] {
-  const source = Array.isArray(value) ? value : [];
+  const source: unknown[] = Array.isArray(value) ? value : [];
   const output: string[] = [];
   const seen = new Set<string>();
   for (const item of [...source, legacyLast]) {
     const id = String(item ?? "")
-      .replace(/[\u0000-\u001f\u007f]/gu, "")
+      .replace(/\p{Cc}/gu, "")
       .trim()
       .slice(0, 320);
     if (!id || seen.has(id)) continue;

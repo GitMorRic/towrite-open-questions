@@ -996,7 +996,7 @@ function normalizedIdentifier(value: unknown, name: string): string {
     throw new DailyTimerValidationError(`${name} must be a non-empty string.`);
   }
   const result = value.trim();
-  if (/[\r\n\u0000]/u.test(result)) throw new DailyTimerValidationError(`${name} contains invalid characters.`);
+  if (/\p{Cc}/u.test(result)) throw new DailyTimerValidationError(`${name} contains invalid characters.`);
   return result;
 }
 
@@ -1107,7 +1107,7 @@ function timingRevision(events: readonly DailyTimerEvent[], taskId: string): str
 }
 
 function defaultCreateId(prefix: "evt" | "ses" | "txn"): string {
-  const random = globalThis.crypto?.randomUUID?.().replaceAll("-", "")
+  const random = window.crypto?.randomUUID?.().replaceAll("-", "")
     ?? `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
   return `${prefix}_${random}`;
 }

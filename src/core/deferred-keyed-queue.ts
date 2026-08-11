@@ -1,7 +1,7 @@
 export interface DeferredKeyedQueueOptions {
   delayMs?: number;
-  setTimer?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
-  clearTimer?: (timer: ReturnType<typeof setTimeout>) => void;
+  setTimer?: (callback: () => void, delayMs: number) => unknown;
+  clearTimer?: (timer: unknown) => void;
   onError?: (error: unknown) => void;
 }
 
@@ -15,7 +15,7 @@ export class DeferredKeyedQueue<T> {
   private readonly setTimer: NonNullable<DeferredKeyedQueueOptions["setTimer"]>;
   private readonly clearTimer: NonNullable<DeferredKeyedQueueOptions["clearTimer"]>;
   private readonly delayMs: number;
-  private timer: ReturnType<typeof setTimeout> | undefined;
+  private timer: unknown;
   private running: Promise<void> | undefined;
 
   constructor(
@@ -23,8 +23,8 @@ export class DeferredKeyedQueue<T> {
     private readonly options: DeferredKeyedQueueOptions = {}
   ) {
     this.delayMs = Math.max(0, Math.floor(options.delayMs ?? 1_000));
-    this.setTimer = options.setTimer ?? ((callback, delayMs) => globalThis.setTimeout(callback, delayMs));
-    this.clearTimer = options.clearTimer ?? ((timer) => globalThis.clearTimeout(timer));
+    this.setTimer = options.setTimer ?? ((callback, delayMs) => window.setTimeout(callback, delayMs));
+    this.clearTimer = options.clearTimer ?? ((timer) => window.clearTimeout(timer as number));
   }
 
   enqueue(key: string, value: T): void {

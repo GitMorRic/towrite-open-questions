@@ -241,7 +241,7 @@ export class LocalTapSelectionService {
 
   private trimContentSnapshots(): void {
     while (this.contentSnapshots.size > 100) {
-      const oldest = this.contentSnapshots.keys().next().value as string | undefined;
+      const oldest = this.contentSnapshots.keys().next().value;
       if (!oldest) break;
       this.contentSnapshots.delete(oldest);
     }
@@ -262,8 +262,8 @@ function isSnapshot(value: unknown): value is TapSelectionSnapshot {
 }
 
 function clone<T>(value: T): T {
-  return typeof globalThis.structuredClone === "function"
-    ? globalThis.structuredClone(value)
+  return typeof window.structuredClone === "function"
+    ? window.structuredClone(value)
     : JSON.parse(JSON.stringify(value)) as T;
 }
 

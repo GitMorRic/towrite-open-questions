@@ -23,8 +23,8 @@ export interface DailyActivityServiceOptions {
   createId?: () => string;
   onChanged?: (state: DailyActivityState) => void | Promise<void>;
   onError?: (error: unknown) => void;
-  setTimer?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
-  clearTimer?: (timer: ReturnType<typeof setTimeout>) => void;
+  setTimer?: (callback: () => void, delayMs: number) => unknown;
+  clearTimer?: (timer: unknown) => void;
 }
 
 interface PendingMeasurement extends DailyDocumentMeasurementRequest {
@@ -46,17 +46,17 @@ export class DailyActivityService {
   private readonly setTimer: NonNullable<DailyActivityServiceOptions["setTimer"]>;
   private readonly clearTimer: NonNullable<DailyActivityServiceOptions["clearTimer"]>;
   private readonly pending = new Map<string, PendingMeasurement>();
-  private timer: ReturnType<typeof setTimeout> | undefined;
+  private timer: unknown;
   private running: Promise<void> | undefined;
   private disposed = false;
 
-  constructor(initial?: Partial<DailyActivityState> | unknown, private readonly options: DailyActivityServiceOptions = {}) {
+  constructor(initial?: unknown, private readonly options: DailyActivityServiceOptions = {}) {
     this.now = options.now ?? (() => new Date());
     this.createId = options.createId ?? createActivityId;
     this.debounceMs = clampInteger(options.debounceMs ?? 1_500, 0, 60_000);
     this.retentionMs = clampInteger(options.retentionDays ?? 30, 1, 365) * 24 * 60 * 60 * 1000;
-    this.setTimer = options.setTimer ?? ((callback, delayMs) => globalThis.setTimeout(callback, delayMs));
-    this.clearTimer = options.clearTimer ?? ((timer) => globalThis.clearTimeout(timer));
+    this.setTimer = options.setTimer ?? ((callback, delayMs) => window.setTimeout(callback, delayMs));
+    this.clearTimer = options.clearTimer ?? ((timer) => window.clearTimeout(timer as number));
     this.state = normalizeDailyActivityState(initial, this.now());
   }
 
@@ -596,8 +596,8 @@ function dedupeEvents(events: DailyActivityEvent[]): DailyActivityEvent[] {
 }
 
 function createActivityId(): string {
-  if (globalThis.crypto?.randomUUID) return `dayevt_${globalThis.crypto.randomUUID().replace(/-/gu, "")}`;
-  const bytes = globalThis.crypto?.getRandomValues?.(new Uint8Array(16));
+  if (window.crypto?.randomUUID) return `dayevt_${window.crypto.randomUUID().replace(/-/gu, "")}`;
+  const bytes = window.crypto?.getRandomValues?.(new Uint8Array(16));
   if (!bytes) throw new Error("Secure randomness is unavailable for daily activity ids.");
   return `dayevt_${[...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }

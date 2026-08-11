@@ -85,7 +85,7 @@ export function parseCaptureTags(value: string): string[] {
 }
 
 export function extractCaptureLinks(value: string): string[] {
-  const matches = value.match(/https?:\/\/[^\s<>{}\[\]"']+/giu) ?? [];
+  const matches = value.match(/https?:\/\/[^\s<>{}"']+/giu) ?? [];
   const seen = new Set<string>();
   const links: string[] = [];
   for (const match of matches) {

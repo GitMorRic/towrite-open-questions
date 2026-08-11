@@ -23,15 +23,16 @@ export async function applyInboxStageMetadata(
 ): Promise<InboxMetadataApplyResult> {
   if (!settings.enabled || file.extension.toLocaleLowerCase() !== "md") return "not-markdown";
   if (!matchingInboxRoot(file.path, settings.folderPrefixes)) return "outside-folder";
-  const frontmatter = app.metadataCache.getFileCache(file)?.frontmatter;
-  if (readExplicitWorkflowStage(frontmatter && typeof frontmatter === "object"
-    ? frontmatter as Record<string, unknown>
-    : undefined)) {
+  const cachedFrontmatter: unknown = app.metadataCache.getFileCache(file)?.frontmatter;
+  const frontmatter = cachedFrontmatter && typeof cachedFrontmatter === "object"
+    ? cachedFrontmatter as Record<string, unknown>
+    : undefined;
+  if (readExplicitWorkflowStage(frontmatter)) {
     return "already-explicit";
   }
 
   let updated = false;
-  await app.fileManager.processFrontMatter(file, (next) => {
+  await app.fileManager.processFrontMatter(file, (next: Record<string, unknown>) => {
     if (readExplicitWorkflowStage(next)) return;
     next[WORKFLOW_STAGE_PROPERTY] = "inbox";
     updated = true;

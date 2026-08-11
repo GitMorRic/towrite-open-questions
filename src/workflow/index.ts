@@ -690,10 +690,6 @@ function compactWorkflowFile(file: WorkflowFileSummary): WorkflowFileSummary {
   return compact;
 }
 
-function uniqueFileCount(stages: Array<Pick<WorkflowStageSummary, "files">>): number {
-  return new Set(stages.flatMap((stage) => stage.files.map((file) => file.filePath))).size;
-}
-
 function stringifyFrontmatter(frontmatter?: Record<string, unknown>): string {
   if (!frontmatter) {
     return "";

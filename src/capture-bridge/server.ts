@@ -1,4 +1,8 @@
-import type { CaptureBridgeSettings } from "./types";
+import type {
+  CaptureBridgeAssetUploadRequest,
+  CaptureBridgeCommitRequest,
+  CaptureBridgeSettings
+} from "./types";
 import {
   CAPTURE_BRIDGE_PROTOCOL_V2,
   CAPTURE_BRIDGE_PROTOCOL_VERSION,
@@ -165,7 +169,7 @@ export class CaptureBridgeServer {
 
       match = /^\/api\/v1\/integrations\/capture\/v([12])\/handoffs\/(hnd_[A-Za-z0-9_-]{22})\/commit$/u.exec(url.pathname);
       if (method === "POST" && match?.[1] && match[2]) {
-        const body = await readJson(request);
+        const body = await readJson<CaptureBridgeCommitRequest>(request);
         const handoff = this.options.coordinator.getHandoff(match[2]);
         requireBridgeProtocol(handoff.protocolVersion, match[1]);
         this.writeJson(response, 200, await this.options.coordinator.commit(match[2], body));
@@ -174,7 +178,7 @@ export class CaptureBridgeServer {
 
       match = /^\/api\/v1\/integrations\/capture\/v2\/handoffs\/(hnd_[A-Za-z0-9_-]{22})\/assets$/u.exec(url.pathname);
       if (method === "POST" && match?.[1]) {
-        const body = await readJson(request, 35_000_000);
+        const body = await readJson<CaptureBridgeAssetUploadRequest>(request, 35_000_000);
         const handoff = this.options.coordinator.getHandoff(match[1]);
         requireBridgeProtocol(handoff.protocolVersion, "2");
         this.writeJson(
@@ -233,7 +237,7 @@ function isLoopback(value: string | undefined): boolean {
   return value === "127.0.0.1" || value === "::1" || value === "::ffff:127.0.0.1";
 }
 
-async function readJson<T = any>(request: HttpRequest, maxBytes = 1_000_000): Promise<T> {
+async function readJson<T = unknown>(request: HttpRequest, maxBytes = 1_000_000): Promise<T> {
   const chunks: Uint8Array[] = [];
   let total = 0;
   await new Promise<void>((resolve, reject) => {

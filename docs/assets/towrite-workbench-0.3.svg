@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title description">
+  <title id="title">ToWrite Workbench 0.3</title>
+  <desc id="description">A calm Obsidian workbench with Today, Work Pool, Status and Journal tabs.</desc>
+  <defs>
+    <style>
+      .bg{fill:#f8f5ec}.panel{fill:#fffdf8;stroke:#d8d3c7;stroke-width:2}.soft{fill:#efebe0}.accent{fill:#5baa75}.accent2{fill:#5b9bc7}.accent3{fill:#d58a42}.text{fill:#242522;font-family:Inter,Segoe UI,Arial,sans-serif}.muted{fill:#6d706a;font-family:Inter,Segoe UI,Arial,sans-serif}.mono{fill:#6d706a;font-family:Consolas,monospace}.line{stroke:#d8d3c7;stroke-width:2}.task{fill:#f5f2e9;stroke:#ded9cd;stroke-width:1.5}
+    </style>
+  </defs>
+  <rect class="bg" width="1600" height="900"/>
+  <text class="muted" x="74" y="68" font-size="18" font-weight="700" letter-spacing="2">TOWRITE WORKSPACE</text>
+  <text class="text" x="74" y="122" font-size="46" font-weight="750">ToWrite 工作台</text>
+  <text class="muted" x="74" y="158" font-size="22">在 Daily Notes 里自然书写，在一个地方安排、专注与回顾。</text>
+  <g transform="translate(74 195)">
+    <text class="text" x="54" y="32" font-size="22" font-weight="700">今日</text>
+    <text class="muted" x="198" y="32" font-size="22">工作池</text>
+    <text class="muted" x="354" y="32" font-size="22">状态</text>
+    <text class="muted" x="480" y="32" font-size="22">日志</text>
+    <rect class="accent" x="0" y="50" width="128" height="4" rx="2"/>
+  </g>
+  <rect class="panel" x="74" y="276" width="1452" height="122" rx="18"/>
+  <text class="muted" x="104" y="312" font-size="17">今日进度</text>
+  <text class="text" x="104" y="350" font-size="29" font-weight="700">推进 ToWrite 0.3 稳定版</text>
+  <text class="muted" x="104" y="380" font-size="19">2 / 5 已完成 · 当前：完善社区插件说明</text>
+  <rect class="soft" x="945" y="316" width="535" height="26" rx="13"/>
+  <rect class="accent" x="945" y="316" width="214" height="26" rx="13"/>
+  <text class="text" x="1410" y="376" font-size="20" font-weight="700">40%</text>
+  <rect class="panel" x="74" y="430" width="930" height="390" rx="18"/>
+  <text class="text" x="104" y="476" font-size="26" font-weight="700">今日清单</text>
+  <text class="muted" x="814" y="476" font-size="17">Markdown 双向同步</text>
+  <g transform="translate(104 504)">
+    <rect class="task" width="870" height="76" rx="12"/>
+    <circle class="accent" cx="30" cy="38" r="10"/>
+    <text class="text" x="58" y="34" font-size="21" font-weight="700">完善社区插件 README</text>
+    <text class="muted" x="58" y="59" font-size="16">发布 · 下一步：替换旧截图</text>
+    <rect class="accent" x="758" y="20" width="86" height="38" rx="10"/>
+    <text x="781" y="46" fill="#fff" font-family="Inter,Segoe UI,Arial" font-size="17" font-weight="700">开始</text>
+  </g>
+  <g transform="translate(104 594)">
+    <rect class="task" width="870" height="76" rx="12"/>
+    <circle fill="none" stroke="#5b9bc7" stroke-width="3" cx="30" cy="38" r="10"/>
+    <text class="text" x="58" y="34" font-size="21" font-weight="700">验证 Daily 零打扰编辑</text>
+    <text class="muted" x="58" y="59" font-size="16">质量 · 技术字段只在明确动作时写入</text>
+  </g>
+  <g transform="translate(104 684)">
+    <rect class="task" width="870" height="76" rx="12"/>
+    <circle fill="none" stroke="#d58a42" stroke-width="3" cx="30" cy="38" r="10"/>
+    <text class="text" x="58" y="34" font-size="21" font-weight="700">检查工作日志与月度统计</text>
+    <text class="muted" x="58" y="59" font-size="16">复盘 · 本地 JSONL，可选写回日记</text>
+  </g>
+  <rect class="panel" x="1034" y="430" width="492" height="390" rx="18"/>
+  <text class="text" x="1066" y="474" font-size="24" font-weight="700">2.7” 墨水屏预览</text>
+  <text class="mono" x="1438" y="473" font-size="16">3 页</text>
+  <line class="line" x1="1066" y1="494" x2="1494" y2="494"/>
+  <text class="mono" x="1066" y="528" font-size="17">08月11日 · 今日</text>
+  <text class="mono" x="1416" y="528" font-size="17">电量 82%</text>
+  <rect x="1066" y="548" width="428" height="16" rx="8" fill="#ebe7dc"/>
+  <rect class="accent" x="1066" y="548" width="171" height="16" rx="8"/>
+  <text class="muted" x="1066" y="610" font-size="16">现在专注</text>
+  <text class="text" x="1066" y="650" font-size="26" font-weight="700">完善社区插件 README</text>
+  <text class="muted" x="1066" y="686" font-size="18">下一步</text>
+  <text class="text" x="1066" y="719" font-size="20">替换旧截图并检查快速开始</text>
+  <line class="line" x1="1066" y1="756" x2="1494" y2="756"/>
+  <text class="mono" x="1066" y="790" font-size="16">左：切换</text>
+  <text class="mono" x="1417" y="790" font-size="16">主键：打开</text>
+</svg>

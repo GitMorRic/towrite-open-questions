@@ -655,7 +655,7 @@ function documentRevision(markdown: string, sourcePath: string): string {
 
 function createNoteTaskId(): string {
   const bytes = new Uint8Array(16);
-  globalThis.crypto.getRandomValues(bytes);
+  window.crypto.getRandomValues(bytes);
   return `task_${[...bytes].map((value) => value.toString(16).padStart(2, "0")).join("")}`;
 }
 

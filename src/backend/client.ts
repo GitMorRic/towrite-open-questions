@@ -1,6 +1,7 @@
 import type { ToWriteBackendSettings } from "../core/settings";
 import type { BackendCapabilities, CaptureDraft, CaptureTargetCandidate } from "../capture/types";
 import type { HubCandidate, HubContextState } from "../hub/types";
+import { requestHub, type HttpRequest } from "../hub/http";
 import type {
   DailyDevicePolicy,
   DailyPlanItemKind,
@@ -228,7 +229,10 @@ export interface BackendDailyTimerTransitionRequest {
 }
 
 export class BackendEnhancementClient {
-  constructor(private readonly getSettings: () => ToWriteBackendSettings) {}
+  constructor(
+    private readonly getSettings: () => ToWriteBackendSettings,
+    private readonly httpRequest: HttpRequest = requestHub
+  ) {}
 
   async getCapabilities(): Promise<BackendCapabilities> {
     const settings = this.requireEnabledSettings();
@@ -818,7 +822,7 @@ export class BackendEnhancementClient {
     const timer = window.setTimeout(() => controller.abort(), timeoutMs);
     const close = () => window.clearTimeout(timer);
     try {
-      const response = await fetch(`${settings.baseUrl.replace(/\/+$/u, "")}${path}`, {
+      const response = await this.httpRequest(`${settings.baseUrl.replace(/\/+$/u, "")}${path}`, {
         ...init,
         signal: controller.signal,
         headers: {
@@ -1169,7 +1173,7 @@ function optionalFiniteNumber(value: unknown): number | undefined {
 }
 
 function randomFragment(): string {
-  return globalThis.crypto?.randomUUID?.().replace(/-/gu, "")
+  return window.crypto?.randomUUID?.().replace(/-/gu, "")
     ?? `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
 }
 

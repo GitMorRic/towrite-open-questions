@@ -16,7 +16,7 @@ export class NavigationRouter {
     if (this.adapters.has(adapter.provider)) {
       throw new Error(`Navigation adapter is already registered: ${adapter.provider}`);
     }
-    this.adapters.set(adapter.provider, adapter as NavigationAdapter);
+    this.adapters.set(adapter.provider, adapter);
     return () => {
       if (this.adapters.get(adapter.provider) === adapter) {
         this.adapters.delete(adapter.provider);

@@ -223,15 +223,15 @@ class TrackedNoteTaskWidget extends WidgetType {
 
   toDOM(view: EditorView): HTMLElement {
     const doc = view.dom.ownerDocument;
-    const wrapper = doc.createElement("span");
+    const wrapper = createSpan();
     wrapper.className = "towrite-daily-line-controls towrite-note-task-line-controls";
     wrapper.dataset.enriched = hasVisibleProperties(this.item) ? "true" : "false";
     wrapper.dataset.state = this.timing.status;
 
-    const disclosure = doc.createElement("details");
+    const disclosure = createEl("details");
     disclosure.className = "towrite-note-task-disclosure";
     const disposeDisclosure = installTaskDisclosureDismiss(disclosure);
-    const disclosureToggle = doc.createElement("summary");
+    const disclosureToggle = createEl("summary");
     disclosureToggle.className = "towrite-note-task-disclosure-toggle";
     disclosureToggle.textContent = this.timing.status === "running"
       ? `${timingMinuteBucket(this.timing)}m`
@@ -241,12 +241,12 @@ class TrackedNoteTaskWidget extends WidgetType {
       : "点击查看任务状态、属性和操作";
     disclosureToggle.setAttribute("aria-label", "展开 ToWrite 任务操作");
     disclosure.append(disclosureToggle);
-    const details = doc.createElement("span");
+    const details = createSpan();
     details.className = "towrite-note-task-disclosure-content";
 
     const timingLabel = noteTimingLabel(this.item, this.timing);
     if (timingLabel) {
-      const state = doc.createElement("span");
+      const state = createSpan();
       state.className = "towrite-daily-line-state";
       state.textContent = timingLabel;
       details.append(state);
@@ -255,7 +255,7 @@ class TrackedNoteTaskWidget extends WidgetType {
     if (this.poolTask) {
       const poolLabel = visiblePoolStateLabel(this.poolTask);
       if (poolLabel) {
-        const pool = doc.createElement("span");
+        const pool = createSpan();
         pool.className = "towrite-note-task-pool-state";
         pool.textContent = poolLabel;
         pool.title = "任务当前的安排状态";
@@ -352,23 +352,23 @@ class NoteTaskCandidateWidget extends WidgetType {
 
   toDOM(view: EditorView): HTMLElement {
     const doc = view.dom.ownerDocument;
-    const wrapper = doc.createElement("span");
+    const wrapper = createSpan();
     wrapper.className = "towrite-daily-line-controls towrite-note-task-line-controls towrite-note-task-candidate-controls";
     wrapper.setAttribute("role", "group");
     wrapper.setAttribute("aria-label", "ToWrite 自动任务池同步");
 
-    const disclosure = doc.createElement("details");
+    const disclosure = createEl("details");
     disclosure.className = "towrite-note-task-disclosure";
     const disposeDisclosure = installTaskDisclosureDismiss(disclosure);
-    const disclosureToggle = doc.createElement("summary");
+    const disclosureToggle = createEl("summary");
     disclosureToggle.className = "towrite-note-task-disclosure-toggle";
     disclosureToggle.textContent = "···";
     disclosureToggle.title = "这条待办会自动登记；点击查看同步状态";
     disclosureToggle.setAttribute("aria-label", "展开自动任务池同步状态");
     disclosure.append(disclosureToggle);
-    const details = doc.createElement("span");
+    const details = createSpan();
     details.className = "towrite-note-task-disclosure-content";
-    const state = doc.createElement("span");
+    const state = createSpan();
     state.className = "towrite-daily-enrichment-state";
     state.textContent = "等待自动同步";
     details.append(state);
@@ -384,10 +384,10 @@ class NoteTaskCandidateWidget extends WidgetType {
     details.append(enrich);
 
     if (this.matches.length > 0) {
-      const suggestions = doc.createElement("span");
+      const suggestions = createSpan();
       suggestions.className = "towrite-note-task-pool-suggestions";
       suggestions.setAttribute("role", "list");
-      const label = doc.createElement("span");
+      const label = createSpan();
       label.className = "towrite-note-task-pool-suggestions-label";
       label.textContent = "任务池中可能已有：";
       suggestions.append(label);
@@ -427,7 +427,7 @@ function actionButton(
   label: string,
   action: () => void | Promise<void>
 ): HTMLButtonElement {
-  const button = doc.createElement("button");
+  const button = createEl("button");
   button.type = "button";
   button.textContent = label;
   button.addEventListener("mousedown", stop);

@@ -12,8 +12,8 @@ export class TFile {
 }
 
 export class MarkdownView {
-  editor: any;
-  containerEl: any = {
+  editor: unknown;
+  containerEl: unknown = {
     querySelector: () => null
   };
 }

@@ -1819,7 +1819,7 @@ function unsafeVaultPath(value: string): boolean {
   return !value
     || /^[A-Za-z]:/u.test(value)
     || /^[\\/]/u.test(value)
-    || /[\u0000-\u001f\u007f:]/u.test(value);
+    || /[\p{Cc}:]/u.test(value);
 }
 
 function unsafeVaultSegments(value: string): boolean {
@@ -1897,7 +1897,7 @@ function normalizeOptionalTarget(value: unknown): string | undefined {
     const label = markdown[1].trim();
     return `[[${target}${label ? `|${label}` : ""}]]`;
   }
-  return normalized.replace(/[\[\]]/gu, "").trim() || undefined;
+  return normalized.replaceAll("[", "").replaceAll("]", "").trim() || undefined;
 }
 
 function safeMarkdownNoteTarget(value: string): string | undefined {
@@ -2035,10 +2035,10 @@ function diagnostic(
 }
 
 function createDailyId(): string {
-  if (globalThis.crypto?.randomUUID) {
-    return `daily_${globalThis.crypto.randomUUID().replace(/-/gu, "")}`;
+  if (window.crypto?.randomUUID) {
+    return `daily_${window.crypto.randomUUID().replace(/-/gu, "")}`;
   }
-  const bytes = globalThis.crypto?.getRandomValues?.(new Uint8Array(16));
+  const bytes = window.crypto?.getRandomValues?.(new Uint8Array(16));
   if (!bytes) throw new Error("Secure randomness is unavailable for daily plan ids.");
   return `daily_${[...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }

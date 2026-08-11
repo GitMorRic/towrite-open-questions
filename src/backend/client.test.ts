@@ -65,7 +65,7 @@ describe("Backend enhancement contract", () => {
       useForRecommendations: true,
       useForHabitSuggestions: false,
       timeoutMs: 2500
-    }));
+    }), globalThis.fetch);
 
     await expect(client.rerankTargets(draft, candidates)).resolves.toEqual(candidates);
   });
@@ -109,7 +109,7 @@ describe("Backend enhancement contract", () => {
       };
     });
     vi.stubGlobal("fetch", fetchMock);
-    const client = new BackendEnhancementClient(() => backendSettings());
+    const client = new BackendEnhancementClient(() => backendSettings(), globalThis.fetch);
 
     const result = await client.rerankDeviceHubCandidates(hubCandidates, { state: "desk_idle" }, [
       { status: "pending", candidate_id: "src_note_alpha" },
@@ -145,7 +145,7 @@ describe("Backend enhancement contract", () => {
           }
     }));
     vi.stubGlobal("fetch", fetchMock);
-    const client = new BackendEnhancementClient(() => backendSettings());
+    const client = new BackendEnhancementClient(() => backendSettings(), globalThis.fetch);
 
     await expect(client.listModels()).resolves.toEqual([
       { id: "local_chat", label: "Local Chat", provider: "openai-compatible" }
@@ -173,7 +173,7 @@ describe("Backend enhancement contract", () => {
       json: async () => ({ reply: "Backend reply" })
     }));
     vi.stubGlobal("fetch", fetchMock);
-    const client = new BackendEnhancementClient(() => backendSettings());
+    const client = new BackendEnhancementClient(() => backendSettings(), globalThis.fetch);
 
     await expect(client.chatOnContext({
       message: "Help me continue",
@@ -218,7 +218,7 @@ describe("Backend enhancement contract", () => {
         }]
       })
     })));
-    const client = new BackendEnhancementClient(() => backendSettings());
+    const client = new BackendEnhancementClient(() => backendSettings(), globalThis.fetch);
 
     await expect(client.listAgents()).resolves.toEqual([{
       agentId: "creative_dialogue_partner",
@@ -263,7 +263,7 @@ describe("Backend enhancement contract", () => {
       };
     });
     vi.stubGlobal("fetch", fetchMock);
-    const client = new BackendEnhancementClient(() => backendSettings());
+    const client = new BackendEnhancementClient(() => backendSettings(), globalThis.fetch);
 
     await expect(client.runAgentCommand({ message: "suggest" })).resolves.toMatchObject({
       kind: "suggestion",
@@ -330,7 +330,7 @@ describe("Backend enhancement contract", () => {
         })
       };
     }));
-    const client = new BackendEnhancementClient(() => backendSettings());
+    const client = new BackendEnhancementClient(() => backendSettings(), globalThis.fetch);
 
     await expect(client.getDailyOpsStatus()).resolves.toMatchObject({
       protocolVersion: "towrite-daily-ops/v2",
@@ -424,7 +424,7 @@ describe("Backend enhancement contract", () => {
         })
       };
     }));
-    const client = new BackendEnhancementClient(() => backendSettings());
+    const client = new BackendEnhancementClient(() => backendSettings(), globalThis.fetch);
     const base = {
       source: "device" as const,
       rawBlock: "- [/] Bound\n  ^daily_bound",
@@ -500,7 +500,7 @@ describe("Backend enhancement contract", () => {
         }
       })
     })));
-    const client = new BackendEnhancementClient(() => backendSettings());
+    const client = new BackendEnhancementClient(() => backendSettings(), globalThis.fetch);
 
     const events = [];
     for await (const event of client.streamChatOnContext({

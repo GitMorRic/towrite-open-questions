@@ -99,12 +99,12 @@ describe("Device Hub HTTP transport", () => {
     await closed;
   });
 
-  it("keeps injected/public fetch transports and classifies private origins", async () => {
+  it("keeps injected transports and classifies private origins", async () => {
     const fetcher = vi.fn(async () => new Response("{}", {
       status: 200,
       headers: { "content-type": "application/json" }
     }));
-    await requestHub("https://hub.example.com/v1/hub/capabilities", { method: "GET" }, fetcher as typeof fetch);
+    await requestHub("https://hub.example.com/v1/hub/capabilities", { method: "GET" }, fetcher);
     expect(fetcher).toHaveBeenCalledOnce();
     expect(needsDesktopTransport("https://hub.example.com/v1")).toBe(false);
     expect(needsDesktopTransport("https://node.tailnet.ts.net:10000/v1")).toBe(true);

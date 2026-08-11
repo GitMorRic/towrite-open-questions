@@ -86,7 +86,7 @@ export class NavigationCheckpointService {
 
   private trim(): void {
     while (this.checkpoints.size > this.maxEntries) {
-      const first = this.checkpoints.keys().next().value as string | undefined;
+      const first = this.checkpoints.keys().next().value;
       if (!first) break;
       this.checkpoints.delete(first);
     }

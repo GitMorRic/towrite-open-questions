@@ -1354,7 +1354,7 @@ function normalizePushHabits(habits: PushHabitRule[] | undefined): PushHabitRule
       mode: normalizePushShortText(habit.mode, 80),
       stageIds: normalizePushStringList(habit.stageIds).map(normalizePushId).filter(Boolean),
       lanes: normalizePushStringList(habit.lanes).filter((item): item is OpenQuestionLane => item === "think" || item === "write"),
-      statuses: normalizePushStringList(habit.statuses) as PushHabitRule["statuses"],
+      statuses: normalizePushStringList(habit.statuses),
       targetIds: normalizePushStringList(habit.targetIds).map(normalizePushId).filter(Boolean),
       boost: clampIntegerSetting(habit.boost, -100, 100, 10),
       limitPerDay: clampIntegerSetting(habit.limitPerDay, 0, 500, 0)

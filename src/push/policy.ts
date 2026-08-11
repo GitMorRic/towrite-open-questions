@@ -266,5 +266,5 @@ export function normalizeLaneList(values: unknown[]): OpenQuestionLane[] {
 }
 
 export function normalizeStatusList(values: unknown[]): OpenQuestionStatus[] {
-  return values.map((value) => String(value).trim()).filter(Boolean) as OpenQuestionStatus[];
+  return values.map((value) => String(value).trim()).filter(Boolean);
 }

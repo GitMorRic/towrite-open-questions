@@ -1701,7 +1701,7 @@ export class ToWriteExternalApiServer {
     if (this.deviceEventRecords.size <= 300) {
       return;
     }
-    const firstKey = this.deviceEventRecords.keys().next().value as string | undefined;
+    const firstKey = this.deviceEventRecords.keys().next().value;
     if (firstKey) {
       this.deviceEventRecords.delete(firstKey);
     }
@@ -2413,7 +2413,7 @@ function displayMessageForDeviceIntent(intent: DeviceActionIntent): string {
 }
 
 function randomFragment(): string {
-  return globalThis.crypto?.randomUUID?.().replace(/-/gu, "") ?? `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+  return window.crypto?.randomUUID?.().replace(/-/gu, "") ?? `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
 }
 
 function readPushFeedbackAction(body: Record<string, unknown>): PushFeedbackInput["action"] | undefined {

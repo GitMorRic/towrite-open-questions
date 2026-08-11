@@ -16,7 +16,7 @@ export interface CaptureCryptoOptions {
 
 export async function generateHubCaptureKeyPair(crypto: Crypto = requireCrypto()): Promise<HubCaptureKeyPair> {
   const pair = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
-  const keyPair = pair as CryptoKeyPair;
+  const keyPair = pair;
   return {
     publicKey: await crypto.subtle.exportKey("jwk", keyPair.publicKey),
     privateKey: await crypto.subtle.exportKey("jwk", keyPair.privateKey)
@@ -32,7 +32,7 @@ export async function encryptHubCapture(
   const publicKey = isCryptoKey(recipientPublicKey)
     ? recipientPublicKey
     : await importEcdhPublicKey(recipientPublicKey, crypto);
-  const ephemeral = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"] as KeyUsage[]) as CryptoKeyPair;
+  const ephemeral = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"] as KeyUsage[]);
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const additionalData = new TextEncoder().encode(options.additionalData ?? "towrite-hub-capture-v1");
@@ -188,10 +188,10 @@ function isCryptoKey(value: JsonWebKey | CryptoKey): value is CryptoKey {
 }
 
 function requireCrypto(): Crypto {
-  if (!globalThis.crypto?.subtle) {
+  if (!window.crypto?.subtle) {
     throw new Error("Web Crypto is unavailable; encrypted Device Hub captures cannot be processed.");
   }
-  return globalThis.crypto;
+  return window.crypto;
 }
 
 export { ENVELOPE_ALGORITHM };
