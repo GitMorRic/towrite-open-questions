@@ -2066,20 +2066,20 @@ export class ToWriteSettingTab extends PluginSettingTab {
       cls: "towrite-echo-workbench",
       attr: { "aria-labelledby": "towrite-echo-heading" }
     });
-    const heading = section.createDiv({ cls: "towrite-echo-section-heading" });
-    const headingCopy = heading.createDiv();
-    headingCopy.createEl("h3", { text: zh ? "Echo 墨水屏卡片" : "Echo e-ink cards", attr: { id: "towrite-echo-heading" } });
-    headingCopy.createEl("p", {
-      text: zh
+    const heading = new Setting(section)
+      .setName(zh ? "Echo 墨水屏卡片" : "Echo e-ink cards")
+      .setDesc(zh
         ? "一张卡只保留一个核心信息与最多三个动作。选择模板只会创建草稿；明确保存后默认加入小屏翻页队列，但不会触发 AI。"
-        : "Keep one core idea and at most three actions per card. Choosing a template only creates a draft; explicitly saving it adds it to small-screen paging by default without invoking AI."
+        : "Keep one core idea and at most three actions per card. Choosing a template only creates a draft; explicitly saving it adds it to small-screen paging by default without invoking AI.")
+      .setHeading();
+    heading.settingEl.addClass("towrite-echo-section-heading");
+    heading.nameEl.id = "towrite-echo-heading";
+    heading.addButton((button) => {
+      button
+        .setButtonText(zh ? "新建空白卡" : "New blank card")
+        .onClick(() => void this.startEchoCardDraft(undefined));
+      button.buttonEl.addClass("towrite-echo-new-button");
     });
-    const blank = heading.createEl("button", {
-      cls: "towrite-echo-new-button",
-      text: zh ? "新建空白卡" : "New blank card",
-      attr: { type: "button" }
-    });
-    blank.addEventListener("click", () => void this.startEchoCardDraft(undefined));
 
     const presetDetails = section.createEl("details", { cls: "towrite-echo-presets" });
     const presetSummary = presetDetails.createEl("summary");

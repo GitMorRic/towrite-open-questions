@@ -4153,23 +4153,23 @@
   gap: 14px;
 }
 
-.towrite-echo-section-heading > div,
+.towrite-echo-section-heading .setting-item-info,
 .towrite-echo-editor-header > div {
   min-width: 0;
 }
 
-.towrite-echo-section-heading h3,
-.towrite-echo-section-heading p,
+.towrite-echo-section-heading .setting-item-name,
+.towrite-echo-section-heading .setting-item-description,
 .towrite-echo-editor-header strong,
 .towrite-echo-editor-header small {
   margin: 0;
 }
 
-.towrite-echo-section-heading h3 {
+.towrite-echo-section-heading .setting-item-name {
   font-size: var(--font-ui-medium);
 }
 
-.towrite-echo-section-heading p {
+.towrite-echo-section-heading .setting-item-description {
   max-width: 620px;
   margin-top: 3px;
   color: var(--text-muted);

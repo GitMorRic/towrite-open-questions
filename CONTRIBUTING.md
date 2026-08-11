@@ -16,6 +16,12 @@ npm.cmd run build
 
 Build output is written to `dist/`.
 
+`npm.cmd run build` includes the blocking Obsidian community-guideline gate.
+Use `npm.cmd run lint:obsidian:report` when reviewing the non-blocking
+compatibility and UX recommendations as a separate backlog. Do not disable an
+`obsidianmd/*` rule to make a release pass; fix the violation or document why
+the implementation needs an upstream rule change.
+
 ## Branches
 
 - `main`: stable release branch.
@@ -50,6 +56,7 @@ Before opening a PR:
 
 - Run `npm.cmd run test`.
 - Run `npm.cmd run build`.
+- Confirm `npm.cmd run lint` reports no blocking Obsidian guideline errors.
 - Update `README.md`, `README.zh-CN.md`, `CHANGELOG.md`, or files under `docs/` when behavior changes.
 - Keep UI copy available in both English and Chinese when adding user-facing docs or examples.
 - Keep screenshots and demo data free of private notes, tokens, or API keys.

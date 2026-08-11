@@ -9,6 +9,7 @@
 - 更新 `CHANGELOG.md`。
 - 运行 `npm.cmd run test`。
 - 运行 `npm.cmd run build`。
+- 确认 Obsidian 社区规范阻断门禁通过；构建会自动执行该检查。需要查看不阻断发布的兼容性与体验建议时，单独运行 `npm.cmd run lint:obsidian:report`。
 - 确认 README、CHANGELOG、versions.json 与当前版本一致。
 - 确认文档、测试或日志里没有真实 Dot API key、External API token、AI key。
 
@@ -43,5 +44,6 @@
 - 将 GitHub 仓库设为公开。
 - 创建与 `manifest.json` 版本一致的 GitHub release。
 - 上传三件套 release assets。
+- 创建 tag 前，确认发布 commit 的 GitHub Quality 工作流已经通过。
 - 通过 Obsidian 社区插件请求流程提交。
 - 详见 [marketplace-submission.zh-CN.md](marketplace-submission.zh-CN.md)。

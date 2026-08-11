@@ -1,5 +1,23 @@
 # Changelog / 更新日志
 
+## 0.3.2 - 2026-08-11
+
+- Replaced the Echo settings section's manual HTML heading with Obsidian's native `Setting.setHeading()` API, resolving the blocking community-review finding while preserving accessibility and layout.
+- Added an Obsidian marketplace-rule gate based on the official `eslint-plugin-obsidianmd`; blocking guideline violations now fail local production builds before a release is created.
+- Added a dedicated GitHub Quality workflow for `main`, Codex branches, and pull requests, and connected the same guideline gate to the stable Release workflow.
+- Separated blocking marketplace rules from the non-blocking compatibility warning backlog so genuine submission failures remain visible without masking future runtime or TypeScript checks.
+- Documented the review gate and release procedure for contributors and release maintainers.
+- Production verification: 121 test files and 730 tests, Obsidian blocking rules, typecheck, runtime dependency audit, production build, release asset validation, and the 2 MiB bundle limit.
+
+中文摘要：
+
+- 将 Echo 设置区手写的 HTML 标题替换为 Obsidian 原生 `Setting.setHeading()`，修复社区审核中的唯一阻断错误，并保留无障碍关联与原有布局。
+- 接入官方 `eslint-plugin-obsidianmd`，本地生产构建会在创建 Release 前阻止违反 Obsidian 社区规范的代码。
+- 新增 GitHub Quality 工作流，覆盖 `main`、Codex 分支和 Pull Request；稳定版 Release 工作流使用同一规范门禁。
+- 将阻断上架的规范错误与非阻断兼容性建议分离，避免历史警告掩盖真正的提交失败，同时继续保留类型检查与运行时测试。
+- 更新贡献与发布文档，明确社区审核和 Release 流程。
+- 生产验证：121 个测试文件、730 项测试、Obsidian 阻断规则、类型检查、运行时依赖审计、生产构建、Release 资产验证及 2 MiB bundle 门限全部通过。
+
 ## 0.3.1 - 2026-08-11
 
 - Fixed the Workbench Journal runtime error by providing block editor decorations through a CodeMirror state field.

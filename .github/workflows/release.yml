@@ -35,7 +35,7 @@ jobs:
       - name: Test
         run: npm test
 
-      - name: Build
+      - name: Obsidian guidelines and production build
         run: npm run build
 
       - name: Prepare release assets

@@ -9,6 +9,9 @@
 - Update `CHANGELOG.md`.
 - Run `npm.cmd run test`.
 - Run `npm.cmd run build`.
+- Confirm the blocking Obsidian guideline gate passes. The build runs it
+  automatically; use `npm.cmd run lint:obsidian:report` to inspect the separate
+  non-blocking warning backlog.
 - Confirm README, CHANGELOG, and versions.json match the current version.
 - Confirm docs, tests, and logs do not contain real Dot API keys, External API tokens, or AI keys.
 
@@ -43,5 +46,7 @@ Do not upload a vault folder, `data.json`, `.obsidian-open-questions`, API token
 - Make the GitHub repository public.
 - Create a GitHub release with a tag matching `manifest.json`.
 - Upload the three release assets.
+- Confirm the GitHub quality workflow passed on the release commit before
+  creating the tag.
 - Submit through Obsidian's community plugin request flow.
 - See [marketplace-submission.md](marketplace-submission.md).
