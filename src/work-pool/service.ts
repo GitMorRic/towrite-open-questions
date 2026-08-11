@@ -347,8 +347,8 @@ export function filterWorkPoolItems(
   return items.filter((item) => (
     matchesHistory(item, history)
     && matchesSource(item, query.source ?? "all")
-    && (!query.stageId || item.stageId === query.stageId)
-    && (!query.typeId || item.typeId === query.typeId)
+    && (!query.stageId || (query.stageId === "__unclassified__" ? !item.stageId : item.stageId === query.stageId))
+    && (!query.typeId || (query.typeId === "__unclassified__" ? !item.typeId : item.typeId === query.typeId))
     && (!query.category || item.category === query.category)
     && (!query.workType || item.classification.workTypeId === query.workType)
     && (!query.project || item.classification.projectId === query.project)

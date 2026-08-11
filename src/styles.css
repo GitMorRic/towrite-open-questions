@@ -5492,6 +5492,27 @@
   vertical-align: middle;
 }
 
+.towrite-daily-previous-migration {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 6px 0 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-left: 3px solid var(--interactive-accent);
+  border-radius: 8px;
+  color: var(--text-muted);
+  background: var(--background-secondary);
+  font-size: var(--font-ui-small);
+}
+
+.towrite-daily-previous-migration button {
+  flex: none;
+  color: var(--text-on-accent);
+  background: var(--interactive-accent);
+}
+
 .towrite-daily-line-controls[data-state="running"] {
   border-color: var(--interactive-accent);
   color: var(--text-normal);
@@ -5519,9 +5540,39 @@
 }
 
 .towrite-daily-task-line-controls {
+  position: absolute;
+  z-index: var(--layer-popover, 30);
+  inset-inline-end: 0.35rem;
+  top: 50%;
+  transform: translateY(-50%);
   padding: 0;
   border-color: transparent;
   background: transparent;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 90ms ease;
+}
+
+.markdown-source-view .cm-line.towrite-daily-task-card-line {
+  position: relative;
+  padding-inline-end: 2.4rem;
+}
+
+.markdown-source-view .cm-line.towrite-daily-task-card-line:hover .towrite-daily-task-line-controls,
+.markdown-source-view .cm-line.towrite-daily-task-card-line:focus-within .towrite-daily-task-line-controls,
+.towrite-daily-task-line-controls:has(.towrite-note-task-disclosure[open]) {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.towrite-daily-task-line-controls .towrite-note-task-disclosure-content {
+  position: absolute;
+  z-index: var(--layer-popover, 30);
+  inset-inline-end: 0;
+  top: calc(100% + 0.3rem);
+  width: max-content;
+  max-width: min(32rem, calc(100vw - 3rem));
+  box-shadow: var(--shadow-s);
 }
 
 .towrite-note-task-disclosure {
@@ -5629,7 +5680,20 @@
 }
 
 .towrite-daily-task-enrichment-controls {
-  margin-inline-start: 0.35rem;
+  position: absolute;
+  z-index: var(--layer-popover, 30);
+  inset-inline-end: 0.35rem;
+  top: 50%;
+  margin-inline-start: 0;
+  transform: translateY(-50%);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.markdown-source-view .cm-line.towrite-daily-task-candidate-line:hover .towrite-daily-task-enrichment-controls,
+.towrite-daily-task-enrichment-controls:has(.towrite-note-task-disclosure[open]) {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .towrite-daily-enrichment-content {

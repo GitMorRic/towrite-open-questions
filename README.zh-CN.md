@@ -1,336 +1,134 @@
 # ToWrite Open Questions
 
-## 今日悬浮小窗
-
-在命令面板运行 `ToWrite: Today: open floating window`，或点击左侧
-`calendar-check` ribbon 图标，可以打开独立的今日小窗。小窗默认固定为
-Obsidian 的 pinned leaf，可折叠成一行；这里的“固定”用于防止视图被其他
-文件替换，并不等同于 Windows 的“始终置顶”。
-
-- 点击任务整行：未开始时先开始，暂停时先继续，然后打开最新修订所解析的目标。
-- 点击目标标签：只打开目标，不改变任务状态。
-- 点击“稍后”：暂停计时，并把当前笔记行保存为本地阅读断点；下次点击任务时优先返回断点。
-- 笔记目标支持 `[[笔记#标题]]`、`[[笔记#^block]]` 和安全的相对 `.md` 链接。
-- 网页必须显式写为 `[towrite-target:: https://example.com/path#fragment]`；
-  普通正文 URL、HTTP、带账号密码的 URL、`file:` 和 `javascript:` 都不会执行。
-
-阅读断点保存在
-`.obsidian-open-questions/daily/navigation-checkpoints.json`，不写进待办正文，
-也不会发送给 Device Hub。硬件主键继续严格针对屏幕已经 ACK 的
-`displayed` 卡片，因此电脑小窗与设备共用同一套目标解析和冲突保护。
-
-[今日 Dashboard 与每日计划](docs/daily-dashboard.zh-CN.md) 已把“今日”和“全部状态”明确分开：“今日”以 `Daily/YYYY-MM-DD.md` 为数据真源，原生理解项目/任务层级和父级目标继承，并把开始、暂停、继续、完成计时保存在不含正文的 JSONL 账本；“全部状态”使用完整增量索引统计 Workflow、Article Type、Inbox、stale、ToThink 与 ToWrite。指南同时说明规范化预览、30 天活动统计隐私边界、设备/NFC 冲突保护，以及 `auto` / `local` / `backend` 单写入者模式。
-
-[按一下打开对应位置](docs/navigation-adapters.zh-CN.md) 说明主键单击如何严格依据墨水屏已 ACK 的 displayed 卡片，打开 Obsidian 文件、heading、block 或移动后的文本锚点，并给出后续网页与其他笔记软件的安全 Adapter 架构。
-
 [English](README.md) | 简体中文
 
-ToWrite Open Questions 是一个 Obsidian 桌面端插件，用来把还没想清楚、还要继续写、需要查证或需要补充的内容，保留在它们原本出现的位置旁边。
+ToWrite 是一个桌面端 Obsidian 工作台：把散落在日记、普通笔记、开放问题和 Workflow 里的未完成内容，整理成今天真正要推进的事情。Markdown 始终是数据真源；你可以继续在日记里自然书写，只在需要编排、开始、完成或复盘时打开工作台。
 
-它不是普通 TODO 列表。它更像一层 `ToThink` / `ToWrite` 批注索引：正文继续保持写作流，未完成的思考和写作片段会以卡片、跳转、高亮、导出数据和可选 API 的形式浮出来。
+![ToWrite 侧栏与原文控件](docs/assets/sidebar-current-note%20and%20selection-toolbar.png)
 
-## 主要功能
+## 三分钟快速开始
 
-- 从 Markdown 选区、PDF 选区、显式 Markdown 规则、触发词建议创建 `ToThink` / `ToWrite` 卡片。
-- 右侧栏优先显示当前笔记，并按 ToThink / ToWrite 分区；两个分区都可以整体折叠。
-- 点击卡片可跳回 Markdown 原文行或 PDF 高亮位置。
-- 在侧栏直接编辑卡片标题、原文正文、批注、状态、类型、lane、颜色和标签。
-- 批注支持 Obsidian 风格 `[[双向链接]]`；预览里可打开已有笔记，也可创建缺失笔记。
-- 选区卡片默认保存到 sidecar JSON，不污染 Markdown。只有点击“固定原文锚点”时才会写入 `^oq_xxx`。
-- 编辑器原文支持整行浅色高亮，也支持单条或全局切换成“只保留左侧竖线”。
-- Workflow Stages 可按文件夹、frontmatter tags 或正文 `#tag` 把 Markdown 文件分组成 Raw、Sparks、Processing 等自定义状态。
-- Article Types 可按文件夹或 tag 把笔记归为 MindFlow、Tech、Project 等内容类型；右侧栏和 dashboard 会同时显示分类与 Workflow 阶段。
-- 每日计划支持可直接手改的层级 Markdown：父分类不计入进度，叶子任务可继承最近父级笔记；批量规范化先显示 diff，任务计时不会写进待办正文。
-- 导出 JSON，供 dashboard、桌面小组件、脚本和墨水屏设备读取。
-- 可选桌面端 External API，支持 JSON、RSS、SSE、内置 dashboard、手机小屏预览、手机 companion 输入页，以及状态、批注和新想法写回。
-- 可选通用 Push Engine 和 Quote0 接入，把首页总览或下一张卡片推送到墨水屏；NFC 碰一碰可打开受限的手机写回页面。
-- 可选连接 Device Hub V1，把隐私过滤后的推荐发送到 ESP32/墨水屏，并通过 `selected`、长轮询、display ACK 和不含凭据的 NFC/PWA 完成加密回答闭环。
-- 可选 OpenAI-compatible AI 摘要和本地笔记推荐；默认关闭，只在你配置接口后才会请求。
-- 从新想法、Markdown 选区或 ToThink/ToWrite 问题卡片打开原生智能记录弹窗，先在本地推荐写入位置并提供冲突安全的预览。
-- 可选学习粗粒度工作会话与记录路由模式；识别出的习惯必须由你确认后才会生效。
-- 可选连接独立许可的 Obsidian AI Backend，用于重排本地目标候选或改善习惯候选文案；不连接 Backend 也能完整记录。
+1. 在 **设置 → 第三方插件** 启用 ToWrite。
+2. 在命令面板运行 **ToWrite：打开工作台**。
+3. 打开今天的日记，直接写普通 Markdown 待办。
+4. 回到“今日”开始一项任务，或在“工作池”里安排已有笔记与问题。
+5. 在“日志”查看完成、迁移、回流和放弃记录。
 
-## 截图
+如果已启用 Obsidian 核心“日记”插件，ToWrite 会复用它的目录、日期格式和模板；也可以在 ToWrite 设置中使用独立日记目录。
 
-![侧边栏当前笔记与选区工具栏](docs/assets/sidebar-current-note%20and%20selection-toolbar.png)
+## 在日记里自然写任务
 
-![小屏预览与 External API 概览](docs/assets/to-write-elink-api-overview.png)
+输入时、刷新 Dashboard 时和扫描工作池时，ToWrite 都不会主动改写 Markdown。
 
-![网页 Dashboard](docs/assets/to-write-web-dashboard.png)
+```md
+## ToDo
 
-如果你要给别人介绍插件，可以直接使用 [讲解与宣传素材](docs/promo-demo-guide.zh-CN.md)，里面包含演示流程、样本文本和发布文案。
+- [ ] 项目
+  1. [[Echo MVP]]
+  2. [[发布说明]]
 
-## 为什么是桌面端插件
-
-当前 `manifest.json` 设置为 `isDesktopOnly: true`，因为 External API 使用 Node.js `http` 在 Obsidian Desktop 内启动本地服务器。为了符合 Obsidian 社区插件审核规则，第一版市场提交按桌面端插件处理。
-
-## 快速开始
-
-1. 用左侧 ribbon 图标或命令面板打开 ToWrite 侧栏。
-2. 在 Markdown 或 PDF 里选中文字。
-3. 在浮动工具条里点击 `Think` 或 `Write`。
-4. 在右侧卡片中编辑标题、批注、状态和分类。
-5. 点击卡片上的箭头跳回原文。
-
-## 本地优先的智能记录
-
-你可以从 ribbon、命令面板、Markdown 选区或问题卡片打开智能记录。原生 Obsidian 弹窗支持三种意图：
-
-- `新记录`：保存一个独立想法。
-- `记录选区`：保留选中文字和来源上下文，再决定放到哪里。
-- `回答问题`：默认只追加到问题卡片；可勾选“同时归档为笔记”。
-
-在发起任何可选网络请求前，ToWrite 会先计算并显示最多三个本地候选：
-
-| 候选 | 保存结果 |
-| --- | --- |
-| 最相关的已有笔记 | 追加到配置的 Capture 标题下。 |
-| 推荐文件夹或 Workflow 阶段 | 按预览路径新建 Markdown 笔记。 |
-| Inbox 兜底 | 当高相关候选不足时写入配置的 Inbox。 |
-
-本地索引会遵守 Capture 的包含/排除文件夹、排除 tags 和 truthy 隐私 frontmatter 设置。你可以先检查路径与摘要、改选目标，再用 `Ctrl/Cmd+Enter` 保存。保存成功后可以立即打开笔记；如果返回了安全撤销凭证，还可以撤销本次写入，并避免覆盖之后发生的编辑。
-
-Obsidian AI Backend 只是可选增强，不是运行依赖。本地候选会先出现，并构成 Backend 可操作的白名单；启用 Backend 后，它可以异步重排这些候选和修改展示理由，但不能注入任意 Vault 路径。Backend 关闭、离线、版本不兼容或超时时，本地记录和本地推荐仍然正常工作。
-
-Backend 实现方可参考版本化的 [ToWrite v1 对接契约](docs/obsidian-ai-backend-towrite-v1.md)。
-
-## 习惯学习与主动建议
-
-习惯学习默认关闭。启用后，ToWrite 只记录粗粒度结构事件，例如文件切换、有效编辑时段、已确认的记录目标、问题操作和建议反馈。学习事件不包含笔记正文、选区内容、剪贴板内容或逐键输入。
-
-原始学习事件会在 30 天后自动清理。模式识别只能生成“待确认习惯”，待确认状态不会改变记录路由，也不会触发习惯通知；只有你明确接受的习惯才会影响后续行为。你可以查看证据、修改候选名称、忽略或稍后处理，也可以导出或全部清空学习数据。
-
-主动通知同样默认关闭。启用后，只有到期提醒和已确认习惯可以弹通知；新的习惯候选会静默进入侧栏。默认安静时段为 `23:00-08:00`，默认每天最多发送三条习惯通知。
-
-精确的数据边界与可选 Backend 传输范围见 [PRIVACY.zh-CN.md](PRIVACY.zh-CN.md)。
-
-## Markdown 触发规则
-
-- `?? 内容` 或 `？？ 内容`：创建正式 `ToThink` 卡片，适合明确标记“这里需要想清楚”。
-- `- [ ] [?] 内容`：创建待处理卡片；勾选后会被识别为 resolved。
-- `> [!question]` callout：创建多行问题卡片。
-- 触发词建议只处理较明确的句式，例如“分析一下”“需要确认”“来源是什么”“有没有实测”“继续写”“补写”“扩写”等。普通单问号句子不会自动变成候选，所以小说台词、对话和反问不会因为末尾是 `？` 就被标记。
-- 编辑器里的候选建议只会显示加号和叉号；点加号才会保存，点叉号会忽略这一条。
-
-## Workflow Stages
-
-Workflow Stages 是独立于 ToThink / ToWrite 的“文件生命周期索引”。它适合把文件按项目阶段暴露给 dashboard、桌面卡片、墨水屏或后续 AI 提醒系统。
-
-你可以在设置页开启并配置：
-
-- `id`：稳定标识，例如 `sparks`、`processing`。
-- `title` / `description`：展示标题和说明。
-- `color`：dashboard 和设置页使用的颜色。
-- `folderPrefixes[]`：文件夹路径前缀，例如 `MindFlow/01-Sparks`。
-- `tags[]`：匹配 frontmatter tags 和正文 `#tag`。
-- `limit`：每组导出多少文件。
-- `staleAfterDays`：多少天没有更新后标记为 stale。
-
-一个文件可以同时属于多个 stage。Workflow 只索引 Markdown 文件，不移动文件，也不会自动改 frontmatter。
-
-建议把 `Stage` 当作“生命周期”，例如 Raw、Sparks、Initialize、Processing、Archive；把 MindFlow、Techbench、OCStory 这类当作“内容类型 / 项目域”。第一版可以通过文件夹前缀来表达项目域：例如 `MindFlow/01-Sparks`、`Techbench/02-Processing`、`OC-Story/Lore`。如果你想在 API 和 dashboard 里同时按“项目域 × 生命周期”交叉统计，后续可以再加独立的 `Workflow Areas` 配置，避免把 stage 复制成 `raw-mindflow`、`raw-techbench` 这种难维护的长列表。
-
-## Article Types、侧栏和 Dashboard
-
-Article Types 是和 Workflow Stages 正交的一层“内容类型”配置。默认示例包括 `mindflow`、`tech`、`project`，你可以在设置页改名、换颜色、添加文件夹前缀和 tags。
-
-层级 tag 会被拆成两层使用：例如 `#mindflow/spark` 同时表示 type=`mindflow` 和 stage=`spark`。独立 tag 也可以匹配 stage，例如 `#spark`、`#processing`。这意味着一篇笔记可以还没有 ToThink/ToWrite 卡片，但只要它匹配了 type 或 stage，也会进入“其他笔记”、dashboard 和设备数据。
-
-右侧栏顶部有三层筛选：
-
-- ToThink / ToWrite lane：控制当前笔记问题分区，以及展开文章后显示哪些问题。
-- 分类 tabs：来自 Article Types 设置，哪怕当前数量为 0 也会显示。
-- Workflow tabs：来自 Workflow Stages 设置，所有阶段都会显示，0 也保留，方便你知道哪个阶段暂时空着。
-
-Obsidian 内置 Dashboard、External API 的 `/api/v1/device-feed`、Quote0 dashboard 都使用同一批问题、文章和 workflow/tag 索引。不同设备会做展示适配：侧栏保留更多可编辑信息，web/dashboard 更适合扫描统计，Quote0 Text API 会压缩成少量文字，Quote0 Canvas/Image dashboard 会优先显示首页指标和 Workflow 状态。
-
-## Quote0 与自动推流
-
-Quote0 接入分成两类内容：
-
-- 文本卡片：推送下一张 ToThink/ToWrite 卡片，显示标题、问题、下一步、最近 note、stage 和状态；适合设备轮播。
-- 首页总览：通过 Text / Image / Canvas API 推送 dashboard，总览 ToThink、ToWrite、未解决文章、提醒、Workflow 文件和阶段状态；适合常驻桌面小屏。
-
-旧版 Quote0 NFC link 默认指向 `External API publicBaseUrl + /device/input?token=<quote0-nfc-token>&questionId=<id>`。这个 token 是 Quote0 专用受限 token，只用于手机写回页、输入上下文、追加 note 和创建 capture，不复用完整 External API token。该 query-token 路由只为本地/Quote0 兼容流程保留，不要把它写入新的 Device Hub NFC 标签。要让旧流程的手机碰一碰能打开页面，需要：
-
-1. Obsidian 桌面端正在运行，插件启用 External API。
-2. `bindHost` 在局域网/Tailscale 场景下设置为 `0.0.0.0`。
-3. `publicBaseUrl` 填手机可访问的电脑地址，例如 `http://100.x.y.z:48321` 或 `http://192.168.1.20:48321`。
-4. Quote0 设置里有 API key、deviceId，并且 Text / Image / Canvas API 内容已经在 Dot App/Content Studio 加入设备 Loop。
-5. 发送测试卡、发送主页、强制刷新设备都能成功；如果 Dot API 返回 200 但屏幕没变，通常要检查 Loop 里是否选择了对应 API 内容，以及设备是否在线/刷新间隔是否生效。
-
-插件默认会在发送成功后额外调用一次 Dot 的设备切换/刷新接口（`/next`），尽量让 quote0 立刻拉取新内容。但它仍受 Dot 云端队列、Loop 当前内容和墨水屏物理刷新限制；如果你的 Loop 因为 `/next` 跳到其他内容，可以在 Quote0 设置里关闭“发送后自动强制刷新”。
-
-## Device Hub V1
-
-个人 NFC 写回现在默认使用 **ToWrite × Capture 本地联动**：`NTAG213 → Tailscale HTTPS :8790 → Capture 手机记录页 → ToWrite CaptureService → Vault`。手机只需连接同一 tailnet 并通过配置的 Tailscale 身份，不再填写邮箱验证码；Obsidian Desktop、ToWrite、Capture 和本地 Backend 必须在线。NFC 优先打开已 ACK 的 `displayed` 内容，无 ACK 时回退 `selected`，没有 Hub 设备时使用本地当前选择。完整的 Serve、插件连接和 NFC Tools 步骤见 [NTAG213 与 NFC Tools 指南](docs/ntag213-nfc-tools.zh-CN.md)。下述 Device Hub E2EE 流程仍作为公网、离线队列和独立设备的可选方案保留。
-
-Device Hub 是可选、独立部署的 ESP32/墨水屏与 HTTPS 手机 PWA 通路：
-
-```text
-Obsidian 本地隐私过滤候选
-  -> Hub selected 状态
-  -> ESP32 HTTPS 长轮询
-  -> display ACK
-  -> 静态 NFC Tap URL
-  -> PWA 本机加密回答
-  -> Receiver 队列
-  -> CaptureService 本地写回
+- [ ] 写作
+  - [ ] 写完引言
+  - [ ] 核对示例
 ```
 
-插件最多发送 20 个本地过滤后的候选，来源和写回目标使用 opaque 引用；显示正文默认不发送。可选可信 Backend 只能重排这些候选 ID，不能注入 Vault 路径、直接切换屏幕或请求振动。Hub 的 `selected` 表示服务端希望显示什么；只有完全匹配的成功 ACK 才能推进 `displayed`。因此 NFC 优先打开最近一次已 ACK 的 displayed 内容，尚无成功 ACK 时才回退 selected。
+- checkbox 下面只有普通编号、链接或说明时，父项是分类，不计入进度。
+- 子项是 checkbox 时，子项是任务；父 checkbox 也可以作为任务。
+- 分类下的编号链接可以投影为叶子任务，但无关普通列表不会被识别。
+- 任务自己的链接优先打开；缺失时可以继承最近父分类的笔记。
+- 显式 `towrite-kind:: task` 可以覆盖分类推断。
 
-新的 Device Hub 标签只包含一条 URI Record：
+没有 ID 的新任务先使用内存临时引用。只有点击开始、完成、属性、迁移、发送到设备或加入工作池等明确动作时，插件才会重新校验文档，并把稳定 `^daily_*` ID 写到同一任务行末尾。目标行已经变化时会取消操作，绝不会把 ID 写到相邻编号行。
 
-```text
-<PUBLIC_BASE_URL>/t/v1/<tap_id>
-```
+## 一个工作台，四个页面
 
-标签不含 API token、device secret、内容 ID 或 Vault 路径。旧 `/device/go`、`/device/input?token=...` 和 query-token 小屏页仍是本地/Quote0 兼容功能，不属于 Device Hub NFC 契约。
+### 今日
 
-完整说明见 [Device Hub V1 中文协议](docs/device-hub-protocol.zh-CN.md)（[English](docs/device-hub-protocol.md)）和 [NTAG213 与 NFC Tools 指南](docs/ntag213-nfc-tools.zh-CN.md)（[English](docs/ntag213-nfc-tools.md)）。
+展示当天顺序、当前专注、按项目着色的进度、昨日未完成迁移，以及可选的 2.7 英寸墨水屏预览。完整清单始终遵循 Markdown 顺序。
 
-## 数据文件
+### 工作池
 
-ToWrite 会在 vault 中写入可读 JSON：
+统一投影 Markdown 待办、ToThink/ToWrite 问题、Inbox 与 Workflow 笔记，但不会复制到隐藏数据库。保存视图可以按项目、来源、阶段、文章类型、关联笔记或原生状态分组。
 
-```text
-.obsidian-open-questions/
-  index.json
-  articles.json
-  eink-compact.json
-  workflows.json
-  learning/
-    events.jsonl
-    habits.json
-  questions/
-    <question-sidecar>.json
-```
+### 状态
 
-这些文件可能包含选中的笔记文本、PDF 摘录、标题、批注、标签、状态、来源路径、frontmatter、卡片元数据，以及启用学习后生成的粗粒度事件与习惯候选。除非你明确想分享这些内容，否则不要公开导出目录。
+解释并统计 Workflow 阶段、Article Type、问题状态、Inbox 与 tags。这里是分析页；真正修改仍写回来源笔记或问题 Sidecar。
 
-## External API
+### 日志
 
-External API 默认关闭，只在 Obsidian 桌面端运行。启用后需要 token。
+按日或自然月查看计划数、完成率、投入/暂停时间、中断、迁入、迁出、回流和放弃。事件只保存在本地可读 JSONL 中；确认写回时，只更新日记中 `ToWrite 日志` marker 包围的区域。
 
-默认本机地址：
+## 现在专注
 
-```text
-http://127.0.0.1:48321
-```
+运行 **ToWrite：现在专注：打开悬浮窗**，得到一个可固定的 Obsidian 小窗，只显示当前任务和紧凑今日摘要。点击任务会开始/继续并打开对应笔记、heading、block 或安全 HTTPS 目标；“稍后”会暂停计时并保存本地阅读断点。
 
-常用接口：
+命令 **ToWrite：定位当前专注任务** 可以绑定快捷键。在 Markdown 编辑器空白处双击也会定位并短暂高亮当前任务；链接、控件和选中文字不会被拦截。
 
-```text
-GET   /health
-GET   /api/v1/questions
-GET   /api/v1/articles
-GET   /api/v1/workflows
-GET   /api/v1/eink
-GET   /api/v1/deck
-GET   /api/v1/device-feed
-GET   /api/v1/rss.xml
-GET   /api/v1/events
-GET   /dashboard
-GET   /device
-GET   /device/go
-GET   /device/input
-POST  /api/v1/questions/<id>/status
-POST  /api/v1/questions/<id>/notes
-POST  /api/v1/captures
-POST  /api/v1/device/events
-POST  /api/v1/device/handoffs
-PATCH /api/v1/questions/<id>
-```
+## ToThink / ToWrite 批注
 
-`/api/v1/eink` 兼容接口现在也会返回已保存的 Echo 模板卡，并与 ToThink / ToWrite 共用“Echo 在前、划线卡在后”的循环队列。接口使用 `currentInQueue/currentIndex/currentPosition/queueTotal` 表示固定队列里的真实页码，即使设备始终请求 `cursor=0`，翻页数字也会变化；未加入轮播的手动卡保持为单张预览。Echo 卡通过 `displayCategory: "echo"` 明确显示为样板，不计作 ToWrite。ESP32 可把右键短按作为 `right` 事件 POST 到 `/api/v1/device/events`；完整接线与固件示例见 [ESP32-S3 模板优先翻页示例](examples/esp32s3-eink/README.zh-CN.md)。
+选择 Markdown 或 PDF 文本后，可以创建 ToThink/ToWrite 卡片。卡片能跳回来源、在 Sidecar 中保存批注而不污染正文，并进入工作池或设备候选。原来的批注流程与每日计划同时保留。
 
-只在本机使用时保持 `127.0.0.1`。如果要给 ESP32、手机或另一台电脑访问，可以把 bind host 改成 `0.0.0.0`，但请自己用 Tailscale、Cloudflare Tunnel、反向代理、HTTPS、访问控制或防火墙保护远程访问。
+## Markdown 真源与技术字段
 
-### 手机小屏 / 墨水屏模拟
+- 笔记、日记、checkbox、frontmatter 和可读 JSON/JSONL 是数据真源。
+- `^daily_*`、`^task_*` 与 `towrite-*` 只用于稳定定位和冲突安全写入。
+- 除非开启调试设置，Source、Live Preview 和阅读模式都会隐藏并保护技术字段，光标和删除键不会进入这些原子区域。
+- 活动统计不记录按键，也不会保存笔记正文。
+- API Key 和长期 token 使用 Obsidian 1.11.4+ 的 SecretStorage，不再保存在插件 `data.json`。
 
-仅用于旧版本地 External API 小屏预览：如果手机和电脑已经通过 Tailscale 组成局域网，在插件设置里打开 External API，把 `API bind host` 改成 `0.0.0.0`，并开启“允许 GET 查询参数 token”，然后在手机浏览器打开：
+## 可选联网功能与数据说明
 
-```text
-http://<电脑的 Tailscale IP>:48321/device?token=<你的 token>
-```
+所有联网功能默认关闭。
 
-也可以在设置页的“手机/远程访问基地址”里填写 `http://<电脑的 Tailscale IP>:48321`，之后直接复制“手机小屏页面”链接。
+| 功能 | 默认 | 启用后发送什么 |
+| --- | --- | --- |
+| OpenAI-compatible AI | 关闭 | 用户预览确认的字段与本地候选 ID |
+| 可信 Backend | 关闭 | 经过隐私过滤的候选元数据；不能发明 Vault 路径 |
+| External API | 关闭 | 经过认证的本地客户端请求的数据 |
+| Device Hub / NFC | 关闭 | 获准显示的卡片快照和 opaque 来源引用 |
+| Quote0 / Push | 关闭 | 用户选择的卡片或 Dashboard 数据 |
 
-`/device` 是小屏预览页，视觉上模拟墨水屏，支持左右滑动和屏幕上的上一页/下一页按钮。它内置屏幕模拟器，可以选择 2.7 寸、2.13 寸、4.2 寸等预设，也可以手动输入宽度、高度和英寸数；模拟屏幕会按比例居中显示。页面会请求 `GET /api/v1/device-feed`，由电脑端插件提前整理首页、Workflow 状态、下一步、ToThink/ToWrite 卡片、下一张预览和来源笔记状态。未来 ESP32、桌面小组件或其他设备也可以复用这个接口，只负责渲染。
+高级内容集中在 [`docs/`](docs/)：
 
-query-token URL 可能进入浏览器历史、截图、反向代理日志和 Referrer。除非旧客户端确实需要，否则保持 query-token 读取关闭；不要把这类 URL 写入新的 Device Hub NFC 标签，意外暴露后应轮换 token。
+- [今日 Dashboard 与 Markdown 契约](docs/daily-dashboard.zh-CN.md)
+- [按键打开与导航 Adapter](docs/navigation-adapters.zh-CN.md)
+- [Device Hub 协议](docs/device-hub-protocol.zh-CN.md)
+- [NTAG213 / NFC Tools 指南](docs/ntag213-nfc-tools.zh-CN.md)
+- [External API](docs/api.zh-CN.md)
 
-真实墨水屏不需要负责复杂输入。在旧版本地流程中，卡片页会提供“回答”和“新想法”入口，打开 `/device/input` 手机 companion 页面：带 `questionId` 时默认追加到那张卡片的 note；不带 `questionId` 时可以把独立灵感写入设置里的默认 Inbox 文件、目标文件夹或 Workflow stage。兼容标签或二维码可以指向 `/device/go?targetId=...`，由桌面端根据该设备最近显示的卡片决定打开回答页、原笔记或统一记录入口。硬件按键可以 POST 到 `/api/v1/device/events`，由同一套 action 层解析。新的 Device Hub 标签改用 `/t/v1/<tap_id>`，绝不携带 query token。手机预览页里还会额外显示“语音”按钮，可以不离开当前页面，直接用浏览器语音转文字保存为一条新想法。
+## 安装与兼容
 
-手机预览页会在模拟屏幕底部显示五键提示栏：`新想法 / 上一页 / 首页+录音 / 下一页 / 手机输入或当前动作`。中间键短按回首页，长按直接语音记录新想法并写入 Device Inbox；右侧键在来源笔记页会变成“看卡片”，进入当前笔记的卡片队列。真实硬件可以把这五个提示映射到屏幕下方或侧边的实体按键。
+- Obsidian **1.11.4 或更高版本**
+- 仅桌面端（`isDesktopOnly: true`）
+- 支持 Obsidian Desktop 覆盖的 Windows、macOS 与 Linux
 
-设备协议支持 `profile=mobile-eink`、`profile=eink-bw`、`profile=desktop-card`，也支持 `page=home/cards/workflow/articles`、`cursor`、`limit`、`lane`、`stage`、`sourceFile`、`width`、`height`、`inches` 等参数。`sourceFile` 可让卡片页只刷某篇来源笔记里的 ToThink/ToWrite。`mobile-eink` 适合手机 PWA 模拟墨水屏；`eink-bw` 适合真实黑白小屏，文本更短；`desktop-card` 适合桌面小组件，信息密度更高。横屏墨水屏可以传入实际尺寸，例如 `width=264&height=176&inches=2.7`，服务端会返回 `orientation`、`aspectRatio`、`ppi` 和更紧凑的 `layout`。
-
-卡片可以设置手动提醒时间，提醒字段会出现在 `/api/v1/questions`、`/api/v1/deck` 和 `/api/v1/device-feed` 中。`/device` 在 HTTPS 或 Tailscale Serve 等安全上下文里可以安装成 PWA；第一版提醒是在页面打开时通过 SSE 检测变化，完整后台推送需要后续 Web Push 或常驻服务支持。
-
-详细示例见 [中文 API 文档](docs/api.zh-CN.md)。
-
-## PDF 支持
-
-PDF 批注是非破坏式的。ToWrite 会把 PDF 路径、选中文本、页码和归一化选区矩形保存到 sidecar JSON，然后在 Obsidian PDF 查看器中绘制 overlay 高亮。点击卡片时，会尽量跳回对应页和高亮位置。
-
-ToWrite 不会修改 PDF 文件本体。
-
-## AI 与本地知识推荐
-
-AI 默认关闭。启用并配置 `baseUrl`、`apiKey`、`model` 后，ToWrite 会调用 OpenAI-compatible `/chat/completions` 接口，为已保存卡片生成摘要、下一步建议和相关本地笔记推荐。
-
-填写 Base URL 和 API Key 后，可以点击“获取模型”调用服务端的 `/models` 接口，再从返回列表中选择模型；不支持模型发现的兼容服务仍可手工填写模型 id。“测试连接”会使用当前模型发起一次很小的真实对话请求，并显示延迟和返回内容。
-
-通过命令面板的“打开 AI 助手”、左侧 Ribbon 机器人图标或侧栏机器人按钮，可以打开原生 Obsidian 对话界面。AI 回复使用 Obsidian Markdown 渲染，每条回复都可以切回“原文”。`Ctrl/Cmd+Enter` 发送，`Shift+Enter` 换行。Backend 模式下可以输入 `/` 搜索本地 Skill 仓库，输入 `@` 添加一个或多个 Agent；所选模型、Skill 和 Agent 会持续显示在输入框上方。
-
-助手支持切换模型、本地持久化历史、上下文检查器和安全的交互式选择卡片。当模型确实需要用户决策时，直连模式可以调用 `ask_user_choice` function tool；Backend 回复使用有边界、只负责展示的选择标记。选择卡片本身不会自动写入 Vault。直连模式使用配置的 OpenAI-compatible 接口；Backend 模式复用 Backend 已有的模型目录、LiteLLM 路由、Agent roster、Skills 和上下文对话接口。用户发送前可以展开上下文检查器，确认本次会发送哪些字段。历史也会写入用户可读的 `.obsidian-open-questions/ai/conversations.json`，并可在助手中清空。
-
-ToWrite 不做联网搜索。它会基于 Obsidian `Vault` 和 `MetadataCache` 构建轻量本地索引，从文件名、路径、frontmatter、标签、标题和正文片段中召回候选笔记。
-
-## 安装
-
-### 社区插件
-
-通过审核后，在 Obsidian 的 Community Plugins 中搜索 `ToWrite Open Questions` 安装。
-
-### 手动安装
-
-从 GitHub release 下载：
-
-- `main.js`
-- `manifest.json`
-- `styles.css`
-
-放到：
+社区插件市场搜索 **ToWrite Open Questions** 即可安装。手动安装时，把 Release 中的 `main.js`、`manifest.json`、`styles.css` 复制到：
 
 ```text
-<你的 vault>/.obsidian/plugins/towrite-open-questions/
+<你的 Vault>/.obsidian/plugins/towrite-open-questions/
 ```
 
-重启 Obsidian，然后启用 `ToWrite Open Questions`。
+## 常见问题
 
-如果你之前用过 `.obsidian/plugins/obsidian-towrite/` 这个早期手动安装目录，切换到市场版 id 前请先备份旧目录，尤其是其中的 `data.json`。
+- **今日为空：**检查当前日记来源，以及任务是否位于配置的 ToDo 区段或支持的自由日记区域。
+- **提示任务已变化：**刷新后重试；这是插件避免覆盖新内容的保护。
+- **笔记链接打不开：**使用有效的 `[[双链]]` 或相对 Markdown 链接，并检查是否存在同名笔记。
+- **打字卡顿：**可关闭编辑器建议或缩小工作池 include 范围；索引和网络工作均在 debounce 后执行，不进入按键处理链。
+- **技术字段可见：**运行“修复当前日记任务结构”，并关闭“显示技术字段”调试开关。
+
+提交敏感问题前请阅读 [社区商城检查](docs/marketplace-submission.zh-CN.md)、[安全策略](SECURITY.zh-CN.md) 和 [隐私说明](PRIVACY.zh-CN.md)。
 
 ## 开发
 
-```powershell
-npm.cmd install
-npm.cmd run test
-npm.cmd run build
+```bash
+npm ci
+npm test
+npm run typecheck
+npm run build
 ```
 
-构建产物输出到 `dist/`。
+生产构建会检查 package/manifest/versions 版本一致、Release 三个必需文件，以及 `main.js` 不超过 2 MiB。
 
-## 隐私
+## 许可
 
-核心索引、三候选记录推荐和习惯推断都在本地 Obsidian 内运行。学习、External API、主动通知、AI、Device Hub 与 Obsidian AI Backend 接入都是可选功能。API token、AI API key、Device Hub Receiver token、Receiver 私钥和 opaque 引用 secret 保存在本地 Obsidian 插件数据中，不会写入导出的 JSON；Obsidian 插件数据不是加密密钥库。Backend token 通过 `X-Capture-Token` 请求头发送；Device Hub 凭据通过鉴权请求头发送，不进入 Tap URL。
-
-因为 ToWrite 会把选区文字、来源路径和可选学习事件保存到 sidecar JSON 与导出文件，请把这些文件视为你的私有 Vault 数据。启用远程访问或可选网络服务前，请阅读 [PRIVACY.zh-CN.md](PRIVACY.zh-CN.md) 与 [SECURITY.zh-CN.md](SECURITY.zh-CN.md)。
-
-## License
-
-ToWrite Open Questions 插件使用 MIT License，详见 [LICENSE](LICENSE)。
-
-可选的 Obsidian AI Backend 是独立项目，使用它自己的许可条款。插件的 MIT 授权不包含 Backend 代码或托管服务；请以 Backend 分发包中的 `LICENSE` 与商业许可文件为准。
+MIT，见 [LICENSE](LICENSE)。可选 Backend 独立发行并使用自己的许可证。

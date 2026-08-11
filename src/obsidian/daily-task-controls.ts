@@ -46,6 +46,8 @@ interface DailyTaskControlsOptions {
   getItems(): readonly DailyPlanItem[];
   getNormalizationPreviews(): readonly DailyPlanNormalizationPreview[];
   getLinkedTaskProjections(): readonly DailyLinkedTaskProjection[];
+  getPreviousUnfinished(): readonly DailyPlanItem[];
+  getTodaySourcePath(): string | undefined;
   getTiming(item: DailyPlanItem): DailyTaskTimingSnapshot;
   onToggle(item: DailyPlanItem): void | Promise<void>;
   onComplete(item: DailyPlanItem): void | Promise<void>;
@@ -56,6 +58,7 @@ interface DailyTaskControlsOptions {
   onOpenPending(edit: DailyPlanNormalizationEdit): void | Promise<void>;
   onToggleLinkedTask(projection: DailyLinkedTaskProjection, item: TrackedNoteTask): void | Promise<void>;
   onOpenLinkedNote(projection: DailyLinkedTaskProjection): void | Promise<void>;
+  onOpenPreviousMigration(): void | Promise<void>;
 }
 
 /**
@@ -116,6 +119,18 @@ function buildControls(
   const items = options.getItems()
     .filter((item) => item.sourcePath === activePath && item.line >= 1 && item.line <= view.state.doc.lines)
     .map((item) => ({ item, timing: options.getTiming(item) }));
+  const previousUnfinished = options.getPreviousUnfinished();
+  if (activePath === options.getTodaySourcePath() && previousUnfinished.length > 0) {
+    entries.push({
+      from: 0,
+      to: 0,
+      decoration: Decoration.widget({
+        block: true,
+        side: -100,
+        widget: new DailyPreviousMigrationWidget(previousUnfinished.length, options)
+      })
+    });
+  }
   const selectedLines = new Set<number>();
   for (const selection of view.state.selection.ranges) {
     selectedLines.add(view.state.doc.lineAt(selection.anchor).number);
@@ -144,7 +159,9 @@ function buildControls(
       });
       atomicEntries.push({ from, to, decoration: Decoration.mark({ class: "towrite-daily-technical-atomic" }) });
     }
-    if (selectedLines.has(item.line)) {
+    // Do not interrupt the line currently being authored. Existing tasks keep
+    // a zero-layout hover affordance on every other line.
+    if (!selectedLines.has(item.line)) {
       entries.push({
         from: taskLine.to,
         to: taskLine.to,
@@ -190,7 +207,7 @@ function buildControls(
           }
         })
       });
-      if (selectedLines.has(edit.line)) {
+      if (!selectedLines.has(edit.line)) {
         entries.push({
           from: line.to,
           to: line.to,
@@ -228,6 +245,42 @@ function buildControls(
   atomicEntries.sort((left, right) => left.from - right.from || left.to - right.to);
   for (const entry of atomicEntries) atomicBuilder.add(entry.from, entry.to, entry.decoration);
   return { decorations: builder.finish(), atomic: atomicBuilder.finish() };
+}
+
+class DailyPreviousMigrationWidget extends WidgetType {
+  constructor(
+    private readonly count: number,
+    private readonly options: DailyTaskControlsOptions
+  ) {
+    super();
+  }
+
+  eq(other: DailyPreviousMigrationWidget): boolean {
+    return other.count === this.count;
+  }
+
+  toDOM(view: EditorView): HTMLElement {
+    const doc = view.dom.ownerDocument;
+    const wrapper = doc.createElement("aside");
+    wrapper.className = "towrite-daily-previous-migration";
+    const text = doc.createElement("span");
+    text.textContent = `昨日还有 ${this.count} 项未完成`;
+    const button = doc.createElement("button");
+    button.type = "button";
+    button.textContent = "选择迁移";
+    button.addEventListener("mousedown", stop);
+    button.addEventListener("click", (event) => {
+      stop(event);
+      void Promise.resolve(this.options.onOpenPreviousMigration())
+        .catch((error) => console.error("Opening previous Daily migration failed", error));
+    });
+    wrapper.append(text, button);
+    return wrapper;
+  }
+
+  ignoreEvent(): boolean {
+    return false;
+  }
 }
 
 class DailyLinkedTaskProjectionWidget extends WidgetType {

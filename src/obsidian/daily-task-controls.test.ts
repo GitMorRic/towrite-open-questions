@@ -92,4 +92,11 @@ describe("Daily editor task controls", () => {
     )).toEqual({ from: 12, to: 52 });
     expect(dailyTaskTrailingIdRange("- [ ] 普通内容")).toBeUndefined();
   });
+
+  it("offers yesterday migration inside today's Daily note", () => {
+    const source = readFileSync(new URL("./daily-task-controls.ts", import.meta.url), "utf8");
+    expect(source).toContain("DailyPreviousMigrationWidget");
+    expect(source).toContain("towrite-daily-previous-migration");
+    expect(source).toContain("onOpenPreviousMigration");
+  });
 });

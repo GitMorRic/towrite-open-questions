@@ -141,7 +141,34 @@ export interface DailyPlanItem {
   timing?: DailyTaskTimingSnapshot;
   /** Direct continuation lines physically placed after a nested child block. */
   detachedOwnedLines?: number[];
+  /**
+   * Runtime-only marker for an authored checkbox that has not yet received a
+   * stable Markdown block id. Draft items are read-only until an explicit user
+   * action materializes their exact source line.
+   */
+  provisional?: boolean;
+  /** One-based source line used by the draft CAS materialization step. */
+  draftLine?: number;
 }
+
+export interface StableDailyTaskReference {
+  kind: "stable";
+  id: string;
+  revision: DailyTaskRevision;
+  date: string;
+}
+
+export interface DraftDailyTaskReference {
+  kind: "draft";
+  id: string;
+  date: string;
+  sourcePath: string;
+  line: number;
+  sourceRevision: string;
+  rawLine: string;
+}
+
+export type DailyTaskReference = StableDailyTaskReference | DraftDailyTaskReference;
 
 export type DailyTargetSource =
   | "explicit"
@@ -566,6 +593,73 @@ export interface DailyAnalyticsRange {
 
 export interface DailyMonthlySummary extends DailyAnalyticsRange {
   month: string;
+}
+
+export type DailyTaskTransitionKind =
+  | "schedule"
+  | "start"
+  | "pause"
+  | "resume"
+  | "complete"
+  | "reopen"
+  | "migrate"
+  | "return"
+  | "abandon";
+
+/**
+ * Content-minimal, local-only audit event for the work journal. `title` is a
+ * short local snapshot so a historical day remains understandable after the
+ * source task is renamed; no note body is stored.
+ */
+export interface DailyTaskTransitionEvent {
+  schemaVersion: 1;
+  eventId: string;
+  taskId: string;
+  kind: DailyTaskTransitionKind;
+  at: string;
+  localDate: string;
+  sourceDate?: string;
+  destinationDate?: string;
+  title: string;
+  category?: string;
+  project?: string;
+}
+
+export interface DailyJournalDaySnapshot {
+  schemaVersion: 1;
+  date: string;
+  generatedAt: string;
+  planned: number;
+  completed: number;
+  completionRate: number;
+  firstStartedAt?: string;
+  lastCompletedAt?: string;
+  activeMs: number;
+  pausedMs: number;
+  interruptions: number;
+  unfinished: number;
+  migratedIn: number;
+  migratedOut: number;
+  returned: number;
+  abandoned: number;
+  byCategory: DailyAnalyticsBreakdown[];
+  transitions: DailyTaskTransitionEvent[];
+}
+
+export interface DailyJournalMonthSnapshot {
+  schemaVersion: 1;
+  month: string;
+  generatedAt: string;
+  days: DailyJournalDaySnapshot[];
+  totals: Omit<DailyJournalDaySnapshot, "date" | "generatedAt" | "transitions" | "byCategory">;
+  byCategory: DailyAnalyticsBreakdown[];
+}
+
+export interface DailyJournalWriteBackResult {
+  date: string;
+  sourcePath: string;
+  revision: string;
+  idempotent: boolean;
 }
 
 export interface DailyDocumentMeasurementRequest {

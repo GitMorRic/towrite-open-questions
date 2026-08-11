@@ -3,7 +3,6 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
       - "*.*.*"
   workflow_dispatch:
     inputs:
@@ -49,7 +48,7 @@ jobs:
             TAG="$INPUT_VERSION"
           else
             TAG="${GITHUB_REF_NAME}"
-            VERSION="${TAG#v}"
+            VERSION="$TAG"
           fi
           export VERSION
           export TAG
@@ -65,6 +64,7 @@ jobs:
           const errors = [];
           if (pkg.version !== version) errors.push(`package.json version is ${pkg.version}, expected ${version}`);
           if (manifest.version !== version) errors.push(`manifest.json version is ${manifest.version}, expected ${version}`);
+          if (process.env.TAG !== version) errors.push(`stable release tag must be exactly ${version}, received ${process.env.TAG}`);
           if (!versions[version]) errors.push(`versions.json is missing ${version}`);
           if (errors.length) {
             console.error(errors.join('\n'));

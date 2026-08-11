@@ -102,7 +102,7 @@ export function parseDailyPlanHierarchy(
   const diagnostics: DailyPlanHierarchyDiagnostic[] = [];
 
   for (const node of nodes) {
-    if (!isStructuralGroup(node)) continue;
+    if (!isStructuralGroup(node, lines)) continue;
     const parentGroup = nearestGroup(node.parent);
     const text = cleanListText(node.body);
     node.group = {
@@ -122,7 +122,7 @@ export function parseDailyPlanHierarchy(
   const tasks: DailyPlanHierarchyTask[] = [];
   const ids = new Map<string, ListNode[]>();
   for (const node of nodes) {
-    if (isStructuralGroup(node) || !cleanListText(node.body)) continue;
+    if (isStructuralGroup(node, lines) || !cleanListText(node.body)) continue;
     for (const id of node.blockIds) {
       const occurrences = ids.get(id) ?? [];
       occurrences.push(node);
@@ -154,7 +154,7 @@ export function parseDailyPlanHierarchy(
   }
 
   for (const node of nodes) {
-    if (isStructuralGroup(node) || !cleanListText(node.body)) continue;
+    if (isStructuralGroup(node, lines) || !cleanListText(node.body)) continue;
     const lineageGroups = ancestorGroups(node);
     const lineage = createDailyLineage(lineageGroups, sourcePath, normalizedDate);
     const firstChildIndex = node.children[0]?.index ?? Number.POSITIVE_INFINITY;
@@ -229,8 +229,10 @@ export function parseDailyPlanHierarchy(
  * checkbox children remains a real task so existing nested-task documents
  * keep their semantics.
  */
-function isStructuralGroup(node: ListNode): boolean {
+function isStructuralGroup(node: ListNode, lines: readonly string[]): boolean {
   if (node.children.length === 0) return false;
+  const owned = [node.rawLine, ...node.directLines.map((line) => lines[line])].join("\n");
+  if (readOwnedField(owned, "kind")?.trim().toLowerCase() === "task") return false;
   if (!node.checkbox || node.blockIds.length === 0) return true;
   return node.children.every((child) => !child.checkbox);
 }

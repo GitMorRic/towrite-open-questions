@@ -134,6 +134,7 @@ import {
   DailyTaskTimerService,
   DailyTimerTransitionCoordinator,
   JsonDailyTimerTransitionJournal,
+  DailyTransitionJournal,
   PersistentDailyTaskTimer,
   predictDailyPlanItemStatusRevision,
   parseDailyMarkdownTargets,
@@ -150,6 +151,8 @@ import {
   dailyMarkdownTimerTransactionId,
   dailyTaskTextForBackend,
   dailyWikiLink,
+  expandDailyMigrationSelections,
+  unfinishedDailyLeafItems,
   DailyPlanConflictError,
   DailyPlanService,
   executeDailyStartAndOpen,
@@ -161,6 +164,10 @@ import {
   type DailyActivityState,
   type DailyAnalyticsRange,
   type DailyMonthlySummary,
+  type DailyJournalDaySnapshot,
+  type DailyJournalMonthSnapshot,
+  type DailyJournalWriteBackResult,
+  type DailyTaskTransitionKind,
   type DailyDashboardSnapshot,
   type DailyDevicePolicy,
   type DailyMarkdownTarget,
@@ -383,6 +390,23 @@ import type {
 
 const LOCAL_EINK_EXPECTED_POLL_SECONDS = 5;
 
+function renderDailyJournalMarkdown(snapshot: DailyJournalDaySnapshot): string {
+  const minutes = (value: number): string => `${Math.round(value / 60_000)} min`;
+  const lines = [
+    "## ToWrite 日志",
+    "",
+    `- 计划：${snapshot.planned}`,
+    `- 完成：${snapshot.completed}（${Math.round(snapshot.completionRate * 100)}%）`,
+    `- 实际投入：${minutes(snapshot.activeMs)}`,
+    `- 暂停：${minutes(snapshot.pausedMs)}；中断：${snapshot.interruptions}`,
+    `- 未完成：${snapshot.unfinished}；迁入：${snapshot.migratedIn}；迁出：${snapshot.migratedOut}`,
+    `- 回流工作池：${snapshot.returned}；放弃：${snapshot.abandoned}`
+  ];
+  if (snapshot.firstStartedAt) lines.push(`- 首次开始：${snapshot.firstStartedAt}`);
+  if (snapshot.lastCompletedAt) lines.push(`- 最后完成：${snapshot.lastCompletedAt}`);
+  return lines.join("\n");
+}
+
 interface CaptureLaunchOptions {
   intent?: CaptureIntent;
   body?: string;
@@ -433,6 +457,7 @@ export default class ToWritePlugin extends Plugin {
   private taskPoolService!: TaskPoolService;
   private dailyActivityService!: DailyActivityService;
   private dailyTaskTimer?: PersistentDailyTaskTimer;
+  private dailyTransitionJournal?: DailyTransitionJournal;
   private noteTaskTimer?: PersistentDailyTaskTimer;
   private dailyTimerCoordinator?: DailyTimerTransitionCoordinator;
   private dailyTimerLedgerPath = "";
@@ -443,7 +468,15 @@ export default class ToWritePlugin extends Plugin {
   private dailyEditorPlanItems: DailyPlanItem[] = [];
   private dailyPlanDocument?: DailyPlanDocument;
   private dailyPlanNormalizationPreviews: DailyPlanNormalizationPreview[] = [];
+  private readonly dailyDraftReferences = new Map<string, {
+    date: string;
+    sourcePath: string;
+    line: number;
+    expectedRevision: string;
+    rawLine: string;
+  }>();
   private dailyLinkedTaskProjections: DailyLinkedTaskProjection[] = [];
+  private previousDailyUnfinished: DailyPlanItem[] = [];
   private activeNoteTaskDocument?: NoteTaskDocument;
   private activeTaskPoolItems: TaskPoolItem[] = [];
   private markdownTaskNoteSuggestions: MarkdownTaskInputSuggestion[] = [];
@@ -566,20 +599,10 @@ export default class ToWritePlugin extends Plugin {
       readText: () => readVaultDataText(this.app, navigationCheckpointPath),
       writeText: (content) => writeVaultDataText(this.app, navigationCheckpointPath, content)
     });
-    try {
-      await this.navigationCheckpointService.load();
-    } catch (error) {
-      console.error("ToWrite could not load navigation checkpoints", error);
-    }
     this.backendClient = new BackendEnhancementClient(() => this.settings.backend);
     this.store = new OpenQuestionStore(this.savedQuestionStates);
     this.register(this.store.subscribe(() => this.invalidateLegacyEinkPlaylist()));
     this.initializeDailyServices();
-    await this.initializeDailyTaskTimer();
-    await this.initializeNoteTaskTimer();
-    await this.returnExpiredTaskPoolAssignments();
-    await this.refreshActiveTaskPoolCache(false);
-    await this.refreshDailyPlanCache(false);
     this.learningService = new HabitLearningService(this.savedLearningState);
     this.learningService.setCollectionPaused(!this.settings.learning.enabled);
     this.learningEditQueue = new DeferredKeyedQueue(async (events) => {
@@ -706,6 +729,9 @@ export default class ToWritePlugin extends Plugin {
       migratePreviousDailyItems: (date, selections) => this.migratePreviousDailyItems(date, selections),
       getDailyAnalyticsRange: (from, to) => this.getDailyAnalyticsRange(from, to),
       getDailyMonthlySummary: (month) => this.getDailyMonthlySummary(month),
+      getDailyJournalDay: (date) => this.getDailyJournalDay(date),
+      getDailyJournalMonth: (month) => this.getDailyJournalMonth(month),
+      writeDailyJournal: (date) => this.writeDailyJournal(date),
       locateCurrentFocusedTask: () => this.locateCurrentFocusedTask(),
       previewDailyPlanNormalization: (date) => this.previewDailyPlanNormalization(date),
       normalizeDailyPlan: (date, preview) => this.normalizeDailyPlan(date, preview),
@@ -891,6 +917,25 @@ export default class ToWritePlugin extends Plugin {
     this.registerMarkdownPostProcessor((el, context) => {
       if (!this.settings.daily.enabled || !this.isTrackedDailyPlanPath(context.sourcePath)) return;
       concealDailyTaskTechnicalMetadata(el);
+      if (
+        normalizePath(context.sourcePath) !== normalizePath(this.dailyPlanDocument?.sourcePath ?? "")
+        || this.previousDailyUnfinished.length === 0
+      ) return;
+      const previewRoot = el.closest(".markdown-preview-view") ?? el.parentElement ?? el;
+      if (previewRoot.querySelector("[data-towrite-previous-migration]")) return;
+      const prompt = el.ownerDocument.createElement("aside");
+      prompt.className = "towrite-daily-previous-migration";
+      prompt.dataset.towritePreviousMigration = "true";
+      const text = el.ownerDocument.createElement("span");
+      text.textContent = `昨日还有 ${this.previousDailyUnfinished.length} 项未完成`;
+      const button = el.ownerDocument.createElement("button");
+      button.type = "button";
+      button.textContent = "选择迁移";
+      button.addEventListener("click", () => {
+        void this.activateDashboard({ activeTab: "today" });
+      });
+      prompt.append(text, button);
+      el.prepend(prompt);
     });
 
     this.refreshRibbonIcons();
@@ -1105,6 +1150,8 @@ export default class ToWritePlugin extends Plugin {
       getItems: () => this.dailyEditorPlanItems,
       getNormalizationPreviews: () => this.dailyPlanNormalizationPreviews,
       getLinkedTaskProjections: () => this.dailyLinkedTaskProjections,
+      getPreviousUnfinished: () => this.previousDailyUnfinished,
+      getTodaySourcePath: () => this.dailyPlanDocument?.sourcePath,
       getTiming: (item) => this.dailyTimingSnapshotForItem(item),
       onToggle: async (item) => {
         try {
@@ -1156,7 +1203,10 @@ export default class ToWritePlugin extends Plugin {
         await this.openObsidianLink(this.dailyTargetLinkText(target), sourcePath);
       },
       onToggleLinkedTask: (projection, item) => this.toggleDailyLinkedTask(projection, item),
-      onOpenLinkedNote: (projection) => this.openFile(projection.targetPath)
+      onOpenLinkedNote: (projection) => this.openFile(projection.targetPath),
+      onOpenPreviousMigration: async () => {
+        await this.activateDashboard({ activeTab: "today" });
+      }
     }));
     this.registerEditorExtension(createTaskPoolTechnicalMetadataExtension({
       isEnabled: () => this.settings.daily.enabled,
@@ -1208,22 +1258,31 @@ export default class ToWritePlugin extends Plugin {
         this.refreshNoteEditorTaskControls();
       }
     }, 60_000));
-    void this.configureExternalApiServer(false);
-    this.configureQuote0Sync();
-    this.configureDeviceHub();
-    void this.configureCaptureBridge(false);
-    this.registerInterval(window.setInterval(() => {
-      void this.registerCapturePluginBridge(false);
-    }, 30_000));
-    this.scheduleDailyMidnightRefresh();
-    this.registerInterval(window.setInterval(() => {
-      void this.runDueDailyDeviceSchedule();
-    }, 30_000));
-    void this.runDueDailyDeviceSchedule();
-
     this.app.workspace.onLayoutReady(() => {
+      void this.configureExternalApiServer(false);
+      this.configureQuote0Sync();
+      this.configureDeviceHub();
+      void this.configureCaptureBridge(false);
+      this.registerInterval(window.setInterval(() => {
+        void this.registerCapturePluginBridge(false);
+      }, 30_000));
+      this.scheduleDailyMidnightRefresh();
+      this.registerInterval(window.setInterval(() => {
+        void this.runDueDailyDeviceSchedule();
+      }, 30_000));
+      void this.runDueDailyDeviceSchedule();
       // Avoid starting multiple Vault readers while Obsidian restores editors.
       void (async () => {
+        try {
+          await this.navigationCheckpointService.load();
+        } catch (error) {
+          console.error("ToWrite could not load navigation checkpoints", error);
+        }
+        await this.initializeDailyTaskTimer();
+        await this.initializeNoteTaskTimer();
+        await this.returnExpiredTaskPoolAssignments();
+        await this.refreshActiveTaskPoolCache(false);
+        await this.refreshDailyPlanCache(false);
         await this.refreshIndex();
         await this.refreshActiveNoteTaskCache();
         window.setTimeout(() => {
@@ -1890,8 +1949,9 @@ export default class ToWritePlugin extends Plugin {
   }
 
   async savePluginData(): Promise<void> {
+    const persistedSettings = this.persistSensitiveSettings();
     const data: ToWriteSavedData = {
-      settings: this.settings,
+      settings: persistedSettings,
       questionStates: this.store?.serializeStates() ?? this.savedQuestionStates,
       pushState: this.pushState,
       learningState: this.learningService?.getState() ?? this.savedLearningState,
@@ -4504,21 +4564,27 @@ export default class ToWritePlugin extends Plugin {
   }
 
   private async startAndOpenDailyItem(item: DailyPlanItem): Promise<void> {
-    const date = await this.dateForDailyItem(item.id, item.revision);
-    await executeDailyStartAndOpen(item, {
-      loadCurrent: () => this.dailyPlanService.get(item.id, date),
+    const date = item.revision.date ?? await this.dateForDailyItem(item.id, item.revision);
+    const stable = await this.ensureStableDailyTask(item.id, item.revision, date);
+    let activated: DailyPlanItem | undefined;
+    await executeDailyStartAndOpen(stable, {
+      loadCurrent: () => this.dailyPlanService.get(stable.id, date),
       getTiming: (current) => this.getDailyItemTiming(current.id, date),
-      start: (current, timing) => this.startDailyItem(
-        current.id,
-        current.revision,
-        date,
-        undefined,
-        "obsidian",
-        timing.timingRevision,
-        current.lineageRevision
-      ),
+      start: async (current, timing) => {
+        activated = await this.startDailyItem(
+          current.id,
+          current.revision,
+          date,
+          undefined,
+          "obsidian",
+          timing.timingRevision,
+          current.lineageRevision
+        );
+        return activated;
+      },
       open: (active) => this.openDailyItemTarget(active).then(() => undefined)
     });
+    await this.recordDailyTransition("start", activated ?? stable);
   }
 
   private hasDailyItemCheckpoint(item: DailyPlanItem): boolean {
@@ -5723,6 +5789,7 @@ export default class ToWritePlugin extends Plugin {
   private async loadPluginData(): Promise<void> {
     const data = (await this.loadData()) as Partial<ToWriteSavedData> | null;
     this.settings = normalizeSettings(data?.settings);
+    this.restoreSensitiveSettings(data?.settings);
     this.securityMigrationVersion = Number.isFinite(data?.securityMigrationVersion)
       ? Math.max(0, Math.floor(data?.securityMigrationVersion ?? 0))
       : 0;
@@ -5778,6 +5845,86 @@ export default class ToWritePlugin extends Plugin {
           : undefined
       });
     }
+  }
+
+  /**
+   * SecretStorage is the authoritative store for credentials on Obsidian 1.11.4+.
+   * Existing plaintext values win once so upgrades are lossless; subsequent saves
+   * scrub the corresponding fields from data.json.
+   */
+  private restoreSensitiveSettings(raw?: Partial<ToWriteSettings>): void {
+    const restore = (id: string, plaintext: unknown, fallback: string): string => {
+      const legacy = typeof plaintext === "string" ? plaintext.trim() : "";
+      if (legacy) {
+        this.app.secretStorage.setSecret(id, legacy);
+        return legacy;
+      }
+      return this.app.secretStorage.getSecret(id) ?? fallback;
+    };
+    this.settings.ai.apiKey = restore("towrite-ai-api-key", raw?.ai?.apiKey, this.settings.ai.apiKey);
+    this.settings.quote0.apiKey = restore("towrite-quote0-api-key", raw?.quote0?.apiKey, this.settings.quote0.apiKey);
+    this.settings.quote0.nfcToken = restore("towrite-quote0-nfc-token", raw?.quote0?.nfcToken, this.settings.quote0.nfcToken);
+    this.settings.externalApi.token = restore("towrite-external-api-token", raw?.externalApi?.token, this.settings.externalApi.token);
+    this.settings.backend.token = restore("towrite-backend-token", raw?.backend?.token, this.settings.backend.token);
+    this.settings.captureBridge.callbackToken = restore(
+      "towrite-capture-bridge-token",
+      raw?.captureBridge?.callbackToken,
+      this.settings.captureBridge.callbackToken
+    );
+    this.settings.hub.receiverToken = restore("towrite-hub-receiver-token", raw?.hub?.receiverToken, this.settings.hub.receiverToken);
+    this.settings.hub.receiverPrivateKeyJwk = restore(
+      "towrite-hub-private-key",
+      raw?.hub?.receiverPrivateKeyJwk,
+      this.settings.hub.receiverPrivateKeyJwk
+    );
+    this.settings.hub.referenceSecret = restore("towrite-hub-reference-secret", raw?.hub?.referenceSecret, this.settings.hub.referenceSecret);
+
+    const legacyPushTokens = raw?.push?.targets?.map((target) => target.token ?? "") ?? [];
+    const storedPushTokens = this.app.secretStorage.getSecret("towrite-push-target-tokens");
+    if (legacyPushTokens.some(Boolean)) {
+      this.app.secretStorage.setSecret("towrite-push-target-tokens", JSON.stringify(legacyPushTokens));
+      this.settings.push.targets.forEach((target, index) => { target.token = legacyPushTokens[index] ?? target.token; });
+    } else if (storedPushTokens) {
+      try {
+        const tokens = JSON.parse(storedPushTokens) as unknown;
+        if (Array.isArray(tokens)) {
+          this.settings.push.targets.forEach((target, index) => {
+            target.token = typeof tokens[index] === "string" ? tokens[index] : target.token;
+          });
+        }
+      } catch {
+        // A malformed optional secret must not prevent the plugin from loading.
+      }
+    }
+  }
+
+  private persistSensitiveSettings(): ToWriteSettings {
+    this.app.secretStorage.setSecret("towrite-ai-api-key", this.settings.ai.apiKey);
+    this.app.secretStorage.setSecret("towrite-quote0-api-key", this.settings.quote0.apiKey);
+    this.app.secretStorage.setSecret("towrite-quote0-nfc-token", this.settings.quote0.nfcToken);
+    this.app.secretStorage.setSecret("towrite-external-api-token", this.settings.externalApi.token);
+    this.app.secretStorage.setSecret("towrite-backend-token", this.settings.backend.token);
+    this.app.secretStorage.setSecret("towrite-capture-bridge-token", this.settings.captureBridge.callbackToken);
+    this.app.secretStorage.setSecret("towrite-hub-receiver-token", this.settings.hub.receiverToken);
+    this.app.secretStorage.setSecret("towrite-hub-private-key", this.settings.hub.receiverPrivateKeyJwk);
+    this.app.secretStorage.setSecret("towrite-hub-reference-secret", this.settings.hub.referenceSecret);
+    this.app.secretStorage.setSecret(
+      "towrite-push-target-tokens",
+      JSON.stringify(this.settings.push.targets.map((target) => target.token))
+    );
+
+    const persisted = JSON.parse(JSON.stringify(this.settings)) as ToWriteSettings;
+    persisted.ai.apiKey = "";
+    persisted.quote0.apiKey = "";
+    persisted.quote0.nfcToken = "";
+    persisted.externalApi.token = "";
+    persisted.backend.token = "";
+    persisted.captureBridge.callbackToken = "";
+    persisted.hub.receiverToken = "";
+    persisted.hub.receiverPrivateKeyJwk = "";
+    persisted.hub.referenceSecret = "";
+    persisted.push.targets.forEach((target) => { target.token = ""; });
+    return persisted;
   }
 
   private initializeDailyServices(state: DailyActivityState | undefined = this.savedDailyActivityState): void {
@@ -5961,6 +6108,7 @@ export default class ToWritePlugin extends Plugin {
   private async initializeDailyTaskTimer(): Promise<void> {
     const root = normalizeVaultPath(this.settings.exportDirectory);
     this.dailyTimerLedgerPath = `${root}/daily/task-timer-events.jsonl`;
+    const transitionLedgerPath = `${root}/daily/task-transition-events.jsonl`;
     const log: DailyTimerEventLog = {
       readJsonl: async () => await readVaultDataText(this.app, this.dailyTimerLedgerPath) ?? "",
       appendJsonl: async (jsonl) => {
@@ -5977,6 +6125,20 @@ export default class ToWritePlugin extends Plugin {
         await writeVaultDataText(this.app, this.dailyTimerLedgerPath, "");
       }
     };
+    try {
+      this.dailyTransitionJournal = await DailyTransitionJournal.load({
+        readJsonl: async () => await readVaultDataText(this.app, transitionLedgerPath) ?? "",
+        appendJsonl: async (jsonl) => {
+          if (!jsonl) return;
+          const existing = await readVaultDataText(this.app, transitionLedgerPath) ?? "";
+          const separator = existing && !existing.endsWith("\n") ? "\n" : "";
+          await writeVaultDataText(this.app, transitionLedgerPath, `${existing}${separator}${jsonl}`);
+        }
+      });
+    } catch (error) {
+      this.dailyTransitionJournal = undefined;
+      console.error("ToWrite work journal ledger could not be loaded", error);
+    }
     try {
       this.dailyTaskTimer = await PersistentDailyTaskTimer.load(log, {
         maxOpenSessionMs: this.settings.daily.taskTimingReviewHours * 60 * 60_000
@@ -6219,6 +6381,10 @@ export default class ToWritePlugin extends Plugin {
     this.dailyEditorPlanItems = editorDocuments.flatMap((entry) => entry.items);
     this.dailyPlanDocument = document;
     this.dailyPlanNormalizationPreviews = normalizationPreviews;
+    this.dailyDraftReferences.clear();
+    this.previousDailyUnfinished = document
+      ? await this.getPreviousDailyUnfinished(document.date)
+      : [];
     await this.refreshDailyBackendTimingCache(next);
     await this.rebuildDailyLinkedTaskProjectionCache();
     if (this.dailyPlanCacheInitialized && previousRevision && document?.revision !== previousRevision) {
@@ -6534,35 +6700,7 @@ export default class ToWritePlugin extends Plugin {
     }
     await this.initializeDailyTaskTimer();
     await this.refreshDailyPlanCache();
-    if (await this.normalizeMissingDailyCheckboxIds()) {
-      await this.refreshDailyPlanCache();
-    }
     this.rebuildMarkdownTaskNoteSuggestions();
-  }
-
-  /**
-   * A manually authored checkbox is already an explicit task commitment. Give
-   * checkbox rows a stable id so they immediately participate in Today and the
-   * Work Pool. A plain numbered/bulleted leaf is also adopted automatically
-   * only when its complete body is one safe local note link. Prose leaves still
-   * require explicit confirmation and all authored list markers are preserved.
-   */
-  private async normalizeMissingDailyCheckboxIds(): Promise<boolean> {
-    if (!this.settings.daily.enabled) return false;
-    let changed = false;
-    const dates = [...new Set(this.dailyPlanNormalizationPreviews.map((preview) => preview.date))];
-    for (const date of dates) {
-      for (let count = 0; count < 200; count += 1) {
-        const preview = await this.dailyPlanNormalizationService.preview(date);
-        const edit = preview.edits.find((candidate) =>
-          shouldAutomaticallyNormalizeDailyEdit(candidate, preview.sourcePath)
-        );
-        if (!edit) break;
-        await this.dailyPlanNormalizationService.normalizeTask(preview, edit.line);
-        changed = true;
-      }
-    }
-    return changed;
   }
 
   private async getDailyDashboardSnapshot(value: Date | string = new Date()): Promise<DailyDashboardSnapshot> {
@@ -6571,11 +6709,115 @@ export default class ToWritePlugin extends Plugin {
     if (date === today) {
       await this.refreshDailyPlanCache(false);
       return this.withDailyTimingSnapshots(
-        this.dailyActivityService.getSnapshot(date, this.dailyPlanItems)
+        this.dailyActivityService.getSnapshot(date, this.dailyDisplayItems(date))
       );
     }
     const items = this.settings.daily.enabled ? await this.dailyPlanService.list(date) : [];
     return this.withDailyTimingSnapshots(this.dailyActivityService.getSnapshot(date, items));
+  }
+
+  /**
+   * Projects valid, un-normalized checkbox leaves into Today without touching
+   * Markdown. The generated id is deliberately runtime-only and is resolved
+   * through ensureStableDailyTask before any mutation is attempted.
+   */
+  private dailyDisplayItems(date: string): DailyPlanItem[] {
+    const stable = this.dailyPlanItems;
+    const preview = this.dailyPlanNormalizationPreviews.find((entry) => entry.date === date);
+    if (!preview) return stable;
+    const stableLines = new Set(stable.map((item) => item.line));
+    const drafts: DailyPlanItem[] = [];
+    for (const edit of preview.edits) {
+      if (edit.kind !== "missing-block-id" || stableLines.has(edit.line)) continue;
+      const task = preview.tasks.find((candidate) => candidate.line === edit.line);
+      if (!task?.checkbox || !task.text.trim()) continue;
+      const id = `draft_${shortHash(`${preview.sourcePath}|${date}|${edit.line}|${preview.expectedRevision}|${edit.before}`)}`;
+      this.dailyDraftReferences.set(id, {
+        date,
+        sourcePath: preview.sourcePath,
+        line: edit.line,
+        expectedRevision: preview.expectedRevision,
+        rawLine: edit.before
+      });
+      drafts.push({
+        schemaVersion: 1,
+        id,
+        blockId: id,
+        date,
+        text: task.text,
+        kind: "task",
+        status: task.status,
+        done: task.status === "done",
+        sourcePath: preview.sourcePath,
+        line: task.line,
+        endLine: task.endLine,
+        rawLine: task.rawLine,
+        rawBlock: task.rawBlock,
+        revision: {
+          value: preview.expectedRevision,
+          sourcePath: preview.sourcePath,
+          blockId: id,
+          date
+        },
+        parentTaskId: task.parentTaskId,
+        depth: task.depth,
+        scheduledDate: date,
+        scheduledDateExplicit: false,
+        dueDate: date,
+        dueDateExplicit: false,
+        devicePolicy: "none",
+        priority: "normal",
+        priorityExplicit: false,
+        tags: [],
+        linkedNotes: task.links.map((link) => link.linkText),
+        primary: false,
+        minimum: false,
+        lineageRevision: task.lineageRevision,
+        lineage: task.lineage,
+        groupId: task.lineage.groups.at(-1)?.id,
+        category: task.lineage.groups.at(-1)?.text,
+        targetResolution: task.targetResolution,
+        detachedOwnedLines: task.detachedOwnedLines,
+        provisional: true,
+        draftLine: task.line
+      });
+    }
+    return [...stable, ...drafts].sort((left, right) => left.line - right.line);
+  }
+
+  private async ensureStableDailyTask(
+    id: string,
+    revision: DailyTaskRevision,
+    date: string
+  ): Promise<DailyPlanItem> {
+    if (!id.startsWith("draft_")) {
+      const current = await this.dailyPlanService.get(id, date);
+      if (!current) throw new DailyPlanConflictError("not-found", `Daily item does not exist: ${id}`);
+      if (current.revision.value !== revision.value) {
+        throw new DailyPlanConflictError("revision-changed", "The Daily task changed after it was loaded.");
+      }
+      return current;
+    }
+    const draft = this.dailyDraftReferences.get(id);
+    if (!draft || draft.date !== date || draft.sourcePath !== revision.sourcePath) {
+      throw new DailyPlanConflictError("revision-changed", "The draft Daily task is no longer current. Refresh and try again.");
+    }
+    const preview = await this.dailyPlanNormalizationService.preview(date);
+    if (preview.expectedRevision !== draft.expectedRevision || preview.sourcePath !== draft.sourcePath) {
+      throw new DailyPlanConflictError("revision-changed", "The Daily task changed while it was being edited. No id was written.");
+    }
+    const edit = preview.edits.find((candidate) =>
+      candidate.line === draft.line && candidate.before === draft.rawLine && candidate.kind === "missing-block-id"
+    );
+    if (!edit) {
+      throw new DailyPlanConflictError("revision-changed", "The target task line changed. No id was written.");
+    }
+    await this.dailyPlanNormalizationService.normalizeTask(preview, edit.line);
+    await this.refreshDailyPlanCache(false);
+    const current = await this.dailyPlanService.get(edit.proposedBlockId, date);
+    if (!current) throw new DailyPlanConflictError("not-found", "The materialized Daily task could not be verified.");
+    this.dailyDraftReferences.delete(id);
+    return current;
   }
 
   private withDailyTimingSnapshots(snapshot: DailyDashboardSnapshot): DailyDashboardSnapshot {
@@ -6625,12 +6867,118 @@ export default class ToWritePlugin extends Plugin {
     return { ...range, month: normalized };
   }
 
+  private async getDailyJournalDay(date: string): Promise<DailyJournalDaySnapshot> {
+    const normalized = formatDailyInputDate(date);
+    const range = await this.getDailyAnalyticsRange(normalized, normalized);
+    const day = range.days[0];
+    if (!day) throw new DailyPlanConflictError("not-found", `Daily journal date is unavailable: ${normalized}`);
+    const snapshot = this.dailyTransitionJournal?.day(normalized, day) ?? {
+      schemaVersion: 1 as const,
+      date: normalized,
+      generatedAt: new Date().toISOString(),
+      planned: day.planned,
+      completed: day.completed,
+      completionRate: day.completionRate,
+      ...(day.firstStartedAt ? { firstStartedAt: day.firstStartedAt } : {}),
+      ...(day.lastCompletedAt ? { lastCompletedAt: day.lastCompletedAt } : {}),
+      activeMs: day.activeMs,
+      pausedMs: day.pausedMs,
+      interruptions: day.interruptions,
+      unfinished: Math.max(0, day.planned - day.completed),
+      migratedIn: 0,
+      migratedOut: 0,
+      returned: 0,
+      abandoned: 0,
+      byCategory: range.byCategory,
+      transitions: []
+    };
+    return { ...snapshot, byCategory: range.byCategory };
+  }
+
+  private async getDailyJournalMonth(month: string): Promise<DailyJournalMonthSnapshot> {
+    const analytics = await this.getDailyMonthlySummary(month);
+    if (this.dailyTransitionJournal) {
+      return this.dailyTransitionJournal.month(analytics.month, analytics.days, analytics.byCategory);
+    }
+    const days = await Promise.all(analytics.days.map((day) => this.getDailyJournalDay(day.date)));
+    return {
+      schemaVersion: 1,
+      month: analytics.month,
+      generatedAt: new Date().toISOString(),
+      days,
+      totals: {
+        schemaVersion: 1,
+        planned: analytics.totals.planned,
+        completed: analytics.totals.completed,
+        completionRate: analytics.totals.completionRate,
+        activeMs: analytics.totals.activeMs,
+        pausedMs: analytics.totals.pausedMs,
+        interruptions: analytics.totals.interruptions,
+        unfinished: days.reduce((sum, day) => sum + day.unfinished, 0),
+        migratedIn: 0,
+        migratedOut: 0,
+        returned: 0,
+        abandoned: 0
+      },
+      byCategory: analytics.byCategory
+    };
+  }
+
+  private async writeDailyJournal(date: string): Promise<DailyJournalWriteBackResult> {
+    const normalized = formatDailyInputDate(date);
+    const before = await this.dailyPlanService.read(normalized);
+    const storage = this.createDailyPlanStorage();
+    const markdown = await storage.readText(before.sourcePath) ?? "";
+    const snapshot = await this.getDailyJournalDay(normalized);
+    const body = renderDailyJournalMarkdown(snapshot);
+    const start = "<!-- towrite-journal:start -->";
+    const end = "<!-- towrite-journal:end -->";
+    const replacement = `${start}\n${body}\n${end}`;
+    const marker = /<!-- towrite-journal:start -->[\s\S]*?<!-- towrite-journal:end -->/u;
+    const next = marker.test(markdown)
+      ? markdown.replace(marker, replacement)
+      : `${markdown.replace(/\s*$/u, "")}\n\n${replacement}\n`;
+    if (next === markdown) {
+      return { date: normalized, sourcePath: before.sourcePath, revision: before.revision, idempotent: true };
+    }
+    const current = await this.dailyPlanService.read(normalized);
+    if (current.revision !== before.revision) {
+      throw new DailyPlanConflictError("revision-changed", "The Daily note changed before its journal could be written.");
+    }
+    await storage.writeText(before.sourcePath, next);
+    const after = await this.dailyPlanService.read(normalized);
+    await this.refreshDailyPlanCache(false);
+    return { date: normalized, sourcePath: before.sourcePath, revision: after.revision, idempotent: false };
+  }
+
+  private async recordDailyTransition(
+    kind: DailyTaskTransitionKind,
+    item: DailyPlanItem,
+    options: { eventId?: string; sourceDate?: string; destinationDate?: string } = {}
+  ): Promise<void> {
+    if (!this.dailyTransitionJournal) return;
+    const now = new Date();
+    await this.dailyTransitionJournal.append({
+      schemaVersion: 1,
+      eventId: options.eventId?.trim() || `jrn_${randomTokenFragment()}`,
+      taskId: item.id,
+      kind,
+      at: now.toISOString(),
+      localDate: formatDailyInputDate(now),
+      title: item.text.slice(0, 240),
+      ...(item.category ? { category: item.category } : {}),
+      ...(options.sourceDate ? { sourceDate: options.sourceDate } : {}),
+      ...(options.destinationDate ? { destinationDate: options.destinationDate } : {})
+    });
+  }
+
   private async getPreviousDailyUnfinished(date: string): Promise<DailyPlanItem[]> {
     const targetDate = formatDailyInputDate(date);
     const previous = new Date(`${targetDate}T12:00:00`);
     previous.setDate(previous.getDate() - 1);
-    return (await this.dailyPlanService.list(formatDailyInputDate(previous)))
-      .filter((item) => item.status !== "done");
+    return unfinishedDailyLeafItems(
+      await this.dailyPlanService.list(formatDailyInputDate(previous))
+    );
   }
 
   private async migratePreviousDailyItems(
@@ -6641,16 +6989,28 @@ export default class ToWritePlugin extends Plugin {
     const previous = new Date(`${targetDate}T12:00:00`);
     previous.setDate(previous.getDate() - 1);
     const sourceDate = formatDailyInputDate(previous);
-    const validated: DailyPlanItem[] = [];
+    const sourceItems = await this.dailyPlanService.list(sourceDate);
+    const sourceById = new Map(sourceItems.map((item) => [item.id, item]));
     for (const selection of selections) {
-      const item = await this.dailyPlanService.get(selection.id, sourceDate);
+      const item = sourceById.get(selection.id);
       if (!item || item.revision.value !== selection.revision.value) {
         throw new DailyPlanConflictError(
           "revision-changed",
           "The previous Daily task changed after the migration preview was opened."
         );
       }
-      validated.push(item);
+    }
+    const validated = expandDailyMigrationSelections(
+      sourceItems,
+      new Set(selections.map((selection) => selection.id))
+    );
+    if (validated.length === 0) {
+      throw new DailyPlanConflictError(
+        "invalid-state",
+        this.settings.language === "zh"
+          ? "所选分类下没有可迁移的未完成叶子任务。"
+          : "The selected group has no unfinished leaf tasks to migrate."
+      );
     }
     const migrations: DailyTaskMigration[] = [];
     for (const item of validated) {
@@ -9224,17 +9584,23 @@ export default class ToWritePlugin extends Plugin {
         await this.assignTaskPoolItemToDate(id, revision, date);
       },
       returnItemToPool: async (id, revision) => {
-        await this.returnDailyItemToPool(id, revision);
+        const date = revision.date ?? await this.dateForDailyItem(id, revision);
+        const current = await this.ensureStableDailyTask(id, revision, date);
+        await this.returnDailyItemToPool(current.id, current.revision);
       },
       moveItemToTomorrow: async (id, revision) => {
-        await this.moveDailyItemToTomorrow(id, revision);
+        const date = revision.date ?? await this.dateForDailyItem(id, revision);
+        const current = await this.ensureStableDailyTask(id, revision, date);
+        await this.moveDailyItemToTomorrow(current.id, current.revision);
       },
       getPreviousUnfinished: (date) => this.getPreviousDailyUnfinished(formatDailyInputDate(date)),
       migratePreviousItems: async (date, selections) => {
         await this.migratePreviousDailyItems(formatDailyInputDate(date), selections);
       },
       dropDailyItem: async (id, revision) => {
-        await this.dropDailyItem(id, revision);
+        const date = revision.date ?? await this.dateForDailyItem(id, revision);
+        const current = await this.ensureStableDailyTask(id, revision, date);
+        await this.dropDailyItem(current.id, current.revision);
       },
       getPlanHierarchy: (date) => this.dailyPlanService.readHierarchy(date),
       getNormalizationPreview: (date) => this.previewDailyPlanNormalization(date),
@@ -9288,55 +9654,71 @@ export default class ToWritePlugin extends Plugin {
         }
         await this.refreshDailyPlanCache();
       },
-      createItem: async (input) => { await this.createDailyItem(input); },
+      createItem: async (input) => {
+        const created = await this.createDailyItem(input);
+        await this.recordDailyTransition("schedule", created);
+      },
       updateItem: async (id, revision, patch) => {
-        await this.updateDailyItem(id, revision, patch, await this.dateForDailyItem(id, revision));
+        const date = revision.date ?? await this.dateForDailyItem(id, revision);
+        const current = await this.ensureStableDailyTask(id, revision, date);
+        await this.updateDailyItem(current.id, current.revision, patch, date);
       },
       moveItem: async (id, revision, direction) => {
-        const date = await this.dateForDailyItem(id, revision);
-        const current = await this.dailyPlanService.get(id, date);
-        if (!current) {
-          throw new DailyPlanConflictError("not-found", `Daily item does not exist: ${id}`);
-        }
-        if (current.revision.value !== revision.value) {
-          throw new DailyPlanConflictError("revision-changed", "The Daily task changed after it was loaded.");
-        }
+        const date = revision.date ?? await this.dateForDailyItem(id, revision);
+        const current = await this.ensureStableDailyTask(id, revision, date);
         if (!current.taskRef && await this.shouldUseBackendDailyWriter()) {
           await this.backendClient.moveDailyTask(
-            id,
+            current.id,
             current.rawBlock ?? current.rawLine,
             direction
           );
         } else {
-          await this.dailyPlanService.move(id, revision, direction, date);
+          await this.dailyPlanService.move(current.id, current.revision, direction, date);
         }
         await this.refreshDailyPlanCache();
       },
       startItem: async (id, revision) => {
-        const date = await this.dateForDailyItem(id, revision);
-        await this.startDailyItem(id, revision, date);
+        const date = revision.date ?? await this.dateForDailyItem(id, revision);
+        const current = await this.ensureStableDailyTask(id, revision, date);
+        const started = await this.startDailyItem(current.id, current.revision, date);
+        await this.recordDailyTransition("start", started);
       },
       pauseItem: async (id, revision, timingRevision) => {
-        const date = await this.dateForDailyItem(id, revision);
-        await this.pauseDailyItem(id, revision, undefined, date, "obsidian", timingRevision);
+        const date = revision.date ?? await this.dateForDailyItem(id, revision);
+        const current = await this.ensureStableDailyTask(id, revision, date);
+        const paused = await this.pauseDailyItem(current.id, current.revision, undefined, date, "obsidian", timingRevision);
+        await this.recordDailyTransition("pause", paused);
       },
       resumeItem: async (id, revision, timingRevision) => {
-        const date = await this.dateForDailyItem(id, revision);
-        await this.resumeDailyItem(id, revision, undefined, date, "obsidian", timingRevision);
+        const date = revision.date ?? await this.dateForDailyItem(id, revision);
+        const current = await this.ensureStableDailyTask(id, revision, date);
+        const resumed = await this.resumeDailyItem(current.id, current.revision, undefined, date, "obsidian", timingRevision);
+        await this.recordDailyTransition("resume", resumed);
       },
       completeItem: async (id, revision) => {
-        await this.completeDailyItem(id, revision, undefined, await this.dateForDailyItem(id, revision));
+        const date = revision.date ?? await this.dateForDailyItem(id, revision);
+        const current = await this.ensureStableDailyTask(id, revision, date);
+        const completed = await this.completeDailyItem(current.id, current.revision, undefined, date);
+        await this.recordDailyTransition("complete", completed);
       },
       completeItemAndApplyOrigin: async (id, revision, options) => {
-        await this.completeDailyItemAndApplyOrigin(id, revision, options?.stageId);
+        const date = revision.date ?? await this.dateForDailyItem(id, revision);
+        const current = await this.ensureStableDailyTask(id, revision, date);
+        await this.completeDailyItemAndApplyOrigin(current.id, current.revision, options?.stageId);
+        const completed = await this.dailyPlanService.get(current.id, date) ?? current;
+        await this.recordDailyTransition("complete", completed);
       },
       reopenItem: async (id, revision) => {
         const reopened = await this.reopenDailyItem(id, revision, await this.dateForDailyItem(id, revision));
         await this.syncTaskPoolReopen(reopened);
+        await this.recordDailyTransition("reopen", reopened);
       },
       getItemTiming: (id) => this.getDailyItemTiming(id),
       getAnalyticsRange: (from, to) => this.getDailyAnalyticsRange(from, to),
       getMonthlySummary: (month) => this.getDailyMonthlySummary(month),
+      getJournalDay: (date) => this.getDailyJournalDay(date),
+      getJournalMonth: (month) => this.getDailyJournalMonth(month),
+      writeJournal: (date) => this.writeDailyJournal(date),
       listItemTimerEvents: async (id) => {
         const item = await this.findDailyItem(id);
         if (!item) throw new DailyPlanConflictError("not-found", `Daily item does not exist: ${id}`);
@@ -9372,7 +9754,9 @@ export default class ToWritePlugin extends Plugin {
       writeSummary: async (summary) => { await this.writeDailySummary(summary); },
       generateSummary: (mode) => this.generateDailySummary(mode),
       sendItemToDevice: async (id, revision) => {
-        await this.sendDailyItemToDevice(id, revision, await this.dateForDailyItem(id, revision));
+        const date = revision.date ?? await this.dateForDailyItem(id, revision);
+        const current = await this.ensureStableDailyTask(id, revision, date);
+        await this.sendDailyItemToDevice(current.id, current.revision, date);
       },
       sendSummaryToDevice: async () => { await this.sendDailySummaryToDevice(); },
       startAndOpenItem: async (item) => { await this.startAndOpenDailyItem(item); },
@@ -9528,6 +9912,7 @@ export default class ToWritePlugin extends Plugin {
         throw error;
       }
       await this.refreshDailyPlanCache();
+      await this.recordDailyTransition("return", item, { sourceDate: date });
       return;
     }
     const poolTask = await this.taskPoolService.get(item.taskRef);
@@ -9550,6 +9935,7 @@ export default class ToWritePlugin extends Plugin {
       throw error;
     }
     await this.refreshDailyPlanCache();
+    await this.recordDailyTransition("return", item, { sourceDate: date });
   }
 
   private async moveDailyItemToTomorrow(
@@ -9656,6 +10042,11 @@ export default class ToWritePlugin extends Plugin {
     }
     await this.refreshDailyPlanCache();
     if (!migration) throw new Error("Daily migration did not produce an audit record.");
+    await this.recordDailyTransition("migrate", item, {
+      eventId: migration.migrationId,
+      sourceDate: date,
+      destinationDate: tomorrowDate
+    });
     return migration;
   }
 
@@ -9690,6 +10081,7 @@ export default class ToWritePlugin extends Plugin {
       await this.dailyPlanService.remove(item.id, item.revision, date);
     }
     await this.refreshDailyPlanCache();
+    await this.recordDailyTransition("abandon", item, { sourceDate: date });
   }
 
   private async assertDailyLifecycleLeaf(item: DailyPlanItem, date: string): Promise<void> {
@@ -10748,7 +11140,7 @@ export default class ToWritePlugin extends Plugin {
         }
       }
       if (!referenced) {
-        await this.app.vault.delete(file);
+        await this.app.fileManager.trashFile(file);
       }
     }
   }
@@ -11465,9 +11857,6 @@ export default class ToWritePlugin extends Plugin {
       const previousAllowlist = new Set(this.workPoolTaskSourceAllowlist());
       void this.refreshDailyPlanCache()
         .then(async () => {
-          if (await this.normalizeMissingDailyCheckboxIds()) {
-            await this.refreshDailyPlanCache();
-          }
           const nextAllowlist = this.rebuildWorkPoolTaskSourceAllowlistCache();
           const newlyAllowed = nextAllowlist.filter((path) => !previousAllowlist.has(path));
           for (const path of newlyAllowed) {

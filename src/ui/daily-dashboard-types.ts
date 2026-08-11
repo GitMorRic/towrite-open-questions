@@ -10,6 +10,9 @@ import type {
   DailyPlanNormalizationUndoResult,
   DailyAnalyticsRange,
   DailyMonthlySummary,
+  DailyJournalDaySnapshot,
+  DailyJournalMonthSnapshot,
+  DailyJournalWriteBackResult,
   DailyPlanPriority,
   DailyPlanUpdate,
   DailySummary,
@@ -49,6 +52,9 @@ export type {
   DailyPlanNormalizationUndoResult,
   DailyAnalyticsRange,
   DailyMonthlySummary,
+  DailyJournalDaySnapshot,
+  DailyJournalMonthSnapshot,
+  DailyJournalWriteBackResult,
   DailyPlanStatus,
   DailyPlanUpdate,
   DailyPlanPriority,
@@ -277,6 +283,9 @@ export interface DailyDashboardAdapter {
   ): DailyTaskTimingSnapshot | Promise<DailyTaskTimingSnapshot>;
   getAnalyticsRange?(from: string, to: string): DailyAnalyticsRange | Promise<DailyAnalyticsRange>;
   getMonthlySummary?(month: string): DailyMonthlySummary | Promise<DailyMonthlySummary>;
+  getJournalDay?(date: string): DailyJournalDaySnapshot | Promise<DailyJournalDaySnapshot>;
+  getJournalMonth?(month: string): DailyJournalMonthSnapshot | Promise<DailyJournalMonthSnapshot>;
+  writeJournal?(date: string): DailyJournalWriteBackResult | Promise<DailyJournalWriteBackResult>;
   listItemTimerEvents?(id: string): DailyTimerEvent[] | Promise<DailyTimerEvent[]>;
   correctItemTiming?(
     id: string,

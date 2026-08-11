@@ -1255,7 +1255,7 @@
     </nav>
 
     {#if planningDay === "today" && previousUnfinished.length > 0 && dailyApi.migratePreviousItems}
-      <details class="previous-tasks-card">
+      <details class="previous-tasks-card" open>
         <summary>
           <span><History size={15} /><strong>处理昨日未完成</strong><small>{previousUnfinished.length} 项可迁移，原日记会保留迁移记录</small></span>
           <ChevronDown size={15} />

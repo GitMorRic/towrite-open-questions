@@ -164,6 +164,20 @@
       id: item.classification.projectId!,
       label: item.classification.projectLabel!
     })));
+  $: stageBuckets = workflowStages
+    .map((option) => ({
+      ...option,
+      count: allItems.filter((item) => item.stageId === option.id).length
+    }))
+    .filter((option) => option.count > 0);
+  $: unclassifiedStageCount = allItems.filter((item) => !item.stageId).length;
+  $: articleTypeBuckets = articleTypes
+    .map((option) => ({
+      ...option,
+      count: allItems.filter((item) => item.typeId === option.id).length
+    }))
+    .filter((option) => option.count > 0);
+  $: unclassifiedTypeCount = allItems.filter((item) => !item.typeId).length;
   $: draftSuggestions = rankDraftSuggestions(allItems, draftText, selectedExisting?.id);
 
   async function initialize(): Promise<void> {
@@ -228,6 +242,16 @@
     visibleLimit = settings.pageSize;
     applyView(view);
     void saveSettings({ defaultViewId: view.id });
+  }
+
+  function chooseStage(stage: string): void {
+    stageId = stageId === stage ? "" : stage;
+    visibleLimit = settings.pageSize;
+  }
+
+  function chooseArticleType(type: string): void {
+    typeId = typeId === type ? "" : type;
+    visibleLimit = settings.pageSize;
   }
 
   function applyView(view: WorkPoolViewPreset | undefined): void {
@@ -711,6 +735,54 @@
     </details>
   </div>
 
+  {#if stageBuckets.length > 0 || articleTypeBuckets.length > 0}
+    <details class="classification-browser" open>
+      <summary>
+        <span><Filter size={14} /><strong>阶段与文章类型</strong></span>
+        <small>直接查看状态页中的同一套分类</small>
+        <ChevronDown size={14} />
+      </summary>
+      <div class="classification-rows">
+        {#if stageBuckets.length > 0}
+          <section aria-label="Workflow 阶段">
+            <strong>Workflow</strong>
+            <div>
+              <button type="button" class:active={!stageId} on:click={() => chooseStage("")}>全部</button>
+              {#each stageBuckets as option (option.id)}
+                <button type="button" class:active={stageId === option.id} on:click={() => chooseStage(option.id)}>
+                  <span>{option.label}</span><small>{option.count}</small>
+                </button>
+              {/each}
+              {#if unclassifiedStageCount > 0}
+                <button type="button" class:active={stageId === "__unclassified__"} on:click={() => chooseStage("__unclassified__")}>
+                  <span>未分阶段</span><small>{unclassifiedStageCount}</small>
+                </button>
+              {/if}
+            </div>
+          </section>
+        {/if}
+        {#if articleTypeBuckets.length > 0}
+          <section aria-label="文章类型">
+            <strong>文章类型</strong>
+            <div>
+              <button type="button" class:active={!typeId} on:click={() => chooseArticleType("")}>全部</button>
+              {#each articleTypeBuckets as option (option.id)}
+                <button type="button" class:active={typeId === option.id} on:click={() => chooseArticleType(option.id)}>
+                  <span>{option.label}</span><small>{option.count}</small>
+                </button>
+              {/each}
+              {#if unclassifiedTypeCount > 0}
+                <button type="button" class:active={typeId === "__unclassified__"} on:click={() => chooseArticleType("__unclassified__")}>
+                  <span>未分类</span><small>{unclassifiedTypeCount}</small>
+                </button>
+              {/if}
+            </div>
+          </section>
+        {/if}
+      </div>
+    </details>
+  {/if}
+
   <details class="quick-create">
     <summary><span><Plus size={15} /><strong>新建任务</strong><small>统一先进入工作池</small></span><ChevronDown size={15} /></summary>
     <form on:submit|preventDefault={createTask}>
@@ -890,6 +962,20 @@
   .view-manager { position:relative; flex:none; }
   .view-manager>summary,.filters>summary { display:flex; align-items:center; gap:5px; cursor:pointer; list-style:none; white-space:nowrap; }
   .view-manager>summary::-webkit-details-marker,.filters>summary::-webkit-details-marker,.actions details>summary::-webkit-details-marker { display:none; }
+  .classification-browser { overflow:hidden; border:1px solid var(--background-modifier-border); border-radius:12px; background:var(--background-primary); }
+  .classification-browser>summary { display:flex; align-items:center; gap:8px; padding:9px 11px; cursor:pointer; list-style:none; }
+  .classification-browser>summary::-webkit-details-marker { display:none; }
+  .classification-browser>summary>span { display:flex; align-items:center; gap:6px; }
+  .classification-browser>summary>small { flex:1; color:var(--text-muted); }
+  .classification-browser[open]>summary :global(svg:last-child) { transform:rotate(180deg); }
+  .classification-rows { display:grid; gap:7px; padding:0 10px 10px; }
+  .classification-rows section { display:grid; grid-template-columns:88px minmax(0,1fr); align-items:center; gap:8px; }
+  .classification-rows section>strong { color:var(--text-muted); font-size:11px; }
+  .classification-rows section>div { display:flex; gap:5px; overflow-x:auto; padding:2px 0; scrollbar-width:thin; }
+  .classification-rows button { flex:none; min-height:28px; padding:3px 9px; border-radius:999px; box-shadow:none; white-space:nowrap; }
+  .classification-rows button small { min-width:18px; color:var(--text-muted); }
+  .classification-rows button.active { color:var(--text-on-accent); background:var(--interactive-accent); }
+  .classification-rows button.active small { color:inherit; }
   .manager-panel { position:absolute; z-index:20; top:calc(100% + 8px); right:0; width:min(680px,calc(100vw - 48px)); padding:14px; border:1px solid var(--background-modifier-border); border-radius:14px; background:var(--background-primary); box-shadow:var(--shadow-l); }
   .manager-row { display:grid; grid-template-columns:1.2fr .8fr 1fr 1fr; gap:8px; }
   label { display:grid; gap:4px; min-width:0; }
@@ -987,6 +1073,7 @@
     .pool-toolbar { align-items:flex-start; }
     .pool-toolbar small { display:none; }
     .quick-create form,.manager-row,.project-recognition>div { grid-template-columns:1fr; }
+    .classification-rows section { grid-template-columns:1fr; gap:3px; }
     .project-recognition .wide { grid-column:auto; }
     .manager-panel { position:fixed; inset:52px 12px auto; width:auto; max-height:calc(100vh - 72px); overflow:auto; }
   }

@@ -23,6 +23,10 @@ describe("single Workbench and configurable Work Pool", () => {
     expect(panel).toContain("projectAppearances");
     expect(panel).toContain("beginProjectAppearance");
     expect(panel).toContain("project-style-dialog");
+    expect(panel).toContain("classification-browser");
+    expect(panel).toContain("stageBuckets");
+    expect(panel).toContain("articleTypeBuckets");
+    expect(panel).toContain("阶段与文章类型");
     expect(panel).toContain("@media (max-width:760px)");
   });
 

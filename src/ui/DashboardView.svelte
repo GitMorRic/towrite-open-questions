@@ -10,6 +10,7 @@
     buildWorkflowStatusColumns
   } from "./dashboard-state";
   import DailyDashboardPanel from "./DailyDashboardPanel.svelte";
+  import DailyJournalPanel from "./DailyJournalPanel.svelte";
   import type { DailyDashboardAdapter, DailyDashboardConfiguration } from "./daily-dashboard-types";
   import WorkPoolPanel from "./WorkPoolPanel.svelte";
   import type { ToWriteWorkbenchTab } from "./workbench-state";
@@ -225,6 +226,8 @@
         ? "守住今天最重要的事。任务从工作池安排，Markdown 始终是数据真源。"
         : activeTab === "pool"
           ? "在一个地方整理任务、问题和不同阶段的笔记。"
+          : activeTab === "journal"
+            ? "回看每天完成、投入、暂停、迁移与回流的本地工作记录。"
           : `${workflowPayload.counts.uniqueFiles} 篇笔记 · ${activeQuestions.length} 个待处理问题 · ${inboxCount} 条 Inbox`}</p>
     </div>
     <div class="dashboard-actions">
@@ -270,6 +273,14 @@
     >
       状态
     </button>
+    <button
+      type="button"
+      class:active={activeTab === "journal"}
+      aria-current={activeTab === "journal" ? "page" : undefined}
+      on:click={() => switchTab("journal")}
+    >
+      日志
+    </button>
   </nav>
 
   {#if activeTab === "today"}
@@ -289,6 +300,8 @@
       questionStatuses={dailyConfiguration.questionStatuses ?? []}
       initialSettings={dailyConfiguration.workPool}
     />
+  {:else if activeTab === "journal" && dailyApi}
+    <DailyJournalPanel {dailyApi} />
   {:else}
     <section class="all-status" aria-label="全部状态">
       <div class="metric-grid" aria-label="全库摘要">

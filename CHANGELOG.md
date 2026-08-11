@@ -1,5 +1,31 @@
 # Changelog / 更新日志
 
+## 0.3.0 - 2026-08-11
+
+- Made Daily Note editing zero-disturbance: refreshes and indexes are read-only, and a stable `^daily_*` identity is added only when the user explicitly starts, completes, edits, migrates, sends, or schedules that exact task.
+- Added revision-checked draft task materialization so a changed line is rejected instead of writing an ID into a neighboring list item.
+- Treated checkbox parents with ordinary numbered children as categories while preserving checkbox parent/child task hierarchies and explicit `towrite-kind:: task` overrides.
+- Changed Daily task actions to a hover-only, absolutely positioned disclosure that does not change line height; ToWrite technical fields remain protected atomic ranges.
+- Added the Workbench Journal surface, persistent transition ledger, daily/monthly aggregation, marker-scoped Markdown write-back, and versioned journal API endpoints.
+- Deferred Vault-backed indexes, ledgers, optional servers, bridges, and device scheduling until Obsidian layout restoration completes.
+- Migrated API keys and long-lived tokens to Obsidian SecretStorage and scrubbed migrated plaintext values from `data.json`.
+- Raised the minimum Obsidian version to 1.11.4, retained desktop-only support, replaced direct deletion with Trash, and added release version/asset/2 MiB bundle checks.
+- Reworked the English and Chinese README files around the three-minute start, natural Daily Markdown, Workbench surfaces, data ownership, network disclosure, and troubleshooting.
+- Production verification: 120 test files and 727 tests, typecheck, production build, release asset validation, and Capture Vault deployment.
+
+中文摘要：
+
+- 日记编辑现在真正“零打扰”：刷新、索引和扫描只读；只有用户明确开始、完成、编辑属性、迁移、发送或安排某一任务时，才给该任务写入稳定 `^daily_*` ID。
+- 临时任务首次执行前会重新校验文档修订、行号和正文指纹；任务行已变化时直接拒绝，不会把 ID 写到相邻编号列表。
+- 带普通编号子项的 checkbox 默认作为分类；父子 checkbox 任务和显式 `towrite-kind:: task` 仍保持兼容。
+- 日记任务操作改为悬停后出现的绝对定位三点按钮，不改变行高；技术字段继续作为不可误入、不可误删的原子区域。
+- 工作台新增“日志”页、长期任务 transition JSONL 账本、日/月汇总、marker 范围内的日记写回和版本化日志 API。
+- Vault 索引、账本、可选服务器、Bridge 和设备调度均延后到 Obsidian 布局恢复完成后启动。
+- API Key 和长期 token 迁移到 Obsidian SecretStorage，迁移成功后从 `data.json` 清除明文。
+- 最低 Obsidian 版本提升到 1.11.4，继续限定桌面端；直接删除改为回收站，并增加版本、Release 资产和 2 MiB bundle 检查。
+- 中英文 README 重新围绕三分钟上手、自然日记 Markdown、工作台各页面、数据所有权、联网披露和故障排查编排。
+- 生产验证：120 个测试文件、727 项测试、类型检查、生产构建、Release 资产检查和 Capture Vault 同步全部通过。
+
 ## 0.3.0-beta.25 - 2026-08-11
 
 - Added configurable Obsidian Ribbon shortcuts and reduced the default Ribbon to the core Todo Workspace entry; Questions, Capture, AI, and Focus shortcuts can be enabled independently in Settings.

@@ -99,6 +99,19 @@ describe("WorkPoolService", () => {
     expect(filterWorkPoolItems(buildWorkPoolItems(input), { history: "all", search: "已完成" })).toHaveLength(1);
   });
 
+  it("filters explicitly for work without a stage or article type", () => {
+    const items = buildWorkPoolItems({
+      tasks: [task("plain", "Plain task")],
+      questions: [],
+      inboxItems: [],
+      workflowFiles: [workflow("Ideas/Spark.md", "sparks")]
+    });
+    expect(filterWorkPoolItems(items, { stageId: "__unclassified__" })
+      .every((item) => !item.stageId)).toBe(true);
+    expect(filterWorkPoolItems(items, { typeId: "__unclassified__" })
+      .every((item) => !item.typeId)).toBe(true);
+  });
+
   it("associates a task with source before target and falls back to an independent group", () => {
     const linked = task("c", "继续源笔记", "[[Sources/Origin#^task_c]]");
     linked.target = "[[Targets/Destination]]";

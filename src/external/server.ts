@@ -58,6 +58,9 @@ import {
   DailyPlanConflictError,
   type DailyDashboardSnapshot,
   type DailyAnalyticsRange,
+  type DailyJournalDaySnapshot,
+  type DailyJournalMonthSnapshot,
+  type DailyJournalWriteBackResult,
   type DailyMonthlySummary,
   type DailyPlanCreateInput,
   type DailyPlanDocument,
@@ -164,6 +167,9 @@ interface ExternalApiServerOptions {
   ): Promise<DailyTaskMigration[]>;
   getDailyAnalyticsRange?(from: string, to: string): Promise<DailyAnalyticsRange>;
   getDailyMonthlySummary?(month: string): Promise<DailyMonthlySummary>;
+  getDailyJournalDay?(date: string): Promise<DailyJournalDaySnapshot>;
+  getDailyJournalMonth?(month: string): Promise<DailyJournalMonthSnapshot>;
+  writeDailyJournal?(date: string): Promise<DailyJournalWriteBackResult>;
   locateCurrentFocusedTask?(): Promise<boolean>;
   previewDailyPlanNormalization?(date: string): Promise<DailyPlanNormalizationPreview>;
   normalizeDailyPlan?(
@@ -616,6 +622,27 @@ export class ToWriteExternalApiServer {
       return;
     }
 
+    if (url.pathname === "/api/v1/daily/journal") {
+      if (!this.options.getDailyJournalDay) {
+        throw new ExternalApiError(501, "Daily work journal is unavailable.");
+      }
+      const date = requireDateQuery(url, "date");
+      this.writeJson(response, 200, { data: await this.options.getDailyJournalDay(date) });
+      return;
+    }
+
+    if (url.pathname === "/api/v1/daily/journal/month") {
+      if (!this.options.getDailyJournalMonth) {
+        throw new ExternalApiError(501, "Monthly work journal is unavailable.");
+      }
+      const month = url.searchParams.get("month")?.trim() ?? "";
+      if (!/^\d{4}-\d{2}$/u.test(month)) {
+        throw new ExternalApiError(400, "A month in YYYY-MM format is required.");
+      }
+      this.writeJson(response, 200, { data: await this.options.getDailyJournalMonth(month) });
+      return;
+    }
+
     const dailyTimingMatch = /^\/api\/v1\/daily\/items\/([^/]+)\/timing$/u.exec(url.pathname);
     if (dailyTimingMatch) {
       if (!this.options.getDailyItemTiming) {
@@ -925,6 +952,16 @@ export class ToWriteExternalApiServer {
         ? { ...current, date: requestedDate || current.date, markdown: requestedMarkdown }
         : current;
       const result = await this.options.writeDailySummary(summary);
+      this.writeJson(response, 200, { data: result });
+      return;
+    }
+
+    const dailyJournalWriteMatch = /^\/api\/v1\/daily\/journal\/(\d{4}-\d{2}-\d{2})\/write-back$/u.exec(url.pathname);
+    if (dailyJournalWriteMatch) {
+      if (!this.options.writeDailyJournal) {
+        throw new ExternalApiError(501, "Daily work journal writing is unavailable.");
+      }
+      const result = await this.options.writeDailyJournal(dailyJournalWriteMatch[1]);
       this.writeJson(response, 200, { data: result });
       return;
     }
