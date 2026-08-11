@@ -1,11 +1,15 @@
-import { RangeSetBuilder, StateEffect, type Extension } from "@codemirror/state";
+import {
+  type EditorState,
+  RangeSetBuilder,
+  StateEffect,
+  StateField,
+  type Extension
+} from "@codemirror/state";
 import {
   Decoration,
   type DecorationSet,
   EditorView,
-  ViewPlugin,
-  WidgetType,
-  type ViewUpdate
+  WidgetType
 } from "@codemirror/view";
 import type {
   DailyPlanItem,
@@ -67,46 +71,36 @@ interface DailyTaskControlsOptions {
  * the network on the typing path.
  */
 export function createDailyTaskControls(options: DailyTaskControlsOptions): Extension {
-  const plugin = ViewPlugin.fromClass(
-    class {
-      decorations: DecorationSet;
-      atomic: DecorationSet;
-
-      constructor(view: EditorView) {
-        const built = buildControls(view, options);
-        this.decorations = built.decorations;
-        this.atomic = built.atomic;
-      }
-
-      update(update: ViewUpdate): void {
-        const strategy = getDailyTaskControlUpdateStrategy({
-          docChanged: update.docChanged,
-          reconfigured: update.transactions.some((transaction) => transaction.reconfigured),
-          refreshRequested: update.transactions.some((transaction) =>
-            transaction.effects.some((effect) => effect.is(refreshDailyTaskControls))
-          ),
-          selectionChanged: update.selectionSet
-        });
-        if (strategy === "rebuild") {
-          const built = buildControls(update.view, options);
-          this.decorations = built.decorations;
-          this.atomic = built.atomic;
-        } else if (strategy === "map") {
-          this.decorations = this.decorations.map(update.changes);
-          this.atomic = this.atomic.map(update.changes);
-        }
-      }
+  const controls = StateField.define<{ decorations: DecorationSet; atomic: DecorationSet }>({
+    create(state) {
+      return buildControls(state, options);
     },
-    { decorations: (plugin) => plugin.decorations }
-  );
-  return [
-    plugin,
-    EditorView.atomicRanges.of((view) => view.plugin(plugin)?.atomic ?? Decoration.none)
-  ];
+    update(value, transaction) {
+      const strategy = getDailyTaskControlUpdateStrategy({
+        docChanged: transaction.docChanged,
+        reconfigured: transaction.reconfigured,
+        refreshRequested: transaction.effects.some((effect) => effect.is(refreshDailyTaskControls)),
+        selectionChanged: transaction.selection !== undefined
+      });
+      if (strategy === "rebuild") return buildControls(transaction.state, options);
+      if (strategy === "map") {
+        return {
+          decorations: value.decorations.map(transaction.changes),
+          atomic: value.atomic.map(transaction.changes)
+        };
+      }
+      return value;
+    },
+    provide: (field) => [
+      EditorView.decorations.from(field, (value) => value.decorations),
+      EditorView.atomicRanges.from(field, (value) => () => value.atomic)
+    ]
+  });
+  return controls;
 }
 
 function buildControls(
-  view: EditorView,
+  state: EditorState,
   options: DailyTaskControlsOptions
 ): { decorations: DecorationSet; atomic: DecorationSet } {
   const builder = new RangeSetBuilder<Decoration>();
@@ -117,7 +111,7 @@ function buildControls(
   const entries: Array<{ from: number; to: number; decoration: Decoration }> = [];
   const atomicEntries: Array<{ from: number; to: number; decoration: Decoration }> = [];
   const items = options.getItems()
-    .filter((item) => item.sourcePath === activePath && item.line >= 1 && item.line <= view.state.doc.lines)
+    .filter((item) => item.sourcePath === activePath && item.line >= 1 && item.line <= state.doc.lines)
     .map((item) => ({ item, timing: options.getTiming(item) }));
   const previousUnfinished = options.getPreviousUnfinished();
   if (activePath === options.getTodaySourcePath() && previousUnfinished.length > 0) {
@@ -132,12 +126,12 @@ function buildControls(
     });
   }
   const selectedLines = new Set<number>();
-  for (const selection of view.state.selection.ranges) {
-    selectedLines.add(view.state.doc.lineAt(selection.anchor).number);
-    selectedLines.add(view.state.doc.lineAt(selection.head).number);
+  for (const selection of state.selection.ranges) {
+    selectedLines.add(state.doc.lineAt(selection.anchor).number);
+    selectedLines.add(state.doc.lineAt(selection.head).number);
   }
   for (const { item, timing } of items) {
-    const taskLine = view.state.doc.line(item.line);
+    const taskLine = state.doc.line(item.line);
     entries.push({
       from: taskLine.from,
       to: taskLine.from,
@@ -171,8 +165,8 @@ function buildControls(
         })
       });
     }
-    for (const lineNumber of ownedMetadataLineNumbers(view, item)) {
-      const line = view.state.doc.line(lineNumber);
+    for (const lineNumber of ownedMetadataLineNumbers(state, item)) {
+      const line = state.doc.line(lineNumber);
       entries.push({
         from: line.from,
         to: line.from,
@@ -196,8 +190,8 @@ function buildControls(
   for (const preview of options.getNormalizationPreviews()) {
     if (preview.sourcePath !== activePath) continue;
     for (const edit of preview.edits) {
-      if (edit.line < 1 || edit.line > view.state.doc.lines) continue;
-      const line = view.state.doc.line(edit.line);
+      if (edit.line < 1 || edit.line > state.doc.lines) continue;
+      const line = state.doc.line(edit.line);
       entries.push({
         from: line.from,
         to: line.from,
@@ -224,10 +218,10 @@ function buildControls(
     if (
       projection.sourcePath !== activePath
       || projection.line < 1
-      || projection.line > view.state.doc.lines
+      || projection.line > state.doc.lines
       || projection.tasks.length === 0
     ) continue;
-    const line = view.state.doc.line(projection.line);
+    const line = state.doc.line(projection.line);
     entries.push({
       from: line.to,
       to: line.to,
@@ -647,17 +641,17 @@ function hasVisibleProperties(
   );
 }
 
-function ownedMetadataLineNumbers(view: EditorView, item: DailyPlanItem): number[] {
+function ownedMetadataLineNumbers(state: EditorState, item: DailyPlanItem): number[] {
   const candidates = new Set<number>();
   const endLine = item.endLine ?? item.line;
-  for (let line = item.line + 1; line <= Math.min(endLine, view.state.doc.lines); line += 1) {
+  for (let line = item.line + 1; line <= Math.min(endLine, state.doc.lines); line += 1) {
     candidates.add(line);
   }
   for (const line of item.detachedOwnedLines ?? []) {
-    if (line >= 1 && line <= view.state.doc.lines) candidates.add(line);
+    if (line >= 1 && line <= state.doc.lines) candidates.add(line);
   }
   return [...candidates]
-    .filter((line) => isOwnedDailyMetadataLine(view.state.doc.line(line).text))
+    .filter((line) => isOwnedDailyMetadataLine(state.doc.line(line).text))
     .sort((left, right) => left - right);
 }
 

@@ -1,5 +1,11 @@
 # Changelog / 更新日志
 
+## 0.3.1 - 2026-08-11
+
+- Fixed the Workbench Journal runtime error by providing block editor decorations through a CodeMirror state field.
+- Prevented the Open Questions sidebar's Daily summary from shrinking and clipping the current task row.
+- Removed stale ToWrite-owned Ribbon elements before rebuilding shortcuts, preventing duplicate Todo Workspace icons after reloads.
+
 ## 0.3.0 - 2026-08-11
 
 - Made Daily Note editing zero-disturbance: refreshes and indexes are read-only, and a stable `^daily_*` identity is added only when the user explicitly starts, completes, edits, migrates, sends, or schedules that exact task.

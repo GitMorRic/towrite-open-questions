@@ -99,4 +99,11 @@ describe("Daily editor task controls", () => {
     expect(source).toContain("towrite-daily-previous-migration");
     expect(source).toContain("onOpenPreviousMigration");
   });
+
+  it("provides block widgets through a StateField instead of a ViewPlugin", () => {
+    const source = readFileSync(new URL("./daily-task-controls.ts", import.meta.url), "utf8");
+    expect(source).toContain("StateField.define");
+    expect(source).toContain("EditorView.decorations.from");
+    expect(source).not.toContain("ViewPlugin.fromClass");
+  });
 });

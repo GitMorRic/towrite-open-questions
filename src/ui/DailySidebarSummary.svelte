@@ -70,6 +70,7 @@
 
 <style>
   .daily-sidebar-summary {
+    flex: 0 0 auto;
     overflow: hidden;
     margin: 8px 0;
     border: 1px solid var(--background-modifier-border);
@@ -169,6 +170,7 @@
     align-items: center;
     gap: 7px;
     width: 100%;
+    min-height: 40px;
     padding: 8px 10px;
     border: 0;
     border-top: 1px solid var(--background-modifier-border);

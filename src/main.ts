@@ -1806,6 +1806,12 @@ export default class ToWritePlugin extends Plugin {
 
   /** Rebuild only this plugin's Ribbon shortcuts; command-palette entries are unaffected. */
   refreshRibbonIcons(): void {
+    // Hot reloads and interrupted unloads can leave an older instance's
+    // Ribbon element behind. Remove only ToWrite-owned elements before the
+    // current instance recreates the enabled shortcuts.
+    this.app.workspace.containerEl.ownerDocument
+      .querySelectorAll<HTMLElement>("[data-towrite-ribbon]")
+      .forEach((element) => element.remove());
     for (const element of this.ribbonIconElements.values()) {
       element.remove();
     }
