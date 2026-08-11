@@ -926,8 +926,14 @@ export default class ToWritePlugin extends Plugin {
       const button = createEl("button");
       button.type = "button";
       button.textContent = "选择迁移";
-      button.addEventListener("click", () => {
-        void this.activateDashboard({ activeTab: "today" });
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        this.runViewAction("昨日未完成迁移", () => this.activateDashboard({
+          activeTab: "today",
+          focusPreviousMigration: true,
+          popout: true
+        }));
       });
       prompt.append(text, button);
       el.prepend(prompt);
@@ -1266,7 +1272,9 @@ export default class ToWritePlugin extends Plugin {
         void this.runDueDailyDeviceSchedule();
       }, 30_000));
       void this.runDueDailyDeviceSchedule();
-      // Avoid starting multiple Vault readers while Obsidian restores editors.
+      // Restore the small, user-visible caches first. Full Vault reconciliation
+      // is deliberately deferred so ribbon commands and pop-outs stay usable
+      // while Obsidian restores editors.
       void (async () => {
         try {
           await this.navigationCheckpointService.load();
@@ -1278,13 +1286,19 @@ export default class ToWritePlugin extends Plugin {
         await this.returnExpiredTaskPoolAssignments();
         await this.refreshActiveTaskPoolCache(false);
         await this.refreshDailyPlanCache(false);
-        await this.refreshIndex();
         await this.refreshActiveNoteTaskCache();
         window.setTimeout(() => {
-          if (this.settings.daily.enabled) void this.syncMarkdownTasksToWorkPool();
-        }, 8_000);
+          void (async () => {
+            await this.refreshIndex();
+            window.setTimeout(() => {
+              if (this.settings.daily.enabled) void this.syncMarkdownTasksToWorkPool();
+            }, 2_500);
+          })().catch((error: unknown) => {
+            console.error("ToWrite background index reconciliation failed", error);
+          });
+        }, 1_200);
       })().catch((error: unknown) => {
-        console.error("ToWrite startup indexing failed", error);
+        console.error("ToWrite startup cache restore failed", error);
       });
       if (this.settings.autoOpenSidebar) {
         window.setTimeout(() => {
@@ -1823,7 +1837,7 @@ export default class ToWritePlugin extends Plugin {
         icon: "list-checks",
         label: "Open Todo Workspace",
         action: () => {
-          this.runViewAction("ToWrite Workbench", () => this.activateDashboard({ activeTab: "today" }));
+          this.runViewAction("ToWrite Workbench", () => this.activateDashboard({ activeTab: "today", popout: true }));
         }
       },
       {
@@ -11790,13 +11804,32 @@ export default class ToWritePlugin extends Plugin {
   }
 
   private async activateDashboard(
-    state: Partial<ToWriteDashboardViewState> = {}
+    state: Partial<ToWriteDashboardViewState> & { popout?: boolean } = {}
   ): Promise<void> {
+    if (state.popout) {
+      const result = await openPinnedFloatingView(this.app.workspace, {
+        viewType: TOWRITE_DASHBOARD_VIEW,
+        state: {
+          activeTab: state.activeTab ?? "today",
+          focusPreviousMigration: state.focusPreviousMigration === true
+        },
+        width: 1180,
+        height: 760,
+        preferPopout: true
+      });
+      if (!result.popout && result.popoutError) {
+        new Notice(this.settings.language === "zh"
+          ? `无法创建独立工作台，已在普通标签页打开：${messageForError(result.popoutError)}`
+          : `Could not create the Workbench pop-out; opened a tab instead: ${messageForError(result.popoutError)}`);
+      }
+      return;
+    }
     await activateWorkspaceView(this.app.workspace, {
       type: TOWRITE_DASHBOARD_VIEW,
       location: "tab",
       state: {
-        activeTab: state.activeTab ?? "today"
+        activeTab: state.activeTab ?? "today",
+        focusPreviousMigration: state.focusPreviousMigration === true
       }
     });
   }

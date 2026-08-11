@@ -37,7 +37,7 @@
     Trash2,
     Undo2
   } from "lucide-svelte";
-  import { onDestroy, onMount } from "svelte";
+  import { onDestroy, onMount, tick } from "svelte";
   import { buildDailyDeckSnapshot } from "../hub/daily-cards";
   import type {
     DailyDashboardAdapter,
@@ -78,6 +78,7 @@
     type DailyPlanningDay
   } from "./daily-dashboard-state";
   import WorkPoolPanel from "./WorkPoolPanel.svelte";
+  import { dailyDisplayText } from "../daily/display-text";
 
   export let dailyApi: DailyDashboardAdapter | undefined = undefined;
   export let onOpenCapture: (() => void) | undefined = undefined;
@@ -86,6 +87,9 @@
   export let workspaceMode = false;
   export let onSurfaceChange: ((surface: "today" | "pool" | "review") => void) | undefined = undefined;
   export let initialSurface: "today" | "pool" | "review" = "today";
+  export let focusPreviousMigration = false;
+  let previousMigrationCard: HTMLDetailsElement | undefined;
+  let previousMigrationFocused = false;
 
   interface DailyProjectProgressSegment {
     id: string;
@@ -466,6 +470,15 @@
         const available = new Set(previousUnfinished.map((item) => item.id));
         const retained = [...selectedPreviousIds].filter((id) => available.has(id));
         selectedPreviousIds = new Set(retained.length ? retained : previousUnfinished.map((item) => item.id));
+        if (focusPreviousMigration && previousUnfinished.length > 0 && !previousMigrationFocused) {
+          previousMigrationFocused = true;
+          await tick();
+          if (previousMigrationCard) {
+            previousMigrationCard.open = true;
+            previousMigrationCard.scrollIntoView({ behavior: "smooth", block: "center" });
+            previousMigrationCard.querySelector<HTMLElement>("button, input")?.focus();
+          }
+        }
       } else {
         previousUnfinished = [];
         selectedPreviousIds = new Set();
@@ -956,12 +969,7 @@
   }
 
   function compactTaskText(value: string): string {
-    const text = value.trim();
-    const wikiLink = /^\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]$/u.exec(text);
-    if (wikiLink) return (wikiLink[2] || wikiLink[1] || text).trim();
-    const markdownLink = /^\[([^\]]+)\]\(([^)]+)\)$/u.exec(text);
-    if (markdownLink) return markdownLink[1]?.trim() || text;
-    return text;
+    return dailyDisplayText(value);
   }
 
   function normalizationDiagnosticLabel(
@@ -1255,7 +1263,7 @@
     </nav>
 
     {#if planningDay === "today" && previousUnfinished.length > 0 && dailyApi.migratePreviousItems}
-      <details class="previous-tasks-card" open>
+      <details class="previous-tasks-card" bind:this={previousMigrationCard} open>
         <summary>
           <span><History size={15} /><strong>处理昨日未完成</strong><small>{previousUnfinished.length} 项可迁移，原日记会保留迁移记录</small></span>
           <ChevronDown size={15} />
@@ -2130,6 +2138,12 @@
                 <span>{deckTimingStatusLabel(previewTaskCard.item.timing?.state)}</span>
               </div>
               <h4>{previewTaskCard.item.text}</h4>
+              {#if previewTaskCard.item.startedAt || previewTaskCard.item.timing?.firstStartedAt}
+                <small class="eink-started">
+                  开始 {formatAnalyticsClock(previewTaskCard.item.startedAt || previewTaskCard.item.timing?.firstStartedAt)}
+                  · {deckTimingStatusLabel(previewTaskCard.item.timing?.state)}
+                </small>
+              {/if}
               {#if previewTaskCard.item.targetLabel}
                 <small>打开目标 · {previewTaskCard.item.targetProvenance ? deckTargetSourceLabel(previewTaskCard.item.targetProvenance) : ""}</small>
                 <p class="eink-target">{previewTaskCard.item.targetLabel}</p>
@@ -4095,6 +4109,13 @@
 
   .eink-card > header small {
     color: var(--text-muted);
+  }
+
+  .eink-started {
+    display: block;
+    margin: -2px 0 8px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
   }
 
   .preview-tabs {

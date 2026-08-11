@@ -277,6 +277,46 @@ describe("Daily device card adapters", () => {
       ]
     })).toThrow(/unique/u);
   });
+
+  it("renders compact device text instead of raw Markdown links and technical fields", () => {
+    const deck = buildDailyDeckSnapshot({
+      date: "2026-08-11",
+      items: [task(
+        "daily_markdown",
+        "- [ ] [创作辅助工具电子屏幕硬件-软硬件系统设计](创作辅助工具电子屏幕硬件-软硬件系统设计.md) %% [towrite-kind:: task] %% ^daily_markdown",
+        {
+          projectLabel: "[[电子纸项目|墨水屏]]",
+          targetLabel: "[[创作辅助工具电子屏幕硬件-软硬件系统设计]]"
+        }
+      )]
+    });
+
+    expect(deck.overview.current?.text).toBe("创作辅助工具电子屏幕硬件-软硬件系统设计");
+    expect(deck.overview.projects[0]?.label).toBe("墨水屏");
+    expect(deck.activePlanItem?.item.targetLabel).toBe("创作辅助工具电子屏幕硬件-软硬件系统设计");
+  });
+
+  it("cleans overview themes and inbox copy before device rendering", () => {
+    const snapshot = buildDailyDeckSnapshot({
+      date: "2026-08-11",
+      theme: "[[Echo|推进 Echo]] ^daily_theme",
+      items: [],
+      inboxItems: [{
+        id: "inbox-1",
+        source: "inbox",
+        title: "[稍后阅读](Notes/Read.md)",
+        detail: "继续 [[结构丝印]]",
+        reason: "来自 `今日计划`"
+      }]
+    });
+
+    expect(snapshot.theme).toBe("推进 Echo");
+    expect(snapshot.inboxItems[0]?.item).toMatchObject({
+      title: "稍后阅读",
+      detail: "继续 结构丝印",
+      reason: "来自 今日计划"
+    });
+  });
 });
 
 function task(

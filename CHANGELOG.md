@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 0.3.4 - 2026-08-11
+
+- Changed the Todo Workspace Ribbon action to open a full Obsidian popout workbench and made the Daily Note migration prompt focus the migration picker instead of silently reusing an obscured tab.
+- Restored cached state before background index reconciliation, moved full Vault scans out of the layout-ready critical path, and coalesced duplicate Work Pool reloads so opening the plugin no longer waits on repeated full-index composition.
+- Sanitized every e-ink card field before rendering: Markdown links, wiki links, checkbox syntax, inline code, ToWrite metadata, and `^daily_*` identifiers are no longer shown as screen content.
+- Kept the 2.7-inch preview intentionally glanceable: overview cards show date, battery, overall/project progress and the current task; task cards add state, start time, target, goal, next step, and invested/estimated time; reminder cards show source, summary, and reason.
+- Added regression coverage for popout activation, progressive Work Pool loading, and compact e-ink rendering.
+
+中文摘要：
+
+- 左侧 Todo 工作台现在打开完整的 Obsidian 独立弹出窗口；日记中的“迁移昨日任务”会直接聚焦迁移选择器，不再看起来像没有响应。
+- 启动时先恢复缓存，再在后台重建完整索引；工作池会合并重复刷新请求，避免打开插件时因多次全库组合而长时间空白。
+- 墨水屏卡片会统一清理 Markdown 链接、Wiki 链接、复选框语法、行内代码、ToWrite 元数据和 `^daily_*` 标识，不再把技术文本当成显示内容。
+- 2.7 英寸预览保持可扫读：总览显示日期、电量、整体与项目进度和当前任务；任务页补充状态、开始时间、目标、下一步与投入时间；提醒页显示来源、摘要和出现原因。
+- 新增弹出窗口、渐进式工作池加载与墨水屏文本清理回归测试。
+
 ## 0.3.3 - 2026-08-11
 
 - Changed the license for version 0.3.3 and later to PolyForm Noncommercial 1.0.0, with commercial use available only under a separate written license; earlier releases keep the license that accompanied them.

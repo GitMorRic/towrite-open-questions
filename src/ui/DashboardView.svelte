@@ -19,6 +19,7 @@
   export let dailyApi: DailyDashboardAdapter | undefined = undefined;
   export let getFullWorkflowPayload: (() => WorkflowIndexPayload) | undefined = undefined;
   export let initialTab: ToWriteWorkbenchTab = dailyApi ? "today" : "status";
+  export let focusPreviousMigration = false;
   export let onOpenFloatingToday: (() => void) | undefined = undefined;
   export let onActiveTabChange: ((tab: ToWriteWorkbenchTab) => void) | undefined = undefined;
 
@@ -290,6 +291,7 @@
       onOpenCapture={() => api.openCapture()}
       {onOpenFloatingToday}
       onOpenWorkPool={openWorkPool}
+      {focusPreviousMigration}
     />
   {:else if activeTab === "pool" && dailyApi}
     <WorkPoolPanel

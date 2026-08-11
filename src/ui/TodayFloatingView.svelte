@@ -22,6 +22,7 @@
   } from "lucide-svelte";
   import { onDestroy, onMount } from "svelte";
   import type { DailyPlanItem } from "../daily/types";
+  import { dailyDisplayText } from "../daily/display-text";
   import type { DailyTaskTimingSnapshot } from "../daily/task-timer-types";
   import { selectDailyOverview } from "./daily-dashboard-state";
   import type {
@@ -203,11 +204,7 @@
   }
 
   function compactTaskText(value: string): string {
-    const text = value.trim();
-    const wiki = /^\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]$/u.exec(text);
-    if (wiki) return (wiki[2] || wiki[1]).trim();
-    const markdown = /^\[([^\]]+)\]\([^\)]+\)$/u.exec(text);
-    return (markdown?.[1] ?? text).trim();
+    return dailyDisplayText(value);
   }
 
   function compactProjectLabel(item: DailyPlanItem): string {

@@ -50,6 +50,30 @@ describe("openPinnedFloatingView", () => {
     expect(created.setPinned).toHaveBeenCalledWith(true);
   });
 
+  it("moves a main-window dashboard into a real pop-out when requested", async () => {
+    const existing = {
+      ...leaf(),
+      detach: vi.fn(),
+      view: { containerEl: { ownerDocument: { defaultView: undefined } } }
+    } as unknown as WorkspaceLeaf;
+    const created = leaf();
+    const workspace = {
+      getLeavesOfType: vi.fn(() => [existing]),
+      openPopoutLeaf: vi.fn(() => created),
+      setActiveLeaf: vi.fn()
+    } as unknown as Workspace;
+
+    const result = await openPinnedFloatingView(workspace, {
+      viewType: "towrite-dashboard",
+      state: { activeTab: "today" },
+      preferPopout: true
+    });
+
+    expect(result).toMatchObject({ created: true, popout: true, leaf: created });
+    expect(existing.detach).toHaveBeenCalledOnce();
+    expect(workspace.openPopoutLeaf).toHaveBeenCalledOnce();
+  });
+
   it("falls back to a normal pinned tab when pop-outs are unavailable", async () => {
     const fallback = leaf();
     const workspace = {

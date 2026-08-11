@@ -5,6 +5,8 @@ export interface OpenPinnedFloatingViewOptions {
   state?: Record<string, unknown>;
   width?: number;
   height?: number;
+  /** Move an existing main-window leaf into a real Obsidian pop-out. */
+  preferPopout?: boolean;
 }
 
 export interface OpenPinnedFloatingViewResult {
@@ -23,7 +25,14 @@ export async function openPinnedFloatingView(
   workspace: Workspace,
   options: OpenPinnedFloatingViewOptions
 ): Promise<OpenPinnedFloatingViewResult> {
-  const existing = workspace.getLeavesOfType(options.viewType)[0];
+  let existing: WorkspaceLeaf | undefined = workspace.getLeavesOfType(options.viewType)[0];
+  if (existing && options.preferPopout) {
+    const ownerWindow = existing.view?.containerEl?.ownerDocument?.defaultView;
+    if (!ownerWindow || ownerWindow === window) {
+      existing.detach();
+      existing = undefined;
+    }
+  }
   if (existing) {
     await workspace.revealLeaf(existing);
     existing.setPinned(true);

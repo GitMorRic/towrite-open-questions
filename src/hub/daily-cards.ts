@@ -1,4 +1,5 @@
 import type { LocalHubCandidate } from "./privacy";
+import { dailyDisplayText } from "../daily/display-text";
 import {
   dailyDevicePagingLocalId,
   type DailyDevicePagingItem,
@@ -274,15 +275,15 @@ export function buildDailyDeckSnapshot(input: DailyDeckBuildInput): DailyDeckSna
     localId: overviewLocalId,
     cardId: overviewLocalId,
     date,
-    theme: optionalLine(input.theme),
+    theme: optionalLine(input.theme ? dailyDisplayText(input.theme) : undefined),
     current: current
       ? {
           ...summaries.get(current.id)!,
-          goal: optionalLine(current.goal),
-          nextStep: optionalLine(current.nextStep),
+          goal: optionalLine(current.goal ? dailyDisplayText(current.goal) : undefined),
+          nextStep: optionalLine(current.nextStep ? dailyDisplayText(current.nextStep) : undefined),
           estimateMinutes: positiveInteger(current.estimateMinutes),
-          groupLabel: optionalLine(current.groupLabel),
-          targetLabel: optionalLine(current.targetLabel),
+          groupLabel: optionalLine(current.groupLabel ? dailyDisplayText(current.groupLabel) : undefined),
+          targetLabel: optionalLine(current.targetLabel ? dailyDisplayText(current.targetLabel) : undefined),
           timing: normalizeTiming(current.timing)
         }
       : undefined,
@@ -307,13 +308,13 @@ export function buildDailyDeckSnapshot(input: DailyDeckBuildInput): DailyDeckSna
         ...summaries.get(item.id)!,
         kind: item.kind,
         taskRevision: item.taskRevision,
-        goal: optionalLine(item.goal),
-        nextStep: optionalLine(item.nextStep),
+        goal: optionalLine(item.goal ? dailyDisplayText(item.goal) : undefined),
+        nextStep: optionalLine(item.nextStep ? dailyDisplayText(item.nextStep) : undefined),
         estimateMinutes: positiveInteger(item.estimateMinutes),
-        target: optionalLine(item.target),
+        target: optionalLine(item.target ? dailyDisplayText(item.target) : undefined),
         startedAt: optionalIsoDateTime(item.startedAt),
-        groupLabel: optionalLine(item.groupLabel),
-        targetLabel: optionalLine(item.targetLabel),
+        groupLabel: optionalLine(item.groupLabel ? dailyDisplayText(item.groupLabel) : undefined),
+        targetLabel: optionalLine(item.targetLabel ? dailyDisplayText(item.targetLabel) : undefined),
         targetProvenance: normalizeTargetProvenance(item.targetProvenance),
         lineageRevision: optionalIdentifier(item.lineageRevision),
         timing: normalizeTiming(item.timing)
@@ -357,7 +358,7 @@ export function buildDailyDeckSnapshot(input: DailyDeckBuildInput): DailyDeckSna
   return {
     schemaVersion: 1,
     date,
-    theme: optionalLine(input.theme),
+    theme: optionalLine(input.theme ? dailyDisplayText(input.theme) : undefined),
     currentItemId: current?.id,
     overview,
     planItems,
@@ -387,7 +388,7 @@ export function dailyInboxCardLocalId(date: string, itemId: string): string {
 function buildProjectProgress(items: readonly DailyDeckPlanItemInput[]): DailyOverviewCard["projects"] {
   const projects = new Map<string, DailyOverviewCard["projects"][number]>();
   for (const item of items) {
-    const label = optionalLine(item.projectLabel) || optionalLine(item.groupLabel) || "未分类";
+    const label = optionalLine(dailyDisplayText(item.projectLabel || item.groupLabel || "未分类")) || "未分类";
     const id = normalizedProjectIdentifier(item.projectId) || stableFragment(label);
     const existing = projects.get(id);
     if (existing) {
@@ -410,9 +411,9 @@ function normalizeInboxItem(item: DailyDeckInboxItemInput): DailyInboxItemSummar
   return {
     id: item.id.trim() || "empty",
     source: item.source,
-    title: optionalLine(item.title) || "提醒",
-    detail: optionalLine(item.detail),
-    reason: optionalLine(item.reason),
+    title: optionalLine(dailyDisplayText(item.title)) || "提醒",
+    detail: optionalLine(item.detail ? dailyDisplayText(item.detail) : undefined),
+    reason: optionalLine(item.reason ? dailyDisplayText(item.reason) : undefined),
     generatedAt: optionalIsoDateTime(item.generatedAt),
     aiGenerated: item.source === "ai"
   };
@@ -567,7 +568,7 @@ function normalizeDeckItem(
     item.taskRevision,
     `Daily deck item ${index + 1} revision`
   );
-  const text = optionalLine(item.text);
+  const text = optionalLine(dailyDisplayText(item.text));
   if (!text) {
     throw new Error(`Daily deck item ${index + 1} needs display text.`);
   }
@@ -576,9 +577,13 @@ function normalizeDeckItem(
     id,
     taskRevision,
     text,
+    groupLabel: optionalLine(item.groupLabel ? dailyDisplayText(item.groupLabel) : undefined),
     projectId: normalizedProjectIdentifier(item.projectId),
-    projectLabel: optionalLine(item.projectLabel),
+    projectLabel: optionalLine(item.projectLabel ? dailyDisplayText(item.projectLabel) : undefined),
     projectColor: normalizedColor(item.projectColor),
+    targetLabel: optionalLine(item.targetLabel ? dailyDisplayText(item.targetLabel) : undefined),
+    goal: optionalLine(item.goal ? dailyDisplayText(item.goal) : undefined),
+    nextStep: optionalLine(item.nextStep ? dailyDisplayText(item.nextStep) : undefined),
     primary: item.primary === true,
     minimum: item.minimum === true
   };
@@ -591,11 +596,11 @@ function summarizeDeckItem(item: DailyDeckPlanItemInput): DailyDeckTaskSummary {
     status: item.status,
     primary: item.primary === true,
     minimum: item.minimum === true,
-    groupLabel: optionalLine(item.groupLabel),
+    groupLabel: optionalLine(item.groupLabel ? dailyDisplayText(item.groupLabel) : undefined),
     projectId: item.projectId,
     projectLabel: optionalLine(item.projectLabel),
     projectColor: normalizedColor(item.projectColor),
-    targetLabel: optionalLine(item.targetLabel)
+    targetLabel: optionalLine(item.targetLabel ? dailyDisplayText(item.targetLabel) : undefined)
   };
 }
 

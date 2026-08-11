@@ -122,14 +122,19 @@
   let editingProjectLabel = "";
   let editingProjectColor = "#7c6ee6";
   let editingProjectIcon = "folder-kanban";
+  let initialized = false;
+  let reloadPromise: Promise<void> | undefined;
+  let reloadQueued = false;
 
   onMount(() => {
-    unsubscribe = dailyApi.subscribe?.(() => void reload(false));
+    unsubscribe = dailyApi.subscribe?.(() => {
+      if (initialized) void reload(false);
+    });
     void initialize();
   });
   onDestroy(() => unsubscribe?.());
 
-  $: if (date && date !== loadedDate) {
+  $: if (initialized && date && date !== loadedDate) {
     loadedDate = date;
     void reload(false);
   }
@@ -195,6 +200,8 @@
     } catch (cause) {
       error = message(cause);
     }
+    initialized = true;
+    loadedDate = date;
     await reload();
   }
 
@@ -203,14 +210,31 @@
       loading = false;
       return;
     }
-    if (showLoading) loading = true;
-    error = "";
+    if (reloadPromise) {
+      reloadQueued = true;
+      await reloadPromise;
+      return;
+    }
+    const performReload = async (): Promise<void> => {
+      if (showLoading && !snapshot) loading = true;
+      error = "";
+      try {
+        snapshot = await dailyApi.getWorkPool({ history: "all" });
+      } catch (cause) {
+        error = message(cause);
+      } finally {
+        loading = false;
+      }
+    };
+    reloadPromise = performReload();
     try {
-      snapshot = await dailyApi.getWorkPool({ history: "all" });
-    } catch (cause) {
-      error = message(cause);
+      await reloadPromise;
     } finally {
-      loading = false;
+      reloadPromise = undefined;
+    }
+    if (reloadQueued) {
+      reloadQueued = false;
+      await reload(false);
     }
   }
 

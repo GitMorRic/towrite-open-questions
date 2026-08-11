@@ -22,6 +22,7 @@ export interface ToWriteDashboardViewOptions {
 
 export interface ToWriteDashboardViewState {
   activeTab: ToWriteWorkbenchTab;
+  focusPreviousMigration?: boolean;
 }
 
 export interface ToWriteSidebarViewOptions {
@@ -74,7 +75,8 @@ export class ToWriteSidebarItemView extends ItemView {
 export class ToWriteDashboardItemView extends ItemView {
   private component?: SvelteComponent;
   private state: ToWriteDashboardViewState = {
-    activeTab: "today"
+    activeTab: "today",
+    focusPreviousMigration: false
   };
 
   constructor(
@@ -103,7 +105,8 @@ export class ToWriteDashboardItemView extends ItemView {
 
   async setState(state: unknown): Promise<void> {
     this.state = {
-      activeTab: migrateWorkbenchTab(state)
+      activeTab: migrateWorkbenchTab(state),
+      focusPreviousMigration: Boolean((state as { focusPreviousMigration?: unknown } | undefined)?.focusPreviousMigration)
     };
     this.mount();
   }
@@ -123,9 +126,10 @@ export class ToWriteDashboardItemView extends ItemView {
         dailyApi: this.options.dailyApi,
         getFullWorkflowPayload: this.options.getFullWorkflowPayload,
         initialTab: this.state.activeTab,
+        focusPreviousMigration: this.state.focusPreviousMigration,
         onOpenFloatingToday: this.options.onOpenFloatingToday,
         onActiveTabChange: (activeTab: ToWriteDashboardViewState["activeTab"]) => {
-          this.state = { ...this.state, activeTab };
+          this.state = { ...this.state, activeTab, focusPreviousMigration: false };
           this.app.workspace.requestSaveLayout();
         }
       }
