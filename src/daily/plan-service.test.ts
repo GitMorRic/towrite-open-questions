@@ -339,7 +339,8 @@ describe("DailyPlanService", () => {
     expect(items.map((item) => item.priority)).toEqual(["highest", "high", "normal", "low", "lowest"]);
     const normal = items[2];
     await service.update(normal.id, normal.revision, { devicePolicy: "agent" }, normal.date);
-    expect(storage.files.get(normal.sourcePath)).toContain("Medium 🔼");
+    expect(storage.files.get(normal.sourcePath)).toContain("Medium");
+    expect(storage.files.get(normal.sourcePath)).not.toContain("Medium 🔼");
   });
 
   it("completes the frozen source-day task after the local calendar crosses midnight", async () => {

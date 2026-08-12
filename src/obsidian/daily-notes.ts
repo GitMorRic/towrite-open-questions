@@ -7,6 +7,12 @@ export interface ObsidianDailyNotesConfiguration {
   template: string;
 }
 
+export interface ToWriteDailyNotePreference {
+  source: "obsidian" | "custom";
+  folder: string;
+  format: string;
+}
+
 /** Reads the core Daily Notes plugin without taking a dependency on its private classes. */
 export function readObsidianDailyNotesConfiguration(app: App): ObsidianDailyNotesConfiguration {
   const internal = app as unknown as {
@@ -27,6 +33,22 @@ export function readObsidianDailyNotesConfiguration(app: App): ObsidianDailyNote
     format: normalizeFormat(options.format),
     template: normalizeTemplate(options.template)
   };
+}
+
+/**
+ * Older ToWrite builds persisted the placeholder `Daily/YYYY-MM-DD` as a
+ * custom source even when the user was already using Obsidian Daily Notes.
+ * Treat that untouched placeholder as migration state, while preserving any
+ * genuinely customised ToWrite path.
+ */
+export function shouldUseObsidianDailyNotes(
+  preference: ToWriteDailyNotePreference,
+  core: ObsidianDailyNotesConfiguration
+): boolean {
+  if (!core.enabled) return false;
+  if (preference.source === "obsidian") return true;
+  return normalizeFolder(preference.folder) === "Daily"
+    && normalizeFormat(preference.format) === "YYYY-MM-DD";
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

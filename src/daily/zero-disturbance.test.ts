@@ -61,6 +61,31 @@ describe("zero-disturbance Daily editing", () => {
     expect(storage.writes).toBe(0);
   });
 
+  it("recognizes a free-form Daily checkbox and its numbered linked child without requiring a ToDo heading", async () => {
+    const path = "sync/Todo_and_tosolve/20260812.md";
+    const original = [
+      "# 2026-08-12",
+      "",
+      "- [ ] 创作",
+      "  1. [[小说-请确认你是本人]]"
+    ].join("\n");
+    const storage = new MemoryStorage(path, original);
+    const service = new DailyPlanNormalizationService(storage, {
+      source: { kind: "daily-note", dailyRoot: "sync/Todo_and_tosolve", dateFormat: "YYYYMMDD" }
+    });
+
+    const preview = await service.preview("2026-08-12");
+    const displayable = preview.edits.filter((edit) => isDisplayableDailyDraftTask(
+      edit,
+      preview.tasks.find((task) => task.line === edit.line)
+    ));
+
+    expect(preview.groups.map((group) => group.text)).toEqual(["创作"]);
+    expect(displayable.map((edit) => edit.taskText)).toEqual(["创作", "[[小说-请确认你是本人]]"]);
+    expect(storage.files.get(path)).toBe(original);
+    expect(storage.writes).toBe(0);
+  });
+
   it("adds an explicitly created task to the author's populated plan section without adding ToDo", async () => {
     const path = "Daily/2026-08-12.md";
     const original = [

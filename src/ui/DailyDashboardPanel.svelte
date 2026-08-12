@@ -156,6 +156,7 @@
   let generatedSummary: DailySummaryPresentation | undefined;
   let generatedSummaryFingerprint = "";
   let summary: DailySummaryPresentation | undefined;
+  let summaryNotice = "";
   let hierarchy: DailyPlanHierarchy | undefined;
   let normalizationPreview: DailyPlanNormalizationPreview | undefined;
   let normalizationUndoToken = "";
@@ -209,6 +210,11 @@
       selectedDate,
       selected.map((item) => ({ id: item.id, revision: item.revision }))
     ));
+  }
+
+  async function dismissPreviousReview(): Promise<void> {
+    if (!dailyApi?.dismissPreviousItems) return;
+    await run("dismiss-previous", () => dailyApi?.dismissPreviousItems?.(selectedDate));
   }
 
   onMount(() => {
@@ -315,7 +321,7 @@
       byProject.set(id, {
         id,
         label,
-        color: appearanceById.get(id)?.color ?? projectFallbackColor(id),
+        color: appearanceById.get(id)?.color?.trim() || projectFallbackColor(id),
         items: [item],
         done: isDailyItemComplete(item) ? 1 : 0
       });
@@ -358,8 +364,8 @@
   }
 
   function projectColorForId(projectId: string): string {
-    return configuration.workPool?.projectAppearances.find((appearance) => appearance.projectId === projectId)?.color
-      ?? projectFallbackColor(projectId);
+    return configuration.workPool?.projectAppearances.find((appearance) => appearance.projectId === projectId)?.color?.trim()
+      || projectFallbackColor(projectId);
   }
 
   function beginProgressProjectColor(segment: DailyProjectProgressSegment, event: MouseEvent): void {
@@ -856,6 +862,9 @@
       snapshot = after;
       generatedSummary = generated;
       generatedSummaryFingerprint = basisFingerprint;
+      summaryNotice = mode === "ai"
+        ? "AI 草稿已生成；确认内容后再写回日记。"
+        : "规则总结已生成；确认内容后再写回日记。";
     });
   }
 
@@ -876,11 +885,14 @@
       throw new Error("今日数据已变化，旧总结没有写回；请确认新摘要后重试。");
     }
     await dailyApi.writeSummary(candidate);
+    summaryNotice = "总结已安全写回今日日记的 ToWrite 管理区块。";
+    snapshot = await dailyApi.getSnapshot(selectedDate) ?? snapshot;
   }
 
   function clearGeneratedSummary(): void {
     generatedSummary = undefined;
     generatedSummaryFingerprint = "";
+    summaryNotice = "";
   }
 
   function kindLabel(kind: DailyPlanItemKind): string {
@@ -1269,7 +1281,7 @@
     {#if planningDay === "today" && previousUnfinished.length > 0 && dailyApi.migratePreviousItems}
       <details class="previous-tasks-card" bind:this={previousMigrationCard} open>
         <summary>
-          <span><History size={15} /><strong>处理昨日未完成</strong><small>{previousUnfinished.length} 项可迁移，原日记会保留迁移记录</small></span>
+          <span><History size={15} /><strong>处理之前未完成</strong><small>更早日记中有 {previousUnfinished.length} 项可迁移，原日记会保留迁移记录</small></span>
           <ChevronDown size={15} />
         </summary>
         <div class="previous-task-list">
@@ -1280,11 +1292,18 @@
                 checked={selectedPreviousIds.has(item.id)}
                 on:change={() => togglePreviousSelection(item.id)}
               />
-              <span>{compactTaskText(item.text)}</span>
+              <span>{compactTaskText(item.text)}<small>{item.revision.date}</small></span>
             </label>
           {/each}
         </div>
         <footer>
+          {#if dailyApi.dismissPreviousItems}
+            <button
+              type="button"
+              disabled={Boolean(busy)}
+              on:click={dismissPreviousReview}
+            >标记本次已处理</button>
+          {/if}
           <button
             class="primary"
             type="button"
@@ -2222,9 +2241,11 @@
         {#if summary}
           <div class="workspace-summary"><strong>{summary.headline}</strong>{#each summary.lines as line}<span>{line}</span>{/each}</div>
         {/if}
+        <p class="review-help">“预览总结”只在这里生成文字；“确认写回”只更新日记里的 ToWrite 管理区块，不会覆盖其他手写内容。</p>
+        {#if summaryNotice}<p class="summary-notice">{summaryNotice}</p>{/if}
         <div class="review-actions">
-          {#if dailyApi.generateSummary}<button type="button" disabled={Boolean(busy)} on:click={() => generateSummary("rules")}><RefreshCw size={14} />生成总结</button>{/if}
-          {#if dailyApi.writeSummary && summary}<button type="button" disabled={Boolean(busy)} on:click={() => run("write-summary", writeCurrentSummary)}><FilePlus2 size={14} />写回日记</button>{/if}
+          {#if dailyApi.generateSummary}<button type="button" disabled={Boolean(busy)} on:click={() => generateSummary("rules")}><RefreshCw size={14} />预览总结</button>{/if}
+          {#if dailyApi.writeSummary && summary}<button type="button" disabled={Boolean(busy)} on:click={() => run("write-summary", writeCurrentSummary)}><FilePlus2 size={14} />确认写回日记</button>{/if}
         </div>
       </details>
     {/if}
@@ -2292,6 +2313,7 @@
           {:else}
             <div class="daily-empty compact">今天还没有足够的数据生成总结。</div>
           {/if}
+          {#if summaryNotice}<p class="summary-notice">{summaryNotice}</p>{/if}
           <footer>
             {#if dailyApi.generateSummary}
               <button type="button" disabled={Boolean(busy)} on:click={() => generateSummary("rules")}><RefreshCw size={14} />重新生成</button>
@@ -2733,9 +2755,10 @@
     gap: 2px;
     min-width: 18px;
     padding: 2px;
-    border: 0;
+    border: 1px solid var(--project-color);
     border-radius: 3px;
-    background: transparent;
+    background-color: var(--project-color) !important;
+    background-image: linear-gradient(rgba(255,255,255,.78), rgba(255,255,255,.78));
     box-shadow: none;
     cursor: context-menu;
     transition: background 120ms ease, transform 120ms ease;
@@ -2750,12 +2773,16 @@
     flex: 1;
     min-width: 3px;
     border-radius: 2px;
-    background: color-mix(in srgb, var(--project-color) 62%, var(--background-primary));
+    background-color: var(--project-color) !important;
+    opacity: .42;
   }
 
   .battery-project i.done {
     background: var(--project-color);
+    opacity: 1;
   }
+
+  .summary-notice { margin: 6px 0 0; color: var(--text-success); font-size: .82rem; }
 
   .project-progress-legend {
     display: grid;

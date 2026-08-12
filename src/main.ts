@@ -81,7 +81,10 @@ import {
   createTaskPoolTechnicalMetadataExtension,
   refreshTaskPoolTechnicalMetadata
 } from "./obsidian/task-pool-editor";
-import { readObsidianDailyNotesConfiguration } from "./obsidian/daily-notes";
+import {
+  readObsidianDailyNotesConfiguration,
+  shouldUseObsidianDailyNotes
+} from "./obsidian/daily-notes";
 import { activateWorkspaceView } from "./obsidian/view-activation";
 import { confirmWithModal, promptWithModal } from "./obsidian/dialogs";
 import { AiQuestionService } from "./ai/service";
@@ -2111,6 +2114,7 @@ export default class ToWritePlugin extends Plugin {
       dailyActivityState: this.dailyActivityService?.getState() ?? this.savedDailyActivityState,
       dailyDeviceStateVersion: this.dailyDeviceStateVersion,
       dailyScheduleOccurrenceIds: [...this.dailyScheduleOccurrenceIds].slice(-200),
+      dailyCarryoverReviews: this.dailyCarryoverReviews,
       deviceCommandJournal: [...this.deviceCommandJournal.values()].slice(-256)
     };
     await this.saveData(data);
@@ -5937,6 +5941,11 @@ export default class ToWritePlugin extends Plugin {
   private savedLearningState?: HabitLearningState;
   private savedCaptureBridgeState?: LocalTapSelectionState;
   private savedDailyActivityState?: DailyActivityState;
+  private dailyCarryoverReviews: Record<string, string> = {};
+  private readonly historicalDailyUnfinishedCache = new Map<string, {
+    expiresAt: number;
+    items: DailyPlanItem[];
+  }>();
 
   private async loadPluginData(): Promise<void> {
     const data = (await this.loadData()) as Partial<ToWriteSavedData> | null;
@@ -5963,6 +5972,9 @@ export default class ToWritePlugin extends Plugin {
     this.aiAssistantState = normalizeAiAssistantState(data?.aiAssistantState);
     this.savedCaptureBridgeState = data?.captureBridgeState;
     this.savedDailyActivityState = data?.dailyActivityState;
+    this.dailyCarryoverReviews = data?.dailyCarryoverReviews && typeof data.dailyCarryoverReviews === "object"
+      ? { ...data.dailyCarryoverReviews }
+      : {};
     this.dailyDeviceStateVersion = Number.isSafeInteger(data?.dailyDeviceStateVersion)
       ? Math.max(1, Number(data?.dailyDeviceStateVersion))
       : 1;
@@ -6204,7 +6216,11 @@ export default class ToWritePlugin extends Plugin {
     templateExists: boolean;
   } {
     const core = readObsidianDailyNotesConfiguration(this.app);
-    const useCore = this.settings.daily.dailyNoteSource === "obsidian" && core.enabled;
+    const useCore = shouldUseObsidianDailyNotes({
+      source: this.settings.daily.dailyNoteSource,
+      folder: this.settings.daily.dailyNoteRoot,
+      format: this.settings.daily.dailyNoteFormat
+    }, core);
     const folder = (useCore ? core.folder : this.settings.daily.dailyNoteRoot) || "Daily";
     const format = (useCore ? core.format : this.settings.daily.dailyNoteFormat) || "YYYY-MM-DD";
     const templatePath = core.template
@@ -6839,6 +6855,10 @@ export default class ToWritePlugin extends Plugin {
 
   async refreshDailyDashboard(): Promise<void> {
     this.dailyBackendWriterCheckedAt = 0;
+    // Daily-note location and format can change independently of the selected
+    // dashboard date (for example when the core Daily Notes plugin is enabled).
+    // Never reuse carry-over results resolved against an older source.
+    this.historicalDailyUnfinishedCache.clear();
     const needsActivityReconfigure = !this.dailyActivityService
       || this.dailyActivityRetentionDays !== this.settings.daily.rawEventRetentionDays;
     if (needsActivityReconfigure) {
@@ -7138,11 +7158,63 @@ export default class ToWritePlugin extends Plugin {
 
   private async getPreviousDailyUnfinished(date: string): Promise<DailyPlanItem[]> {
     const targetDate = formatDailyInputDate(date);
-    const previous = new Date(`${targetDate}T12:00:00`);
-    previous.setDate(previous.getDate() - 1);
-    return unfinishedDailyLeafItems(
-      await this.dailyPlanService.list(formatDailyInputDate(previous))
+    const items = await this.collectHistoricalDailyUnfinished(targetDate);
+    const fingerprint = this.dailyCarryoverFingerprint(items);
+    return fingerprint && this.dailyCarryoverReviews[targetDate] === fingerprint ? [] : items;
+  }
+
+  private async collectHistoricalDailyUnfinished(
+    targetDate: string,
+    force = false
+  ): Promise<DailyPlanItem[]> {
+    const cached = this.historicalDailyUnfinishedCache.get(targetDate);
+    if (!force && cached && cached.expiresAt > Date.now()) return cached.items;
+    const dates: string[] = [];
+    const cursor = new Date(`${targetDate}T12:00:00`);
+    // Daily-note mode can cheaply skip dates with no file. Six months covers
+    // long breaks without turning the review into an unbounded Vault scan.
+    const maximumLookback = this.settings.daily.planSourceMode === "daily-note" ? 183 : 31;
+    for (let offset = 1; offset <= maximumLookback; offset += 1) {
+      cursor.setDate(cursor.getDate() - 1);
+      const sourceDate = formatDailyInputDate(cursor);
+      if (
+        this.settings.daily.planSourceMode !== "daily-note"
+        || this.app.vault.getFileByPath(this.dailyPlanService.pathForDate(sourceDate))
+      ) {
+        dates.push(sourceDate);
+      }
+    }
+    const dailyItems = await Promise.all(dates.map((sourceDate) => this.dailyPlanService.list(sourceDate)));
+    const items = dailyItems
+      .flatMap((items, index) => unfinishedDailyLeafItems(items).map((item) => ({
+        ...item,
+        revision: { ...item.revision, date: dates[index] }
+      })))
+      .sort((left, right) => (right.revision.date ?? "").localeCompare(left.revision.date ?? "") || left.line - right.line);
+    this.historicalDailyUnfinishedCache.set(targetDate, {
+      expiresAt: Date.now() + 30_000,
+      items
+    });
+    return items;
+  }
+
+  private dailyCarryoverFingerprint(items: DailyPlanItem[]): string {
+    if (items.length === 0) return "";
+    return shortHash(items
+      .map((item) => `${item.revision.date}:${item.id}:${item.revision.value}`)
+      .sort()
+      .join("\n"));
+  }
+
+  private async dismissPreviousDailyUnfinished(date: string): Promise<void> {
+    const targetDate = formatDailyInputDate(date);
+    const fingerprint = this.dailyCarryoverFingerprint(
+      await this.collectHistoricalDailyUnfinished(targetDate, true)
     );
+    if (fingerprint) this.dailyCarryoverReviews[targetDate] = fingerprint;
+    else delete this.dailyCarryoverReviews[targetDate];
+    await this.savePluginData();
+    this.store.notify();
   }
 
   private async migratePreviousDailyItems(
@@ -7150,24 +7222,27 @@ export default class ToWritePlugin extends Plugin {
     selections: Array<{ id: string; revision: DailyTaskRevision }>
   ): Promise<DailyTaskMigration[]> {
     const targetDate = formatDailyInputDate(date);
-    const previous = new Date(`${targetDate}T12:00:00`);
-    previous.setDate(previous.getDate() - 1);
-    const sourceDate = formatDailyInputDate(previous);
-    const sourceItems = await this.dailyPlanService.list(sourceDate);
-    const sourceById = new Map(sourceItems.map((item) => [item.id, item]));
+    const historicalItems = await this.collectHistoricalDailyUnfinished(targetDate, true);
+    const sourceById = new Map(historicalItems.map((item) => [item.id, item]));
     for (const selection of selections) {
       const item = sourceById.get(selection.id);
-      if (!item || item.revision.value !== selection.revision.value) {
+      if (!item
+        || item.revision.value !== selection.revision.value
+        || item.revision.date !== selection.revision.date) {
         throw new DailyPlanConflictError(
           "revision-changed",
-          "The previous Daily task changed after the migration preview was opened."
+          "The historical Daily task changed after the carryover review was opened."
         );
       }
     }
-    const validated = expandDailyMigrationSelections(
-      sourceItems,
-      new Set(selections.map((selection) => selection.id))
-    );
+    const selectedIds = new Set(selections.map((selection) => selection.id));
+    const validated = [...new Set(selections
+      .map((selection) => selection.revision.date)
+      .filter((sourceDate): sourceDate is string => Boolean(sourceDate)))]
+      .flatMap((sourceDate) => expandDailyMigrationSelections(
+        historicalItems.filter((item) => item.revision.date === sourceDate),
+        selectedIds
+      ));
     if (validated.length === 0) {
       throw new DailyPlanConflictError(
         "invalid-state",
@@ -7178,8 +7253,11 @@ export default class ToWritePlugin extends Plugin {
     }
     const migrations: DailyTaskMigration[] = [];
     for (const item of validated) {
-      migrations.push(await this.moveDailyItemToTomorrow(item.id, item.revision));
+      migrations.push(await this.moveDailyItemToTomorrow(item.id, item.revision, targetDate));
     }
+    delete this.dailyCarryoverReviews[targetDate];
+    this.historicalDailyUnfinishedCache.delete(targetDate);
+    await this.savePluginData();
     return migrations;
   }
 
@@ -9805,6 +9883,9 @@ export default class ToWritePlugin extends Plugin {
       migratePreviousItems: async (date, selections) => {
         await this.migratePreviousDailyItems(formatDailyInputDate(date), selections);
       },
+      dismissPreviousItems: async (date) => {
+        await this.dismissPreviousDailyUnfinished(formatDailyInputDate(date));
+      },
       dropDailyItem: async (id, revision) => {
         const date = revision.date ?? await this.dateForDailyItem(id, revision);
         const current = await this.ensureStableDailyTask(id, revision, date);
@@ -10149,7 +10230,8 @@ export default class ToWritePlugin extends Plugin {
 
   private async moveDailyItemToTomorrow(
     id: string,
-    revision: DailyTaskRevision
+    revision: DailyTaskRevision,
+    destinationDate?: string
   ): Promise<DailyTaskMigration> {
     const date = await this.dateForDailyItem(id, revision);
     const item = await this.dailyPlanService.get(id, date);
@@ -10159,7 +10241,9 @@ export default class ToWritePlugin extends Plugin {
     await this.assertDailyLifecycleLeaf(item, date);
     const tomorrow = new Date(`${date}T12:00:00`);
     tomorrow.setDate(tomorrow.getDate() + 1);
-    const tomorrowDate = formatDailyInputDate(tomorrow);
+    const tomorrowDate = destinationDate
+      ? formatDailyInputDate(destinationDate)
+      : formatDailyInputDate(tomorrow);
     let createdTomorrow: DailyPlanItem | undefined;
     let reassignedPool: TaskPoolItem | undefined;
     let migration: DailyTaskMigration | undefined;

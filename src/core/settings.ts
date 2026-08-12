@@ -353,6 +353,12 @@ export interface ToWriteSavedData {
   dailyDeviceStateVersion?: number;
   /** Bounded idempotency keys for one-shot local Daily device schedules. */
   dailyScheduleOccurrenceIds?: string[];
+  /**
+   * Per planning date acknowledgement of the then-current historical carryover
+   * set. A changed task set produces a different fingerprint and is shown
+   * again, so dismissing an empty/unwanted review never hides later work.
+   */
+  dailyCarryoverReviews?: Record<string, string>;
   /** Bounded, content-free idempotency journal for desktop UI side effects. */
   deviceCommandJournal?: Array<{
     eventId: string;

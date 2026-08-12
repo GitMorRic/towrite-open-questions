@@ -1719,7 +1719,9 @@ function parsePriority(value: string): DailyPlanPriority {
 function priorityEmoji(priority: DailyPlanPriority | undefined): string {
   if (priority === "highest") return "🔺";
   if (priority === "high") return "⏫";
-  if (priority === "normal") return "🔼";
+  // Normal is the implicit default. Writing an icon for it makes an ordinary
+  // checkbox look modified even though the user never selected a priority.
+  if (priority === "normal") return "";
   if (priority === "low") return "🔽";
   if (priority === "lowest") return "⏬";
   return "";

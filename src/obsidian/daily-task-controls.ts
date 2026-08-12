@@ -253,7 +253,7 @@ class DailyPreviousMigrationWidget extends WidgetType {
     return other.count === this.count;
   }
 
-  toDOM(view: EditorView): HTMLElement {
+  toDOM(_view: EditorView): HTMLElement {
     const wrapper = createEl("aside");
     wrapper.className = "towrite-daily-previous-migration";
     const text = createSpan();
@@ -272,7 +272,7 @@ class DailyPreviousMigrationWidget extends WidgetType {
   }
 
   ignoreEvent(): boolean {
-    return false;
+    return true;
   }
 }
 
@@ -291,7 +291,7 @@ class DailyLinkedTaskProjectionWidget extends WidgetType {
         === this.projection.tasks.map((task) => `${task.taskId}:${task.revision}:${task.status}`).join("|");
   }
 
-  toDOM(view: EditorView): HTMLElement {
+  toDOM(_view: EditorView): HTMLElement {
     const details = createEl("details");
     details.className = "towrite-daily-linked-task-projection";
     const completed = this.projection.tasks.filter((task) => task.status === "done").length;
@@ -341,7 +341,7 @@ class DailyLinkedTaskProjectionWidget extends WidgetType {
   }
 
   ignoreEvent(): boolean {
-    return false;
+    return true;
   }
 }
 
@@ -432,7 +432,7 @@ class DailyTaskControlWidget extends WidgetType {
   }
 
   ignoreEvent(): boolean {
-    return false;
+    return true;
   }
 }
 
@@ -497,7 +497,7 @@ class DailyTaskEnrichmentWidget extends WidgetType {
   }
 
   ignoreEvent(): boolean {
-    return false;
+    return true;
   }
 }
 
@@ -534,6 +534,7 @@ function iconActionButton(
   button.setAttribute("aria-label", title);
   return button;
 }
+
 
 function hasNavigableTarget(resolution: DailyPlanItem["targetResolution"]): boolean {
   return Boolean(

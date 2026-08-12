@@ -20,6 +20,8 @@ describe("Daily editor task controls", () => {
     expect(widget).toContain("towrite-note-task-disclosure-content towrite-daily-enrichment-content");
     expect(widget.indexOf("disclosure.append(details)"))
       .toBeLessThan(widget.indexOf("wrapper.append(disclosure)"));
+    expect(widget).toContain("ignoreEvent(): boolean");
+    expect(widget).toContain("return true");
   });
 
   it("keeps linked-note opening explicit beside the stronger disclosure control", () => {
