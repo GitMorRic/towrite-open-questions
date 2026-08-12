@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.3.6 - 2026-08-12
+
+- Fixed Daily Note source detection so an untouched legacy `Daily/YYYY-MM-DD` placeholder follows Obsidian's configured Daily Notes folder and date format.
+- Expanded unfinished-task handling from only yesterday to earlier available Daily Notes, with source-date labels, revision-safe migration, and a persistent “handled” choice that reappears only when the source changes.
+- Restored Daily editor action clicks by allowing hover widgets to receive pointer events, and stopped normal-priority tasks from inserting a visible priority symbol into authored Markdown.
+- Added visible fallback project colors and clearer segmented progress styling without requiring manual color configuration.
+- Reworked the Journal into a calendar-style month view with selected-day completion, invested time, migration history, and marker-scoped write-back feedback.
+- Clarified deterministic summary preview versus confirmed Daily Note write-back and added regression coverage for no-heading Daily Notes and legacy source migration.
+- Production verification: 123 test files and 745 tests, Obsidian lint with zero warnings, TypeScript checks, production build, release asset validation, and the 2 MiB bundle limit.
+
 ## 0.3.5 - 2026-08-12
 
 - Made checkbox parents dual-role items: a line such as `- [ ] Project` can remain a directly completable task while also grouping nested Daily tasks and tasks projected from linked notes.
