@@ -6912,7 +6912,11 @@ export default class ToWritePlugin extends Plugin {
       if (stableLines.has(edit.line)) continue;
       const task = preview.tasks.find((candidate) => candidate.line === edit.line);
       if (!isDisplayableDailyDraftTask(edit, task)) continue;
-      const id = `draft_${shortHash(`${preview.sourcePath}|${date}|${edit.line}|${preview.expectedRevision}|${edit.before}`)}`;
+      // Do not include the whole-document revision in the runtime id. An
+      // unrelated edit elsewhere in the Daily note must not make a rendered
+      // draft disappear between the dashboard snapshot and its timing query.
+      // The revision remains part of the write-time CAS boundary below.
+      const id = this.dailyDraftItemId(preview.sourcePath, date, edit.line, edit.before);
       this.dailyDraftReferences.set(id, {
         date,
         sourcePath: preview.sourcePath,
@@ -6967,6 +6971,18 @@ export default class ToWritePlugin extends Plugin {
     return [...stable, ...drafts].sort((left, right) => left.line - right.line);
   }
 
+  private dailyDraftItemId(sourcePath: string, date: string, line: number, rawLine: string): string {
+    return `draft_${shortHash(`${sourcePath}|${date}|${line}|${rawLine}`)}`;
+  }
+
+  private projectedDailyDraftItem(id: string, date?: string): DailyPlanItem | undefined {
+    if (!id.startsWith("draft_")) return undefined;
+    const targetDate = date
+      ?? this.dailyDraftReferences.get(id)?.date
+      ?? formatDailyInputDate(new Date());
+    return this.dailyDisplayItems(targetDate).find((item) => item.id === id && item.provisional === true);
+  }
+
   private async ensureStableDailyTask(
     id: string,
     revision: DailyTaskRevision,
@@ -6980,9 +6996,35 @@ export default class ToWritePlugin extends Plugin {
       }
       return current;
     }
-    const draft = this.dailyDraftReferences.get(id);
+    let draft = this.dailyDraftReferences.get(id);
+    // A view may request an action after a cache refresh or workspace reload.
+    // Rebuild the runtime reference from a fresh, read-only preview instead of
+    // treating a valid visible draft as a missing persisted task.
+    if (!draft) {
+      const preview = await this.dailyPlanNormalizationService.preview(date);
+      const edit = preview.edits.find((candidate) =>
+        this.dailyDraftItemId(preview.sourcePath, date, candidate.line, candidate.before) === id
+        && (candidate.kind === "missing-block-id" || candidate.kind === "plain-leaf")
+      );
+      const task = edit
+        ? preview.tasks.find((candidate) => candidate.line === edit.line)
+        : undefined;
+      if (edit && isDisplayableDailyDraftTask(edit, task)) {
+        draft = {
+          date,
+          sourcePath: preview.sourcePath,
+          line: edit.line,
+          expectedRevision: preview.expectedRevision,
+          rawLine: edit.before
+        };
+        this.dailyDraftReferences.set(id, draft);
+      }
+    }
     if (!draft || draft.date !== date || draft.sourcePath !== revision.sourcePath) {
       throw new DailyPlanConflictError("revision-changed", "The draft Daily task is no longer current. Refresh and try again.");
+    }
+    if (revision.value !== draft.expectedRevision) {
+      throw new DailyPlanConflictError("revision-changed", "The Daily task changed while it was being edited. Refresh and try again.");
     }
     const preview = await this.dailyPlanNormalizationService.preview(date);
     if (preview.expectedRevision !== draft.expectedRevision || preview.sourcePath !== draft.sourcePath) {
@@ -8376,8 +8418,18 @@ export default class ToWritePlugin extends Plugin {
   }
 
   private async getDailyItemTiming(id: string, date?: string): Promise<DailyTaskTimingSnapshot> {
-    const item = await this.findDailyItem(id, date);
+    const item = await this.findDailyItem(id, date) ?? this.projectedDailyDraftItem(id, date);
+    // Draft ids are runtime-only. If the author deletes a draft checkbox while
+    // a view still holds the previous snapshot, returning an empty local timing
+    // snapshot lets that stale frame retire quietly on the next refresh.
+    if (!item && id.startsWith("draft_")) {
+      return new DailyTaskTimerService().getSnapshot(id);
+    }
     if (!item) throw new DailyPlanConflictError("not-found", `Daily item does not exist: ${id}`);
+    // Draft tasks are intentionally absent from Markdown until the author
+    // performs an explicit action. They still need a harmless local timing
+    // snapshot so one draft cannot fail the entire Today dashboard render.
+    if (item.provisional) return this.dailyTimingSnapshotForItem(item);
     if (!item.taskRef && await this.shouldUseBackendDailyWriter()) {
       const result = await this.backendClient.getDailyTaskTiming(id, {
         taskRevision: item.revision.value,
@@ -10002,7 +10054,7 @@ export default class ToWritePlugin extends Plugin {
         await this.syncTaskPoolReopen(reopened);
         await this.recordDailyTransition("reopen", reopened);
       },
-      getItemTiming: (id) => this.getDailyItemTiming(id),
+      getItemTiming: (id, _estimateMinutes, date) => this.getDailyItemTiming(id, date),
       getAnalyticsRange: (from, to) => this.getDailyAnalyticsRange(from, to),
       getMonthlySummary: (month) => this.getDailyMonthlySummary(month),
       getJournalDay: (date) => this.getDailyJournalDay(date),

@@ -278,7 +278,8 @@ export interface DailyDashboardAdapter {
   reopenItem?(id: string, revision: DailyTaskRevision): void | Promise<void>;
   getItemTiming?(
     id: string,
-    estimateMinutes?: number
+    estimateMinutes?: number,
+    date?: string
   ): DailyTaskTimingSnapshot | Promise<DailyTaskTimingSnapshot>;
   getAnalyticsRange?(from: string, to: string): DailyAnalyticsRange | Promise<DailyAnalyticsRange>;
   getMonthlySummary?(month: string): DailyMonthlySummary | Promise<DailyMonthlySummary>;

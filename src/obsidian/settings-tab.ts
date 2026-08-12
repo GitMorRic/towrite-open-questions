@@ -883,6 +883,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
 
   display(): void {
     this.settingsHostEl = this.containerEl;
+    this.containerEl.addClass("towrite-settings-definition");
     this.renderSettings(this.containerEl);
   }
 
@@ -905,6 +906,11 @@ export class ToWriteSettingTab extends PluginSettingTab {
       ],
       render: (setting) => {
         this.settingsHostEl = setting.settingEl;
+        // Obsidian renders a SettingDefinition inside a regular horizontal
+        // `.setting-item`.  Our settings UI is a complete vertical surface,
+        // so leaving that default layout in place turns the heading, tabs and
+        // active panel into three squeezed columns.
+        setting.settingEl.addClass("towrite-settings-definition");
         this.renderSettings(setting.settingEl);
         return () => {
           if (this.settingsHostEl === setting.settingEl) {

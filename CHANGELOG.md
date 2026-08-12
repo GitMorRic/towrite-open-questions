@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.3.7 - 2026-08-12
+
+- Prevented deleted or edited provisional Daily tasks from leaving stale `draft_*` timing errors that replaced the Today workspace with an error banner.
+- Stabilized draft task identity across unrelated Daily Note edits and rebuilt current draft references before explicit start, complete, timing, and menu actions.
+- Reused timing snapshots already produced with the Daily dashboard so refreshes cannot race against deleted draft tasks.
+- Restored a resilient settings-page grid at narrow and wide widths, with regression coverage for the navigation and content columns.
+- Production verification: 124 test files and 747 tests, Obsidian lint with zero warnings, TypeScript checks, production build, release asset validation, and the 2 MiB bundle limit.
+
 ## 0.3.6 - 2026-08-12
 
 - Fixed Daily Note source detection so an untouched legacy `Daily/YYYY-MM-DD` placeholder follows Obsidian's configured Daily Notes folder and date format.

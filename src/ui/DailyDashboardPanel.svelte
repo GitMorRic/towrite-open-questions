@@ -433,11 +433,26 @@
         dailyApi.getConfiguration?.() ?? Promise.resolve(configuration),
         dailyApi.getTaskPool?.() ?? Promise.resolve(undefined)
       ]);
-      const nextTimingEntries = nextSnapshot && dailyApi.getItemTiming
-        ? await Promise.all(nextSnapshot.plan.items.map(async (item) => [
-            item.id,
-            await dailyApi?.getItemTiming?.(item.id, item.estimateMinutes)
-          ] as const))
+      // The dashboard snapshot is authoritative and already carries timing.
+      // Do not perform a second lookup for provisional draft items: the author
+      // may delete one between these two reads, which is a normal refresh and
+      // must not turn into a page-level "Daily item does not exist" error.
+      const nextTimingEntries = nextSnapshot
+        ? await Promise.all(nextSnapshot.plan.items.map(async (item) => {
+            if (item.timing) return [item.id, item.timing] as const;
+            if (!dailyApi.getItemTiming) return [item.id, undefined] as const;
+            try {
+              return [
+                item.id,
+                await dailyApi.getItemTiming(item.id, item.estimateMinutes, date)
+              ] as const;
+            } catch (cause) {
+              // A provisional item is an in-memory projection. Disappearing
+              // after its Markdown line is removed is expected, not a fault.
+              if (item.provisional) return [item.id, undefined] as const;
+              throw cause;
+            }
+          }))
         : [];
       if (sequence !== refreshSequence) return;
       if (

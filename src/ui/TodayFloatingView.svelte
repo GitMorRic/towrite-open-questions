@@ -145,7 +145,7 @@
       const item = selectDailyOverview(next?.plan.items ?? []).current;
       const [timing, checkpoint] = item
         ? await Promise.all([
-          dailyApi.getItemTiming?.(item.id, item.estimateMinutes),
+          item.timing ?? dailyApi.getItemTiming?.(item.id, item.estimateMinutes, next.date),
           dailyApi.hasItemCheckpoint?.(item)
         ])
         : [undefined, false];

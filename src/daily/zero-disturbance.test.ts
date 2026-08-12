@@ -122,6 +122,19 @@ describe("zero-disturbance Daily editing", () => {
     expect(refresh).not.toContain("normalizeTask(");
     expect(refresh).not.toContain("normalizePlan(");
     expect(source).toContain("isDisplayableDailyDraftTask(edit, task)");
+    expect(source).toContain("this.findDailyItem(id, date) ?? this.projectedDailyDraftItem(id, date)");
+    expect(source).toContain("if (item.provisional) return this.dailyTimingSnapshotForItem(item)");
+    expect(source).toContain('if (!item && id.startsWith("draft_"))');
+    expect(source).not.toContain("${preview.expectedRevision}|${edit.before}");
+  });
+
+  it("renders timing from one dashboard snapshot and tolerates a deleted draft", () => {
+    const dashboard = readFileSync(new URL("../ui/DailyDashboardPanel.svelte", import.meta.url), "utf8");
+    const focus = readFileSync(new URL("../ui/TodayFloatingView.svelte", import.meta.url), "utf8");
+
+    expect(dashboard).toContain("if (item.timing) return [item.id, item.timing]");
+    expect(dashboard).toContain("if (item.provisional) return [item.id, undefined]");
+    expect(focus).toContain("item.timing ?? dailyApi.getItemTiming");
   });
 
   it("renders editor actions as hover overlays instead of layout rows", () => {

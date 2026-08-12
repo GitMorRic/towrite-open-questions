@@ -2400,12 +2400,18 @@
 }
 
 .towrite-settings-definition {
-  display: block;
+  display: block !important;
+  width: 100%;
+  min-width: 0;
   border-top: 0;
   padding: 0;
 }
 
+.setting-item.towrite-settings-definition.towrite-settings,
+.towrite-settings-definition.towrite-settings,
 .towrite-settings-definition > .towrite-settings {
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
   width: 100%;
 }
 .towrite-settings-tabs {
