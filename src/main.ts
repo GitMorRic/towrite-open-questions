@@ -142,6 +142,8 @@ import {
   parseDailyMarkdownTargets,
   collectDailyLinkedNoteReferences,
   shouldAutomaticallyNormalizeDailyEdit,
+  isDisplayableDailyDraftTask,
+  projectDailyTaskAggregates,
   resolveDailyTarget,
   dailyDeviceScore,
   dailyCreateOnlyTitle,
@@ -559,6 +561,17 @@ export default class ToWritePlugin extends Plugin {
   private selectionToolbar?: SelectionQuestionToolbar;
   private pdfQuestionLayer?: PdfQuestionLayer;
   private backgroundRefreshTimer = 0;
+  private startupReconciliationTimer = 0;
+  private startupMarkdownReconciliationTimer = 0;
+  private startupIdleCallback?: number;
+  private startupCachesReady = false;
+  private fullVaultMaintenanceQueue: Promise<void> = Promise.resolve();
+  private indexRefreshPromise?: Promise<void>;
+  private markdownTaskSyncPromise?: Promise<{
+    filesScanned: number;
+    tasksRegistered: number;
+    filesFailed: number;
+  }>;
   private hubSyncTimer = 0;
   private hubDeviceEventPollTimer = 0;
   private hubContextTimer = 0;
@@ -1234,7 +1247,6 @@ export default class ToWritePlugin extends Plugin {
       onEnrich: (candidate) => this.enrichPendingNoteTask(candidate),
       onTrackOnly: (candidate) => this.trackPendingNoteTask(candidate)
     }));
-    this.rebuildMarkdownTaskNoteSuggestions();
     this.registerEditorSuggest(new MarkdownTaskInputSuggest(this.app, {
       isEnabled: () => this.settings.daily.enabled,
       getItems: () => this.markdownTaskInputSuggestions()
@@ -1248,7 +1260,12 @@ export default class ToWritePlugin extends Plugin {
     // File changes are synchronized incrementally. This slower pass is only a
     // reconciliation safety net for external sync tools that may skip events.
     this.registerInterval(window.setInterval(() => {
-      if (this.settings.daily.enabled) void this.syncMarkdownTasksToWorkPool();
+      if (
+        this.settings.daily.enabled
+        && Date.now() - this.lastEditorActivityAt >= 5_000
+      ) {
+        void this.syncMarkdownTasksToWorkPool();
+      }
     }, 30 * 60 * 1000));
     this.registerInterval(window.setInterval(() => {
       if (
@@ -1259,6 +1276,8 @@ export default class ToWritePlugin extends Plugin {
         this.refreshNoteEditorTaskControls();
       }
     }, 60_000));
+    const persistSecurityMigration = this.securityMigrationVersion < 1;
+    if (persistSecurityMigration) this.securityMigrationVersion = 1;
     this.app.workspace.onLayoutReady(() => {
       void this.configureExternalApiServer(false);
       this.configureQuote0Sync();
@@ -1272,34 +1291,13 @@ export default class ToWritePlugin extends Plugin {
         void this.runDueDailyDeviceSchedule();
       }, 30_000));
       void this.runDueDailyDeviceSchedule();
-      // Restore the small, user-visible caches first. Full Vault reconciliation
-      // is deliberately deferred so ribbon commands and pop-outs stay usable
-      // while Obsidian restores editors.
-      void (async () => {
-        try {
-          await this.navigationCheckpointService.load();
-        } catch (error) {
-          console.error("ToWrite could not load navigation checkpoints", error);
-        }
-        await this.initializeDailyTaskTimer();
-        await this.initializeNoteTaskTimer();
-        await this.returnExpiredTaskPoolAssignments();
-        await this.refreshActiveTaskPoolCache(false);
-        await this.refreshDailyPlanCache(false);
-        await this.refreshActiveNoteTaskCache();
-        window.setTimeout(() => {
-          void (async () => {
-            await this.refreshIndex();
-            window.setTimeout(() => {
-              if (this.settings.daily.enabled) void this.syncMarkdownTasksToWorkPool();
-            }, 2_500);
-          })().catch((error: unknown) => {
-            console.error("ToWrite background index reconciliation failed", error);
-          });
-        }, 1_200);
-      })().catch((error: unknown) => {
+      // Restore only the files needed by the visible Today/Work Pool surfaces.
+      // Full Vault indexing and Markdown reconciliation wait for an idle turn so
+      // a cold laptop can finish metadata-cache and sync recovery first.
+      void this.restoreStartupCaches().catch((error: unknown) => {
         console.error("ToWrite startup cache restore failed", error);
       });
+      this.scheduleStartupReconciliation();
       if (this.settings.autoOpenSidebar) {
         window.setTimeout(() => {
           void this.activateSidebar();
@@ -1308,20 +1306,38 @@ export default class ToWritePlugin extends Plugin {
       void this.runSuggestionNotifications();
       void this.syncDeviceHub(false);
       void this.registerCapturePluginBridge(false);
+      if (persistSecurityMigration) {
+        window.setTimeout(() => {
+          void this.savePluginData().catch((error: unknown) => {
+            console.error("ToWrite could not persist the deferred security migration", error);
+          });
+        }, 1_000);
+      }
+      if (this.showQueryTokenMigrationNotice) {
+        new Notice("ToWrite disabled External API query-token reads during the security upgrade. Re-enable them explicitly in Advanced API settings only if a restricted device flow requires it.", 12000);
+      }
     });
-    if (this.securityMigrationVersion < 1) {
-      this.securityMigrationVersion = 1;
-      await this.savePluginData();
-    }
-    if (this.showQueryTokenMigrationNotice) {
-      new Notice("ToWrite disabled External API query-token reads during the security upgrade. Re-enable them explicitly in Advanced API settings only if a restricted device flow requires it.", 12000);
-    }
   }
 
   onunload(): void {
     if (this.backgroundRefreshTimer) {
       window.clearTimeout(this.backgroundRefreshTimer);
       this.backgroundRefreshTimer = 0;
+    }
+    if (this.startupReconciliationTimer) {
+      window.clearTimeout(this.startupReconciliationTimer);
+      this.startupReconciliationTimer = 0;
+    }
+    if (this.startupMarkdownReconciliationTimer) {
+      window.clearTimeout(this.startupMarkdownReconciliationTimer);
+      this.startupMarkdownReconciliationTimer = 0;
+    }
+    if (this.startupIdleCallback !== undefined) {
+      const idleWindow = window as Window & {
+        cancelIdleCallback?: (handle: number) => void;
+      };
+      idleWindow.cancelIdleCallback?.(this.startupIdleCallback);
+      this.startupIdleCallback = undefined;
     }
     if (this.hubSyncTimer) {
       window.clearInterval(this.hubSyncTimer);
@@ -1767,6 +1783,17 @@ export default class ToWritePlugin extends Plugin {
   }
 
   async refreshIndex(): Promise<void> {
+    if (this.indexRefreshPromise) return this.indexRefreshPromise;
+    const operation = this.enqueueFullVaultMaintenance(() => this.runFullIndexRefresh());
+    this.indexRefreshPromise = operation;
+    try {
+      await operation;
+    } finally {
+      if (this.indexRefreshPromise === operation) this.indexRefreshPromise = undefined;
+    }
+  }
+
+  private async runFullIndexRefresh(): Promise<void> {
     this.inboxIndex.rebuild();
     await this.indexer.rebuildVault(false);
     await this.refreshSidecars({ rebuildWorkflow: false, notify: false });
@@ -1785,6 +1812,12 @@ export default class ToWritePlugin extends Plugin {
     this.aiService.refreshMissingForActiveNote(this.getActiveFile());
     this.refreshEditorDecorations();
     this.store.notify();
+  }
+
+  private enqueueFullVaultMaintenance<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.fullVaultMaintenanceQueue.then(operation, operation);
+    this.fullVaultMaintenanceQueue = result.then(() => undefined, () => undefined);
+    return result;
   }
 
   async refreshWorkflowIndex(): Promise<void> {
@@ -1943,6 +1976,100 @@ export default class ToWritePlugin extends Plugin {
 
   private shouldBuildLocalKnowledgeIndex(): boolean {
     return this.settings.ai.enabled || this.settings.deviceCapture.localRecommendations;
+  }
+
+  private async restoreStartupCaches(): Promise<void> {
+    await this.runStartupStep("navigation checkpoints", () => this.navigationCheckpointService.load());
+    await yieldToEventLoop();
+    await this.runStartupStep("Daily timer", () => this.initializeDailyTaskTimer());
+    await this.runStartupStep("note task timer", () => this.initializeNoteTaskTimer());
+    await yieldToEventLoop();
+    await this.runStartupStep("Task Pool cache", () => this.refreshActiveTaskPoolCache(false));
+    await yieldToEventLoop();
+    await this.runStartupStep("Daily plan cache", () => this.refreshDailyPlanCache(false, {
+      rebuildLinkedProjection: false,
+      refreshBackendTiming: false
+    }));
+    this.startupCachesReady = true;
+    this.rebuildMarkdownTaskInputSuggestionCache();
+    this.notifyUi();
+    await yieldToEventLoop();
+    await this.runStartupStep("active note tasks", () => this.refreshActiveNoteTaskCache());
+  }
+
+  private async runStartupStep(label: string, operation: () => Promise<unknown>): Promise<void> {
+    try {
+      await operation();
+    } catch (error) {
+      console.error(`ToWrite could not restore ${label}`, error);
+    }
+  }
+
+  private scheduleStartupReconciliation(delayMs = 5_000): void {
+    if (this.startupReconciliationTimer) window.clearTimeout(this.startupReconciliationTimer);
+    this.startupReconciliationTimer = window.setTimeout(() => {
+      this.startupReconciliationTimer = 0;
+      if (Date.now() - this.lastEditorActivityAt < 3_000) {
+        this.scheduleStartupReconciliation(4_000);
+        return;
+      }
+      const idleWindow = window as Window & {
+        requestIdleCallback?: (
+          callback: (deadline: { didTimeout: boolean; timeRemaining: () => number }) => void,
+          options?: { timeout: number }
+        ) => number;
+      };
+      const run = (): void => {
+        this.startupIdleCallback = undefined;
+        void this.runStartupReconciliation();
+      };
+      if (idleWindow.requestIdleCallback) {
+        this.startupIdleCallback = idleWindow.requestIdleCallback(run, { timeout: 15_000 });
+      } else {
+        this.startupReconciliationTimer = window.setTimeout(run, 1_500);
+      }
+    }, delayMs);
+  }
+
+  private async runStartupReconciliation(): Promise<void> {
+    if (!this.startupCachesReady) {
+      this.scheduleStartupReconciliation(3_000);
+      return;
+    }
+    // requestIdleCallback may fire because of its timeout even while the user
+    // has started typing. Re-check immediately before touching the whole Vault.
+    if (Date.now() - this.lastEditorActivityAt < 5_000) {
+      this.scheduleStartupReconciliation(8_000);
+      return;
+    }
+    try {
+      await this.refreshIndex();
+      this.rebuildMarkdownTaskNoteSuggestions();
+      await this.returnExpiredTaskPoolAssignments();
+      await this.refreshActiveTaskPoolCache(false);
+      this.notifyUi();
+    } catch (error) {
+      console.error("ToWrite background index reconciliation failed", error);
+    } finally {
+      this.scheduleStartupMarkdownReconciliation();
+    }
+  }
+
+  private scheduleStartupMarkdownReconciliation(delayMs = 20_000): void {
+    if (!this.settings.daily.enabled) return;
+    if (this.startupMarkdownReconciliationTimer) {
+      window.clearTimeout(this.startupMarkdownReconciliationTimer);
+    }
+    this.startupMarkdownReconciliationTimer = window.setTimeout(() => {
+      this.startupMarkdownReconciliationTimer = 0;
+      if (Date.now() - this.lastEditorActivityAt < 5_000) {
+        this.scheduleStartupMarkdownReconciliation(8_000);
+        return;
+      }
+      void this.syncMarkdownTasksToWorkPool().catch((error: unknown) => {
+        console.error("ToWrite deferred Markdown reconciliation failed", error);
+      });
+    }, delayMs);
   }
 
   private getLocalKnowledgeScope() {
@@ -6339,7 +6466,10 @@ export default class ToWritePlugin extends Plugin {
     this.queueDeviceHubSync();
   }
 
-  private async refreshDailyPlanCache(notify = true): Promise<void> {
+  private async refreshDailyPlanCache(
+    notify = true,
+    options: { rebuildLinkedProjection?: boolean; refreshBackendTiming?: boolean } = {}
+  ): Promise<void> {
     const previous = this.dailyPlanItems;
     const previousRevision = this.dailyPlanDocument?.revision;
     let document = this.settings.daily.enabled
@@ -6411,8 +6541,8 @@ export default class ToWritePlugin extends Plugin {
     this.previousDailyUnfinished = document
       ? await this.getPreviousDailyUnfinished(document.date)
       : [];
-    await this.refreshDailyBackendTimingCache(next);
-    await this.rebuildDailyLinkedTaskProjectionCache();
+    if (options.refreshBackendTiming !== false) await this.refreshDailyBackendTimingCache(next);
+    if (options.rebuildLinkedProjection !== false) await this.rebuildDailyLinkedTaskProjectionCache();
     if (this.dailyPlanCacheInitialized && previousRevision && document?.revision !== previousRevision) {
       this.dailyDeviceStateVersion += 1;
       this.scheduleDailyStateSave();
@@ -6735,11 +6865,16 @@ export default class ToWritePlugin extends Plugin {
     if (date === today) {
       await this.refreshDailyPlanCache(false);
       return this.withDailyTimingSnapshots(
-        this.dailyActivityService.getSnapshot(date, this.dailyDisplayItems(date))
+        this.dailyActivityService.getSnapshot(
+          date,
+          projectDailyTaskAggregates(this.dailyDisplayItems(date), this.dailyLinkedTaskProjections)
+        )
       );
     }
     const items = this.settings.daily.enabled ? await this.dailyPlanService.list(date) : [];
-    return this.withDailyTimingSnapshots(this.dailyActivityService.getSnapshot(date, items));
+    return this.withDailyTimingSnapshots(
+      this.dailyActivityService.getSnapshot(date, projectDailyTaskAggregates(items))
+    );
   }
 
   /**
@@ -6754,9 +6889,9 @@ export default class ToWritePlugin extends Plugin {
     const stableLines = new Set(stable.map((item) => item.line));
     const drafts: DailyPlanItem[] = [];
     for (const edit of preview.edits) {
-      if (edit.kind !== "missing-block-id" || stableLines.has(edit.line)) continue;
+      if (stableLines.has(edit.line)) continue;
       const task = preview.tasks.find((candidate) => candidate.line === edit.line);
-      if (!task?.checkbox || !task.text.trim()) continue;
+      if (!isDisplayableDailyDraftTask(edit, task)) continue;
       const id = `draft_${shortHash(`${preview.sourcePath}|${date}|${edit.line}|${preview.expectedRevision}|${edit.before}`)}`;
       this.dailyDraftReferences.set(id, {
         date,
@@ -6786,6 +6921,7 @@ export default class ToWritePlugin extends Plugin {
           date
         },
         parentTaskId: task.parentTaskId,
+        parentTaskLine: task.parentTaskLine,
         depth: task.depth,
         scheduledDate: date,
         scheduledDateExplicit: false,
@@ -6833,7 +6969,9 @@ export default class ToWritePlugin extends Plugin {
       throw new DailyPlanConflictError("revision-changed", "The Daily task changed while it was being edited. No id was written.");
     }
     const edit = preview.edits.find((candidate) =>
-      candidate.line === draft.line && candidate.before === draft.rawLine && candidate.kind === "missing-block-id"
+      candidate.line === draft.line
+      && candidate.before === draft.rawLine
+      && (candidate.kind === "missing-block-id" || candidate.kind === "plain-leaf")
     );
     if (!edit) {
       throw new DailyPlanConflictError("revision-changed", "The target task line changed. No id was written.");
@@ -8960,13 +9098,40 @@ export default class ToWritePlugin extends Plugin {
 
   private async getWorkPoolSnapshot(query: WorkPoolQuery = {}): Promise<WorkPoolSnapshot> {
     const taskPool = await this.taskPoolService.read();
-    const taskSourceAllowlist = this.rebuildWorkPoolTaskSourceAllowlistCache();
     const dailyDate = formatDailyInputDate(new Date());
     const dailyHierarchy = this.settings.daily.enabled
       ? await this.dailyPlanService.readHierarchy(dailyDate)
       : undefined;
+    return this.buildWorkPoolSnapshot(taskPool.items, dailyHierarchy, query);
+  }
+
+  private getCachedWorkPoolSnapshot(query: WorkPoolQuery = {}): WorkPoolSnapshot {
+    const dailyDate = formatDailyInputDate(new Date());
+    const preview = this.dailyPlanNormalizationPreviews.find((candidate) => candidate.date === dailyDate);
+    const dailyHierarchy: DailyPlanHierarchy | undefined = preview
+      ? {
+          schemaVersion: 1,
+          date: preview.date,
+          source: preview.source,
+          sourcePath: preview.sourcePath,
+          groups: preview.groups,
+          tasks: preview.tasks,
+          diagnostics: preview.diagnostics,
+          revision: preview.expectedRevision
+        }
+      : undefined;
+    return this.buildWorkPoolSnapshot(this.activeTaskPoolItems, dailyHierarchy, query);
+  }
+
+  private buildWorkPoolSnapshot(
+    tasks: readonly TaskPoolItem[],
+    dailyHierarchy: DailyPlanHierarchy | undefined,
+    query: WorkPoolQuery
+  ): WorkPoolSnapshot {
+    const taskSourceAllowlist = this.workPoolTaskSourceAllowlist();
+    const dailyDate = dailyHierarchy?.date ?? formatDailyInputDate(new Date());
     return this.workPoolService.build({
-      tasks: taskPool.items,
+      tasks,
       questions: this.store.query(),
       inboxItems: this.getInboxSnapshot().items,
       workflowFiles: this.workflowIndex.getPayload({ compact: true }).files ?? [],
@@ -9001,6 +9166,21 @@ export default class ToWritePlugin extends Plugin {
     tasksRegistered: number;
     filesFailed: number;
   }> {
+    if (this.markdownTaskSyncPromise) return this.markdownTaskSyncPromise;
+    const operation = this.enqueueFullVaultMaintenance(() => this.runMarkdownTaskSync());
+    this.markdownTaskSyncPromise = operation;
+    try {
+      return await operation;
+    } finally {
+      if (this.markdownTaskSyncPromise === operation) this.markdownTaskSyncPromise = undefined;
+    }
+  }
+
+  private async runMarkdownTaskSync(): Promise<{
+    filesScanned: number;
+    tasksRegistered: number;
+    filesFailed: number;
+  }> {
     const beforeIds = new Set((await this.taskPoolService.list()).map((item) => item.taskId));
     const taskSourceAllowlist = this.rebuildWorkPoolTaskSourceAllowlistCache();
     let filesScanned = 0;
@@ -9020,7 +9200,7 @@ export default class ToWritePlugin extends Plugin {
         filesFailed += 1;
         console.error(`ToWrite could not sync Markdown tasks from ${file.path}`, error);
       }
-      if ((filesScanned + filesFailed) % 20 === 0) await Promise.resolve();
+      if ((filesScanned + filesFailed) % 10 === 0) await yieldToEventLoop();
     }
     const after = await this.taskPoolService.list();
     this.rebuildMarkdownTaskNoteSuggestions();
@@ -9590,7 +9770,9 @@ export default class ToWritePlugin extends Plugin {
         }
       }),
       getTaskPool: () => this.taskPoolService.read(),
-      getWorkPool: (query) => this.getWorkPoolSnapshot(query),
+      // Views consume the already-restored caches so reopening a Work Pool tab
+      // never performs Vault reads while Obsidian is restoring its layout.
+      getWorkPool: async (query) => this.getCachedWorkPoolSnapshot(query),
       actOnWorkPoolItem: async (item, action, options) => {
         await this.actOnWorkPoolItem(item, action, options);
       },

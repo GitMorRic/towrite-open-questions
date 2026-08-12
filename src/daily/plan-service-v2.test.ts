@@ -16,7 +16,7 @@ describe("DailyPlanService v2", () => {
     expect(service.pathForDate("2026-08-05")).toBe("sync/Todo_and_tosolve/20260805.md");
   });
 
-  it("creates an empty Markdown plan scaffold without inventing a task", async () => {
+  it("does not create an empty Markdown scaffold when clearing an absent theme", async () => {
     const storage = new MemoryDailyStorage();
     const service = new DailyPlanService(storage, {
       now: () => new Date("2026-07-27T08:00:00+08:00")
@@ -29,14 +29,7 @@ describe("DailyPlanService v2", () => {
     );
 
     expect(document.items).toEqual([]);
-    expect(storage.files.get("Daily/2026-07-27.md")).toBe([
-      "# 2026-07-27",
-      "",
-      "## 今日计划",
-      "",
-      "## ToDo",
-      ""
-    ].join("\n"));
+    expect(storage.files.has("Daily/2026-07-27.md")).toBe(false);
   });
 
   it("supports a fixed planning document with isolated date sections", async () => {
@@ -58,8 +51,9 @@ describe("DailyPlanService v2", () => {
       items: [{ text: "Tomorrow" }]
     });
     const markdown = storage.files.get("Planning/Daily Plans.md")!;
-    expect(markdown).toContain("## 2026-07-23\n\n### 今日计划");
-    expect(markdown).toContain("## 2026-07-24\n\n### 今日计划");
+    expect(markdown).toContain("## 2026-07-23\n\n### ToDo");
+    expect(markdown).toContain("## 2026-07-24");
+    expect(markdown).toContain("### 今日计划");
     expect(markdown).toContain("[towrite-theme:: Ship Echo]");
   });
 

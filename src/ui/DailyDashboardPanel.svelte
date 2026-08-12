@@ -73,6 +73,7 @@
     filterAvailableTaskPoolItems,
     filterDailyItemsByCategory,
     groupDailyItems,
+    isDailyItemComplete,
     isDailySummaryCurrent,
     selectDailyOverview,
     type DailyPlanningDay
@@ -221,9 +222,9 @@
   $: selectedDate = dailyDateForPlanningDay(planningDay);
   $: items = (snapshot?.plan.items ?? []) as DailyPlanItemPresentation[];
   $: overview = selectDailyOverview(items);
-  $: todoItems = items.filter((item) => item.status === "todo");
-  $: inProgressItems = items.filter((item) => item.status === "in-progress");
-  $: doneItems = items.filter((item) => item.status === "done");
+  $: todoItems = items.filter((item) => !isDailyItemComplete(item) && item.status === "todo");
+  $: inProgressItems = items.filter((item) => !isDailyItemComplete(item) && item.status === "in-progress");
+  $: doneItems = items.filter(isDailyItemComplete);
   $: categories = dailyCategories(items);
   $: categoryChoices = [...new Set([
     ...configuration.categoryPresets.map((preset) => preset.label),
@@ -244,9 +245,9 @@
   $: groupedItems = groupDailyItems(filteredItems, hierarchy, items);
   $: unnormalizedTaskCount = hierarchy?.tasks.filter((task) => task.normalizationRequired).length ?? 0;
   $: boardColumns = [
-    { status: "todo" as const, label: "待办", items: filteredItems.filter((item) => item.status === "todo") },
-    { status: "in-progress" as const, label: "进行中", items: filteredItems.filter((item) => item.status === "in-progress") },
-    { status: "done" as const, label: "已完成", items: filteredItems.filter((item) => item.status === "done") }
+    { status: "todo" as const, label: "待办", items: filteredItems.filter((item) => !isDailyItemComplete(item) && item.status === "todo") },
+    { status: "in-progress" as const, label: "进行中", items: filteredItems.filter((item) => !isDailyItemComplete(item) && item.status === "in-progress") },
+    { status: "done" as const, label: "已完成", items: filteredItems.filter(isDailyItemComplete) }
   ];
   $: calendarEntries = buildDailyCalendar(filteredItems, selectedDate);
   $: previewItem = items.find((item) => item.id === previewItemId)
@@ -260,7 +261,7 @@
           id: item.id,
           text: item.text,
           kind: item.kind,
-          status: item.status,
+          status: isDailyItemComplete(item) ? "done" : item.status,
           taskRevision: item.revision.value,
           primary: Boolean(item.primary),
           minimum: Boolean(item.minimum),
@@ -308,7 +309,7 @@
       const existing = byProject.get(id);
       if (existing) {
         existing.items.push(item);
-        if (item.status === "done") existing.done += 1;
+        if (isDailyItemComplete(item)) existing.done += 1;
         continue;
       }
       byProject.set(id, {
@@ -316,7 +317,7 @@
         label,
         color: appearanceById.get(id)?.color ?? projectFallbackColor(id),
         items: [item],
-        done: item.status === "done" ? 1 : 0
+        done: isDailyItemComplete(item) ? 1 : 0
       });
     }
     return [...byProject.values()];
@@ -526,7 +527,10 @@
   }
 
   function directChildTasks(item: DailyPlanItemPresentation): DailyPlanItemPresentation[] {
-    return items.filter((candidate) => candidate.parentTaskId === item.id);
+    return items.filter((candidate) => candidate.parentTaskId === item.id
+      || (!candidate.parentTaskId
+        && candidate.parentTaskLine === item.line
+        && candidate.sourcePath === item.sourcePath));
   }
 
   async function toggleDailyCompletion(item: DailyPlanItemPresentation): Promise<void> {
@@ -534,7 +538,7 @@
       await run(`reopen:${item.id}`, () => dailyApi?.reopenItem?.(item.id, item.revision));
       return;
     }
-    const unfinishedChildren = directChildTasks(item).filter((child) => child.status !== "done");
+    const unfinishedChildren = directChildTasks(item).filter((child) => !isDailyItemComplete(child));
     if (
       unfinishedChildren.length > 0
       && !window.confirm(`还有 ${unfinishedChildren.length} 个直接子任务未完成。仍要完成父任务吗？`)
@@ -1827,7 +1831,7 @@
                   {@const timing = timingByItem[item.id]}
             <article
               class:current={item.status === "in-progress"}
-              class:completed={item.status === "done"}
+              class:completed={isDailyItemComplete(item)}
               class="plan-item"
               style={`--task-depth: ${dailyItemDepth(item)}`}
             >
@@ -1838,7 +1842,7 @@
                 title={item.status === "done" ? "重新打开" : "标记完成"}
                 on:click={() => toggleDailyCompletion(item)}
               >
-                {#if item.status === "done"}<Check size={17} />{:else}<Circle size={17} />{/if}
+                {#if isDailyItemComplete(item)}<Check size={17} />{:else}<Circle size={17} />{/if}
               </button>
               <button class="item-main" type="button" on:click={() => {
                 previewItemId = item.id;
@@ -1859,7 +1863,13 @@
                   {#if item.priority && item.priority !== "normal"}<em class={`priority priority-${item.priority}`}>{priorityLabel(item.priority)}</em>{/if}
                   {#if item.dueDateExplicit !== false && item.dueDate}<time datetime={item.dueDate}>截止 {item.dueDate}</time>{/if}
                   {#if directChildTasks(item).length}
-                    <em>子任务 {directChildTasks(item).filter((child) => child.status === "done").length}/{directChildTasks(item).length}</em>
+                    <em>子任务 {directChildTasks(item).filter(isDailyItemComplete).length}/{directChildTasks(item).length}</em>
+                  {/if}
+                  {#if item.aggregate?.linkedTasks}
+                    <em>子文档 {item.aggregate.linkedTasks} 项</em>
+                  {/if}
+                  {#if item.aggregate}
+                    <em class="aggregate-progress">汇总 {item.aggregate.done}/{item.aggregate.total}</em>
                   {/if}
                 </span>
                 {/if}
@@ -2021,7 +2031,7 @@
                 <header><strong>{column.label}</strong><span>{column.items.length}</span></header>
                 <div>
                   {#each column.items as item (item.id)}
-                    <article class:current={item.status === "in-progress"} class:completed={item.status === "done"}>
+                    <article class:current={item.status === "in-progress"} class:completed={isDailyItemComplete(item)}>
                       <button type="button" on:click={() => {
                         previewItemId = item.id;
                         previewPage = "item";
@@ -2055,7 +2065,7 @@
               <thead><tr><th>任务</th><th>类别</th><th>状态</th><th>优先级</th><th>截止</th><th>预计</th><th>标签</th><th></th></tr></thead>
               <tbody>
                 {#each filteredItems as item (item.id)}
-                  <tr class:completed={item.status === "done"}>
+                  <tr class:completed={isDailyItemComplete(item)}>
                     <td style={`--task-depth: ${dailyItemDepth(item)}`}><button type="button" on:click={() => {
                       previewItemId = item.id;
                       previewPage = "item";
@@ -2081,7 +2091,7 @@
                 <header><CalendarDays size={15} /><strong>{formatCalendarDate(entry.date)}</strong><span>{entry.items.length}</span></header>
                 <div>
                   {#each entry.items as item (item.id)}
-                    <button class:completed={item.status === "done"} type="button" on:click={() => {
+                    <button class:completed={isDailyItemComplete(item)} type="button" on:click={() => {
                       previewItemId = item.id;
                       previewPage = "item";
                     }}>

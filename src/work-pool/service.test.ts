@@ -13,7 +13,7 @@ import {
 } from "./service";
 
 describe("WorkPoolService", () => {
-  it("projects unnormalized Daily leaf rows into the Work Pool without copying their group checkbox", () => {
+  it("projects unnormalized Daily leaves and the authored aggregate checkbox into the Work Pool", () => {
     const date = "2026-08-05";
     const sourcePath = `sync/Todo_and_tosolve/${date.replaceAll("-", "")}.md`;
     const hierarchy = parseDailyPlanHierarchy([
@@ -39,10 +39,12 @@ describe("WorkPoolService", () => {
     });
     const daily = items.filter((item) => item.dailyDate === date);
 
-    expect(daily).toHaveLength(2);
-    expect(daily.map((item) => item.title)).not.toContain("项目");
+    expect(daily).toHaveLength(3);
+    expect(daily.map((item) => item.title)).toContain("项目");
     expect(daily.every((item) => item.dailyProvisional)).toBe(true);
-    expect(daily.map((item) => item.classification.projectLabel)).toEqual(["项目", "项目"]);
+    expect(daily.find((item) => item.title === "项目")?.classification.projectLabel).toBeUndefined();
+    expect(daily.filter((item) => item.title !== "项目").map((item) => item.classification.projectLabel))
+      .toEqual(["项目", "项目"]);
     expect(daily.find((item) => item.title.includes("obsidian"))?.notePath)
       .toBe("obsidian-待办清单.md");
   });

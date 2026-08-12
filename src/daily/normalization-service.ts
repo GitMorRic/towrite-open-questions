@@ -9,6 +9,7 @@ import {
 } from "./plan-service";
 import type {
   DailyPlanNormalizationEdit,
+  DailyPlanHierarchyTask,
   DailyPlanEnrichmentPatch,
   DailyPlanNormalizationPreview,
   DailyPlanNormalizationResult,
@@ -42,6 +43,20 @@ export function shouldAutomaticallyNormalizeDailyEdit(
       edit.kind === "plain-leaf"
       && isPureDailyNoteLinkText(edit.taskText, { sourcePath })
     );
+}
+
+/**
+ * A read-only projection may show both handwritten checkbox leaves and the
+ * numbered leaves of a checkbox category. Neither kind is normalized until a
+ * user explicitly starts, completes, edits, migrates, or sends that item.
+ */
+export function isDisplayableDailyDraftTask(
+  edit: DailyPlanNormalizationEdit,
+  task: DailyPlanHierarchyTask | undefined
+): task is DailyPlanHierarchyTask {
+  if (!task || task.line !== edit.line || !task.text.trim()) return false;
+  return (edit.kind === "missing-block-id" && task.checkbox)
+    || (edit.kind === "plain-leaf" && !task.checkbox);
 }
 
 /**
@@ -264,10 +279,12 @@ export function createDailyPlanNormalizationPreview(
   const hierarchy = parseDailyPlanHierarchy(markdown, sourcePath, date, options);
   const createId = options.createId ?? createDailyId;
   const usedIds = new Set(hierarchy.tasks.flatMap((task) => task.blockId ? [task.blockId] : []));
+  const sourceLines = markdown.split(/\r?\n/u);
   const edits: DailyPlanNormalizationEdit[] = [];
   for (const task of hierarchy.tasks) {
     if (!task.normalizationRequired) continue;
     if (hasIncompleteDailyTaskLinkSyntax(task.rawLine)) continue;
+    if (hasInProgressDescendant(task.line, sourceLines)) continue;
     const proposedBlockId = task.blockId ?? nextUniqueId(createId, usedIds);
     const after = normalizedTaskLine(task.rawLine, task.checkbox, task.status === "done", proposedBlockId);
     if (after === task.rawLine) continue;
@@ -296,6 +313,33 @@ export function createDailyPlanNormalizationPreview(
     changed: edits.length > 0,
     diff: formatCompactDiff(edits)
   };
+}
+
+/**
+ * While the author is still typing a nested list or note link, neither that
+ * child nor its checkbox parent may be normalized. This keeps an aggregate
+ * parent's second role completely read-only until an explicit action.
+ */
+function hasInProgressDescendant(
+  taskLine: number,
+  lines: readonly string[]
+): boolean {
+  const parentIndex = taskLine - 1;
+  const parentIndent = leadingWhitespace(lines[parentIndex] ?? "");
+  for (let index = parentIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    if (!line.trim()) continue;
+    const indent = leadingWhitespace(line);
+    if (indent <= parentIndent) break;
+    const trimmed = line.trim();
+    if (/^(?:[-+*]|\d+[.)])\s*$/u.test(trimmed)) return true;
+    if (hasIncompleteDailyTaskLinkSyntax(line)) return true;
+  }
+  return false;
+}
+
+function leadingWhitespace(value: string): number {
+  return /^\s*/u.exec(value)?.[0].length ?? 0;
 }
 
 function inferLegacyTimingSuggestion(

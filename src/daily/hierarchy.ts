@@ -102,7 +102,7 @@ export function parseDailyPlanHierarchy(
   const diagnostics: DailyPlanHierarchyDiagnostic[] = [];
 
   for (const node of nodes) {
-    if (!isStructuralGroup(node, lines)) continue;
+    if (!isGroupNode(node)) continue;
     const parentGroup = nearestGroup(node.parent);
     const text = cleanListText(node.body);
     node.group = {
@@ -122,7 +122,7 @@ export function parseDailyPlanHierarchy(
   const tasks: DailyPlanHierarchyTask[] = [];
   const ids = new Map<string, ListNode[]>();
   for (const node of nodes) {
-    if (isStructuralGroup(node, lines) || !cleanListText(node.body)) continue;
+    if (!isTaskNode(node) || !cleanListText(node.body)) continue;
     for (const id of node.blockIds) {
       const occurrences = ids.get(id) ?? [];
       occurrences.push(node);
@@ -154,7 +154,7 @@ export function parseDailyPlanHierarchy(
   }
 
   for (const node of nodes) {
-    if (isStructuralGroup(node, lines) || !cleanListText(node.body)) continue;
+    if (!isTaskNode(node) || !cleanListText(node.body)) continue;
     const lineageGroups = ancestorGroups(node);
     const lineage = createDailyLineage(lineageGroups, sourcePath, normalizedDate);
     const firstChildIndex = node.children[0]?.index ?? Number.POSITIVE_INFINITY;
@@ -190,6 +190,7 @@ export function parseDailyPlanHierarchy(
       endLine: ownEndIndex + 1,
       depth: node.depth,
       parentTaskId: nearestParentTaskId(node),
+      parentTaskLine: nearestParentTask(node)?.line,
       category,
       taskRef,
       status,
@@ -223,18 +224,17 @@ export function parseDailyPlanHierarchy(
 }
 
 /**
- * A checkbox used only as a heading/category should not inflate task counts.
- * An authored parent without its own stable id is a structural container even
- * after one of its leaf rows is normalized. An id-bearing checkbox containing
- * checkbox children remains a real task so existing nested-task documents
- * keep their semantics.
+ * Every list parent is a structural group. Checkbox parents deliberately keep
+ * a second role as aggregate tasks, so an author can use `- [ ] Project` both
+ * as a collapsible category and as the explicit completion switch for all work
+ * below it. Plain list parents remain group-only.
  */
-function isStructuralGroup(node: ListNode, lines: readonly string[]): boolean {
-  if (node.children.length === 0) return false;
-  const owned = [node.rawLine, ...node.directLines.map((line) => lines[line])].join("\n");
-  if (readOwnedField(owned, "kind")?.trim().toLowerCase() === "task") return false;
-  if (!node.checkbox || node.blockIds.length === 0) return true;
-  return node.children.every((child) => !child.checkbox);
+function isGroupNode(node: ListNode): boolean {
+  return node.children.length > 0;
+}
+
+function isTaskNode(node: ListNode): boolean {
+  return node.checkbox || node.children.length === 0;
 }
 
 /**
@@ -418,13 +418,16 @@ function nearestGroup(node: ListNode | undefined): DailyPlanGroup | undefined {
 }
 
 function nearestParentTaskId(node: ListNode): string | undefined {
+  const current = nearestParentTask(node);
+  return current?.blockIds.length === 1
+    ? normalizeBlockId(current.blockIds[0])
+    : undefined;
+}
+
+function nearestParentTask(node: ListNode): ListNode | undefined {
   let current = node.parent;
   while (current) {
-    if (current.checkbox) {
-      return current.blockIds.length === 1
-        ? normalizeBlockId(current.blockIds[0])
-        : undefined;
-    }
+    if (current.checkbox) return current;
     current = current.parent;
   }
   return undefined;

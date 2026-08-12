@@ -100,6 +100,13 @@ export interface DailyPlanItem {
   workRevision?: string;
   /** Stable id of the nearest containing checkbox task, when one exists. */
   parentTaskId?: string;
+  /**
+   * One-based source line of the nearest containing checkbox task. This keeps
+   * an authored parent/child relationship available before the parent receives
+   * its stable block id. It is runtime/source metadata and is never written as
+   * a ToWrite field.
+   */
+  parentTaskLine?: number;
   /** Structural list depth inside the configured ToDo section. */
   depth?: number;
   scheduledDate: string;
@@ -149,6 +156,21 @@ export interface DailyPlanItem {
   provisional?: boolean;
   /** One-based source line used by the draft CAS materialization step. */
   draftLine?: number;
+  /** Read-only roll-up of descendant and linked-note work. */
+  aggregate?: DailyTaskAggregate;
+}
+
+export interface DailyTaskAggregate {
+  /** All descendant Daily tasks plus linked-note tasks in this subtree. */
+  total: number;
+  /** Descendants that are explicitly or transitively complete. */
+  done: number;
+  /** True when at least one dependent exists and every dependent is complete. */
+  complete: boolean;
+  /** The parent checkbox itself was explicitly checked by the author. */
+  explicitlyComplete: boolean;
+  dailyTasks: number;
+  linkedTasks: number;
 }
 
 export interface StableDailyTaskReference {
@@ -246,6 +268,8 @@ export interface DailyPlanHierarchyTask {
   depth: number;
   /** Stable id of the nearest containing checkbox task, when one exists. */
   parentTaskId?: string;
+  /** One-based source line of that parent, including draft parents without ids. */
+  parentTaskLine?: number;
   /** Optional explicit category stored in a ToWrite continuation field. */
   category?: string;
   /** Optional canonical Task Pool reference stored in a continuation field. */

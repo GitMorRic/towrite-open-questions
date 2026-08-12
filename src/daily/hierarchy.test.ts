@@ -41,8 +41,10 @@ describe("daily hierarchy and inherited targets", () => {
       "[Exoskeleton](exoskeleton.md)"
     ]);
     expect(hierarchy.tasks.map((task) => task.text)).toEqual([
+      "Projects",
       "[Obsidian tasks](obsidian-tasks.md)",
       "[[Book sprint]]",
+      "Other",
       "[[Research notes]]"
     ]);
     expect(hierarchy.tasks.at(-1)?.targetResolution.displayLabel).toBe("Research notes");
@@ -100,12 +102,14 @@ describe("daily hierarchy and inherited targets", () => {
 
     expect(hierarchy.groups.map((group) => group.text)).toEqual(["项目", "待记录和搞懂"]);
     expect(hierarchy.tasks.map((task) => task.text)).toEqual([
+      "项目",
       "[[创作辅助工具电子屏幕硬件-软硬件系统设计]]",
       "[[obsidian-待办清单]]",
+      "待记录和搞懂",
       "[[触屏墨水屏,手写墨水屏,屏幕的大小与方案]]"
     ]);
     expect(hierarchy.tasks.map((task) => task.lineage.groups.at(-1)?.text))
-      .toEqual(["项目", "项目", "待记录和搞懂"]);
+      .toEqual([undefined, "项目", "项目", undefined, "待记录和搞懂"]);
   });
 
   it("adopts a free-form Daily Note checklist when no managed heading exists", async () => {
@@ -145,14 +149,19 @@ describe("daily hierarchy and inherited targets", () => {
       "其他"
     ]);
     expect(hierarchy.tasks.map((task) => task.text)).toEqual([
+      "待办",
       "[[一个待办]]",
+      "项目",
       "[obsidian-待办清单](obsidian-待办清单.md)",
       "[书客松](书客松.md)",
+      "创作",
       "[[请确认你是本人]]",
+      "稍后阅读和记录",
       "[[结构丝印]]",
       "[[供应商8D报告]]",
       "[[海外剧本范例]]",
       "[[封样资料要求]]",
+      "其他",
       "[膝关节外骨骼设计](膝关节外骨骼设计.md)"
     ]);
 
@@ -171,17 +180,17 @@ describe("daily hierarchy and inherited targets", () => {
     const normalizer = new DailyPlanNormalizationService(storage, options);
     for (;;) {
       const preview = await normalizer.preview("2026-08-10");
-      const edit = preview.edits.find((candidate) =>
-        shouldAutomaticallyNormalizeDailyEdit(candidate, sourcePath)
-      );
+      const edit = preview.edits[0];
       if (!edit) break;
       await normalizer.normalizeTask(preview, edit.line);
     }
     const service = new DailyPlanService(storage, options);
     const items = await service.list("2026-08-10");
 
-    expect(items).toHaveLength(9);
-    expect(items.map((item) => item.text)).toEqual(hierarchy.tasks.map((task) => task.text));
+    expect(items).toHaveLength(13);
+    expect(items.map((item) => item.text)).toEqual(hierarchy.tasks
+      .map((task) => task.text)
+      .filter((text) => text !== "其他"));
     expect(items.map((item) => item.groupId)).toEqual(expect.arrayContaining([
       expect.stringMatching(/^group_/u)
     ]));
@@ -223,6 +232,7 @@ describe("daily hierarchy and inherited targets", () => {
 
     expect(hierarchy.groups.map((group) => group.text)).toEqual(["项目"]);
     expect(hierarchy.tasks.map((task) => task.text)).toEqual([
+      "项目",
       "[[obsidian-待办清单]]",
       "[[书客松]]",
       "独立待办"
@@ -679,7 +689,7 @@ describe("daily plan normalization", () => {
       "  1. [[obsidian]]"
     ].join("\n"), PATH, DATE, { createId: idSequence() });
 
-    expect(finished.edits.map((edit) => edit.line)).toEqual([4]);
+    expect(finished.edits.map((edit) => edit.line)).toEqual([3, 4]);
     expect(finished.edits.find((edit) => edit.line === 4)?.after)
       .toContain("[[obsidian]] ^daily_");
   });

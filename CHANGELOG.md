@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## 0.3.5 - 2026-08-12
+
+- Made checkbox parents dual-role items: a line such as `- [ ] Project` can remain a directly completable task while also grouping nested Daily tasks and tasks projected from linked notes.
+- Added read-only aggregate completion. An unchecked parent is shown as complete only after every descendant and linked-note task is complete; explicitly checking the parent still completes the parent immediately without rewriting its children.
+- Preserved authored Markdown as the source of truth: aggregate state is computed in memory, and only an explicit user action changes a checkbox in the Daily Note.
+- Added aggregate progress and linked-task counts to the Today dashboard, Work Pool, device deck, and daily activity calculations.
+- Deferred expensive Vault-backed startup reconciliation and coalesced background index work so large Vaults become interactive before the full Work Pool is ready.
+- Production verification: 123 test files and 743 tests, Obsidian lint, TypeScript checks, production build, release asset validation, and the 2 MiB bundle limit.
+
+中文摘要：
+
+- 父级复选框现在兼具“任务”和“分类”两种角色：例如 `- [ ] 项目` 可以直接勾选，也可以汇总日记中的子任务及关联笔记内的任务。
+- 未手动勾选的父任务会在全部下级任务完成后显示为汇总完成；手动勾选父任务则立即完成父任务，但不会偷偷改写子任务。
+- 汇总状态只在内存中计算，Markdown 仍是数据真源；只有用户明确执行操作时才写回原文。
+- 今日工作台、工作池、设备卡片和活动统计会显示汇总进度与关联任务数量。
+- 大型仓库的完整索引与校准继续放到后台串行执行，优先让 Obsidian 与工作台可交互。
+- 生产验证：123 个测试文件、743 项测试，以及 Obsidian lint、类型检查、生产构建、Release 资产和 2 MiB 包体限制全部通过。
+
 ## 0.3.4 - 2026-08-11
 
 - Changed the Todo Workspace Ribbon action to open a full Obsidian popout workbench and made the Daily Note migration prompt focus the migration picker instead of silently reusing an obscured tab.

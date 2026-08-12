@@ -47,7 +47,7 @@ export function collectDailyLinkedNoteReferences(
     }
   }
   return [...new Map(references.map((reference) => [
-    `${reference.parentId}\u0000${reference.target.linkText}\u0000${reference.target.heading ?? ""}\u0000${reference.target.blockId ?? ""}`,
+    `${reference.sourcePath}\u0000${reference.line}\u0000${reference.target.linkText}\u0000${reference.target.heading ?? ""}\u0000${reference.target.blockId ?? ""}`,
     reference
   ])).values()];
 }

@@ -1,7 +1,10 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { DailyPlanNormalizationService } from "./normalization-service";
-import type { DailyPlanStorage } from "./plan-service";
+import {
+  DailyPlanNormalizationService,
+  isDisplayableDailyDraftTask
+} from "./normalization-service";
+import { DailyPlanService, type DailyPlanStorage } from "./plan-service";
 
 describe("zero-disturbance Daily editing", () => {
   it("keeps preview and refresh read-only while the author continues a numbered child list", async () => {
@@ -18,6 +21,71 @@ describe("zero-disturbance Daily editing", () => {
     expect(storage.writes).toBe(0);
   });
 
+  it("projects numbered children of a checkbox category without writing to the Daily note", async () => {
+    const path = "Daily/2026-08-12.md";
+    const original = [
+      "# 2026-08-12",
+      "",
+      "## 今日计划",
+      "- [ ] 项目",
+      "  1. 你",
+      "  2. s",
+      "  3. d",
+      "  4. [[第三十三周]]",
+      "",
+      "## ToDo"
+    ].join("\n");
+    const storage = new MemoryStorage(path, original);
+    const service = new DailyPlanNormalizationService(storage, {
+      source: { kind: "daily-note", dailyRoot: "Daily", dateFormat: "YYYY-MM-DD" },
+      planHeading: "今日计划",
+      todoHeading: "ToDo"
+    });
+
+    const preview = await service.preview("2026-08-12");
+    const displayable = preview.edits.filter((edit) => isDisplayableDailyDraftTask(
+      edit,
+      preview.tasks.find((task) => task.line === edit.line)
+    ));
+
+    expect(preview.groups.map((group) => group.text)).toEqual(["项目"]);
+    expect(displayable.map((edit) => edit.taskText)).toEqual(["项目", "你", "s", "d", "[[第三十三周]]"]);
+    expect(displayable.map((edit) => edit.kind)).toEqual([
+      "missing-block-id",
+      "plain-leaf",
+      "plain-leaf",
+      "plain-leaf",
+      "plain-leaf"
+    ]);
+    expect(storage.files.get(path)).toBe(original);
+    expect(storage.writes).toBe(0);
+  });
+
+  it("adds an explicitly created task to the author's populated plan section without adding ToDo", async () => {
+    const path = "Daily/2026-08-12.md";
+    const original = [
+      "# 2026-08-12",
+      "",
+      "## 今日计划",
+      "- [ ] 项目",
+      "  1. 你"
+    ].join("\n");
+    const storage = new MemoryStorage(path, original);
+    const service = new DailyPlanService(storage, {
+      source: { kind: "daily-note", dailyRoot: "Daily", dateFormat: "YYYY-MM-DD" },
+      planHeading: "今日计划",
+      todoHeading: "ToDo",
+      createId: () => "daily_explicit000000000000000000000001"
+    });
+
+    await service.create({ text: "明确确认的新任务", date: "2026-08-12" });
+    const written = storage.files.get(path) ?? "";
+
+    expect(written).toContain("明确确认的新任务");
+    expect(written).not.toContain("## ToDo");
+    expect(written).toContain("  1. 你");
+  });
+
   it("does not call the normalizer from dashboard or Vault refresh paths", () => {
     const source = readFileSync(new URL("../main.ts", import.meta.url), "utf8");
     expect(source).not.toContain("normalizeMissingDailyCheckboxIds");
@@ -28,6 +96,7 @@ describe("zero-disturbance Daily editing", () => {
     );
     expect(refresh).not.toContain("normalizeTask(");
     expect(refresh).not.toContain("normalizePlan(");
+    expect(source).toContain("isDisplayableDailyDraftTask(edit, task)");
   });
 
   it("renders editor actions as hover overlays instead of layout rows", () => {

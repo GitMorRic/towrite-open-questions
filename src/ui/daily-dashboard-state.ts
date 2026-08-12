@@ -53,7 +53,7 @@ export function dailyDateForPlanningDay(
 export function selectDailyOverview(
   items: readonly DailyPlanItem[]
 ): DailyOverviewSelection {
-  const unfinished = items.filter((item) => item.status !== "done");
+  const unfinished = items.filter((item) => !isDailyItemComplete(item));
   const current = unfinished.find((item) => item.status === "in-progress")
     ?? unfinished.find((item) => Boolean(item.primary))
     ?? unfinished[0];
@@ -62,9 +62,14 @@ export function selectDailyOverview(
     upcoming: current
       ? [current, ...unfinished.filter((item) => item.id !== current.id)].slice(1, 3)
       : [],
-    done: items.filter((item) => item.status === "done").length,
+    done: items.filter(isDailyItemComplete).length,
     total: items.length
   };
+}
+
+/** Runtime aggregates may complete a parent without rewriting its checkbox. */
+export function isDailyItemComplete(item: Pick<DailyPlanItem, "done" | "status">): boolean {
+  return item.done || item.status === "done";
 }
 
 /** Returns the explicit category, then the nearest Markdown group, without mutating the task. */

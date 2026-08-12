@@ -195,8 +195,8 @@ export class DailyActivityService {
       plan: {
         items: copiedItems,
         total: copiedItems.length,
-        todo: copiedItems.filter((item) => item.status === "todo").length,
-        inProgress: copiedItems.filter((item) => item.status === "in-progress").length,
+        todo: copiedItems.filter((item) => !item.done && item.status === "todo").length,
+        inProgress: copiedItems.filter((item) => !item.done && item.status === "in-progress").length,
         done: copiedItems.filter((item) => item.done).length
       },
       activity,

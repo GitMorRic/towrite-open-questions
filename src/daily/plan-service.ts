@@ -559,7 +559,6 @@ export class DailyPlanService {
           date,
           this.resolveSource(date),
           this.planHeading,
-          this.todoHeading,
           normalizeOptionalText(patch.theme, 500)
         );
       }
@@ -585,9 +584,7 @@ export class DailyPlanService {
         date,
         this.resolveSource(date),
         this.summaryHeading,
-        body,
-        this.planHeading,
-        this.todoHeading
+        body
       );
       if (next === current) return { path, changed: false };
       await this.storage.writeText(path, next);
@@ -865,6 +862,7 @@ function mergeHierarchyIntoPlanDocument(
   _markdown: string
 ): DailyPlanDocument {
   const merged: DailyPlanItem[] = [];
+  const hierarchyByLine = new Map(hierarchy.tasks.map((task) => [task.line, task]));
   for (const task of hierarchy.tasks) {
     if (!task.blockId || task.normalizationRequired) continue;
     const taskLines = task.rawBlock.split(/\r?\n/u);
@@ -897,12 +895,16 @@ function mergeHierarchyIntoPlanDocument(
       };
     }
     if (!item) continue;
+    const descendantLinks = hierarchy.tasks
+      .filter((candidate) => isHierarchyDescendant(candidate, task, hierarchyByLine))
+      .flatMap((candidate) => candidate.links.map((link) => link.linkText));
     merged.push({
       ...item,
       line: task.line,
       endLine: task.endLine,
       depth: task.depth,
       parentTaskId: task.parentTaskId,
+      parentTaskLine: task.parentTaskLine,
       category: item.category ?? task.category,
       taskRef: item.taskRef ?? task.taskRef,
       rawLine: task.rawLine,
@@ -911,7 +913,8 @@ function mergeHierarchyIntoPlanDocument(
       groupId: task.lineage.groups[task.lineage.groups.length - 1]?.id,
       lineage: task.lineage,
       lineageRevision: task.lineageRevision,
-      targetResolution: task.targetResolution
+      targetResolution: task.targetResolution,
+      linkedNotes: unique([...item.linkedNotes, ...descendantLinks])
     });
   }
   // Preserve V1 compatibility for a malformed item that the hierarchy parser
@@ -1432,10 +1435,22 @@ function appendToTodoSection(
   headings: { planHeading: string; todoHeading: string },
   block: string
 ): string {
-  let current = ensurePlanScaffold(markdown, date, source, headings.planHeading, headings.todoHeading);
-  const lines = current.replace(/\s+$/u, "").split(/\r?\n/u);
-  const scope = findDateScope(lines, date, source.nestedDate)!;
-  const section = findNamedSection(lines, headings.todoHeading, source.planLevel, scope)!;
+  let current = ensureDateScope(markdown, date, source);
+  let lines = current.replace(/\s+$/u, "").split(/\r?\n/u);
+  let scope = findDateScope(lines, date, source.nestedDate)!;
+  const todo = findNamedSection(lines, headings.todoHeading, source.planLevel, scope);
+  const plan = findNamedSection(lines, headings.planHeading, source.planLevel, scope);
+  let section = todo && sectionContainsListItem(lines, todo)
+    ? todo
+    : plan && sectionContainsListItem(lines, plan)
+      ? plan
+      : todo ?? plan;
+  if (!section) {
+    current = ensureNamedSection(current, date, source, headings.todoHeading);
+    lines = current.replace(/\s+$/u, "").split(/\r?\n/u);
+    scope = findDateScope(lines, date, source.nestedDate)!;
+    section = findNamedSection(lines, headings.todoHeading, source.planLevel, scope)!;
+  }
   let insertion = section.end;
   while (insertion > section.start && !lines[insertion - 1].trim()) insertion -= 1;
   lines.splice(insertion, 0, ...(insertion > section.start ? [""] : []), ...block.split("\n"));
@@ -1447,10 +1462,17 @@ function updateTheme(
   date: string,
   source: ResolvedSource,
   heading: string,
-  todoHeading: string,
   theme: string | undefined
 ): string {
-  let current = ensurePlanScaffold(markdown, date, source, heading, todoHeading);
+  const existingLines = markdown.replace(/\s+$/u, "").split(/\r?\n/u);
+  const existingScope = findDateScope(existingLines, date, source.nestedDate);
+  const existingSection = existingScope
+    ? findNamedSection(existingLines, heading, source.planLevel, existingScope)
+    : undefined;
+  // Clearing an absent theme is a no-op. In particular, it must not create a
+  // Daily file or inject headings merely because a settings surface refreshed.
+  if (!theme && !existingSection) return markdown;
+  const current = existingSection ? markdown : ensureNamedSection(markdown, date, source, heading);
   const lines = current.replace(/\s+$/u, "").split(/\r?\n/u);
   const scope = findDateScope(lines, date, source.nestedDate)!;
   const section = findNamedSection(lines, heading, source.planLevel, scope)!;
@@ -1478,11 +1500,9 @@ function replaceManagedSummary(
   date: string,
   source: ResolvedSource,
   summaryHeading: string,
-  body: string,
-  planHeading: string,
-  todoHeading: string
+  body: string
 ): string {
-  let current = ensurePlanScaffold(markdown, date, source, planHeading, todoHeading);
+  const current = ensureDateScope(markdown, date, source);
   let lines = current.replace(/\s+$/u, "").split(/\r?\n/u);
   let scope = findDateScope(lines, date, source.nestedDate)!;
   let section = findNamedSection(lines, summaryHeading, source.planLevel, scope);
@@ -1524,40 +1544,51 @@ function stripSummaryWrapper(markdown: string): string {
     .trim();
 }
 
-function ensurePlanScaffold(
+function ensureDateScope(
   markdown: string,
   date: string,
-  source: ResolvedSource,
-  planHeading: string,
-  todoHeading: string
+  source: ResolvedSource
 ): string {
   const trimmed = markdown.replace(/\s+$/u, "");
   if (!source.nestedDate) {
-    let lines = (trimmed || `# ${date}`).split(/\r?\n/u);
-    const scope: DateScope = { start: 0, end: lines.length };
-    if (!findNamedSection(lines, planHeading, source.planLevel, scope)) {
-      lines.push("", `${"#".repeat(source.planLevel)} ${planHeading}`);
-    }
-    const refreshed: DateScope = { start: 0, end: lines.length };
-    if (!findNamedSection(lines, todoHeading, source.planLevel, refreshed)) {
-      lines.push("", `${"#".repeat(source.planLevel)} ${todoHeading}`);
-    }
-    return ensureTrailingNewline(lines.join("\n"));
+    return ensureTrailingNewline(trimmed || `# ${date}`);
   }
 
-  let lines = trimmed ? trimmed.split(/\r?\n/u) : [];
-  let scope = findDateScope(lines, date, true);
+  const lines = trimmed ? trimmed.split(/\r?\n/u) : [];
+  const scope = findDateScope(lines, date, true);
   if (!scope) {
     if (lines.length) lines.push("");
-    lines.push(`## ${date}`, "", `### ${planHeading}`, "", `### ${todoHeading}`);
-    return ensureTrailingNewline(lines.join("\n"));
+    lines.push(`## ${date}`);
   }
-  if (!findNamedSection(lines, planHeading, source.planLevel, scope)) {
-    lines.splice(scope.end, 0, "", `### ${planHeading}`);
-    scope = findDateScope(lines, date, true)!;
+  return ensureTrailingNewline(lines.join("\n"));
+}
+
+function isHierarchyDescendant(
+  candidate: DailyPlanHierarchy["tasks"][number],
+  parent: DailyPlanHierarchy["tasks"][number],
+  byLine: ReadonlyMap<number, DailyPlanHierarchy["tasks"][number]>
+): boolean {
+  let cursor = candidate.parentTaskLine;
+  const visited = new Set<number>();
+  while (cursor !== undefined && !visited.has(cursor)) {
+    if (cursor === parent.line) return true;
+    visited.add(cursor);
+    cursor = byLine.get(cursor)?.parentTaskLine;
   }
-  if (!findNamedSection(lines, todoHeading, source.planLevel, scope)) {
-    lines.splice(scope.end, 0, "", `### ${todoHeading}`);
+  return false;
+}
+
+function ensureNamedSection(
+  markdown: string,
+  date: string,
+  source: ResolvedSource,
+  heading: string
+): string {
+  const current = ensureDateScope(markdown, date, source);
+  const lines = current.replace(/\s+$/u, "").split(/\r?\n/u);
+  const scope = findDateScope(lines, date, source.nestedDate)!;
+  if (!findNamedSection(lines, heading, source.planLevel, scope)) {
+    lines.splice(scope.end, 0, "", `${"#".repeat(source.planLevel)} ${heading}`);
   }
   return ensureTrailingNewline(lines.join("\n"));
 }

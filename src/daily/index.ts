@@ -21,3 +21,4 @@ export * from "./note-task-service";
 export * from "./note-task-pool-coordinator";
 export * from "./migration";
 export * from "./transition-journal";
+export * from "./aggregate";
