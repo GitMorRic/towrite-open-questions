@@ -61,6 +61,26 @@ interface TodoScope {
   rawEnd: number;
 }
 
+interface DailyPlanningSurfaceResolution {
+  canonicalScope?: TodoScope;
+  canonicalNodes: ListNode[];
+  planScope?: TodoScope;
+  planNodes: ListNode[];
+  documentScope?: TodoScope;
+  documentNodes: ListNode[];
+  freeFormNodes: ListNode[];
+  nodes: ListNode[];
+  revisionScope?: TodoScope;
+}
+
+export interface DailyPlanWriteSurface {
+  kind: "todo" | "plan" | "free-form" | "none";
+  /** Zero-based first source line owned by this surface. */
+  start: number;
+  /** Zero-based insertion point before the next source line. */
+  insertion: number;
+}
+
 export function parseDailyPlanHierarchy(
   markdown: string,
   sourcePath: string,
@@ -70,34 +90,8 @@ export function parseDailyPlanHierarchy(
   const normalizedDate = normalizeDate(date);
   const source = normalizeSource(options.source);
   const lines = markdown.split(/\r?\n/u);
-  const canonicalScope = findTodoScope(lines, normalizedDate, source, options.todoHeading ?? "ToDo");
-  const canonicalNodes = canonicalScope ? parseListNodes(lines, canonicalScope) : [];
-  const fallbackScope = canonicalNodes.length === 0
-    ? findTodoScope(lines, normalizedDate, source, options.planHeading ?? "今日计划")
-    : undefined;
-  const fallbackNodes = fallbackScope ? parseListNodes(lines, fallbackScope) : [];
-  // Daily Notes are often authored as a free-form journal without a dedicated
-  // ToDo heading. When neither managed section contains a list, treat the
-  // current day's document (or the current date section in fixed mode) as the
-  // editable planning surface. This fallback is deliberately limited to the
-  // configured Daily source; arbitrary Vault notes still enter through the
-  // Work Pool allowlist instead of becoming today's commitments.
-  const documentScope = canonicalNodes.length === 0 && fallbackNodes.length === 0
-    ? findDailyDocumentScope(lines, normalizedDate, source)
-    : undefined;
-  const documentNodes = documentScope
-    ? parseListNodes(lines, documentScope).filter(isDailyChecklistNode)
-    : [];
-  const scope = canonicalNodes.length > 0
-    ? canonicalScope
-    : fallbackNodes.length > 0
-      ? fallbackScope
-      : documentScope ?? fallbackScope ?? canonicalScope;
-  const nodes = canonicalNodes.length > 0
-    ? canonicalNodes
-    : fallbackNodes.length > 0
-      ? fallbackNodes
-      : documentNodes;
+  const surface = resolveDailyPlanningSurface(lines, normalizedDate, source, options);
+  const nodes = surface.nodes;
   const groups: DailyPlanGroup[] = [];
   const diagnostics: DailyPlanHierarchyDiagnostic[] = [];
 
@@ -210,7 +204,9 @@ export function parseDailyPlanHierarchy(
     appendUnsafeTargetDiagnostics(node, sourcePath, diagnostics);
   }
 
-  const scopedRaw = scope ? lines.slice(scope.rawStart, scope.rawEnd).join("\n") : "";
+  const scopedRaw = surface.revisionScope
+    ? lines.slice(surface.revisionScope.rawStart, surface.revisionScope.rawEnd).join("\n")
+    : "";
   return {
     schemaVersion: DAILY_SCHEMA_VERSION,
     date: normalizedDate,
@@ -221,6 +217,227 @@ export function parseDailyPlanHierarchy(
     diagnostics: dedupeDiagnostics(diagnostics),
     revision: `dpr_${contentHash128(`${sourcePath}\n${normalizedDate}\n${scopedRaw}`)}`
   };
+}
+
+/**
+ * Resolves the same authored planning surface used by the reader. A populated
+ * managed section remains the preferred write target. When a Daily note is
+ * authored as a free-form checkbox tree, however, creating a task appends next
+ * to that tree instead of injecting a new ToDo heading that would shadow it.
+ */
+export function resolveDailyPlanWriteSurface(
+  markdown: string,
+  date: string,
+  options: DailyPlanHierarchyParseOptions = {}
+): DailyPlanWriteSurface {
+  const normalizedDate = normalizeDate(date);
+  const source = normalizeSource(options.source);
+  const lines = markdown.split(/\r?\n/u);
+  const surface = resolveDailyPlanningSurface(lines, normalizedDate, source, options);
+  if (surface.canonicalNodes.length > 0 && surface.canonicalScope) {
+    return sectionWriteSurface("todo", surface.canonicalScope);
+  }
+  if (surface.planNodes.length > 0 && surface.planScope) {
+    return sectionWriteSurface("plan", surface.planScope);
+  }
+  if (surface.nodes.length > 0 && surface.documentScope) {
+    const projectTreeNodes = checkboxTreeComponents(surface.nodes);
+    let insertionNodes = surface.nodes;
+    if (projectTreeNodes.length > 0) {
+      const lastProjectLine = Math.max(...projectTreeNodes.map((node) => node.endIndex));
+      let nextHeading = lines.length;
+      for (let index = lastProjectLine + 1; index < lines.length; index += 1) {
+        if (headingDepth(lines[index]) > 0) {
+          nextHeading = index;
+          break;
+        }
+      }
+      // Include standalone tasks already appended after the project trees,
+      // but stop before a later journal heading and its unrelated checkboxes.
+      insertionNodes = surface.documentNodes.filter((node) => node.index < nextHeading);
+    }
+    return {
+      kind: "free-form",
+      start: surface.documentScope.start,
+      insertion: Math.max(...insertionNodes.map((node) => node.endIndex + 1))
+    };
+  }
+  if (surface.canonicalScope) return sectionWriteSurface("todo", surface.canonicalScope);
+  if (surface.planScope) return sectionWriteSurface("plan", surface.planScope);
+  return { kind: "none", start: 0, insertion: lines.length };
+}
+
+function resolveDailyPlanningSurface(
+  lines: string[],
+  date: string,
+  source: DailyPlanSource,
+  options: DailyPlanHierarchyParseOptions
+): DailyPlanningSurfaceResolution {
+  const canonicalScope = findTodoScope(lines, date, source, options.todoHeading ?? "ToDo");
+  const planScope = findTodoScope(lines, date, source, options.planHeading ?? "今日计划");
+  const canonicalNodes = canonicalScope ? parseListNodes(lines, canonicalScope) : [];
+  const planNodes = planScope ? parseListNodes(lines, planScope) : [];
+
+  // Daily Notes are often authored as a free-form journal without a dedicated
+  // ToDo heading. The whole-document scan remains strict: a node must be a
+  // checkbox or live below a checkbox container, so ordinary outlines and
+  // reading indexes cannot become commitments merely because they use lists.
+  const documentScope = findDailyDocumentScope(lines, date, source);
+  const documentNodes = documentScope
+    ? parseListNodes(lines, documentScope).filter(isDailyChecklistNode)
+    : [];
+  const freeFormNodes = documentNodes.filter((node) =>
+    !nodeIsInScope(node, canonicalScope) && !nodeIsInScope(node, planScope)
+  );
+  const projectRegionNodes = checkboxPlanningRegionNodes(lines, freeFormNodes, source, date);
+
+  if (canonicalNodes.length > 0) {
+    // Older writers could append a populated ToDo section to a Daily note that
+    // already used checkbox project trees. Keep the explicit canonical section
+    // while recovering those authored tree components. Isolated journal
+    // checkboxes and ordinary outlines remain outside the managed plan.
+    const supplemental = [
+      ...planNodes,
+      ...projectRegionNodes
+    ];
+    return {
+      canonicalScope,
+      canonicalNodes,
+      planScope,
+      planNodes,
+      documentScope,
+      documentNodes,
+      freeFormNodes,
+      nodes: uniqueNodesBySourceLine([...canonicalNodes, ...supplemental]),
+      revisionScope: supplemental.length > 0 ? documentScope ?? canonicalScope : canonicalScope
+    };
+  }
+  if (planNodes.length > 0) {
+    return {
+      canonicalScope,
+      canonicalNodes,
+      planScope,
+      planNodes,
+      documentScope,
+      documentNodes,
+      freeFormNodes,
+      nodes: planNodes,
+      revisionScope: planScope
+    };
+  }
+  const managedScope = canonicalScope ?? planScope;
+  if (managedScope) {
+    // An explicitly authored managed section wins over unrelated journal
+    // checkboxes, even while it is empty. The one exception is the legacy
+    // shape this plugin previously polluted: a real free-form project tree
+    // followed by an empty managed heading. Recover that tree without also
+    // adopting isolated reminders elsewhere in the note.
+    return {
+      canonicalScope,
+      canonicalNodes,
+      planScope,
+      planNodes,
+      documentScope,
+      documentNodes,
+      freeFormNodes,
+      nodes: projectRegionNodes,
+      revisionScope: projectRegionNodes.length > 0 ? documentScope ?? managedScope : managedScope
+    };
+  }
+  const unmanagedNodes = projectRegionNodes.length > 0
+    ? projectRegionNodes
+    : initialFreeFormChecklistNodes(lines, freeFormNodes, source, date);
+  return {
+    canonicalScope,
+    canonicalNodes,
+    planScope,
+    planNodes,
+    documentScope,
+    documentNodes,
+    freeFormNodes,
+    nodes: unmanagedNodes,
+    revisionScope: unmanagedNodes.length > 0 ? documentScope : undefined
+  };
+}
+
+function sectionWriteSurface(
+  kind: "todo" | "plan",
+  scope: TodoScope
+): DailyPlanWriteSurface {
+  return { kind, start: scope.start, insertion: scope.end };
+}
+
+function nodeIsInScope(node: ListNode, scope: TodoScope | undefined): boolean {
+  return Boolean(scope && node.index >= scope.start && node.index < scope.end);
+}
+
+function checkboxTreeComponents(nodes: readonly ListNode[]): ListNode[] {
+  const included = new Set(nodes.map((node) => node.index));
+  const componentRoot = (node: ListNode): number => {
+    let current = node;
+    while (current.parent && included.has(current.parent.index)) current = current.parent;
+    return current.index;
+  };
+  const treeRoots = new Set(nodes
+    .filter((node) => node.checkbox && node.children.some((child) => included.has(child.index)))
+    .map(componentRoot));
+  return nodes.filter((node) => treeRoots.has(componentRoot(node)));
+}
+
+/**
+ * A legacy free-form planning area is identified by a checkbox project tree.
+ * Once a tree establishes a heading-bounded region, standalone checkbox tasks
+ * in that same region are also kept. This recovers legitimate peers without
+ * pulling isolated reminders from a later Journal section into the plan.
+ */
+function checkboxPlanningRegionNodes(
+  lines: readonly string[],
+  nodes: readonly ListNode[],
+  source: DailyPlanSource,
+  date: string
+): ListNode[] {
+  const initialNodes = initialFreeFormChecklistNodes(lines, nodes, source, date);
+  const treeNodes = checkboxTreeComponents(initialNodes);
+  if (treeNodes.length === 0) return [];
+  const regions = new Set(treeNodes.map((node) => precedingHeadingIndex(lines, node.index)));
+  return initialNodes.filter((node) => regions.has(precedingHeadingIndex(lines, node.index)));
+}
+
+/** A heading-free body (or the body immediately below the date H1) can be a
+ * simple checklist even without project containers. Lower-level authored
+ * sections such as `## Journal` are not implicitly planning surfaces. */
+function initialFreeFormChecklistNodes(
+  lines: readonly string[],
+  nodes: readonly ListNode[],
+  source: DailyPlanSource,
+  date: string
+): ListNode[] {
+  const firstHeading = source.kind === "fixed-document"
+    ? lines.findIndex((line) => headingDepth(line) === 2 && headingText(line) === date)
+    : lines.findIndex((line) => headingDepth(line) === 1 && headingLooksLikeDate(line, date));
+  const hasPreHeadingNode = nodes.some((node) => precedingHeadingIndex(lines, node.index) < 0);
+  const region = hasPreHeadingNode ? -1 : firstHeading;
+  if (region < 0 && !hasPreHeadingNode) return [];
+  return nodes.filter((node) => precedingHeadingIndex(lines, node.index) === region);
+}
+
+function headingLooksLikeDate(line: string, date: string): boolean {
+  return headingText(line).replace(/\D/gu, "") === date.replace(/\D/gu, "");
+}
+
+function precedingHeadingIndex(lines: readonly string[], index: number): number {
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    if (headingDepth(lines[cursor]) > 0) return cursor;
+  }
+  return -1;
+}
+
+function uniqueNodesBySourceLine(nodes: readonly ListNode[]): ListNode[] {
+  const byLine = new Map<number, ListNode>();
+  for (const node of nodes) {
+    if (!byLine.has(node.index)) byLine.set(node.index, node);
+  }
+  return [...byLine.values()].sort((left, right) => left.index - right.index);
 }
 
 /**

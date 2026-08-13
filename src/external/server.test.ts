@@ -41,6 +41,7 @@ const question: OpenQuestion = {
 describe("external server", () => {
   it("exposes previous-task migration, focused location, and analytics through versioned Daily routes", async () => {
     const item = makeDailyItem("todo");
+    const migrationRevision = { ...item.revision, date: "2026-07-23" };
     const migratePreviousDailyItems = vi.fn(async () => [{
       schemaVersion: 1 as const,
       migrationId: "mig_external_1",
@@ -89,13 +90,22 @@ describe("external server", () => {
     await handle.handleRequest(new FakeRequest(
       "POST",
       "/api/v1/daily/plans/2026-07-24/migrate-previous",
-      { selections: [{ id: item.id, revision: item.revision }] }
+      { selections: [{ id: item.id, revision: migrationRevision }] }
     ), migrated);
     expect(migrated.statusCode).toBe(200);
     expect(migratePreviousDailyItems).toHaveBeenCalledWith("2026-07-24", [{
       id: item.id,
-      revision: item.revision
+      revision: migrationRevision
     }]);
+
+    const invalidMigrationDate = new FakeResponse();
+    await handle.handleRequest(new FakeRequest(
+      "POST",
+      "/api/v1/daily/plans/2026-07-24/migrate-previous",
+      { selections: [{ id: item.id, revision: { ...migrationRevision, date: "2026-02-30" } }] }
+    ), invalidMigrationDate);
+    expect(invalidMigrationDate.statusCode).toBe(400);
+    expect(migratePreviousDailyItems).toHaveBeenCalledTimes(1);
 
     const range = new FakeResponse();
     await handle.handleRequest(new FakeRequest(

@@ -79,6 +79,7 @@
   } from "./daily-dashboard-state";
   import WorkPoolPanel from "./WorkPoolPanel.svelte";
   import { dailyDisplayText } from "../daily/display-text";
+  import { dailyMigrationSelectionKey } from "../daily/migration";
 
   export let dailyApi: DailyDashboardAdapter | undefined = undefined;
   export let onOpenCapture: (() => void) | undefined = undefined;
@@ -167,6 +168,9 @@
   let editingProgressProjectId = "";
   let editingProgressProjectLabel = "";
   let editingProgressProjectColor = "#7c6ee6";
+  let projectColorInput: HTMLInputElement | undefined;
+  let hoveredProgressProjectId = "";
+  let pinnedProgressProjectId = "";
   let projectColorPopover: HTMLElement | undefined;
   let previousUnfinished: DailyPlanItem[] = [];
   let selectedPreviousIds = new Set<string>();
@@ -197,15 +201,16 @@
     monthlySummary = monthly;
   }
 
-  function togglePreviousSelection(id: string): void {
+  function togglePreviousSelection(item: DailyPlanItem): void {
+    const key = dailyMigrationSelectionKey(item);
     const next = new Set(selectedPreviousIds);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
     selectedPreviousIds = next;
   }
 
   async function migrateSelectedPrevious(): Promise<void> {
-    const selected = previousUnfinished.filter((item) => selectedPreviousIds.has(item.id));
+    const selected = previousUnfinished.filter((item) => selectedPreviousIds.has(dailyMigrationSelectionKey(item)));
     if (!selected.length || !dailyApi?.migratePreviousItems) return;
     await run("migrate-previous", () => dailyApi?.migratePreviousItems?.(
       selectedDate,
@@ -228,14 +233,23 @@
   }
 
   function handleWindowPointerDown(event: PointerEvent): void {
-    if (!editingProgressProjectId) return;
     const target = event.target;
-    if (target instanceof Node && projectColorPopover?.contains(target)) return;
-    closeProjectColorPopover();
+    if (editingProgressProjectId) {
+      if (!(target instanceof Node && projectColorPopover?.contains(target))) {
+        closeProjectColorPopover();
+      }
+    }
+    if (!pinnedProgressProjectId || !(target instanceof Element)) return;
+    if (target.closest(".battery-project, .project-progress-legend, .project-progress-details")) return;
+    hoveredProgressProjectId = "";
+    pinnedProgressProjectId = "";
   }
 
   function handleWindowKeydown(event: KeyboardEvent): void {
-    if (event.key === "Escape") closeProjectColorPopover();
+    if (event.key !== "Escape") return;
+    closeProjectColorPopover();
+    hoveredProgressProjectId = "";
+    pinnedProgressProjectId = "";
   }
 
   function timingFor(item: DailyPlanItem): DailyTaskTimingSnapshot | undefined {
@@ -295,6 +309,9 @@
     items,
     poolTaskById,
     configuration.workPool?.projectAppearances ?? []
+  );
+  $: inspectedProgressProject = projectProgress.find((segment) =>
+    segment.id === (hoveredProgressProjectId || pinnedProgressProjectId)
   );
   $: availablePoolItems = filterAvailableTaskPoolItems(poolItems);
   $: visiblePoolPickerItems = filterAvailableTaskPoolItems(poolItems, poolPickerSearch);
@@ -417,12 +434,27 @@
       || projectFallbackColor(projectId);
   }
 
-  function beginProgressProjectColor(segment: DailyProjectProgressSegment, event: MouseEvent): void {
+  async function beginProgressProjectColor(
+    segment: DailyProjectProgressSegment,
+    event: MouseEvent | KeyboardEvent
+  ): Promise<void> {
     event.preventDefault();
     event.stopPropagation();
+    hoveredProgressProjectId = "";
+    pinnedProgressProjectId = "";
     editingProgressProjectId = segment.id;
     editingProgressProjectLabel = segment.label;
     editingProgressProjectColor = segment.color;
+    await tick();
+    projectColorInput?.focus();
+  }
+
+  function handleProgressProjectKeydown(
+    segment: DailyProjectProgressSegment,
+    event: KeyboardEvent
+  ): void {
+    if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+    void beginProgressProjectColor(segment, event);
   }
 
   async function saveProgressProjectColor(): Promise<void> {
@@ -504,6 +536,33 @@
     }
   }
 
+  function showProgressProjectDetails(segment: DailyProjectProgressSegment): void {
+    hoveredProgressProjectId = segment.id;
+  }
+
+  function hideProgressProjectDetails(segment: DailyProjectProgressSegment): void {
+    if (hoveredProgressProjectId === segment.id) hoveredProgressProjectId = "";
+  }
+
+  function toggleProgressProjectDetails(segment: DailyProjectProgressSegment, event: MouseEvent): void {
+    event.preventDefault();
+    event.stopPropagation();
+    closeProjectColorPopover();
+    const wasPinned = pinnedProgressProjectId === segment.id;
+    pinnedProgressProjectId = wasPinned ? "" : segment.id;
+    // Clicking an already-pinned project is an explicit close request. Do not
+    // let the same pointer/focus state immediately reopen its transient detail.
+    hoveredProgressProjectId = wasPinned ? "" : segment.id;
+  }
+
+  function progressProjectTodoCount(segment: DailyProjectProgressSegment): number {
+    return segment.items.filter((item) => !isDailyItemComplete(item) && item.status === "todo").length;
+  }
+
+  function progressProjectActiveCount(segment: DailyProjectProgressSegment): number {
+    return segment.items.filter((item) => !isDailyItemComplete(item) && item.status === "in-progress").length;
+  }
+
   async function refreshPreviousItems(sequence: number, date: string): Promise<void> {
     if (planningDay !== "today" || !dailyApi?.getPreviousUnfinished) {
       if (sequence === refreshSequence) {
@@ -516,9 +575,8 @@
       const previous = await dailyApi.getPreviousUnfinished(date);
       if (sequence !== refreshSequence) return;
       previousUnfinished = previous;
-      const available = new Set(previous.map((item) => item.id));
-      const retained = [...selectedPreviousIds].filter((id) => available.has(id));
-      selectedPreviousIds = new Set(retained.length ? retained : previous.map((item) => item.id));
+      const available = new Set(previous.map(dailyMigrationSelectionKey));
+      selectedPreviousIds = new Set([...selectedPreviousIds].filter((key) => available.has(key)));
       if (focusPreviousMigration && previous.length > 0 && !previousMigrationFocused) {
         previousMigrationFocused = true;
         await tick();
@@ -1177,6 +1235,12 @@
     if (value.includes("missing-block-id")) {
       return "有新写入的待办还没有稳定标识。已跟踪的任务仍可开始；请刷新，或在“整理任务”中补齐新任务标识。";
     }
+    if (value.includes("historical Daily task changed")) {
+      return "原日记任务在迁移列表打开后发生了变化。列表已刷新，请重新选择后再迁移。";
+    }
+    if (value.includes("Daily plan item id is already used")) {
+      return "目标日期已有同一稳定任务，但内容不同，未自动覆盖。请先核对目标日记。";
+    }
     return value;
   }
 </script>
@@ -1320,43 +1384,50 @@
     {#if planningDay === "today" && previousUnfinished.length > 0 && dailyApi.migratePreviousItems}
       <details class="previous-tasks-card" bind:this={previousMigrationCard} open>
         <summary>
-          <span><History size={15} /><strong>处理之前未完成</strong><small>更早日记中有 {previousUnfinished.length} 项可迁移，原日记会保留迁移记录</small></span>
+          <span><History size={15} /><strong>处理之前未完成</strong><small>更早日记中有 {previousUnfinished.length} 项可迁移；请勾选需要的任务，原日记会保留迁移记录</small></span>
           <ChevronDown size={15} />
         </summary>
         <div class="previous-task-list">
           {#each previousMigrationGroups as dateGroup (dateGroup.date)}
-            <section class="previous-date-group">
-              <header>
+            <details class="previous-date-group" open>
+              <summary>
                 <span><CalendarDays size={14} /><strong>{dateGroup.date}</strong><em>{dateGroup.count} 项</em></span>
-                {#if dailyApi.openPlanSource}
-                  <button type="button" title="打开这天的日记" on:click={() => dailyApi?.openPlanSource?.(dateGroup.date)}>
-                    <BookOpen size={14} />
-                  </button>
-                {/if}
-              </header>
+                <span class="previous-date-actions">
+                  {#if dailyApi.openPlanSource}
+                    <button
+                      type="button"
+                      title="打开这天的日记"
+                      on:click|stopPropagation={() => dailyApi?.openPlanSource?.(dateGroup.date)}
+                    >
+                      <BookOpen size={14} />
+                    </button>
+                  {/if}
+                  <span class="previous-date-chevron" aria-hidden="true"><ChevronDown size={14} /></span>
+                </span>
+              </summary>
               {#each dateGroup.projects as project (project.key)}
                 <details class="previous-project-group" open>
                   <summary><FolderTree size={14} /><strong>{project.label}</strong><em>{project.items.length}</em><ChevronDown size={14} /></summary>
                   <div>
-                    {#each project.items as item (item.id)}
-                      <article class="previous-task-row" class:previewing={previewPreviousItemId === item.id}>
+                    {#each project.items as item (dailyMigrationSelectionKey(item))}
+                      <article class="previous-task-row" class:previewing={previewPreviousItemId === dailyMigrationSelectionKey(item)}>
                         <input
                           type="checkbox"
                           aria-label={`选择迁移：${compactTaskText(item.text)}`}
-                          checked={selectedPreviousIds.has(item.id)}
-                          on:change={() => togglePreviousSelection(item.id)}
+                          checked={selectedPreviousIds.has(dailyMigrationSelectionKey(item))}
+                          on:change={() => togglePreviousSelection(item)}
                         />
                         <button
                           class="previous-task-title"
                           type="button"
-                          aria-expanded={previewPreviousItemId === item.id}
-                          on:click={() => (previewPreviousItemId = previewPreviousItemId === item.id ? "" : item.id)}
+                          aria-expanded={previewPreviousItemId === dailyMigrationSelectionKey(item)}
+                          on:click={() => (previewPreviousItemId = previewPreviousItemId === dailyMigrationSelectionKey(item) ? "" : dailyMigrationSelectionKey(item))}
                         >{compactTaskText(item.text)}</button>
                         <div class="previous-task-actions">
                           <button
                             type="button"
-                            title={previewPreviousItemId === item.id ? "收起预览" : "预览任务"}
-                            on:click={() => (previewPreviousItemId = previewPreviousItemId === item.id ? "" : item.id)}
+                            title={previewPreviousItemId === dailyMigrationSelectionKey(item) ? "收起预览" : "预览任务"}
+                            on:click={() => (previewPreviousItemId = previewPreviousItemId === dailyMigrationSelectionKey(item) ? "" : dailyMigrationSelectionKey(item))}
                           ><PanelTopOpen size={14} /></button>
                           {#if dailyApi.openItem}
                             <button type="button" title="打开任务目标" on:click={() => dailyApi?.openItem?.(item)}><BookOpen size={14} /></button>
@@ -1365,7 +1436,7 @@
                             <button class="dismiss-previous-item" type="button" title="忽略这一项，不再提示迁移" on:click={() => dismissPreviousItem(item)}><EyeOff size={14} /><span>忽略</span></button>
                           {/if}
                         </div>
-                        {#if previewPreviousItemId === item.id}
+                        {#if previewPreviousItemId === dailyMigrationSelectionKey(item)}
                           <div class="previous-task-preview">
                             <span><strong>来源</strong>{item.sourcePath}</span>
                             {#if userFacingTargetLabel(item)}<span><strong>目标</strong>{userFacingTargetLabel(item)}</span>{/if}
@@ -1381,7 +1452,7 @@
                   </div>
                 </details>
               {/each}
-            </section>
+            </details>
           {/each}
         </div>
         <footer>
@@ -1437,25 +1508,26 @@
       {:else}
         <div class="focus-empty">这一天还没有待推进的计划。</div>
       {/if}
-      <div
-        class="project-progress-battery"
-        role="progressbar"
-        aria-label={`${planningDay === "today" ? "今日" : "明日"}任务进度`}
-        aria-valuemin="0"
-        aria-valuemax={overview.total}
-        aria-valuenow={overview.done}
-      >
+      <div class="progress-accessible" role="progressbar" aria-label={`${planningDay === "today" ? "今日" : "明日"}任务进度`} aria-valuemin="0" aria-valuemax={Math.max(1, overview.total)} aria-valuenow={overview.done}></div>
+      <div class="project-progress-battery" role="group" aria-label="按项目查看任务进度；左键查看详情，右键设置项目颜色">
         {#each projectProgress as segment (segment.id)}
           <button
             type="button"
             class="battery-project"
+            class:inspecting={inspectedProgressProject?.id === segment.id}
             style={`--project-color:${segment.color};--project-weight:${segment.items.length}`}
-            title={`${segment.label} · ${segment.done}/${segment.items.length}；右键设置颜色`}
-            aria-label={`${segment.label}，完成 ${segment.done}/${segment.items.length}；点击或右键设置颜色`}
-            on:click={(event) => beginProgressProjectColor(segment, event)}
+            aria-label={`${segment.label}，完成 ${segment.done}/${segment.items.length}；点击查看详情，右键设置颜色`}
+            aria-pressed={pinnedProgressProjectId === segment.id}
+            aria-describedby={inspectedProgressProject?.id === segment.id ? `project-progress-details-${segment.id}` : undefined}
+            on:click={(event) => toggleProgressProjectDetails(segment, event)}
             on:contextmenu={(event) => beginProgressProjectColor(segment, event)}
+            on:keydown={(event) => handleProgressProjectKeydown(segment, event)}
+            on:mouseenter={() => showProgressProjectDetails(segment)}
+            on:mouseleave={() => hideProgressProjectDetails(segment)}
+            on:focus={() => showProgressProjectDetails(segment)}
+            on:blur={() => hideProgressProjectDetails(segment)}
           >
-            {#each segment.items as item (item.id)}<i class:done={item.status === "done"}></i>{/each}
+            {#each segment.items as item (item.id)}<i class:done={isDailyItemComplete(item)}></i>{/each}
           </button>
         {:else}
           <span></span>
@@ -1466,13 +1538,62 @@
           {#each projectProgress as segment (segment.id)}
             <button
               type="button"
+              class:inspecting={inspectedProgressProject?.id === segment.id}
               style={`--project-color:${segment.color}`}
-              on:click={(event) => beginProgressProjectColor(segment, event)}
-              title="右键设置项目颜色"
+              aria-pressed={pinnedProgressProjectId === segment.id}
+              aria-describedby={inspectedProgressProject?.id === segment.id ? `project-progress-details-${segment.id}` : undefined}
+              on:click={(event) => toggleProgressProjectDetails(segment, event)}
+              aria-label={`${segment.label}，完成 ${segment.done}/${segment.items.length}；点击查看详情，右键设置颜色`}
               on:contextmenu={(event) => beginProgressProjectColor(segment, event)}
+              on:keydown={(event) => handleProgressProjectKeydown(segment, event)}
+              on:mouseenter={() => showProgressProjectDetails(segment)}
+              on:mouseleave={() => hideProgressProjectDetails(segment)}
+              on:focus={() => showProgressProjectDetails(segment)}
+              on:blur={() => hideProgressProjectDetails(segment)}
             ><i></i>{segment.label}<em>{segment.done}/{segment.items.length}</em></button>
           {/each}
         </div>
+        {#if inspectedProgressProject}
+          <aside
+            id={`project-progress-details-${inspectedProgressProject.id}`}
+            class="project-progress-details"
+            class:pinned={pinnedProgressProjectId === inspectedProgressProject.id}
+            role={pinnedProgressProjectId === inspectedProgressProject.id ? "region" : "tooltip"}
+            aria-live="polite"
+            style={`--project-color:${inspectedProgressProject.color}`}
+          >
+            <header>
+              <span><i></i><strong>{inspectedProgressProject.label}</strong></span>
+              <em>完成 {inspectedProgressProject.done}/{inspectedProgressProject.items.length}</em>
+            </header>
+            <div class="project-progress-statuses">
+              <span>待办 {progressProjectTodoCount(inspectedProgressProject)}</span>
+              <span>进行中 {progressProjectActiveCount(inspectedProgressProject)}</span>
+              <span>已完成 {inspectedProgressProject.done}</span>
+            </div>
+            <ul>
+              {#each inspectedProgressProject.items as item (item.id)}
+                <li class:done={isDailyItemComplete(item)} class:active={item.status === "in-progress"}>
+                  <span>{isDailyItemComplete(item) ? "✓" : item.status === "in-progress" ? "▶" : "○"}</span>
+                  <div>
+                    <strong>{compactTaskText(item.text)}</strong>
+                    {#if item.nextStep}<small>下一步：{item.nextStep}</small>{/if}
+                    {#if timingFor(item)}<small>{timingStatusLabel(timingFor(item))} · {formatDuration(timingFor(item)?.activeMs)}</small>{/if}
+                  </div>
+                </li>
+              {/each}
+            </ul>
+            <footer>
+              <span>左键固定详情 · Shift+F10 设置颜色</span>
+              {#if pinnedProgressProjectId === inspectedProgressProject.id}
+                <button
+                  type="button"
+                  on:click={(event) => beginProgressProjectColor(inspectedProgressProject, event)}
+                >设置颜色</button>
+              {/if}
+            </footer>
+          </aside>
+        {/if}
         {#if editingProgressProjectId}
           <button
             class="project-color-scrim"
@@ -1488,7 +1609,7 @@
             on:pointerdown|stopPropagation
           >
             <strong>{editingProgressProjectLabel}</strong>
-            <label>项目颜色 <input type="color" bind:value={editingProgressProjectColor} /></label>
+            <label>项目颜色 <input bind:this={projectColorInput} type="color" bind:value={editingProgressProjectColor} /></label>
             <div class="project-color-presets">
               {#each ["#6a5acd", "#2878b5", "#16845b", "#c46a16", "#bd3e5b", "#6b7f2b", "#8f4fb2", "#287f8d"] as color}
                 <button type="button" style={`--swatch:${color}`} aria-label={`选择颜色 ${color}`} on:click={() => (editingProgressProjectColor = color)}></button>
@@ -2344,10 +2465,14 @@
   .previous-tasks-card > summary small { color: var(--text-muted); }
   .previous-task-list { display: grid; gap: 9px; padding: 0 12px 10px; }
   .previous-date-group { overflow: hidden; border: 1px solid var(--daily-border); border-radius: 9px; background: var(--daily-raised); }
-  .previous-date-group > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; background: var(--background-secondary); }
-  .previous-date-group > header > span { display: flex; align-items: center; gap: 7px; }
+  .previous-date-group > summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; cursor: pointer; list-style: none; background: var(--background-secondary); }
+  .previous-date-group > summary::-webkit-details-marker { display: none; }
+  .previous-date-group > summary > span { display: flex; align-items: center; gap: 7px; }
   .previous-date-group em { color: var(--text-muted); font-size: .65rem; font-style: normal; font-weight: 500; }
   .previous-date-group button { display: inline-grid; padding: 4px; place-items: center; color: var(--text-muted); background: transparent; }
+  .previous-date-actions { margin-left: auto; }
+  .previous-date-chevron { transition: transform 140ms ease; }
+  .previous-date-group:not([open]) .previous-date-chevron { transform: rotate(-90deg); }
   .previous-project-group { border-top: 1px solid var(--daily-border); }
   .previous-project-group > summary { display: flex; align-items: center; gap: 7px; padding: 7px 10px; cursor: pointer; list-style: none; }
   .previous-project-group > summary strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2711,6 +2836,16 @@
     background: var(--background-primary);
   }
 
+  .progress-accessible {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
   .project-progress-battery::after {
     position: absolute;
     top: 4px;
@@ -2739,11 +2874,12 @@
     background-color: var(--project-color) !important;
     background-image: linear-gradient(rgba(255,255,255,.78), rgba(255,255,255,.78));
     box-shadow: none;
-    cursor: context-menu;
+    cursor: pointer;
     transition: background 120ms ease, transform 120ms ease;
   }
 
-  .battery-project:hover {
+  .battery-project:hover,
+  .battery-project.inspecting {
     background: color-mix(in srgb, var(--project-color) 22%, transparent);
     transform: translateY(-1px);
   }
@@ -2788,7 +2924,8 @@
   }
 
   .project-progress-legend > button:hover,
-  .project-progress-legend > button:focus-visible {
+  .project-progress-legend > button:focus-visible,
+  .project-progress-legend > button.inspecting {
     border-color: color-mix(in srgb, var(--project-color) 55%, var(--background-modifier-border));
     color: var(--text-normal);
     background: color-mix(in srgb, var(--project-color) 12%, transparent);
@@ -2806,6 +2943,46 @@
     font-style: normal;
     opacity: 0.75;
   }
+
+  .project-progress-details {
+    position: relative;
+    display: grid;
+    gap: 7px;
+    max-height: 250px;
+    margin-top: 8px;
+    padding: 9px 10px;
+    overflow: auto;
+    border: 1px solid color-mix(in srgb, var(--project-color) 48%, var(--background-modifier-border));
+    border-left: 3px solid var(--project-color);
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--project-color) 7%, var(--background-primary));
+    box-shadow: 0 8px 24px rgb(0 0 0 / 9%);
+  }
+
+  .project-progress-details > header,
+  .project-progress-details > header > span,
+  .project-progress-statuses,
+  .project-progress-details > footer {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+
+  .project-progress-details > header { justify-content: space-between; }
+  .project-progress-details > header i { width: 8px; height: 8px; border-radius: 2px; background: var(--project-color); }
+  .project-progress-details > header em { color: var(--text-muted); font-size: .68rem; font-style: normal; }
+  .project-progress-statuses { flex-wrap: wrap; color: var(--text-muted); font-size: .67rem; }
+  .project-progress-statuses span { padding: 2px 6px; border-radius: 999px; background: var(--background-secondary); }
+  .project-progress-details ul { display: grid; gap: 3px; margin: 0; padding: 0; list-style: none; }
+  .project-progress-details li { display: grid; grid-template-columns: 18px 1fr; gap: 5px; padding: 5px 3px; border-top: 1px solid var(--daily-border); }
+  .project-progress-details li > span { color: var(--text-muted); }
+  .project-progress-details li.active > span { color: var(--interactive-accent); }
+  .project-progress-details li.done strong { color: var(--text-muted); text-decoration: line-through; }
+  .project-progress-details li div { display: grid; min-width: 0; gap: 2px; }
+  .project-progress-details li strong { overflow: hidden; text-overflow: ellipsis; font-size: .73rem; white-space: nowrap; }
+  .project-progress-details li small { overflow: hidden; color: var(--text-muted); font-size: .64rem; text-overflow: ellipsis; white-space: nowrap; }
+  .project-progress-details > footer { justify-content: space-between; color: var(--text-faint); font-size: .61rem; }
+  .project-progress-details > footer button { padding: 3px 7px; font-size: .64rem; }
 
   .project-color-scrim {
     position: fixed;

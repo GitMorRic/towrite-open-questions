@@ -151,6 +151,7 @@ import {
   dailyDeviceScore,
   dailyCreateOnlyTitle,
   dailyPlanCacheInvalidationForPath,
+  isConfiguredDailyPlanSourcePath,
   changedDailyMarkdownTimerTaskIds,
   canSkipMissingDailyTimerMarkdownTask,
   dailyMarkdownTimerEventId,
@@ -158,7 +159,9 @@ import {
   dailyMarkdownTimerTransactionId,
   dailyTaskTextForBackend,
   dailyWikiLink,
+  dailyMigrationSelectionKey,
   expandDailyMigrationSelections,
+  planDailyMigrationDestinations,
   unfinishedDailyLeafItems,
   DailyPlanConflictError,
   DailyPlanService,
@@ -7407,7 +7410,9 @@ export default class ToWritePlugin extends Plugin {
     if (!item) {
       throw new DailyPlanConflictError(
         "revision-changed",
-        "The historical Daily task changed after the carryover review was opened."
+        this.settings.language === "zh"
+          ? "原日记任务在迁移列表打开后发生了变化；请按刷新后的列表重新选择。"
+          : "The historical Daily task changed after the carryover review was opened. Please select it again from the refreshed list."
       );
     }
     const ignored = new Set(this.dailyCarryoverIgnored[targetDate] ?? []);
@@ -7430,23 +7435,35 @@ export default class ToWritePlugin extends Plugin {
   ): Promise<DailyTaskMigration[]> {
     const targetDate = formatDailyInputDate(date);
     const historicalItems = await this.collectHistoricalDailyUnfinished(targetDate, true);
-    const sourceById = new Map(historicalItems.map((item) => [item.id, item]));
+    const sourceBySelection = new Map(historicalItems.map((item) => [dailyMigrationSelectionKey(item), item]));
+    const selectedIdsByDate = new Map<string, Set<string>>();
     for (const selection of selections) {
-      const item = sourceById.get(selection.id);
-      if (!item
-        || item.revision.value !== selection.revision.value
-        || item.revision.date !== selection.revision.date) {
+      const item = sourceBySelection.get(dailyMigrationSelectionKey(selection));
+      if (!item) {
+        if (this.dailyPlanDocument?.date === targetDate) {
+          const ignored = new Set(this.dailyCarryoverIgnored[targetDate] ?? []);
+          this.previousDailyUnfinished = historicalItems.filter(
+            (candidate) => !ignored.has(this.dailyCarryoverItemKey(candidate))
+          );
+          this.notifyUi();
+        }
         throw new DailyPlanConflictError(
           "revision-changed",
-          "The historical Daily task changed after the carryover review was opened."
+          this.settings.language === "zh"
+            ? "原日记任务在迁移列表打开后发生了变化；列表已刷新，请重新选择。"
+            : "The historical Daily task changed after the carryover review was opened. The list was refreshed; please select it again."
         );
       }
+      const sourceDate = item.revision.date;
+      if (!sourceDate) {
+        throw new DailyPlanConflictError("invalid-state", "The historical Daily task has no source date.");
+      }
+      const ids = selectedIdsByDate.get(sourceDate) ?? new Set<string>();
+      ids.add(item.id);
+      selectedIdsByDate.set(sourceDate, ids);
     }
-    const selectedIds = new Set(selections.map((selection) => selection.id));
-    const validated = [...new Set(selections
-      .map((selection) => selection.revision.date)
-      .filter((sourceDate): sourceDate is string => Boolean(sourceDate)))]
-      .flatMap((sourceDate) => expandDailyMigrationSelections(
+    const validated = [...selectedIdsByDate]
+      .flatMap(([sourceDate, selectedIds]) => expandDailyMigrationSelections(
         historicalItems.filter((item) => item.revision.date === sourceDate),
         selectedIds
       ));
@@ -7458,9 +7475,51 @@ export default class ToWritePlugin extends Plugin {
           : "The selected group has no unfinished leaf tasks to migrate."
       );
     }
+    // Reserve the complete batch before touching any source note. Historical
+    // ids are date-scoped, so two legitimate source tasks may otherwise merge
+    // silently or fail only after an earlier selection has already moved.
+    const destination = await this.dailyPlanService.read(targetDate);
+    const destinationBlocking = destination.diagnostics.filter(
+      (entry) => entry.code !== "missing-block-id"
+    );
+    if (destinationBlocking.length > 0) {
+      throw new DailyPlanConflictError(
+        "invalid-document",
+        this.settings.language === "zh"
+          ? `目标日记存在需要先修复的任务结构问题：${destinationBlocking[0].message}`
+          : `The destination Daily note must be repaired before migration: ${destinationBlocking[0].message}`
+      );
+    }
+    const planned = planDailyMigrationDestinations(validated, destination.items, targetDate);
+    for (const { item } of planned) {
+      const sourceDate = item.revision.date!;
+      const current = await this.dailyPlanService.get(item.id, sourceDate);
+      if (!current || current.revision.value !== item.revision.value) {
+        throw new DailyPlanConflictError(
+          "revision-changed",
+          this.settings.language === "zh"
+            ? "迁移准备期间，原日记任务发生了变化；未开始迁移，请刷新后重新选择。"
+            : "A historical Daily task changed while the migration batch was being prepared. Nothing was moved; refresh and select again."
+        );
+      }
+      await this.assertDailyLifecycleLeaf(current, sourceDate);
+      if (current.taskRef) {
+        const poolTask = await this.taskPoolService.get(current.taskRef);
+        if (!poolTask) {
+          throw new TaskPoolConflictError("not-found", `Task Pool item does not exist: ${current.taskRef}`);
+        }
+        this.assertCurrentTaskPoolAssignment(poolTask, current);
+      }
+    }
+
     const migrations: DailyTaskMigration[] = [];
-    for (const item of validated) {
-      migrations.push(await this.moveDailyItemToTomorrow(item.id, item.revision, targetDate));
+    for (const { item, destinationId } of planned) {
+      migrations.push(await this.moveDailyItemToTomorrow(
+        item.id,
+        item.revision,
+        targetDate,
+        destinationId
+      ));
     }
     delete this.dailyCarryoverReviews[targetDate];
     this.historicalDailyUnfinishedCache.delete(targetDate);
@@ -7670,7 +7729,7 @@ export default class ToWritePlugin extends Plugin {
     if (
       !enabled
       || !path
-      || this.isTrackedDailyPlanPath(path)
+      || this.isConfiguredDailyPlanSourcePath(path)
       || normalizePath(path) === normalizePath(this.taskPoolService.path)
       || !this.isWorkPoolTaskSourceAllowed(path)
     ) {
@@ -7774,7 +7833,7 @@ export default class ToWritePlugin extends Plugin {
     this.markdownTaskNoteSuggestions = this.app.vault.getMarkdownFiles()
       .filter((file) =>
         normalizePath(file.path) !== normalizePath(this.taskPoolService.path)
-        && !this.isTrackedDailyPlanPath(file.path)
+        && !this.isConfiguredDailyPlanSourcePath(file.path)
         && this.isWorkPoolTaskSourceAllowed(file.path, allowlist)
       )
       .map((file) => ({
@@ -9483,7 +9542,7 @@ export default class ToWritePlugin extends Plugin {
     for (const file of this.app.vault.getMarkdownFiles()) {
       if (
         normalizePath(file.path) === normalizePath(this.taskPoolService.path)
-        || this.isTrackedDailyPlanPath(file.path)
+        || this.isConfiguredDailyPlanSourcePath(file.path)
         || !this.isWorkPoolTaskSourceAllowed(file.path, taskSourceAllowlist)
       ) {
         continue;
@@ -9521,7 +9580,7 @@ export default class ToWritePlugin extends Plugin {
     visited.add(normalizedPath);
     if (
       normalizePath(path) === normalizePath(this.taskPoolService.path)
-      || this.isTrackedDailyPlanPath(path)
+      || this.isConfiguredDailyPlanSourcePath(path)
       || !this.isWorkPoolTaskSourceAllowed(path, includedSourcePaths)
     ) {
       this.noteTaskRelationsBySource.delete(normalizePath(path));
@@ -10457,7 +10516,8 @@ export default class ToWritePlugin extends Plugin {
   private async moveDailyItemToTomorrow(
     id: string,
     revision: DailyTaskRevision,
-    destinationDate?: string
+    destinationDate?: string,
+    destinationTaskId?: string
   ): Promise<DailyTaskMigration> {
     const date = await this.dateForDailyItem(id, revision);
     const item = await this.dailyPlanService.get(id, date);
@@ -10470,26 +10530,30 @@ export default class ToWritePlugin extends Plugin {
     const tomorrowDate = destinationDate
       ? formatDailyInputDate(destinationDate)
       : formatDailyInputDate(tomorrow);
+    const targetTaskId = destinationTaskId ?? item.id;
     let createdTomorrow: DailyPlanItem | undefined;
+    let createdTomorrowWasNew = false;
     let reassignedPool: TaskPoolItem | undefined;
+    let reassignedPoolChanged = false;
     let migration: DailyTaskMigration | undefined;
     try {
       if (item.taskRef) {
         const poolTask = await this.taskPoolService.get(item.taskRef);
         if (!poolTask) throw new TaskPoolConflictError("not-found", `Task Pool item does not exist: ${item.taskRef}`);
         this.assertCurrentTaskPoolAssignment(poolTask, item);
-        // Preserve the Daily id when a commitment moves between dates. Timer
-        // events and already-issued device references are keyed by this id;
-        // changing it would silently split one task's history in two.
+        // Preserve the Daily id for an ordinary single move. A preflighted
+        // historical batch may supply a deterministic alternative when that
+        // id is already occupied by another date-scoped task.
         const assignment = await this.taskPoolService.restoreAssignment(
           poolTask.taskId,
           poolTask.revision,
           tomorrowDate,
-          item.id
+          targetTaskId
         );
         reassignedPool = assignment.task;
-        createdTomorrow = await this.dailyPlanService.create({
-          id: item.id,
+        reassignedPoolChanged = !assignment.idempotent;
+        const creation = await this.dailyPlanService.createWithResult({
+          id: targetTaskId,
           date: tomorrowDate,
           text: poolTask.text,
           kind: item.kind,
@@ -10505,9 +10569,11 @@ export default class ToWritePlugin extends Plugin {
           priority: item.priority,
           tags: item.tags
         });
+        createdTomorrow = creation.item;
+        createdTomorrowWasNew = creation.created;
       } else {
-        createdTomorrow = await this.dailyPlanService.create({
-          id: item.id,
+        const creation = await this.dailyPlanService.createWithResult({
+          id: targetTaskId,
           date: tomorrowDate,
           text: item.text,
           kind: item.kind,
@@ -10526,15 +10592,23 @@ export default class ToWritePlugin extends Plugin {
           primary: item.primary,
           minimum: item.minimum
         });
+        createdTomorrow = creation.item;
+        createdTomorrowWasNew = creation.created;
       }
       if (!createdTomorrow) throw new Error("Daily migration did not create its destination task.");
+      if (destinationTaskId && !createdTomorrowWasNew) {
+        throw new DailyPlanConflictError(
+          "id-reused",
+          "The preflighted Daily migration destination id became occupied before it could be written."
+        );
+      }
       migration = await this.dailyPlanService.recordMigration(item.id, item.revision, {
         date: tomorrowDate,
         taskId: createdTomorrow.id,
         migrationId: `mig_${randomTokenFragment()}`
       }, date);
     } catch (error) {
-      if (createdTomorrow) {
+      if (createdTomorrow && createdTomorrowWasNew) {
         try {
           await this.dailyPlanService.remove(
             createdTomorrow.id,
@@ -10545,7 +10619,7 @@ export default class ToWritePlugin extends Plugin {
           console.error("ToWrite could not remove a partially migrated Daily task", rollbackError);
         }
       }
-      if (reassignedPool) {
+      if (reassignedPool && reassignedPoolChanged) {
         try {
           await this.taskPoolService.restoreAssignment(
             reassignedPool.taskId,
@@ -12408,7 +12482,7 @@ export default class ToWritePlugin extends Plugin {
           const newlyAllowed = nextAllowlist.filter((path) => !previousAllowlist.has(path));
           for (const path of newlyAllowed) {
             const file = this.app.vault.getFileByPath(path);
-            if (!file || file.extension !== "md" || this.isTrackedDailyPlanPath(path)) continue;
+            if (!file || file.extension !== "md" || this.isConfiguredDailyPlanSourcePath(path)) continue;
             await this.syncMarkdownTasksForFile(path, new Set<string>(), nextAllowlist);
           }
           await this.rebuildDailyLinkedTaskProjectionCache();
@@ -12423,6 +12497,15 @@ export default class ToWritePlugin extends Plugin {
           new Notice(messageForError(error));
         });
     }, 1500, true);
+    const refreshHistoricalDailyAfterVaultChange = debounce(() => {
+      void this.refreshPreviousDailyUnfinishedCache().catch((error: unknown) => {
+        console.error("ToWrite could not refresh historical Daily tasks", error);
+      });
+    }, 1500, true);
+    const invalidateHistoricalDailyAfterVaultChange = (): void => {
+      this.historicalDailyUnfinishedCache.clear();
+      refreshHistoricalDailyAfterVaultChange();
+    };
     const refreshActiveNoteTasksAfterVaultChange = debounce(() => {
       void this.refreshActiveNoteTaskCache().catch((error: unknown) => {
         console.error("ToWrite could not refresh ordinary tasks in the active note", error);
@@ -12459,7 +12542,7 @@ export default class ToWritePlugin extends Plugin {
     const queueMarkdownTaskSync = (file: TFile): void => {
       if (!this.settings.daily.enabled || file.extension !== "md") return;
       if (normalizePath(file.path) === normalizePath(this.taskPoolService.path)) return;
-      if (this.isTrackedDailyPlanPath(file.path)) return;
+      if (this.isConfiguredDailyPlanSourcePath(file.path)) return;
       pendingMarkdownTaskPaths.add(file.path);
       syncChangedMarkdownTasks();
     };
@@ -12490,6 +12573,8 @@ export default class ToWritePlugin extends Plugin {
             refreshTaskPoolAfterVaultChange();
           } else if (this.isTrackedDailyPlanPath(file.path)) {
             refreshDailyPlanAfterVaultChange();
+          } else if (this.isConfiguredDailyPlanSourcePath(file.path)) {
+            invalidateHistoricalDailyAfterVaultChange();
           } else if (file.path === this.getActiveFile() || file.path === this.activeNoteTaskDocument?.sourcePath) {
             refreshActiveNoteTasksAfterVaultChange();
           }
@@ -12519,6 +12604,8 @@ export default class ToWritePlugin extends Plugin {
             refreshTaskPoolAfterVaultChange();
           } else if (this.isTrackedDailyPlanPath(file.path)) {
             refreshDailyPlanAfterVaultChange();
+          } else if (this.isConfiguredDailyPlanSourcePath(file.path)) {
+            invalidateHistoricalDailyAfterVaultChange();
           } else if (file.path === this.getActiveFile() || file.path === this.activeNoteTaskDocument?.sourcePath) {
             refreshActiveNoteTasksAfterVaultChange();
           }
@@ -12549,6 +12636,8 @@ export default class ToWritePlugin extends Plugin {
             // the active (today) plan so deleting tomorrow cannot blank the
             // current dashboard cache.
             refreshDailyPlanAfterVaultChange();
+          } else if (this.isConfiguredDailyPlanSourcePath(file.path)) {
+            invalidateHistoricalDailyAfterVaultChange();
           } else if (
             file.path === this.getActiveFile()
             || file.path === this.activeNoteTaskDocument?.sourcePath
@@ -12592,6 +12681,11 @@ export default class ToWritePlugin extends Plugin {
             refreshTaskPoolAfterVaultChange();
           } else if (this.isTrackedDailyPlanPath(oldPath) || this.isTrackedDailyPlanPath(file.path)) {
             refreshDailyPlanAfterVaultChange();
+          } else if (
+            this.isConfiguredDailyPlanSourcePath(oldPath)
+            || this.isConfiguredDailyPlanSourcePath(file.path)
+          ) {
+            invalidateHistoricalDailyAfterVaultChange();
           } else if (oldPath === this.activeNoteTaskDocument?.sourcePath || file.path === this.getActiveFile()) {
             refreshActiveNoteTasksAfterVaultChange();
           }
@@ -12676,6 +12770,11 @@ export default class ToWritePlugin extends Plugin {
       this.dailyPlanService.pathForDate(today),
       this.dailyPlanService.pathForDate(tomorrow)
     ) === "refresh";
+  }
+
+  /** Any configured Daily source is owned by Daily, not ordinary Note Tasks. */
+  private isConfiguredDailyPlanSourcePath(path: string): boolean {
+    return isConfiguredDailyPlanSourcePath(path, this.dailyPlanSourceSetting());
   }
 
   private async autoApplyInboxMetadata(file: TFile): Promise<void> {

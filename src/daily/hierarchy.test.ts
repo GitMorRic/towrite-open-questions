@@ -241,6 +241,120 @@ describe("daily hierarchy and inherited targets", () => {
     expect(hierarchy.tasks.some((task) => task.text === "LINUX DO")).toBe(false);
   });
 
+  it("recovers free-form project trees beside a populated canonical ToDo section", async () => {
+    const sourcePath = "sync/Todo_and_tosolve/20260813.md";
+    const markdown = [
+      "# 20260813",
+      "1. [[普通索引，不是任务]]",
+      "- [ ] 项目 ^daily_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "  1. [ ] [[obsidian-待办清单]] ^daily_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "- [ ] Standalone legacy task ^daily_abababababababababababababababab",
+      "",
+      "## 随记",
+      "今天的正文",
+      "- [ ] 随记里的孤立提醒 ^daily_ffffffffffffffffffffffffffffffff",
+      "",
+      "## ToDo",
+      "- [ ] [[小说-请确认你是本人]] ^daily_cccccccccccccccccccccccccccccccc"
+    ].join("\n");
+    const options = {
+      source: {
+        kind: "daily-note" as const,
+        dailyRoot: "sync/Todo_and_tosolve",
+        dateFormat: "YYYYMMDD"
+      }
+    };
+    const hierarchy = parseDailyPlanHierarchy(markdown, sourcePath, "2026-08-13", options);
+
+    expect(hierarchy.groups.map((group) => group.text)).toEqual(["项目"]);
+    expect(hierarchy.tasks.map((task) => task.text)).toEqual([
+      "项目",
+      "[[obsidian-待办清单]]",
+      "Standalone legacy task",
+      "[[小说-请确认你是本人]]"
+    ]);
+    expect(new Set(hierarchy.tasks.map((task) => task.line)).size).toBe(hierarchy.tasks.length);
+    expect(hierarchy.tasks.some((task) => task.text.includes("普通索引"))).toBe(false);
+    expect(hierarchy.tasks.some((task) => task.text.includes("孤立提醒"))).toBe(false);
+
+    const storage = new MemoryStorage();
+    storage.files.set(sourcePath, markdown);
+    const items = await new DailyPlanService(storage, options).list("2026-08-13");
+    expect(items.map((item) => item.text)).toEqual([
+      "项目",
+      "[[obsidian-待办清单]]",
+      "Standalone legacy task",
+      "[[小说-请确认你是本人]]"
+    ]);
+  });
+
+  it("keeps an explicit canonical ToDo isolated from unrelated checkboxes", () => {
+    const markdown = [
+      `# ${DATE}`,
+      "- [ ] Journal reminder ^daily_dddddddddddddddddddddddddddddddd",
+      "1. [[Ordinary reading index]]",
+      "",
+      "## ToDo",
+      "- [ ] Canonical task ^daily_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    ].join("\n");
+    const hierarchy = parseDailyPlanHierarchy(markdown, PATH, DATE);
+
+    expect(hierarchy.tasks.map((task) => task.text)).toEqual(["Canonical task"]);
+  });
+
+  it("lets an empty explicit ToDo own the plan instead of an isolated journal reminder", () => {
+    const markdown = [
+      `# ${DATE}`,
+      "## Journal",
+      "- [ ] Personal reminder ^daily_dddddddddddddddddddddddddddddddd",
+      "",
+      "## ToDo"
+    ].join("\n");
+    const hierarchy = parseDailyPlanHierarchy(markdown, PATH, DATE);
+
+    expect(hierarchy.tasks).toEqual([]);
+  });
+
+  it("does not infer a Daily plan from a checkbox inside a Journal section", () => {
+    const markdown = [
+      `# ${DATE}`,
+      "## Journal",
+      "- [ ] Personal reminder ^daily_dddddddddddddddddddddddddddddddd"
+    ].join("\n");
+    const hierarchy = parseDailyPlanHierarchy(markdown, PATH, DATE);
+
+    expect(hierarchy.tasks).toEqual([]);
+  });
+
+  it("keeps configured plan projects visible after a canonical task is added", () => {
+    const markdown = [
+      `# ${DATE}`,
+      "## 今日计划",
+      "- [ ] 项目 ^daily_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "  1. [ ] [[obsidian-待办清单]] ^daily_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "",
+      "## ToDo",
+      "- [ ] 迁入任务 ^daily_cccccccccccccccccccccccccccccccc"
+    ].join("\n");
+    const hierarchy = parseDailyPlanHierarchy(markdown, PATH, DATE, {
+      planHeading: "今日计划",
+      todoHeading: "ToDo"
+    });
+
+    expect(hierarchy.tasks.map((task) => task.text)).toEqual([
+      "项目",
+      "[[obsidian-待办清单]]",
+      "迁入任务"
+    ]);
+    const changed = parseDailyPlanHierarchy(
+      markdown.replace("obsidian-待办清单", "obsidian-任务清单"),
+      PATH,
+      DATE,
+      { planHeading: "今日计划", todoHeading: "ToDo" }
+    );
+    expect(changed.revision).not.toBe(hierarchy.revision);
+  });
+
   it("reads normalized tasks from the plan-heading fallback through DailyPlanService", async () => {
     const storage = new MemoryStorage();
     storage.files.set(PATH, [

@@ -2131,24 +2131,53 @@ function readDailyPriority(value: unknown): DailyPlanCreateInput["priority"] {
 function readDailyRevision(body: Record<string, unknown>): DailyTaskRevision {
   const value = body.revision;
   if (typeof value === "string" && value.trim()) {
+    const date = readOptionalDailyRevisionDate(body);
     return {
       value: value.trim().slice(0, 200),
       sourcePath: readOptionalText(body, "sourcePath") ?? "",
-      blockId: readOptionalText(body, "blockId") ?? ""
+      blockId: readOptionalText(body, "blockId") ?? "",
+      ...(date ? { date } : {})
     };
   }
   if (value && typeof value === "object" && !Array.isArray(value)) {
     const record = value as Record<string, unknown>;
     const revision = readOptionalText(record, "value");
     if (revision) {
+      const date = readOptionalDailyRevisionDate(record);
       return {
         value: revision,
         sourcePath: readOptionalText(record, "sourcePath") ?? "",
-        blockId: readOptionalText(record, "blockId") ?? ""
+        blockId: readOptionalText(record, "blockId") ?? "",
+        ...(date ? { date } : {})
       };
     }
   }
   throw new ExternalApiError(400, "A daily task revision is required.");
+}
+
+function readOptionalDailyRevisionDate(body: Record<string, unknown>): string | undefined {
+  const raw = body.date;
+  if (raw === undefined || raw === null || raw === "") return undefined;
+  if (typeof raw !== "string") {
+    throw new ExternalApiError(400, "Daily task revision date must use YYYY-MM-DD format.");
+  }
+  const date = raw.trim();
+  const match = /^(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})$/u.exec(date);
+  if (!match?.groups) {
+    throw new ExternalApiError(400, "Daily task revision date must use YYYY-MM-DD format.");
+  }
+  const year = Number(match.groups.year);
+  const month = Number(match.groups.month);
+  const day = Number(match.groups.day);
+  const parsed = new Date(year, month - 1, day, 12);
+  if (
+    parsed.getFullYear() !== year
+    || parsed.getMonth() !== month - 1
+    || parsed.getDate() !== day
+  ) {
+    throw new ExternalApiError(400, "Daily task revision date is invalid.");
+  }
+  return date;
 }
 
 function readDailyMigrationSelections(

@@ -111,6 +111,77 @@ describe("zero-disturbance Daily editing", () => {
     expect(written).toContain("  1. 你");
   });
 
+  it("adds created and migrated tasks to a free-form checklist without adding ToDo", async () => {
+    const path = "sync/Todo_and_tosolve/20260813.md";
+    const original = [
+      "# 2026-08-13",
+      "",
+      "- [ ] 项目",
+      "  1. [[obsidian-待办清单]]",
+      "- [ ] 创作",
+      "  1. [[小说-请确认你是本人]]",
+      "",
+      "## 随记",
+      "今天的正文"
+    ].join("\n");
+    const storage = new MemoryStorage(path, original);
+    const service = new DailyPlanService(storage, {
+      source: {
+        kind: "daily-note",
+        dailyRoot: "sync/Todo_and_tosolve",
+        dateFormat: "YYYYMMDD"
+      },
+      planHeading: "今日计划",
+      todoHeading: "ToDo",
+      createId: () => "daily_11111111111111111111111111111111"
+    });
+
+    await service.create({ text: "新建的任务", date: "2026-08-13" });
+    await service.create({
+      id: "daily_22222222222222222222222222222222",
+      text: "迁入的任务",
+      date: "2026-08-13"
+    });
+    const written = storage.files.get(path) ?? "";
+    const hierarchy = await service.readHierarchy("2026-08-13");
+
+    expect(written).not.toContain("## ToDo");
+    expect(written.indexOf("新建的任务")).toBeLessThan(written.indexOf("## 随记"));
+    expect(written.indexOf("迁入的任务")).toBeLessThan(written.indexOf("## 随记"));
+    expect(hierarchy.tasks.map((task) => task.text)).toEqual([
+      "项目",
+      "[[obsidian-待办清单]]",
+      "创作",
+      "[[小说-请确认你是本人]]",
+      "新建的任务",
+      "迁入的任务"
+    ]);
+  });
+
+  it("writes into an empty explicit ToDo instead of beside an isolated journal checkbox", async () => {
+    const path = "Daily/2026-08-13.md";
+    const original = [
+      "# 2026-08-13",
+      "",
+      "## Journal",
+      "- [ ] Personal reminder ^daily_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "",
+      "## ToDo"
+    ].join("\n");
+    const storage = new MemoryStorage(path, original);
+    const service = new DailyPlanService(storage, {
+      source: { kind: "daily-note", dailyRoot: "Daily", dateFormat: "YYYY-MM-DD" },
+      todoHeading: "ToDo",
+      createId: () => "daily_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    });
+
+    await service.create({ text: "Managed task", date: "2026-08-13" });
+    const written = storage.files.get(path) ?? "";
+
+    expect(written.indexOf("Managed task")).toBeGreaterThan(written.indexOf("## ToDo"));
+    expect((await service.list("2026-08-13")).map((item) => item.text)).toEqual(["Managed task"]);
+  });
+
   it("does not call the normalizer from dashboard or Vault refresh paths", () => {
     const source = readFileSync(new URL("../main.ts", import.meta.url), "utf8");
     expect(source).not.toContain("normalizeMissingDailyCheckboxIds");

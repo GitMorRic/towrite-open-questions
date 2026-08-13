@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+## 0.3.9 - 2026-08-13
+
+- Made project progress interactive: hover previews project tasks, left click pins details, and right click opens project colour controls, with equivalent keyboard actions and valid progress accessibility metadata.
+- Made historical carry-over opt-in and revision-safe across dates. Reused task IDs are preflighted and assigned distinct deterministic destination IDs instead of silently merging or leaving a partially migrated batch.
+- Preserved revision dates through the external Daily API and refreshed stale carry-over choices when historical notes change.
+- Stopped configured Daily Notes from entering the ordinary Note Task synchronizer, preventing unexpected managed tasks from being appended to historical journal files.
+- Recovered legacy free-form project trees even when an injected `ToDo` section exists, while excluding isolated journal reminders and unrelated outlines from the Daily plan.
+- Kept new and migrated tasks beside an authored free-form planning tree instead of creating a shadowing `ToDo` heading; an explicitly authored empty `ToDo` section still remains the intended write target.
+- Production verification: 126 test files and 768 tests, Obsidian lint with zero warnings, TypeScript checks, production build, release asset validation, and the 2 MiB bundle limit.
+
+中文摘要：
+
+- 项目进度条现在支持悬浮查看任务详情、左键固定详情、右键设置颜色，并补齐键盘操作与无障碍状态。
+- 历史迁移改为手动勾选；跨日期复用任务 ID 时会在迁移前完成校验并分配独立目标 ID，不再静默合并，也不会迁移一半才报错。
+- 外部 Daily API 会保留迁移来源日期，历史日记发生变化后迁移列表会自动失效并刷新。
+- 配置为 Daily 来源的历史日记不会再进入普通笔记任务同步，避免在日记末尾意外写入托管任务。
+- 旧版误加 `ToDo` 后，原有自由格式项目树仍会被识别；随记中的孤立复选框和普通大纲不会冒充今日任务。
+- 新建和迁入任务会写入已有自由格式计划区，不再创建遮蔽项目的 `ToDo`；如果用户明确写了空的 `ToDo`，则继续以该区块作为目标。
+- 生产验证：126 个测试文件、768 项测试，以及 Obsidian lint、类型检查、生产构建、Release 资产和 2 MiB 包体限制全部通过。
+
 ## 0.3.8 - 2026-08-13
 
 - Kept Workbench navigation responsive when Workflow is not configured: switching between Today, Work Pool, Status, and Journal is now local-first and no longer depends on successfully persisting the Obsidian workspace layout.

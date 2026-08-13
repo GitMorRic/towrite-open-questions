@@ -1,4 +1,48 @@
-import type { DailyPlanItem } from "./types";
+import { contentHash128 } from "../core/hash";
+import type { DailyPlanItem, DailyTaskRevision } from "./types";
+
+/**
+ * Historical Daily ids are only unique inside their original date scope.
+ * Keep the source date and logical-block revision in every UI/service key so
+ * an id reused on another day cannot select or validate the wrong task.
+ */
+export function dailyMigrationSelectionKey(
+  item: { id: string; revision: DailyTaskRevision }
+): string {
+  return `${item.revision.date ?? ""}\u0000${item.id}\u0000${item.revision.value}`;
+}
+
+export interface DailyMigrationDestinationPlan {
+  item: DailyPlanItem;
+  destinationId: string;
+}
+
+/**
+ * Reserves every destination id before a migration batch starts mutating its
+ * source notes. The first source may retain its id when that id is unused in
+ * the target date. Reused historical ids receive a deterministic, valid Daily
+ * id derived from their date-scoped identity, even when their content matches.
+ */
+export function planDailyMigrationDestinations(
+  items: readonly DailyPlanItem[],
+  destinationItems: readonly Pick<DailyPlanItem, "id">[],
+  destinationDate: string
+): DailyMigrationDestinationPlan[] {
+  const occupied = new Set(destinationItems.map((item) => item.id));
+  return items.map((item) => {
+    let destinationId = item.id;
+    if (occupied.has(destinationId)) {
+      const identity = `${destinationDate}\u0000${dailyMigrationSelectionKey(item)}`;
+      let attempt = 0;
+      do {
+        destinationId = `daily_${contentHash128(`${identity}\u0000${attempt}`)}`;
+        attempt += 1;
+      } while (occupied.has(destinationId));
+    }
+    occupied.add(destinationId);
+    return { item, destinationId };
+  });
+}
 
 /**
  * Returns the unfinished tasks that can be migrated independently.

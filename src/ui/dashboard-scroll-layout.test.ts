@@ -62,10 +62,40 @@ describe("dashboard viewport layout", () => {
   it("groups carry-over work by date and project with preview and open actions", () => {
     const component = readFileSync(new URL("./DailyDashboardPanel.svelte", import.meta.url), "utf8");
     expect(component).toContain("previousMigrationGroups");
-    expect(component).toContain('class="previous-date-group"');
+    expect(component).toContain('<details class="previous-date-group" open>');
+    expect(component).toContain('class="previous-date-chevron"');
+    expect(component).toContain("on:click|stopPropagation");
     expect(component).toContain('class="previous-project-group"');
     expect(component).toContain('class="previous-task-preview"');
     expect(component).toContain("打开这天的日记");
     expect(component).toContain("打开任务目标");
+  });
+
+  it("uses left click and hover for project details while reserving right click for color", () => {
+    const component = readFileSync(new URL("./DailyDashboardPanel.svelte", import.meta.url), "utf8");
+    expect(component).toContain("toggleProgressProjectDetails(segment, event)");
+    expect(component).toContain("showProgressProjectDetails(segment)");
+    expect(component).toContain("hideProgressProjectDetails(segment)");
+    expect(component).toContain('class="project-progress-details"');
+    expect(component).toContain("右键设置颜色");
+    expect(component).toContain('event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")');
+    expect(component).toContain("on:keydown={(event) => handleProgressProjectKeydown(segment, event)}");
+    expect(component).toContain("{#if pinnedProgressProjectId === inspectedProgressProject.id}");
+    expect(component).toContain(">设置颜色</button>");
+    expect(component).toContain("projectColorInput?.focus()");
+    expect(component).not.toContain("on:click={(event) => beginProgressProjectColor(segment, event)}");
+  });
+
+  it("closes a pinned project immediately and keeps the empty progress range valid", () => {
+    const component = readFileSync(new URL("./DailyDashboardPanel.svelte", import.meta.url), "utf8");
+    expect(component).toContain("const wasPinned = pinnedProgressProjectId === segment.id");
+    expect(component).toContain('hoveredProgressProjectId = wasPinned ? "" : segment.id');
+    expect(component).toContain("aria-valuemax={Math.max(1, overview.total)}");
+  });
+
+  it("keys historical migration selections by date, id, and revision", () => {
+    const component = readFileSync(new URL("./DailyDashboardPanel.svelte", import.meta.url), "utf8");
+    expect(component).toContain("dailyMigrationSelectionKey(item)");
+    expect(component).not.toContain("previous.map((item) => item.id)");
   });
 });

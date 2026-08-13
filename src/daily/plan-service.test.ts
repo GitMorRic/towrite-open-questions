@@ -41,7 +41,7 @@ describe("DailyPlanService", () => {
       now: () => new Date("2026-07-23T08:00:00+08:00")
     });
 
-    const item = await service.create({
+    const creation = await service.createWithResult({
       text: "补充 [[关于创作]]",
       kind: "edit_note",
       category: "写作与发布",
@@ -56,7 +56,9 @@ describe("DailyPlanService", () => {
       dueDate: "2026-07-24",
       tags: ["writing"]
     });
+    const item = creation.item;
 
+    expect(creation.created).toBe(true);
     expect(item).toMatchObject({
       id: "daily_test123",
       date: "2026-07-23",
@@ -88,7 +90,7 @@ describe("DailyPlanService", () => {
     expect(written).toContain("[towrite-scheduled:: 2026-07-23]");
     expect(written).toContain("[towrite-due:: 2026-07-24]");
     expect(written).toContain("^daily_test123");
-    expect(await service.create({
+    expect(await service.createWithResult({
       id: "daily_test123",
       text: "补充 [[关于创作]]",
       kind: "edit_note",
@@ -103,7 +105,11 @@ describe("DailyPlanService", () => {
       scheduledFor: "2026-07-23T09:30",
       dueDate: "2026-07-24",
       tags: ["writing"]
-    })).toMatchObject({ id: item.id });
+    })).toMatchObject({ item: { id: item.id }, created: false });
+    await expect(service.createWithResult({
+      id: "daily_test123",
+      text: "同一稳定标识但内容不同"
+    })).rejects.toMatchObject({ code: "id-reused" });
     expect(item.revision.date).toBe("2026-07-23");
   });
 

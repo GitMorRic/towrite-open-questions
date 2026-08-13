@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { DailyPlanItem } from "./types";
-import { expandDailyMigrationSelections, unfinishedDailyLeafItems } from "./migration";
+import {
+  dailyMigrationSelectionKey,
+  expandDailyMigrationSelections,
+  planDailyMigrationDestinations,
+  unfinishedDailyLeafItems
+} from "./migration";
 
 function item(
   id: string,
@@ -52,5 +57,51 @@ describe("Daily migration hierarchy", () => {
   it("deduplicates overlapping parent and child selections", () => {
     expect(expandDailyMigrationSelections(items, new Set(["project", "hardware", "pcb"]))
       .map((entry) => entry.id)).toEqual(["design", "pcb"]);
+  });
+
+  it("keeps reused ids distinct across historical date scopes", () => {
+    const first = item("reused");
+    first.revision.date = "2026-08-10";
+    const second = item("reused");
+    second.revision.date = "2026-08-12";
+
+    expect(dailyMigrationSelectionKey(first)).not.toBe(dailyMigrationSelectionKey(second));
+    expect(new Set([first, second].map(dailyMigrationSelectionKey)).size).toBe(2);
+  });
+
+  it("preallocates distinct destinations for same-content tasks that reuse an id", () => {
+    const first = item("daily_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    first.text = "same task text";
+    first.revision.date = "2026-08-10";
+    const second = item("daily_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    second.text = "same task text";
+    second.revision.date = "2026-08-12";
+    second.revision.value = "rev-from-second-date";
+
+    const planned = planDailyMigrationDestinations([first, second], [], "2026-08-13");
+
+    expect(planned[0].destinationId).toBe(first.id);
+    expect(planned[1].destinationId).toMatch(/^daily_[0-9a-f]{32}$/u);
+    expect(planned[1].destinationId).not.toBe(planned[0].destinationId);
+    expect(planDailyMigrationDestinations([first, second], [], "2026-08-13")
+      .map((entry) => entry.destinationId))
+      .toEqual(planned.map((entry) => entry.destinationId));
+  });
+
+  it("preallocates distinct destinations for different-content tasks that reuse an id", () => {
+    const first = item("daily_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    first.text = "first task";
+    first.revision.date = "2026-08-10";
+    const second = item("daily_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    second.text = "different task";
+    second.revision.date = "2026-08-12";
+    second.revision.value = "rev-different-task";
+    const occupied = item(first.id);
+
+    const planned = planDailyMigrationDestinations([first, second], [occupied], "2026-08-13");
+
+    expect(new Set(planned.map((entry) => entry.destinationId)).size).toBe(2);
+    expect(planned.every((entry) => entry.destinationId !== occupied.id)).toBe(true);
+    expect(planned.every((entry) => /^daily_[0-9a-f]{32}$/u.test(entry.destinationId))).toBe(true);
   });
 });

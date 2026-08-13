@@ -1,4 +1,16 @@
+import type { DailyPlanItem, DailyPlanSource } from "./types";
+
 export type DailyPlanCacheInvalidation = "refresh" | "ignore";
+
+const DAILY_DATE_TOKEN = /YYYY|YY|MM|DD|M|D/gu;
+const DAILY_DATE_TOKEN_PATTERN: Record<string, string> = {
+  YYYY: "\\d{4}",
+  YY: "\\d{2}",
+  MM: "(?:0[1-9]|1[0-2])",
+  M: "(?:[1-9]|1[0-2])",
+  DD: "(?:0[1-9]|[12]\\d|3[01])",
+  D: "(?:[1-9]|[12]\\d|3[01])"
+};
 
 /**
  * A tracked delete always causes an active-plan re-read. In particular,
@@ -16,6 +28,28 @@ export function dailyPlanCacheInvalidationForPath(
   )
     ? "refresh"
     : "ignore";
+}
+
+/**
+ * Whether a Vault path is itself a configured Daily plan source.
+ *
+ * Fixed documents match exactly. Daily Notes must be direct children of the
+ * configured root and have the configured date-shaped filename; ordinary
+ * Markdown in a nested project folder is deliberately not treated as Daily.
+ */
+export function isConfiguredDailyPlanSourcePath(path: string, source: DailyPlanSource): boolean {
+  const candidate = comparableVaultPath(path);
+  if (!candidate) return false;
+  if (source.kind === "fixed-document") {
+    return candidate === comparableVaultPath(source.path);
+  }
+
+  const root = comparableVaultPath(source.dailyRoot || "Daily");
+  const prefix = root ? `${root}/` : "";
+  if (!prefix || !candidate.startsWith(prefix)) return false;
+  const fileName = candidate.slice(prefix.length);
+  if (!fileName || fileName.includes("/")) return false;
+  return dailyDateFilePattern(source.dateFormat).test(fileName);
 }
 
 /** Builds a target that retains an Open Question's stable block anchor. */
@@ -52,4 +86,27 @@ function comparableVaultPath(value: string): string {
     .replace(/\\/gu, "/")
     .replace(/^\/+|\/+$/gu, "");
 }
-import type { DailyPlanItem } from "./types";
+
+function dailyDateFilePattern(value: string | undefined): RegExp {
+  const format = normalizedDailyDateFormat(value);
+  let pattern = "";
+  let offset = 0;
+  for (const match of format.matchAll(DAILY_DATE_TOKEN)) {
+    pattern += escapeRegexLiteral(format.slice(offset, match.index));
+    pattern += DAILY_DATE_TOKEN_PATTERN[match[0]];
+    offset = match.index + match[0].length;
+  }
+  pattern += escapeRegexLiteral(format.slice(offset));
+  return new RegExp(`^${pattern}\\.md$`, "iu");
+}
+
+function normalizedDailyDateFormat(value: string | undefined): string {
+  const normalized = String(value ?? "YYYY-MM-DD")
+    .trim()
+    .replace(/\.md$/iu, "");
+  return normalized && !/[\\/:*?"<>|]/u.test(normalized) ? normalized : "YYYY-MM-DD";
+}
+
+function escapeRegexLiteral(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}

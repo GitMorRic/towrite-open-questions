@@ -19,7 +19,7 @@ import {
   type DailyTaskRevision,
   type DailyWorkKind
 } from "./types";
-import { parseDailyPlanHierarchy } from "./hierarchy";
+import { parseDailyPlanHierarchy, resolveDailyPlanWriteSurface } from "./hierarchy";
 
 export interface DailyPlanStorage {
   readText(path: string): Promise<string | undefined>;
@@ -200,6 +200,18 @@ export class DailyPlanService {
   }
 
   async create(input: DailyPlanCreateInput, now = this.now()): Promise<DailyPlanItem> {
+    return (await this.createWithResult(input, now)).item;
+  }
+
+  /**
+   * Creates a task or returns the identical stable-id task already present.
+   * The created flag lets multi-file workflows roll back only content written
+   * by their own attempt, never an idempotent destination that predated it.
+   */
+  async createWithResult(
+    input: DailyPlanCreateInput,
+    now = this.now()
+  ): Promise<{ item: DailyPlanItem; created: boolean }> {
     const date = normalizeDate(input.date ?? now);
     const path = this.pathForDate(date);
     const id = normalizeBlockId(input.id) || normalizeBlockId(this.createId());
@@ -218,7 +230,7 @@ export class DailyPlanService {
       assertWritable(document);
       const existing = document.items.find((item) => item.id === id);
       if (existing) {
-        if (sameCreateRequest(existing, desired)) return existing;
+        if (sameCreateRequest(existing, desired)) return { item: existing, created: false };
         throw new DailyPlanConflictError("id-reused", `Daily plan item id is already used: ${id}`);
       }
 
@@ -241,7 +253,7 @@ export class DailyPlanService {
         }));
       }
       let next = replaceTaskBlocks(current, document.items, replacements);
-      next = appendToTodoSection(next, date, this.resolveSource(date), {
+      next = appendToPlanningSurface(next, date, this.resolveSource(date), {
         planHeading: this.planHeading,
         todoHeading: this.todoHeading
       }, formatTaskBlock(desired, undefined, {
@@ -251,7 +263,7 @@ export class DailyPlanService {
       await this.notify(path);
       const created = this.parse(next, path, date).items.find((item) => item.id === id);
       if (!created) throw new Error("Daily plan item could not be verified after writing.");
-      return created;
+      return { item: created, created: true };
     });
   }
 
@@ -1428,7 +1440,7 @@ function dailyTaskRevisionValue(
   return `dtr_${contentHash128(`${sourcePath}\n${date}\n${blockId}\n${rawBlock}`)}`;
 }
 
-function appendToTodoSection(
+function appendToPlanningSurface(
   markdown: string,
   date: string,
   source: ResolvedSource,
@@ -1436,24 +1448,26 @@ function appendToTodoSection(
   block: string
 ): string {
   let current = ensureDateScope(markdown, date, source);
-  let lines = current.replace(/\s+$/u, "").split(/\r?\n/u);
-  let scope = findDateScope(lines, date, source.nestedDate)!;
-  const todo = findNamedSection(lines, headings.todoHeading, source.planLevel, scope);
-  const plan = findNamedSection(lines, headings.planHeading, source.planLevel, scope);
-  let section = todo && sectionContainsListItem(lines, todo)
-    ? todo
-    : plan && sectionContainsListItem(lines, plan)
-      ? plan
-      : todo ?? plan;
-  if (!section) {
+  let surface = resolveDailyPlanWriteSurface(current, date, {
+    source: source.source,
+    todoHeading: headings.todoHeading,
+    planHeading: headings.planHeading
+  });
+  if (surface.kind === "none") {
     current = ensureNamedSection(current, date, source, headings.todoHeading);
-    lines = current.replace(/\s+$/u, "").split(/\r?\n/u);
-    scope = findDateScope(lines, date, source.nestedDate)!;
-    section = findNamedSection(lines, headings.todoHeading, source.planLevel, scope)!;
+    surface = resolveDailyPlanWriteSurface(current, date, {
+      source: source.source,
+      todoHeading: headings.todoHeading,
+      planHeading: headings.planHeading
+    });
   }
-  let insertion = section.end;
-  while (insertion > section.start && !lines[insertion - 1].trim()) insertion -= 1;
-  lines.splice(insertion, 0, ...(insertion > section.start ? [""] : []), ...block.split("\n"));
+  const lines = current.replace(/\s+$/u, "").split(/\r?\n/u);
+  const start = Math.min(surface.start, lines.length);
+  let insertion = Math.min(surface.insertion, lines.length);
+  while (surface.kind !== "free-form" && insertion > start && !lines[insertion - 1].trim()) {
+    insertion -= 1;
+  }
+  lines.splice(insertion, 0, ...(insertion > start ? [""] : []), ...block.split("\n"));
   return ensureTrailingNewline(lines.join("\n"));
 }
 
