@@ -495,6 +495,8 @@ export default class ToWritePlugin extends Plugin {
   private dailyDeviceStateVersion = 1;
   private dailyScheduleOccurrenceIds = new Set<string>();
   private dailyPlanCacheInitialized = false;
+  private dailyPlanInitializationPromise?: Promise<void>;
+  private dailyDraftPreviewRefreshScheduled = false;
   private dailyBackendWriterCheckedAt = 0;
   private dailyBackendWriterAvailable = false;
   private readonly dailyBackendTimingCache = new Map<string, {
@@ -1991,11 +1993,25 @@ export default class ToWritePlugin extends Plugin {
     await yieldToEventLoop();
     await this.runStartupStep("Daily plan cache", () => this.refreshDailyPlanCache(false, {
       rebuildLinkedProjection: false,
-      refreshBackendTiming: false
+      refreshBackendTiming: false,
+      refreshPreviousUnfinished: false,
+      // Publish the parsed Markdown plan first. Draft discovery is read-only
+      // enrichment and must never hold Workbench or Focus on a loading screen.
+      refreshDraftPreviews: false
     }));
     this.startupCachesReady = true;
     this.rebuildMarkdownTaskInputSuggestionCache();
     this.notifyUi();
+    // Draft discovery needs to parse the editable Daily document (and the
+    // following day). It is useful enrichment, but it must not gate the first
+    // usable Today snapshot or leave Workbench/Focus on a loading screen.
+    this.scheduleDailyDraftPreviewRefresh();
+    // Historical carry-over discovery can inspect many Daily files. It is an
+    // enrichment of the already usable Today snapshot, so never keep Obsidian
+    // startup or the Focus/Workbench views waiting for it.
+    void this.refreshPreviousDailyUnfinishedCache().catch((error: unknown) => {
+      console.error("ToWrite could not restore previous Daily unfinished items", error);
+    });
     await yieldToEventLoop();
     await this.runStartupStep("active note tasks", () => this.refreshActiveNoteTaskCache());
   }
@@ -2115,6 +2131,7 @@ export default class ToWritePlugin extends Plugin {
       dailyDeviceStateVersion: this.dailyDeviceStateVersion,
       dailyScheduleOccurrenceIds: [...this.dailyScheduleOccurrenceIds].slice(-200),
       dailyCarryoverReviews: this.dailyCarryoverReviews,
+      dailyCarryoverIgnored: this.dailyCarryoverIgnored,
       deviceCommandJournal: [...this.deviceCommandJournal.values()].slice(-256)
     };
     await this.saveData(data);
@@ -5942,6 +5959,7 @@ export default class ToWritePlugin extends Plugin {
   private savedCaptureBridgeState?: LocalTapSelectionState;
   private savedDailyActivityState?: DailyActivityState;
   private dailyCarryoverReviews: Record<string, string> = {};
+  private dailyCarryoverIgnored: Record<string, string[]> = {};
   private readonly historicalDailyUnfinishedCache = new Map<string, {
     expiresAt: number;
     items: DailyPlanItem[];
@@ -5974,6 +5992,11 @@ export default class ToWritePlugin extends Plugin {
     this.savedDailyActivityState = data?.dailyActivityState;
     this.dailyCarryoverReviews = data?.dailyCarryoverReviews && typeof data.dailyCarryoverReviews === "object"
       ? { ...data.dailyCarryoverReviews }
+      : {};
+    this.dailyCarryoverIgnored = data?.dailyCarryoverIgnored && typeof data.dailyCarryoverIgnored === "object"
+      ? Object.fromEntries(Object.entries(data.dailyCarryoverIgnored)
+          .filter(([, values]) => Array.isArray(values))
+          .map(([date, values]) => [date, values.filter((value): value is string => typeof value === "string").slice(-512)]))
       : {};
     this.dailyDeviceStateVersion = Number.isSafeInteger(data?.dailyDeviceStateVersion)
       ? Math.max(1, Number(data?.dailyDeviceStateVersion))
@@ -6484,15 +6507,21 @@ export default class ToWritePlugin extends Plugin {
 
   private async refreshDailyPlanCache(
     notify = true,
-    options: { rebuildLinkedProjection?: boolean; refreshBackendTiming?: boolean } = {}
+    options: {
+      rebuildLinkedProjection?: boolean;
+      refreshBackendTiming?: boolean;
+      refreshPreviousUnfinished?: boolean;
+      refreshDraftPreviews?: boolean;
+    } = {}
   ): Promise<void> {
+    const wasInitialized = this.dailyPlanCacheInitialized;
     const previous = this.dailyPlanItems;
     const previousRevision = this.dailyPlanDocument?.revision;
     let document = this.settings.daily.enabled
       ? await this.dailyPlanService.read()
       : undefined;
     if (document
-      && this.dailyPlanCacheInitialized
+      && wasInitialized
       && await this.synchronizeDailyMarkdownTimerState(document, previous)) {
       // Starting a manually selected task can atomically pause another `[/]`
       // task. Re-read after the journal commit so the cache never publishes
@@ -6501,7 +6530,7 @@ export default class ToWritePlugin extends Plugin {
     }
     let next = document?.items ?? [];
     let poolProjectionChanged = false;
-    if (this.dailyPlanCacheInitialized && previous[0]?.sourcePath === next[0]?.sourcePath) {
+    if (wasInitialized && previous[0]?.sourcePath === next[0]?.sourcePath) {
       const previousById = new Map(previous.map((item) => [item.id, item]));
       for (const item of next) {
         const old = previousById.get(item.id);
@@ -6526,8 +6555,9 @@ export default class ToWritePlugin extends Plugin {
       document = await this.dailyPlanService.read(document.date);
       next = document.items;
     }
+    const shouldRefreshDraftPreviews = options.refreshDraftPreviews !== false;
     const editorDocuments: DailyPlanDocument[] = document ? [document] : [];
-    if (document) {
+    if (document && shouldRefreshDraftPreviews) {
       const tomorrow = new Date(`${document.date}T12:00:00`);
       tomorrow.setDate(tomorrow.getDate() + 1);
       const tomorrowDate = formatDailyInputDate(tomorrow);
@@ -6538,7 +6568,7 @@ export default class ToWritePlugin extends Plugin {
       }
     }
     const normalizationPreviews: DailyPlanNormalizationPreview[] = [];
-    if (document) {
+    if (document && shouldRefreshDraftPreviews) {
       for (const editorDocument of editorDocuments) {
         try {
           normalizationPreviews.push(
@@ -6552,25 +6582,83 @@ export default class ToWritePlugin extends Plugin {
     this.dailyPlanItems = next;
     this.dailyEditorPlanItems = editorDocuments.flatMap((entry) => entry.items);
     this.dailyPlanDocument = document;
-    this.dailyPlanNormalizationPreviews = normalizationPreviews;
-    this.dailyDraftReferences.clear();
-    this.previousDailyUnfinished = document
-      ? await this.getPreviousDailyUnfinished(document.date)
-      : [];
-    if (options.refreshBackendTiming !== false) await this.refreshDailyBackendTimingCache(next);
-    if (options.rebuildLinkedProjection !== false) await this.rebuildDailyLinkedTaskProjectionCache();
-    if (this.dailyPlanCacheInitialized && previousRevision && document?.revision !== previousRevision) {
-      this.dailyDeviceStateVersion += 1;
-      this.scheduleDailyStateSave();
+    if (shouldRefreshDraftPreviews) {
+      this.dailyPlanNormalizationPreviews = normalizationPreviews;
     }
+    // Keep runtime draft ids stable while a valid, un-normalized task remains
+    // in the note. Clearing the whole map here made a dashboard refresh race
+    // with Start/Focus actions: the rendered draft id disappeared before the
+    // action could promote it to a stable Markdown task id.
+    const previewDates = new Set(normalizationPreviews.map((entry) => entry.date));
+    const validDraftIds = new Set<string>();
+    for (const preview of normalizationPreviews) {
+      for (const edit of preview.edits) {
+        const task = preview.tasks.find((candidate) => candidate.line === edit.line);
+        if (!isDisplayableDailyDraftTask(edit, task)) continue;
+        validDraftIds.add(
+          this.dailyDraftItemId(preview.sourcePath, preview.date, edit.line, edit.before)
+        );
+      }
+    }
+    if (shouldRefreshDraftPreviews) {
+      for (const [id, reference] of this.dailyDraftReferences) {
+        if (previewDates.has(reference.date) && !validDraftIds.has(id)) {
+          this.dailyDraftReferences.delete(id);
+        }
+      }
+    }
+    // Publish the core Daily snapshot before historical scans, linked-note
+    // projection and backend timing enrichment. Those operations may inspect
+    // many files and must never keep Workbench or Today Focus on a permanent
+    // loading screen.
     this.dailyPlanCacheInitialized = true;
+    // The plan document itself is the only blocking dependency for Today and
+    // Focus. Publish it immediately; history, linked-note projection and
+    // backend timing are optional enrichment and may inspect many files.
+    // Waiting for them here made both surfaces appear permanently stuck on
+    // large or freshly restored vaults.
     this.invalidateLegacyEinkPlaylist();
     this.scheduleRunningDailyCardRefresh();
     this.refreshDailyEditorTaskControls();
     if (notify) this.notifyUi();
+    if (!document) {
+      this.previousDailyUnfinished = [];
+    } else if (options.refreshPreviousUnfinished !== false) {
+      this.previousDailyUnfinished = await this.getPreviousDailyUnfinished(document.date);
+    }
+    if (options.refreshBackendTiming !== false) await this.refreshDailyBackendTimingCache(next);
+    if (options.rebuildLinkedProjection !== false) await this.rebuildDailyLinkedTaskProjectionCache();
+    if (wasInitialized && previousRevision && document?.revision !== previousRevision) {
+      this.dailyDeviceStateVersion += 1;
+      this.scheduleDailyStateSave();
+    }
+    this.invalidateLegacyEinkPlaylist();
+    this.scheduleRunningDailyCardRefresh();
+    this.refreshDailyEditorTaskControls();
+    // Publish the enriched snapshot as a second, non-blocking update.
+    if (notify) this.notifyUi();
     void this.runDueDailyDeviceSchedule().catch((error: unknown) => {
       console.error("ToWrite Daily one-shot schedule failed", error);
     });
+  }
+
+  private async refreshPreviousDailyUnfinishedCache(): Promise<void> {
+    const document = this.dailyPlanDocument;
+    if (!document) {
+      if (this.previousDailyUnfinished.length === 0) return;
+      this.previousDailyUnfinished = [];
+      this.notifyUi();
+      return;
+    }
+    const sourcePath = document.sourcePath;
+    const date = document.date;
+    const items = await this.getPreviousDailyUnfinished(date);
+    // A date/source switch while the historical scan was running must not
+    // publish stale carry-over work into the newly opened Daily plan.
+    if (this.dailyPlanDocument?.date !== date
+      || this.dailyPlanDocument.sourcePath !== sourcePath) return;
+    this.previousDailyUnfinished = items;
+    this.notifyUi();
   }
 
   /**
@@ -6883,7 +6971,11 @@ export default class ToWritePlugin extends Plugin {
     const date = formatDailyInputDate(value);
     const today = formatDailyInputDate(new Date());
     if (date === today) {
-      await this.refreshDailyPlanCache(false);
+      // UI consumers (Workbench and Today Focus) may request the same snapshot
+      // at the same time. Reading the snapshot must not start a full projection
+      // rebuild on every subscriber notification; doing so created a refresh
+      // feedback loop and left one of the views indefinitely loading.
+      await this.ensureDailyPlanCacheReady();
       return this.withDailyTimingSnapshots(
         this.dailyActivityService.getSnapshot(
           date,
@@ -6895,6 +6987,39 @@ export default class ToWritePlugin extends Plugin {
     return this.withDailyTimingSnapshots(
       this.dailyActivityService.getSnapshot(date, projectDailyTaskAggregates(items))
     );
+  }
+
+  private async ensureDailyPlanCacheReady(): Promise<void> {
+    if (this.dailyPlanCacheInitialized) return;
+    if (!this.dailyPlanInitializationPromise) {
+      this.dailyPlanInitializationPromise = this.refreshDailyPlanCache(false, {
+        rebuildLinkedProjection: false,
+        refreshBackendTiming: false,
+        refreshPreviousUnfinished: false,
+        refreshDraftPreviews: false
+      }).finally(() => {
+        this.dailyPlanInitializationPromise = undefined;
+      });
+    }
+    await this.dailyPlanInitializationPromise;
+    this.scheduleDailyDraftPreviewRefresh();
+  }
+
+  private scheduleDailyDraftPreviewRefresh(): void {
+    if (this.dailyDraftPreviewRefreshScheduled || !this.settings.daily.enabled) return;
+    this.dailyDraftPreviewRefreshScheduled = true;
+    window.setTimeout(() => {
+      void this.refreshDailyPlanCache(true, {
+        rebuildLinkedProjection: false,
+        refreshBackendTiming: false,
+        refreshPreviousUnfinished: false,
+        refreshDraftPreviews: true
+      }).catch((error: unknown) => {
+        console.error("ToWrite could not enrich the Daily draft snapshot", error);
+      }).finally(() => {
+        this.dailyDraftPreviewRefreshScheduled = false;
+      });
+    }, 0);
   }
 
   /**
@@ -7200,9 +7325,15 @@ export default class ToWritePlugin extends Plugin {
 
   private async getPreviousDailyUnfinished(date: string): Promise<DailyPlanItem[]> {
     const targetDate = formatDailyInputDate(date);
-    const items = await this.collectHistoricalDailyUnfinished(targetDate);
+    const ignored = new Set(this.dailyCarryoverIgnored[targetDate] ?? []);
+    const items = (await this.collectHistoricalDailyUnfinished(targetDate))
+      .filter((item) => !ignored.has(this.dailyCarryoverItemKey(item)));
     const fingerprint = this.dailyCarryoverFingerprint(items);
     return fingerprint && this.dailyCarryoverReviews[targetDate] === fingerprint ? [] : items;
+  }
+
+  private dailyCarryoverItemKey(item: DailyPlanItem): string {
+    return `${item.revision.date ?? ""}:${item.id}:${item.revision.value}`;
   }
 
   private async collectHistoricalDailyUnfinished(
@@ -7255,6 +7386,40 @@ export default class ToWritePlugin extends Plugin {
     );
     if (fingerprint) this.dailyCarryoverReviews[targetDate] = fingerprint;
     else delete this.dailyCarryoverReviews[targetDate];
+    if (this.dailyPlanDocument?.date === targetDate) {
+      this.previousDailyUnfinished = [];
+    }
+    await this.savePluginData();
+    this.store.notify();
+  }
+
+  private async dismissPreviousDailyItem(
+    date: string,
+    id: string,
+    revision: DailyTaskRevision
+  ): Promise<void> {
+    const targetDate = formatDailyInputDate(date);
+    const item = (await this.collectHistoricalDailyUnfinished(targetDate, true)).find((candidate) =>
+      candidate.id === id
+      && candidate.revision.date === revision.date
+      && candidate.revision.value === revision.value
+    );
+    if (!item) {
+      throw new DailyPlanConflictError(
+        "revision-changed",
+        "The historical Daily task changed after the carryover review was opened."
+      );
+    }
+    const ignored = new Set(this.dailyCarryoverIgnored[targetDate] ?? []);
+    ignored.add(this.dailyCarryoverItemKey(item));
+    this.dailyCarryoverIgnored[targetDate] = [...ignored].slice(-512);
+    delete this.dailyCarryoverReviews[targetDate];
+    if (this.dailyPlanDocument?.date === targetDate) {
+      const ignoredKey = this.dailyCarryoverItemKey(item);
+      this.previousDailyUnfinished = this.previousDailyUnfinished.filter(
+        (candidate) => this.dailyCarryoverItemKey(candidate) !== ignoredKey
+      );
+    }
     await this.savePluginData();
     this.store.notify();
   }
@@ -9931,12 +10096,21 @@ export default class ToWritePlugin extends Plugin {
         const current = await this.ensureStableDailyTask(id, revision, date);
         await this.moveDailyItemToTomorrow(current.id, current.revision);
       },
-      getPreviousUnfinished: (date) => this.getPreviousDailyUnfinished(formatDailyInputDate(date)),
+      getPreviousUnfinished: async (date) => {
+        const normalizedDate = formatDailyInputDate(date);
+        if (this.dailyPlanDocument?.date === normalizedDate) {
+          return this.previousDailyUnfinished;
+        }
+        return this.getPreviousDailyUnfinished(normalizedDate);
+      },
       migratePreviousItems: async (date, selections) => {
         await this.migratePreviousDailyItems(formatDailyInputDate(date), selections);
       },
       dismissPreviousItems: async (date) => {
         await this.dismissPreviousDailyUnfinished(formatDailyInputDate(date));
+      },
+      dismissPreviousItem: async (date, id, revision) => {
+        await this.dismissPreviousDailyItem(formatDailyInputDate(date), id, revision);
       },
       dropDailyItem: async (id, revision) => {
         const date = revision.date ?? await this.dateForDailyItem(id, revision);
@@ -11993,6 +12167,18 @@ export default class ToWritePlugin extends Plugin {
             tags: [...stage.tags]
           }))
         : [],
+      enableDefaultWorkflow: async () => {
+        this.settings.workflowStages.enabled = true;
+        if (this.settings.workflowStages.stages.length === 0) {
+          this.settings.workflowStages.stages = DEFAULT_WORKFLOW_STAGES.map((stage) => ({
+            ...stage,
+            folderPrefixes: [...stage.folderPrefixes],
+            tags: [...stage.tags]
+          }));
+        }
+        await this.savePluginData();
+        await this.refreshWorkflowIndex();
+      },
       getWorkflowPayload: () => this.workflowIndex.getPayload({ limit: 200, compact: true }),
       getStatusOptions: () => this.settings.statusOptions,
       getLanguage: () => this.settings.language,

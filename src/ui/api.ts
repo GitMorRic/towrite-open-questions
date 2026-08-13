@@ -36,6 +36,8 @@ export interface ToWriteUiApi {
   getArticleSummaries(): ArticleSummary[];
   getArticleTypes(): ArticleTypeSettings[];
   getWorkflowStages(): WorkflowStageSettings[];
+  /** Enable the built-in, local-only workflow preset for first-time users. */
+  enableDefaultWorkflow?(): Promise<void>;
   getWorkflowPayload(): WorkflowIndexPayload;
   getStatusOptions(): QuestionStatusOption[];
   getLanguage(): ToWriteLanguage;

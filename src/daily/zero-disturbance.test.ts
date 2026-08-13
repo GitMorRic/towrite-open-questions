@@ -132,8 +132,8 @@ describe("zero-disturbance Daily editing", () => {
     const dashboard = readFileSync(new URL("../ui/DailyDashboardPanel.svelte", import.meta.url), "utf8");
     const focus = readFileSync(new URL("../ui/TodayFloatingView.svelte", import.meta.url), "utf8");
 
-    expect(dashboard).toContain("if (item.timing) return [item.id, item.timing]");
-    expect(dashboard).toContain("if (item.provisional) return [item.id, undefined]");
+    expect(dashboard).toContain("!item.timing && !item.provisional");
+    expect(dashboard).toContain("await dailyApi!.getItemTiming!");
     expect(focus).toContain("item.timing ?? dailyApi.getItemTiming");
   });
 

@@ -32,6 +32,9 @@
   }
 
   let activeTab: ToWriteWorkbenchTab = initialTab;
+  let workflowStages = api.getWorkflowStages();
+  let enablingWorkflow = false;
+  let workflowSetupMessage = "";
   let summaries: ArticleSummary[] = [];
   let workflowPayload: WorkflowIndexPayload = readWorkflowPayload();
   let questions: OpenQuestion[] = [];
@@ -52,7 +55,32 @@
 
   function switchTab(tab: ToWriteWorkbenchTab): void {
     activeTab = tab;
-    onActiveTabChange?.(tab);
+    queueMicrotask(() => {
+      try {
+        onActiveTabChange?.(tab);
+      } catch {
+        // Persisting the Obsidian layout is best-effort. It must never trap the
+        // user on a view when a new vault is still restoring its workspace.
+      }
+    });
+  }
+
+  async function enableRecommendedWorkflow(): Promise<void> {
+    if (!api.enableDefaultWorkflow || enablingWorkflow) return;
+    enablingWorkflow = true;
+    workflowSetupMessage = "";
+    try {
+      await api.enableDefaultWorkflow();
+      workflowStages = api.getWorkflowStages();
+      workflowSetupMessage = "已启用推荐流程：Inbox → Raw → Sparks → Initialize → Processing → Archive。";
+      reload();
+    } catch (error) {
+      workflowSetupMessage = error instanceof Error
+        ? error.message
+        : "启用失败，请打开设置手动配置。";
+    } finally {
+      enablingWorkflow = false;
+    }
   }
 
   function openWorkPool(): void {
@@ -105,6 +133,7 @@
   }
 
   function reload() {
+    workflowStages = api.getWorkflowStages();
     workflowPayload = readWorkflowPayload();
     questions = api.getQuestions();
     statusOptions = api.getStatusOptions();
@@ -329,6 +358,24 @@
         </article>
       </div>
 
+      {#if workflowStages.length === 0}
+        <section class="workflow-setup-callout" role="status" aria-label="配置 Workflow">
+          <div>
+            <strong>还没有配置 Workflow</strong>
+            <span>这不会影响“今日”“工作池”或“日志”。你可以一键启用推荐阶段，也可以只使用普通待办。</span>
+          </div>
+          <div class="workflow-setup-actions">
+            {#if api.enableDefaultWorkflow}
+              <button type="button" class="mod-cta" disabled={enablingWorkflow} on:click={enableRecommendedWorkflow}>
+                {enablingWorkflow ? "正在启用…" : "一键启用推荐流程"}
+              </button>
+            {/if}
+            <button type="button" on:click={() => api.openPluginSettings?.("workflow")}>自定义阶段与标签</button>
+          </div>
+        </section>
+        {#if workflowSetupMessage}<p class="workflow-setup-message">{workflowSetupMessage}</p>{/if}
+      {/if}
+
       <details class="status-guide">
         <summary>这些状态分别表示什么？</summary>
         <div class="status-guide-grid">
@@ -344,6 +391,15 @@
           <button type="button" on:click={refresh}><RefreshCw size={14} />刷新索引</button>
         </footer>
       </details>
+
+      <aside class="workflow-rules" aria-label="Workflow 使用规范">
+        <strong>建议规范</strong>
+        <span><b>Tag</b> 描述内容，可同时有多个，例如 <code>#project/echo</code>、<code>#writing</code>。</span>
+        <span><b>Workflow</b> 表示笔记当前所处的唯一阶段，例如 Raw、Sparks、Processing。</span>
+        <span><b>任务状态</b> 来自 checkbox：<code>[ ]</code> 待办、<code>[/]</code> 进行中、<code>[x]</code> 完成。</span>
+        <span><b>问题状态</b> 只用于 ToThink / ToWrite 批注，与笔记阶段互不覆盖。</span>
+        <small>识别优先级：显式 <code>workflow_stage</code> → 映射的 tag → 文件夹规则。</small>
+      </aside>
 
       <section class="overview-card">
         <header class="section-heading">
@@ -567,6 +623,9 @@
 
   .dashboard-tabs {
     display: inline-flex;
+    position: relative;
+    z-index: 2;
+    pointer-events: auto;
     align-self: flex-start;
     gap: 4px;
     padding: 0;
@@ -612,6 +671,30 @@
   .status-guide-grid span { color: var(--text-muted); font-size: .76rem; }
   .status-guide footer { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 14px; border-top: 1px solid var(--dashboard-border); }
   .status-guide footer button { display: inline-flex; align-items: center; gap: 5px; }
+  .workflow-setup-callout {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px;
+    border: 1px solid var(--dashboard-border);
+    border-radius: 10px;
+    background: var(--dashboard-soft);
+  }
+  .workflow-setup-callout > div:first-child { display: grid; gap: 4px; }
+  .workflow-setup-callout span,
+  .workflow-rules span,
+  .workflow-rules small { color: var(--text-muted); }
+  .workflow-setup-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+  .workflow-setup-message { margin: -8px 2px 0; color: var(--text-success); }
+  .workflow-rules {
+    display: grid;
+    gap: 5px;
+    padding: 12px 14px;
+    border: 1px solid var(--dashboard-border);
+    border-radius: 12px;
+    background: var(--dashboard-raised);
+  }
   .status-empty { display: grid; place-items: center; gap: 5px; min-height: 130px; padding: 20px; text-align: center; }
   .status-empty span { color: var(--text-muted); }
   .status-empty div { display: flex; flex-wrap: wrap; justify-content: center; gap: 7px; }
@@ -843,7 +926,7 @@
 
     .dashboard-tabs {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
+      grid-template-columns: repeat(4, 1fr);
       align-self: stretch;
     }
 

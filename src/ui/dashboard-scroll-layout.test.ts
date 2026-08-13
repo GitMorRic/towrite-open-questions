@@ -55,5 +55,17 @@ describe("dashboard viewport layout", () => {
     expect(component).toContain("userFacingTargetLabel(item)");
     expect(component).not.toContain('<span class="resolved-target"><Target size={11} />{targetDisplayLabel(item)}</span>');
     expect(component).toMatch(/\.plan-item\s*\{[^}]*align-items:\s*center;[^}]*padding:\s*6px 4px;/su);
+    expect(component).not.toMatch(/class="plan-item"[\s\S]{0,240}--task-depth:/u);
+    expect(component).toMatch(/\.check-button\s*\{[^}]*width:\s*34px;[^}]*height:\s*34px;[^}]*place-items:\s*center;/su);
+  });
+
+  it("groups carry-over work by date and project with preview and open actions", () => {
+    const component = readFileSync(new URL("./DailyDashboardPanel.svelte", import.meta.url), "utf8");
+    expect(component).toContain("previousMigrationGroups");
+    expect(component).toContain('class="previous-date-group"');
+    expect(component).toContain('class="previous-project-group"');
+    expect(component).toContain('class="previous-task-preview"');
+    expect(component).toContain("打开这天的日记");
+    expect(component).toContain("打开任务目标");
   });
 });

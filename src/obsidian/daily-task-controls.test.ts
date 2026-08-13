@@ -8,27 +8,18 @@ import {
 } from "./daily-task-controls";
 
 describe("Daily editor task controls", () => {
-  it("keeps new-task actions behind an inline disclosure until explicitly opened", () => {
+  it("does not inject proactive new-task actions while the user is typing", () => {
     const source = readFileSync(new URL("./daily-task-controls.ts", import.meta.url), "utf8");
-    const widget = source.slice(
-      source.indexOf("class DailyTaskEnrichmentWidget"),
-      source.indexOf("function actionButton", source.indexOf("class DailyTaskEnrichmentWidget"))
-    );
-
-    expect(widget).toContain('createEl("details")');
-    expect(widget).toContain('disclosureToggle.textContent = "···"');
-    expect(widget).toContain("towrite-note-task-disclosure-content towrite-daily-enrichment-content");
-    expect(widget.indexOf("disclosure.append(details)"))
-      .toBeLessThan(widget.indexOf("wrapper.append(disclosure)"));
-    expect(widget).toContain("ignoreEvent(): boolean");
-    expect(widget).toContain("return true");
+    expect(source).not.toContain("class DailyTaskEnrichmentWidget");
+    expect(source).not.toContain("towrite-daily-enrichment-content");
+    expect(source).not.toContain('disclosureToggle.textContent = "···"');
   });
 
   it("keeps linked-note opening explicit beside the stronger disclosure control", () => {
     const source = readFileSync(new URL("./daily-task-controls.ts", import.meta.url), "utf8");
     expect(source).toContain('iconActionButton(doc, "↗", "打开关联文档"');
     expect(source).toContain("onOpenPending(edit: DailyPlanNormalizationEdit)");
-    expect(source).toContain("hasNavigableTarget(this.edit.targetResolution)");
+    expect(source).toContain("hasNavigableTarget(this.item.targetResolution)");
   });
 
   it("maps cached widgets during typing instead of rebuilding the Daily plan", () => {

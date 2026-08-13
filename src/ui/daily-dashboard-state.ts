@@ -67,6 +67,18 @@ export function selectDailyOverview(
   };
 }
 
+export interface PreviousDailyProjectGroup {
+  key: string;
+  label: string;
+  items: DailyPlanItem[];
+}
+
+export interface PreviousDailyDateGroup {
+  date: string;
+  projects: PreviousDailyProjectGroup[];
+  count: number;
+}
+
 /** Runtime aggregates may complete a parent without rewriting its checkbox. */
 export function isDailyItemComplete(item: Pick<DailyPlanItem, "done" | "status">): boolean {
   return item.done || item.status === "done";
@@ -156,6 +168,48 @@ export function groupDailyItems(
   }
 
   return result;
+}
+
+/**
+ * Presents carry-over work in the same hierarchy people use while planning:
+ * day first, then the authored project/category. The source items are not
+ * copied or rewritten; this is only a stable UI projection.
+ */
+export function groupPreviousDailyItems(
+  items: readonly DailyPlanItem[]
+): PreviousDailyDateGroup[] {
+  const dates = new Map<string, Map<string, PreviousDailyProjectGroup>>();
+
+  for (const item of items) {
+    const date = item.revision.date || item.date || "未知日期";
+    const project = previousDailyProjectLabel(item);
+    let projects = dates.get(date);
+    if (!projects) {
+      projects = new Map();
+      dates.set(date, projects);
+    }
+    let group = projects.get(project);
+    if (!group) {
+      group = { key: `${date}:${project}`, label: project, items: [] };
+      projects.set(project, group);
+    }
+    group.items.push(item);
+  }
+
+  return [...dates.entries()]
+    .sort(([left], [right]) => right.localeCompare(left))
+    .map(([date, projects]) => ({
+      date,
+      projects: [...projects.values()],
+      count: [...projects.values()].reduce((total, group) => total + group.items.length, 0)
+    }));
+}
+
+function previousDailyProjectLabel(item: DailyPlanItem): string {
+  const explicit = item.category?.trim();
+  if (explicit) return explicit;
+  const rootGroup = item.lineage?.groups[0];
+  return dailyGroupLabel(rootGroup);
 }
 
 export function dailyGroupLabel(group: DailyPlanGroup | undefined): string {

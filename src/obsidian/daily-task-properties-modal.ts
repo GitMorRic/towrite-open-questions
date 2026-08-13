@@ -91,7 +91,7 @@ export class DailyTaskPropertiesModal extends Modal {
     contentEl.addClass("towrite-daily-properties-modal");
 
     const header = contentEl.createDiv({ cls: "towrite-daily-properties-header" });
-    header.createSpan({ cls: "towrite-daily-properties-kicker", text: this.options.pending ? "新待办" : "任务属性" });
+    header.createSpan({ cls: "towrite-daily-properties-kicker", text: "任务属性" });
     header.createEl("h2", { text: this.options.taskText });
     const context = header.createDiv({ cls: "towrite-daily-properties-context" });
     context.createSpan({ text: `打开：${this.options.resolvedTargetLabel}` });

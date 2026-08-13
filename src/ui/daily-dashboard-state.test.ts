@@ -13,6 +13,7 @@ import {
   dailySnapshotFingerprint,
   filterAvailableTaskPoolItems,
   groupDailyItems,
+  groupPreviousDailyItems,
   isDailySummaryCurrent,
   selectDailyOverview
 } from "./daily-dashboard-state";
@@ -258,6 +259,35 @@ describe("Daily dashboard summary basis", () => {
     ])).toEqual([
       ["2026-07-27", ["fallback"]],
       ["2026-07-30", ["due"]]
+    ]);
+  });
+
+  it("groups earlier unfinished work by date and authored project", () => {
+    const projectGroup = group("group_project", "Project Alpha", 1, 8, 0);
+    const editorial = item("editorial", "todo", {
+      date: "2026-08-10",
+      revision: { value: "rev_editorial", sourcePath: "Daily/2026-08-10.md", blockId: "editorial", date: "2026-08-10" },
+      category: "Writing"
+    });
+    const inherited = item("inherited", "todo", {
+      date: "2026-08-10",
+      revision: { value: "rev_inherited", sourcePath: "Daily/2026-08-10.md", blockId: "inherited", date: "2026-08-10" },
+      lineage: { groups: [projectGroup], revision: "lineage_inherited" }
+    });
+    const recent = item("recent", "todo", {
+      date: "2026-08-11",
+      revision: { value: "rev_recent", sourcePath: "Daily/2026-08-11.md", blockId: "recent", date: "2026-08-11" },
+      category: "Project Beta"
+    });
+
+    const grouped = groupPreviousDailyItems([editorial, inherited, recent]);
+    expect(grouped.map(({ date, count }) => [date, count])).toEqual([
+      ["2026-08-11", 1],
+      ["2026-08-10", 2]
+    ]);
+    expect(grouped[1].projects.map(({ label, items }) => [label, items.map(({ id }) => id)])).toEqual([
+      ["Writing", ["editorial"]],
+      ["Project Alpha", ["inherited"]]
     ]);
   });
 });

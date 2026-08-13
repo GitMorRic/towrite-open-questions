@@ -238,6 +238,11 @@ export interface DailyDashboardAdapter {
     items: Array<{ id: string; revision: DailyTaskRevision }>
   ): void | Promise<void>;
   dismissPreviousItems?(date: string): void | Promise<void>;
+  dismissPreviousItem?(
+    date: string,
+    id: string,
+    revision: DailyTaskRevision
+  ): void | Promise<void>;
   dropDailyItem?(id: string, revision: DailyTaskRevision): void | Promise<void>;
   getPlanHierarchy?(date: string): DailyPlanHierarchy | Promise<DailyPlanHierarchy>;
   getNormalizationPreview?(date: string): DailyPlanNormalizationPreview | Promise<DailyPlanNormalizationPreview>;

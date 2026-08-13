@@ -8,6 +8,17 @@ import type { ToWriteUiApi } from "../ui/api";
 import type { WorkflowIndexPayload } from "../workflow";
 import { migrateWorkbenchTab, type ToWriteWorkbenchTab } from "../ui/workbench-state";
 
+function requestSaveLayoutSafely(workspace: { requestSaveLayout(): void }): void {
+  queueMicrotask(() => {
+    try {
+      workspace.requestSaveLayout();
+    } catch {
+      // A newly opened or restoring workspace can reject a synchronous save.
+      // View navigation must remain usable even when layout persistence is not.
+    }
+  });
+}
+
 export const TOWRITE_SIDEBAR_VIEW = "towrite-open-questions-sidebar";
 export const TOWRITE_DASHBOARD_VIEW = "towrite-open-questions-dashboard";
 export const TOWRITE_TODAY_FLOATING_VIEW = "towrite-open-questions-today-floating";
@@ -130,7 +141,7 @@ export class ToWriteDashboardItemView extends ItemView {
         onOpenFloatingToday: this.options.onOpenFloatingToday,
         onActiveTabChange: (activeTab: ToWriteDashboardViewState["activeTab"]) => {
           this.state = { ...this.state, activeTab, focusPreviousMigration: false };
-          this.app.workspace.requestSaveLayout();
+          requestSaveLayoutSafely(this.app.workspace);
         }
       }
     });
@@ -231,16 +242,16 @@ export class ToWriteTodayFloatingItemView extends ItemView {
         onCollapsedChange: (collapsed: boolean) => {
           this.resizePopout(collapsed);
           this.state = { ...this.state, collapsed };
-          this.app.workspace.requestSaveLayout();
+          requestSaveLayoutSafely(this.app.workspace);
         },
         onPinnedChange: (pinned: boolean) => {
           this.pinned = pinned;
           this.leaf.setPinned(pinned);
-          this.app.workspace.requestSaveLayout();
+          requestSaveLayoutSafely(this.app.workspace);
         },
         onModeChange: (mode: "focus" | "list") => {
           this.state = { ...this.state, mode };
-          this.app.workspace.requestSaveLayout();
+          requestSaveLayoutSafely(this.app.workspace);
         },
         onOpenDashboard: this.options.onOpenDashboard,
         onOpenTaskPool: this.options.onOpenTaskPool

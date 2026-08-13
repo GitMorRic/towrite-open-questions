@@ -69,9 +69,14 @@
   let currentTiming: DailyTaskTimingSnapshot | undefined;
   let hasCheckpoint = false;
   let unsubscribe: (() => void) | undefined;
-  let loadSerial = 0;
+  let reloadPromise: Promise<void> | undefined;
+  let reloadQueued = false;
+  let reloadMessagesQueued = false;
+  let candidatesLoaded = false;
+  let enrichmentSequence = 0;
   let carouselTimer = 0;
   let clockTimer = 0;
+  let reloadTimer = 0;
 
   interface CompactProjectGroup {
     id: string;
@@ -105,7 +110,8 @@
 
   onMount(() => {
     unsubscribe = dailyApi.subscribe?.(() => {
-      void reload();
+      window.clearTimeout(reloadTimer);
+      reloadTimer = window.setTimeout(() => void reload(), 80);
     });
     clockTimer = window.setInterval(() => {
       clockNow = Date.now();
@@ -114,49 +120,79 @@
   });
 
   onDestroy(() => {
+    enrichmentSequence += 1;
     unsubscribe?.();
     window.clearInterval(carouselTimer);
     window.clearInterval(clockTimer);
+    window.clearTimeout(reloadTimer);
   });
 
-  async function reload(refreshMessages = false): Promise<void> {
-    const serial = ++loadSerial;
+  function reload(refreshMessages = false): Promise<void> {
+    reloadMessagesQueued ||= refreshMessages;
+    if (reloadPromise) {
+      reloadQueued = true;
+      return reloadPromise;
+    }
+    reloadPromise = (async () => {
+      do {
+        reloadQueued = false;
+        const shouldRefreshMessages = reloadMessagesQueued;
+        reloadMessagesQueued = false;
+        await performReload(shouldRefreshMessages);
+      } while (reloadQueued);
+    })().finally(() => {
+      reloadPromise = undefined;
+    });
+    return reloadPromise;
+  }
+
+  async function performReload(refreshMessages = false): Promise<void> {
     try {
       const next = await dailyApi.getSnapshot();
-      if (serial !== loadSerial) return;
       snapshot = next;
-      const [nextConfiguration, nextCandidates] = await Promise.all([
-        dailyApi.getConfiguration?.() ?? configuration,
-        refreshMessages || candidates.length === 0
-          ? dailyApi.listPlanningCandidates?.(next.date) ?? []
-          : candidates
-      ]);
-      if (serial !== loadSerial) return;
-      configuration = nextConfiguration;
-      candidates = nextCandidates;
-      carouselMessages = buildFocusCarouselMessages({
-        theme: next.plan.metadata?.theme,
-        customMessages: configuration.focusMessages,
-        candidates
-      });
-      messageIndex = Math.min(messageIndex, Math.max(0, carouselMessages.length - 1));
-      resetCarouselTimer();
       error = "";
+      rebuildCarouselMessages(next);
+      scheduleFocusEnrichment(next, refreshMessages);
       const item = selectDailyOverview(next?.plan.items ?? []).current;
-      const [timing, checkpoint] = item
-        ? await Promise.all([
+      const [timingResult, checkpointResult] = item
+        ? await Promise.allSettled([
           item.timing ?? dailyApi.getItemTiming?.(item.id, item.estimateMinutes, next.date),
           dailyApi.hasItemCheckpoint?.(item)
         ])
-        : [undefined, false];
-      if (serial !== loadSerial) return;
-      currentTiming = timing;
+        : [{ status: "fulfilled", value: undefined } as const, { status: "fulfilled", value: false } as const];
+      currentTiming = timingResult.status === "fulfilled" ? timingResult.value : undefined;
       timingCapturedAt = Date.now();
-      hasCheckpoint = Boolean(checkpoint);
+      hasCheckpoint = checkpointResult.status === "fulfilled" && Boolean(checkpointResult.value);
     } catch (cause) {
-      if (serial !== loadSerial) return;
       error = cause instanceof Error ? cause.message : String(cause);
     }
+  }
+
+  function rebuildCarouselMessages(next: DailyDashboardSnapshot): void {
+    carouselMessages = buildFocusCarouselMessages({
+      theme: next.plan.metadata?.theme,
+      customMessages: configuration.focusMessages,
+      candidates
+    });
+    messageIndex = Math.min(messageIndex, Math.max(0, carouselMessages.length - 1));
+    resetCarouselTimer();
+  }
+
+  function scheduleFocusEnrichment(next: DailyDashboardSnapshot, refreshMessages: boolean): void {
+    const sequence = ++enrichmentSequence;
+    const shouldLoadCandidates = refreshMessages || !candidatesLoaded;
+    if (shouldLoadCandidates) candidatesLoaded = true;
+    void Promise.allSettled([
+      dailyApi.getConfiguration?.() ?? configuration,
+      shouldLoadCandidates
+        ? dailyApi.listPlanningCandidates?.(next.date) ?? []
+        : candidates
+    ]).then(([configurationResult, candidatesResult]) => {
+      if (sequence !== enrichmentSequence) return;
+      if (configurationResult.status === "fulfilled") configuration = configurationResult.value;
+      if (candidatesResult.status === "fulfilled") candidates = candidatesResult.value;
+      rebuildCarouselMessages(next);
+    });
   }
 
   function toggleCollapsed(): void {
@@ -241,15 +277,30 @@
     }
   }
 
-  async function startAndOpen(item: DailyPlanItem): Promise<void> {
-    await run(`primary:${item.id}`, async () => {
-      if (dailyApi.startAndOpenItem) {
-        await dailyApi.startAndOpenItem(item);
+  function timingFor(item: DailyPlanItem): DailyTaskTimingSnapshot | undefined {
+    return item.id === current?.id ? currentTiming ?? item.timing : item.timing;
+  }
+
+  function timerLabel(item: DailyPlanItem): string {
+    const status = timingFor(item)?.status;
+    if (status === "running") return "暂停计时";
+    if (status === "paused") return "继续专注";
+    return "开始专注";
+  }
+
+  async function toggleTaskTimer(item: DailyPlanItem): Promise<void> {
+    const timing = timingFor(item);
+    await run(`timer:${item.id}`, async () => {
+      if (timing?.status === "running") {
+        await dailyApi.pauseItem?.(item.id, item.revision, timing.timingRevision);
         return;
       }
-      if (item.status === "todo") await dailyApi.startItem?.(item.id, item.revision);
-      await dailyApi.openItem?.(item);
-    }, hasCheckpoint && item.id === current?.id ? "已返回上次断点" : "已打开目标");
+      if (timing?.status === "paused") {
+        await dailyApi.resumeItem?.(item.id, item.revision, timing.timingRevision);
+        return;
+      }
+      await dailyApi.startItem?.(item.id, item.revision);
+    }, timing?.status === "running" ? "已暂停计时" : "已设为当前专注任务");
   }
 
   async function openOnly(item: DailyPlanItem): Promise<void> {
@@ -273,15 +324,6 @@
 
   function targetLabel(item: DailyPlanItem): string {
     return item.targetResolution?.displayLabel || item.target || "计划原文";
-  }
-
-  function primaryLabel(item: DailyPlanItem): string {
-    const target = item.targetResolution?.webTarget;
-    if (target?.kind === "web") return item.status === "todo" ? "开始并打开网页" : "打开网页";
-    if (hasCheckpoint && item.id === current?.id) return "返回阅读断点";
-    if (item.kind === "create_note") return "继续记录";
-    if (currentTiming?.status === "paused" && item.id === current?.id) return "继续并打开";
-    return item.status === "todo" ? "开始并打开" : "继续工作";
   }
 
 </script>
@@ -385,11 +427,14 @@
             class="task-primary"
             type="button"
             disabled={Boolean(busy)}
-            on:click={() => startAndOpen(current)}
+            on:click={() => toggleTaskTimer(current)}
           >
             <strong>{current.text}</strong>
             {#if current.nextStep}<small>下一步 · {current.nextStep}</small>{/if}
-            <span><Play size={14} />{primaryLabel(current)}</span>
+            <span>
+              {#if timingFor(current)?.status === "running"}<Pause size={14} />{:else}<Play size={14} />{/if}
+              {timerLabel(current)}
+            </span>
           </button>
 
           <div class="target-row">
@@ -432,22 +477,31 @@
         {:else if mode === "list"}
           {#if compactGroups.length}
             <section class="compact-tasks" aria-label="按项目分组的今日任务">
-              <p class="compact-description">今天的全部任务，按项目折叠；点击任务会设为当前并打开。</p>
+              <p class="compact-description">今天的全部任务，按项目折叠；点击任务只切换专注计时，打开目标使用右侧按钮。</p>
               {#each compactGroups as group (group.id)}
                 <details class="compact-project" open>
                   <summary><span>{group.label}</span><em>{group.items.filter((item) => item.status === "done").length}/{group.items.length}</em><ChevronDown size={13} /></summary>
                   <div>
                     {#each group.items as item, index (item.id)}
-                      <button
-                        class:done={item.status === "done"}
-                        type="button"
-                        disabled={Boolean(busy)}
-                        on:click={() => item.status === "done" ? openOnly(item) : startAndOpen(item)}
-                      >
-                        <span class="compact-status">{item.status === "done" ? "✓" : item.status === "in-progress" ? "●" : index + 1}</span>
-                        <span><strong>{compactTaskText(item.text)}</strong><small>{item.nextStep || targetLabel(item)}</small></span>
-                        <ExternalLink size={13} />
-                      </button>
+                      <div class="compact-task-row" class:done={item.status === "done"}>
+                        <button
+                          class="compact-task-main"
+                          type="button"
+                          disabled={Boolean(busy) || item.status === "done"}
+                          on:click={() => toggleTaskTimer(item)}
+                        >
+                          <span class="compact-status">{item.status === "done" ? "✓" : timingFor(item)?.status === "running" ? "●" : index + 1}</span>
+                          <span><strong>{compactTaskText(item.text)}</strong><small>{item.nextStep || timerLabel(item)}</small></span>
+                        </button>
+                        <button
+                          class="compact-open"
+                          type="button"
+                          disabled={Boolean(busy)}
+                          aria-label={`打开 ${compactTaskText(item.text)}`}
+                          title="打开目标"
+                          on:click={() => openOnly(item)}
+                        ><ExternalLink size={13} /></button>
+                      </div>
                     {/each}
                   </div>
                 </details>
@@ -829,35 +883,67 @@
     padding: 0 5px 5px;
   }
 
-  .compact-project > div > button {
+  .compact-task-row {
     display: grid;
-    grid-template-columns: 24px minmax(0, 1fr) 18px;
+    grid-template-columns: minmax(0, 1fr) 34px;
     align-items: center;
-    gap: 6px;
+    gap: 4px;
     width: 100%;
     min-height: 48px;
-    padding: 6px 8px;
+    padding: 3px;
     border: 1px solid var(--background-modifier-border);
     border-radius: 8px;
     color: var(--text-normal);
     background: var(--background-primary);
+  }
+
+  .compact-task-main {
+    display: grid;
+    grid-template-columns: 24px minmax(0, 1fr);
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    min-height: 40px;
+    padding: 4px 6px;
+    border: 0;
+    color: var(--text-normal);
+    background: transparent;
     box-shadow: none;
     text-align: left;
   }
 
-  .compact-project > div > button:hover {
+  .compact-task-row:hover {
     border-color: var(--interactive-accent);
     background: var(--background-modifier-hover);
   }
 
-  .compact-project > div > button.done {
+  .compact-task-row.done {
     opacity: 0.58;
   }
 
-  .compact-project > div > button > span:not(.compact-status) {
+  .compact-task-main > span:not(.compact-status) {
     display: grid;
     gap: 2px;
     min-width: 0;
+  }
+
+  .compact-open {
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: 0;
+    border-radius: 7px;
+    color: var(--text-muted);
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .compact-open:hover,
+  .compact-open:focus-visible {
+    color: var(--text-normal);
+    background: var(--background-modifier-hover);
   }
 
   .compact-tasks strong,

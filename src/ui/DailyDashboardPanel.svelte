@@ -17,6 +17,7 @@
     FilePlus2,
     FolderTree,
     History,
+    EyeOff,
     LayoutList,
     ListTodo,
     MoreHorizontal,
@@ -55,7 +56,6 @@
     DailyMonthlySummary,
     DailyPlanningCandidate,
     DailyPlanPriority,
-    DailySummaryPresentation,
     DailyTaskTimingSnapshot,
     DailyTimerEvent,
     TaskPoolDocument,
@@ -69,12 +69,11 @@
     dailyGroupLabel,
     dailyItemCategory,
     dailyItemDepth,
-    dailySnapshotFingerprint,
     filterAvailableTaskPoolItems,
     filterDailyItemsByCategory,
     groupDailyItems,
+    groupPreviousDailyItems,
     isDailyItemComplete,
-    isDailySummaryCurrent,
     selectDailyOverview,
     type DailyPlanningDay
   } from "./daily-dashboard-state";
@@ -153,10 +152,6 @@
   let editCategory = "";
   let editPriority: DailyPlanPriority = "normal";
   let editTags = "";
-  let generatedSummary: DailySummaryPresentation | undefined;
-  let generatedSummaryFingerprint = "";
-  let summary: DailySummaryPresentation | undefined;
-  let summaryNotice = "";
   let hierarchy: DailyPlanHierarchy | undefined;
   let normalizationPreview: DailyPlanNormalizationPreview | undefined;
   let normalizationUndoToken = "";
@@ -172,12 +167,18 @@
   let editingProgressProjectId = "";
   let editingProgressProjectLabel = "";
   let editingProgressProjectColor = "#7c6ee6";
+  let projectColorPopover: HTMLElement | undefined;
   let previousUnfinished: DailyPlanItem[] = [];
   let selectedPreviousIds = new Set<string>();
+  let previewPreviousItemId = "";
   let analyticsRange: DailyAnalyticsRange | undefined;
   let monthlySummary: DailyMonthlySummary | undefined;
   let unsubscribe: (() => void) | undefined;
+  let refreshTimer: ReturnType<typeof setTimeout> | undefined;
   let refreshSequence = 0;
+  let refreshPromise: Promise<void> | undefined;
+  let refreshQueued = false;
+  let queuedRefreshDate: string | undefined;
 
   function switchSurface(next: "today" | "pool" | "review"): void {
     surface = next;
@@ -212,20 +213,71 @@
     ));
   }
 
-  async function dismissPreviousReview(): Promise<void> {
-    if (!dailyApi?.dismissPreviousItems) return;
-    await run("dismiss-previous", () => dailyApi?.dismissPreviousItems?.(selectedDate));
+  async function dismissPreviousItem(item: DailyPlanItem): Promise<void> {
+    if (!dailyApi?.dismissPreviousItem) return;
+    await run(`dismiss-previous:${item.id}`, () => dailyApi?.dismissPreviousItem?.(
+      selectedDate,
+      item.id,
+      item.revision
+    ));
+  }
+
+  function closeProjectColorPopover(): void {
+    editingProgressProjectId = "";
+    editingProgressProjectLabel = "";
+  }
+
+  function handleWindowPointerDown(event: PointerEvent): void {
+    if (!editingProgressProjectId) return;
+    const target = event.target;
+    if (target instanceof Node && projectColorPopover?.contains(target)) return;
+    closeProjectColorPopover();
+  }
+
+  function handleWindowKeydown(event: KeyboardEvent): void {
+    if (event.key === "Escape") closeProjectColorPopover();
+  }
+
+  function timingFor(item: DailyPlanItem): DailyTaskTimingSnapshot | undefined {
+    return timingByItem[item.id] ?? item.timing;
+  }
+
+  function primaryTimerAction(item: DailyPlanItem): "start" | "pause" | "resume" {
+    const status = timingFor(item)?.status;
+    if (status === "running") return "pause";
+    if (status === "paused") return "resume";
+    return "start";
+  }
+
+  function primaryTimerLabel(item: DailyPlanItem): string {
+    const action = primaryTimerAction(item);
+    return action === "pause" ? "暂停计时" : action === "resume" ? "继续计时" : "开始专注";
+  }
+
+  function focusActionLabel(item: DailyPlanItem): string {
+    const status = timingFor(item)?.status;
+    if (status === "running") return "暂停计时";
+    if (status === "paused") return "继续计时";
+    return "开始计时";
   }
 
   onMount(() => {
     unsubscribe = dailyApi?.subscribe?.(() => {
-      void refresh();
+      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => {
+        refreshTimer = undefined;
+        void refresh();
+      }, 80);
     });
     void refresh();
   });
-  onDestroy(() => unsubscribe?.());
+  onDestroy(() => {
+    if (refreshTimer) clearTimeout(refreshTimer);
+    unsubscribe?.();
+  });
 
   $: selectedDate = dailyDateForPlanningDay(planningDay);
+  $: previousMigrationGroups = groupPreviousDailyItems(previousUnfinished);
   $: items = (snapshot?.plan.items ?? []) as DailyPlanItemPresentation[];
   $: overview = selectDailyOverview(items);
   $: todoItems = items.filter((item) => !isDailyItemComplete(item) && item.status === "todo");
@@ -283,7 +335,7 @@
           targetLabel: item.targetResolution?.displayLabel,
           targetProvenance: item.targetResolution?.source,
           lineageRevision: item.lineageRevision,
-          timing: timingForDeck(timingByItem[item.id])
+          timing: timingForDeck(timingFor(item))
         })),
         inboxItems: otherCandidates.slice(0, 12).map((candidate) => ({
           id: candidate.id,
@@ -299,9 +351,6 @@
     ?? deck?.planItems[0];
   $: previewInboxCard = deck?.inboxItems[Math.min(previewInboxIndex, Math.max(0, (deck?.inboxItems.length ?? 1) - 1))]
     ?? deck?.activeInboxItem;
-  $: summary = generatedSummary
-    ?? (snapshot?.summary ? { ...snapshot.summary, source: "rules" } : undefined);
-
   function buildDailyProjectProgress(
     planItems: DailyPlanItemPresentation[],
     poolById: Map<string, TaskPoolItem>,
@@ -401,11 +450,86 @@
     previewItemId = "";
     previewPage = "overview";
     editingItemId = "";
-    clearGeneratedSummary();
     await refresh(dailyDateForPlanningDay(day));
   }
 
-  async function refresh(dateOverride?: string): Promise<void> {
+  async function refreshSupplemental(
+    sequence: number,
+    date: string,
+    authoritativeSnapshot: DailyDashboardSnapshot
+  ): Promise<void> {
+    const [metadataResult, candidatesResult, hierarchyResult, configurationResult, taskPoolResult] = await Promise.allSettled([
+      dailyApi?.getPlanMetadata?.(date) ?? Promise.resolve({}),
+      workspaceMode || candidatesExpanded
+        ? dailyApi?.listPlanningCandidates?.(date) ?? Promise.resolve([])
+        : Promise.resolve(candidates),
+      dailyApi?.getPlanHierarchy?.(date) ?? Promise.resolve(undefined),
+      dailyApi?.getConfiguration?.() ?? Promise.resolve(configuration),
+      dailyApi?.getTaskPool?.() ?? Promise.resolve(undefined)
+    ]);
+    if (sequence !== refreshSequence) return;
+    if (metadataResult.status === "fulfilled") {
+      metadata = metadataResult.value;
+      themeDraft = metadata.theme ?? "";
+    }
+    if (candidatesResult.status === "fulfilled") candidates = candidatesResult.value;
+    if (hierarchyResult.status === "fulfilled") hierarchy = hierarchyResult.value;
+    if (taskPoolResult.status === "fulfilled") taskPool = taskPoolResult.value;
+    if (configurationResult.status === "fulfilled") {
+      configuration = configurationResult.value;
+      if (!configurationLoaded) {
+        dashboardView = workspaceMode ? "list" : configuration.defaultView;
+        configurationLoaded = true;
+      }
+    }
+
+    // Provisional tasks have no persisted id yet. Asking the timer ledger for
+    // them can never succeed and used to leave the Today page waiting on a
+    // sequence of avoidable failures during its first render.
+    const missingTiming = authoritativeSnapshot.plan.items.filter((item) => !item.timing && !item.provisional);
+    if (dailyApi?.getItemTiming && missingTiming.length > 0) {
+      const entries = await Promise.all(missingTiming.map(async (item) => {
+        try {
+          return [item.id, await dailyApi!.getItemTiming!(item.id, item.estimateMinutes, date)] as const;
+        } catch {
+          return [item.id, undefined] as const;
+        }
+      }));
+      if (sequence === refreshSequence) {
+        timingByItem = {
+          ...timingByItem,
+          ...Object.fromEntries(entries.filter((entry): entry is readonly [string, DailyTaskTimingSnapshot] => Boolean(entry[1])))
+        };
+      }
+    }
+  }
+
+  async function refreshPreviousItems(sequence: number, date: string): Promise<void> {
+    if (planningDay !== "today" || !dailyApi?.getPreviousUnfinished) {
+      if (sequence === refreshSequence) {
+        previousUnfinished = [];
+        selectedPreviousIds = new Set();
+      }
+      return;
+    }
+    try {
+      const previous = await dailyApi.getPreviousUnfinished(date);
+      if (sequence !== refreshSequence) return;
+      previousUnfinished = previous;
+      const available = new Set(previous.map((item) => item.id));
+      const retained = [...selectedPreviousIds].filter((id) => available.has(id));
+      selectedPreviousIds = new Set(retained.length ? retained : previous.map((item) => item.id));
+      if (focusPreviousMigration && previous.length > 0 && !previousMigrationFocused) {
+        previousMigrationFocused = true;
+        await tick();
+        previousMigrationCard?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    } catch {
+      // Historical carry-over is optional enrichment. It must never block Today.
+    }
+  }
+
+  async function performRefresh(dateOverride?: string): Promise<void> {
     const sequence = ++refreshSequence;
     const date = dateOverride ?? selectedDate;
     if (!dailyApi) {
@@ -417,103 +541,56 @@
       hierarchy = undefined;
       timingByItem = {};
       timerEventsByItem = {};
-      clearGeneratedSummary();
       return;
     }
     loading = true;
     error = "";
     try {
-      const [nextSnapshot, nextMetadata, nextCandidates, nextHierarchy, nextConfiguration, nextTaskPool] = await Promise.all([
-        dailyApi.getSnapshot(date),
-        dailyApi.getPlanMetadata?.(date) ?? Promise.resolve({}),
-        workspaceMode || candidatesExpanded
-          ? dailyApi.listPlanningCandidates?.(date) ?? Promise.resolve([])
-          : Promise.resolve(candidates),
-        dailyApi.getPlanHierarchy?.(date) ?? Promise.resolve(undefined),
-        dailyApi.getConfiguration?.() ?? Promise.resolve(configuration),
-        dailyApi.getTaskPool?.() ?? Promise.resolve(undefined)
-      ]);
-      // The dashboard snapshot is authoritative and already carries timing.
-      // Do not perform a second lookup for provisional draft items: the author
-      // may delete one between these two reads, which is a normal refresh and
-      // must not turn into a page-level "Daily item does not exist" error.
-      const nextTimingEntries = nextSnapshot
-        ? await Promise.all(nextSnapshot.plan.items.map(async (item) => {
-            if (item.timing) return [item.id, item.timing] as const;
-            if (!dailyApi.getItemTiming) return [item.id, undefined] as const;
-            try {
-              return [
-                item.id,
-                await dailyApi.getItemTiming(item.id, item.estimateMinutes, date)
-              ] as const;
-            } catch (cause) {
-              // A provisional item is an in-memory projection. Disappearing
-              // after its Markdown line is removed is expected, not a fault.
-              if (item.provisional) return [item.id, undefined] as const;
-              throw cause;
-            }
-          }))
-        : [];
+      const nextSnapshot = await dailyApi.getSnapshot(date);
       if (sequence !== refreshSequence) return;
-      if (
-        generatedSummary
-        && (
-          !nextSnapshot
-          || !isDailySummaryCurrent(
-            generatedSummary,
-            generatedSummaryFingerprint,
-            nextSnapshot
-          )
-        )
-      ) {
-        clearGeneratedSummary();
-      }
       snapshot = nextSnapshot;
-      metadata = nextMetadata;
-      candidates = nextCandidates;
-      hierarchy = nextHierarchy;
-      configuration = nextConfiguration;
-      taskPool = nextTaskPool;
-      if (!configurationLoaded) {
-        dashboardView = workspaceMode ? "list" : nextConfiguration.defaultView;
-        configurationLoaded = true;
-      }
-      timingByItem = Object.fromEntries(
-        nextTimingEntries.filter((entry): entry is readonly [string, DailyTaskTimingSnapshot] => Boolean(entry[1]))
-      );
+      timingByItem = Object.fromEntries(nextSnapshot.plan.items
+        .filter((item): item is DailyPlanItem & { timing: DailyTaskTimingSnapshot } => Boolean(item.timing))
+        .map((item) => [item.id, item.timing]));
       timerEventsByItem = Object.fromEntries(
         Object.entries(timerEventsByItem).filter(([itemId]) =>
           nextSnapshot?.plan.items.some((item) => item.id === itemId)
         )
       );
-      themeDraft = metadata.theme ?? "";
-      if (planningDay === "today" && dailyApi.getPreviousUnfinished) {
-        previousUnfinished = await dailyApi.getPreviousUnfinished(date);
-        const available = new Set(previousUnfinished.map((item) => item.id));
-        const retained = [...selectedPreviousIds].filter((id) => available.has(id));
-        selectedPreviousIds = new Set(retained.length ? retained : previousUnfinished.map((item) => item.id));
-        if (focusPreviousMigration && previousUnfinished.length > 0 && !previousMigrationFocused) {
-          previousMigrationFocused = true;
-          await tick();
-          if (previousMigrationCard) {
-            previousMigrationCard.open = true;
-            previousMigrationCard.scrollIntoView({ behavior: "smooth", block: "center" });
-            previousMigrationCard.querySelector<HTMLElement>("button, input")?.focus();
-          }
-        }
-      } else {
-        previousUnfinished = [];
-        selectedPreviousIds = new Set();
-      }
       if (previewItemId && !snapshot?.plan.items.some((item) => item.id === previewItemId)) {
         previewItemId = "";
       }
+      loading = false;
+      void refreshSupplemental(sequence, date, nextSnapshot);
+      void refreshPreviousItems(sequence, date);
     } catch (cause) {
       if (sequence !== refreshSequence) return;
       error = messageForError(cause);
     } finally {
       if (sequence === refreshSequence) loading = false;
     }
+  }
+
+  function refresh(dateOverride?: string): Promise<void> {
+    refreshQueued = true;
+    if (dateOverride) queuedRefreshDate = dateOverride;
+    if (refreshPromise) return refreshPromise;
+
+    refreshPromise = (async () => {
+      while (refreshQueued) {
+        refreshQueued = false;
+        const requestedDate = queuedRefreshDate;
+        queuedRefreshDate = undefined;
+        await performRefresh(requestedDate);
+      }
+    })().finally(() => {
+      refreshPromise = undefined;
+      // A subscriber can enqueue work between the final loop check and the
+      // promise cleanup. Drain it in a new microtask instead of leaving the UI
+      // stuck on its previous loading state.
+      if (refreshQueued) void refresh();
+    });
+    return refreshPromise;
   }
 
   async function run(
@@ -691,13 +768,12 @@
 
   async function startOverviewItem(): Promise<void> {
     const item = overview.current;
-    if (!item || !dailyApi?.startItem) return;
-    await run(`start:${item.id}`, () => dailyApi?.startItem?.(item.id, item.revision));
+    if (!item) return;
+    await transitionTimer(item, primaryTimerAction(item));
   }
 
   async function makeCurrent(item: DailyPlanItem): Promise<void> {
-    if (!dailyApi?.startItem) return;
-    await run(`start:${item.id}`, () => dailyApi?.startItem?.(item.id, item.revision));
+    await transitionTimer(item, primaryTimerAction(item));
   }
 
   function updatePolicyFromEvent(item: DailyPlanItem, event: Event): void {
@@ -755,7 +831,7 @@
     item: DailyPlanItem,
     action: "start" | "pause" | "resume" | "complete"
   ): Promise<void> {
-    const timing = timingByItem[item.id];
+    const timing = timingFor(item);
     if (action === "start" && dailyApi?.startItem) {
       await run(`start:${item.id}`, () => dailyApi?.startItem?.(item.id, item.revision));
       return;
@@ -797,7 +873,7 @@
       targetEventId,
       replacementAt,
       reason,
-      expectedTimingRevision: timingByItem[item.id]?.timingRevision ?? ""
+      expectedTimingRevision: timingFor(item)?.timingRevision ?? ""
     }));
   }
 
@@ -854,60 +930,6 @@
       ...correctionReasonByItem,
       [itemId]: (event.currentTarget as HTMLInputElement).value
     };
-  }
-
-  async function generateSummary(mode: "rules" | "ai"): Promise<void> {
-    if (!dailyApi?.generateSummary) return;
-    await run(`summary:${mode}`, async () => {
-      const before = await dailyApi?.getSnapshot(selectedDate);
-      if (!before) throw new Error("今日快照暂不可用，请刷新后重试。");
-      const basisFingerprint = dailySnapshotFingerprint(before);
-      const generated = await dailyApi?.generateSummary?.(mode);
-      if (!generated) throw new Error("未能生成今日总结。");
-      const after = await dailyApi?.getSnapshot(selectedDate);
-      if (
-        !after
-        || basisFingerprint !== dailySnapshotFingerprint(after)
-        || !isDailySummaryCurrent(generated, basisFingerprint, after)
-      ) {
-        clearGeneratedSummary();
-        snapshot = after;
-        throw new Error("今日数据在生成总结时发生了变化，请重新生成。");
-      }
-      snapshot = after;
-      generatedSummary = generated;
-      generatedSummaryFingerprint = basisFingerprint;
-      summaryNotice = mode === "ai"
-        ? "AI 草稿已生成；确认内容后再写回日记。"
-        : "规则总结已生成；确认内容后再写回日记。";
-    });
-  }
-
-  async function writeCurrentSummary(): Promise<void> {
-    if (!dailyApi?.writeSummary) return;
-    const latest = await dailyApi.getSnapshot(selectedDate);
-    if (!latest) throw new Error("今日快照暂不可用，请刷新后重试。");
-    snapshot = latest;
-    const candidate = generatedSummary ?? {
-      ...latest.summary,
-      source: "rules" as const
-    };
-    const basisFingerprint = generatedSummary
-      ? generatedSummaryFingerprint
-      : dailySnapshotFingerprint(latest);
-    if (!isDailySummaryCurrent(candidate, basisFingerprint, latest)) {
-      clearGeneratedSummary();
-      throw new Error("今日数据已变化，旧总结没有写回；请确认新摘要后重试。");
-    }
-    await dailyApi.writeSummary(candidate);
-    summaryNotice = "总结已安全写回今日日记的 ToWrite 管理区块。";
-    snapshot = await dailyApi.getSnapshot(selectedDate) ?? snapshot;
-  }
-
-  function clearGeneratedSummary(): void {
-    generatedSummary = undefined;
-    generatedSummaryFingerprint = "";
-    summaryNotice = "";
   }
 
   function kindLabel(kind: DailyPlanItemKind): string {
@@ -1159,6 +1181,8 @@
   }
 </script>
 
+<svelte:window on:pointerdown|capture={handleWindowPointerDown} on:keydown={handleWindowKeydown} />
+
 {#if loading && !snapshot}
   <div class="daily-loading" aria-live="polite">
     <RefreshCw class="spin" size={17} />
@@ -1300,25 +1324,67 @@
           <ChevronDown size={15} />
         </summary>
         <div class="previous-task-list">
-          {#each previousUnfinished as item (item.id)}
-            <label>
-              <input
-                type="checkbox"
-                checked={selectedPreviousIds.has(item.id)}
-                on:change={() => togglePreviousSelection(item.id)}
-              />
-              <span>{compactTaskText(item.text)}<small>{item.revision.date}</small></span>
-            </label>
+          {#each previousMigrationGroups as dateGroup (dateGroup.date)}
+            <section class="previous-date-group">
+              <header>
+                <span><CalendarDays size={14} /><strong>{dateGroup.date}</strong><em>{dateGroup.count} 项</em></span>
+                {#if dailyApi.openPlanSource}
+                  <button type="button" title="打开这天的日记" on:click={() => dailyApi?.openPlanSource?.(dateGroup.date)}>
+                    <BookOpen size={14} />
+                  </button>
+                {/if}
+              </header>
+              {#each dateGroup.projects as project (project.key)}
+                <details class="previous-project-group" open>
+                  <summary><FolderTree size={14} /><strong>{project.label}</strong><em>{project.items.length}</em><ChevronDown size={14} /></summary>
+                  <div>
+                    {#each project.items as item (item.id)}
+                      <article class="previous-task-row" class:previewing={previewPreviousItemId === item.id}>
+                        <input
+                          type="checkbox"
+                          aria-label={`选择迁移：${compactTaskText(item.text)}`}
+                          checked={selectedPreviousIds.has(item.id)}
+                          on:change={() => togglePreviousSelection(item.id)}
+                        />
+                        <button
+                          class="previous-task-title"
+                          type="button"
+                          aria-expanded={previewPreviousItemId === item.id}
+                          on:click={() => (previewPreviousItemId = previewPreviousItemId === item.id ? "" : item.id)}
+                        >{compactTaskText(item.text)}</button>
+                        <div class="previous-task-actions">
+                          <button
+                            type="button"
+                            title={previewPreviousItemId === item.id ? "收起预览" : "预览任务"}
+                            on:click={() => (previewPreviousItemId = previewPreviousItemId === item.id ? "" : item.id)}
+                          ><PanelTopOpen size={14} /></button>
+                          {#if dailyApi.openItem}
+                            <button type="button" title="打开任务目标" on:click={() => dailyApi?.openItem?.(item)}><BookOpen size={14} /></button>
+                          {/if}
+                          {#if dailyApi.dismissPreviousItem}
+                            <button class="dismiss-previous-item" type="button" title="忽略这一项，不再提示迁移" on:click={() => dismissPreviousItem(item)}><EyeOff size={14} /><span>忽略</span></button>
+                          {/if}
+                        </div>
+                        {#if previewPreviousItemId === item.id}
+                          <div class="previous-task-preview">
+                            <span><strong>来源</strong>{item.sourcePath}</span>
+                            {#if userFacingTargetLabel(item)}<span><strong>目标</strong>{userFacingTargetLabel(item)}</span>{/if}
+                            {#if item.nextStep}<span><strong>下一步</strong>{item.nextStep}</span>{/if}
+                            <footer>
+                              {#if dailyApi.openPlanSource}<button type="button" on:click={() => dailyApi?.openPlanSource?.(dateGroup.date)}><CalendarDays size={13} />原日记</button>{/if}
+                              {#if dailyApi.openItem}<button type="button" on:click={() => dailyApi?.openItem?.(item)}><BookOpen size={13} />打开目标</button>{/if}
+                            </footer>
+                          </div>
+                        {/if}
+                      </article>
+                    {/each}
+                  </div>
+                </details>
+              {/each}
+            </section>
           {/each}
         </div>
         <footer>
-          {#if dailyApi.dismissPreviousItems}
-            <button
-              type="button"
-              disabled={Boolean(busy)}
-              on:click={dismissPreviousReview}
-            >标记本次已处理</button>
-          {/if}
           <button
             class="primary"
             type="button"
@@ -1348,13 +1414,13 @@
             <strong>{compactTaskText(overview.current.text)}</strong>
             <small>{overview.current.nextStep ? `下一步：${overview.current.nextStep}` : "还没有写最小下一步"}</small>
           </button>
-          {#if dailyApi.startItem && overview.current.status !== "in-progress"}
+          {#if dailyApi.startItem || dailyApi.pauseItem || dailyApi.resumeItem}
             <button
               class="start-button"
               type="button"
               disabled={Boolean(busy)}
               on:click={startOverviewItem}
-            ><CirclePlay size={14} />开始</button>
+            >{#if primaryTimerAction(overview.current) === "pause"}<Pause size={14} />{:else}<CirclePlay size={14} />{/if}{primaryTimerLabel(overview.current)}</button>
           {/if}
         </div>
         {#if overview.upcoming.length > 0}
@@ -1363,7 +1429,7 @@
               <li>
                 <span>○</span>
                 <button type="button" on:click={() => (previewItemId = item.id)}>{compactTaskText(item.text)}</button>
-                {#if dailyApi.startItem}<button class="make-current" type="button" title="设为当前任务并开始计时" on:click={() => makeCurrent(item)}>设为当前</button>{/if}
+                {#if dailyApi.startItem || dailyApi.pauseItem || dailyApi.resumeItem}<button class="make-current" type="button" title="将这项设为当前专注任务并开始计时" on:click={() => makeCurrent(item)}>{focusActionLabel(item)}</button>{/if}
               </li>
             {/each}
           </ol>
@@ -1408,7 +1474,19 @@
           {/each}
         </div>
         {#if editingProgressProjectId}
-          <div class="project-color-popover" role="dialog" aria-label={`设置 ${editingProgressProjectLabel} 的颜色`}>
+          <button
+            class="project-color-scrim"
+            type="button"
+            aria-label="关闭项目颜色设置"
+            on:click={closeProjectColorPopover}
+          ></button>
+          <div
+            bind:this={projectColorPopover}
+            class="project-color-popover"
+            role="dialog"
+            aria-label={`设置 ${editingProgressProjectLabel} 的颜色`}
+            on:pointerdown|stopPropagation
+          >
             <strong>{editingProgressProjectLabel}</strong>
             <label>项目颜色 <input type="color" bind:value={editingProgressProjectColor} /></label>
             <div class="project-color-presets">
@@ -1417,7 +1495,7 @@
               {/each}
             </div>
             <footer>
-              <button type="button" on:click={() => (editingProgressProjectId = "")}>取消</button>
+              <button type="button" on:click={closeProjectColorPopover}>取消</button>
               <button class="primary" type="button" on:click={saveProgressProjectColor}>保存</button>
             </footer>
           </div>
@@ -1432,7 +1510,7 @@
           <Columns3 size={17} />
           <span>
             <strong>编排与任务池</strong>
-            <small>新建任务，或从任务池搜索并安排到今天 / 明天。</small>
+            <small>从工作池搜索并安排到今天 / 明天。</small>
           </span>
         </span>
         <ChevronDown class={plannerExpanded ? "" : "rotated"} size={17} />
@@ -1446,96 +1524,6 @@
             <button type="button" disabled={busy === "theme"} on:click={saveTheme}><Save size={14} />保存主题</button>
           {/if}
         </div>
-
-        <form class="planner-form" on:submit|preventDefault={createItem}>
-          <label class="wide">
-            <span>计划内容</span>
-            <input bind:value={draftText} placeholder="想推进什么？可使用 [[笔记链接]]" aria-label="计划内容" />
-          </label>
-          <div class="planning-fields">
-            <label>
-              <span>目标</span>
-              <input bind:value={draftGoal} placeholder="完成后能判断什么？" />
-            </label>
-            <label>
-              <span>最小下一步</span>
-              <input bind:value={draftNextStep} placeholder="下一步能在 15 分钟内开始" />
-            </label>
-            <label>
-              <span>目标笔记</span>
-              <input bind:value={draftTarget} placeholder="[[Echo MVP]]" />
-            </label>
-            <label>
-              <span>预计分钟</span>
-              <input bind:value={draftEstimate} type="number" min="1" step="1" placeholder="15" />
-            </label>
-            <label>
-              <span>类别</span>
-              <input bind:value={draftCategory} list="daily-category-options" placeholder="项目 / 写作与发布" />
-            </label>
-            <label>
-              <span>优先级</span>
-              <select bind:value={draftPriority}>
-                <option value="highest">最高</option>
-                <option value="high">高</option>
-                <option value="normal">普通</option>
-                <option value="low">低</option>
-                <option value="lowest">最低</option>
-              </select>
-            </label>
-            <label>
-              <span>标签</span>
-              <input bind:value={draftTags} placeholder="研究, 发布" />
-            </label>
-            <label class="due-field">
-              <span>截止日期</span>
-              <input bind:value={draftDueDate} type="date" />
-              <span class="date-shortcuts" aria-label="截止日期快捷选择">
-                <button type="button" on:click={() => setDraftDueDate("today")}>今天</button>
-                <button type="button" on:click={() => setDraftDueDate("tomorrow")}>明天</button>
-                <button type="button" on:click={() => setDraftDueDate("friday")}>本周五</button>
-                <button type="button" on:click={() => setDraftDueDate("next-week")}>下周</button>
-                <button type="button" on:click={() => setDraftDueDate("clear")}>清除</button>
-              </span>
-            </label>
-            <label>
-              <span>类型</span>
-              <select bind:value={draftKind}>
-                <option value="task">任务</option>
-                <option value="create_note">新建笔记</option>
-                <option value="edit_note">修改笔记</option>
-                <option value="send_card">发送内容</option>
-              </select>
-            </label>
-            <label>
-              <span>墨水屏</span>
-              <select bind:value={draftPolicy}>
-                <option value="none">不发送</option>
-                <option value="manual">手动发送</option>
-                <option value="scheduled">一次性定时</option>
-                <option value="rotation">加入轮播</option>
-                <option value="agent">允许 Agent 选择</option>
-              </select>
-            </label>
-            {#if draftPolicy === "scheduled"}
-              <label>
-                <span>显示时间</span>
-                <input bind:value={draftSchedule} type="datetime-local" required />
-              </label>
-            {/if}
-          </div>
-          <datalist id="daily-category-options">
-            {#each categoryChoices as category}<option value={category}></option>{/each}
-          </datalist>
-          <div class="planning-footer">
-            <label class="check"><input bind:checked={draftPrimary} type="checkbox" />最重要的一件事</label>
-            <label class="check"><input bind:checked={draftMinimum} type="checkbox" />再乱也至少完成</label>
-            <button class="primary" type="submit" disabled={!draftText.trim() || !dailyApi.createItem || busy === "create"}>
-              <Plus size={15} />
-              添加到{planningDay === "today" ? "今天" : "明天"}
-            </button>
-          </div>
-        </form>
 
         <details class="planner-pool-picker" aria-label="从任务池选择">
           <summary>
@@ -1691,24 +1679,6 @@
           <span class="filtered-count">{filteredItems.length} / {items.length}</span>
         </div>
 
-        <form class="quick-add" on:submit|preventDefault={createItem}>
-          <Plus size={16} />
-          <input
-            bind:value={draftText}
-            placeholder={`新建${planningDay === "today" ? "今日" : "明日"}任务，可直接写 [[笔记链接]]`}
-            aria-label={`新建${planningDay === "today" ? "今日" : "明日"}任务`}
-          />
-          <button type="button" on:click={() => (plannerExpanded = true)}>
-            属性
-          </button>
-          <button
-            class="primary"
-            type="submit"
-            disabled={!draftText.trim() || !dailyApi.createItem || busy === "create"}
-          >
-            添加
-          </button>
-        </form>
         {/if}
 
         {#if normalizationPreview}
@@ -1862,12 +1832,11 @@
                 {#each group.items as row (row.item.id)}
                   {@const item = row.item}
                   {@const index = row.index}
-                  {@const timing = timingByItem[item.id]}
+                  {@const timing = timingFor(item)}
             <article
               class:current={item.status === "in-progress"}
               class:completed={isDailyItemComplete(item)}
               class="plan-item"
-              style={`--task-depth: ${dailyItemDepth(item)}`}
             >
               <button
                 class="check-button"
@@ -1915,6 +1884,17 @@
                 {/if}
                 {#if dailyApi.updateItem && item.status !== "done"}
                   <button type="button" title="编辑属性" on:click={(event) => beginEdit(item, event)}><PenLine size={14} /></button>
+                {/if}
+                {#if item.status !== "done" && (dailyApi.startItem || dailyApi.pauseItem || dailyApi.resumeItem)}
+                  <button
+                    class="timer-direct-action"
+                    class:active={timing?.status === "running"}
+                    type="button"
+                    title={`${primaryTimerLabel(item)}任务`}
+                    aria-label={`${primaryTimerLabel(item)}任务`}
+                    disabled={Boolean(busy)}
+                    on:click={() => transitionTimer(item, primaryTimerAction(item))}
+                  >{#if primaryTimerAction(item) === "pause"}<Pause size={14} />{:else}<Play size={14} />{/if}<span>{primaryTimerLabel(item)}</span></button>
                 {/if}
                 {#if dailyApi.getItemTiming || dailyApi.startItem || dailyApi.pauseItem || dailyApi.resumeItem}
                   <details class="item-more item-timing" on:toggle={(event) => handleItemMenuToggle(item.id, event, true)}>
@@ -2253,15 +2233,6 @@
           <article><span>完成事项</span><strong>{Math.max(snapshot?.plan.done ?? 0, snapshot?.activity.tasksCompleted ?? 0)}</strong></article>
           <article><span>Capture</span><strong>{snapshot?.activity.capturesCommitted ?? 0}</strong></article>
         </div>
-        {#if summary}
-          <div class="workspace-summary"><strong>{summary.headline}</strong>{#each summary.lines as line}<span>{line}</span>{/each}</div>
-        {/if}
-        <p class="review-help">“预览总结”只在这里生成文字；“确认写回”只更新日记里的 ToWrite 管理区块，不会覆盖其他手写内容。</p>
-        {#if summaryNotice}<p class="summary-notice">{summaryNotice}</p>{/if}
-        <div class="review-actions">
-          {#if dailyApi.generateSummary}<button type="button" disabled={Boolean(busy)} on:click={() => generateSummary("rules")}><RefreshCw size={14} />预览总结</button>{/if}
-          {#if dailyApi.writeSummary && summary}<button type="button" disabled={Boolean(busy)} on:click={() => run("write-summary", writeCurrentSummary)}><FilePlus2 size={14} />确认写回日记</button>{/if}
-        </div>
       </details>
     {/if}
 
@@ -2315,33 +2286,6 @@
           <article><span>Capture</span><strong>{snapshot?.activity.capturesCommitted ?? 0}</strong><small>今日提交</small></article>
           <article><span>屏幕展示</span><strong>{snapshot?.activity.cardsDisplayed ?? 0}</strong><small>{snapshot?.activity.cardsSelected ?? 0} 次选择</small></article>
         </div>
-        <section class="summary-card">
-          <header>
-            <div><h3>今日总结</h3><p>规则先生成，AI 只改写表述；写回前仍需确认。</p></div>
-            <span class:ai={summary?.source === "ai"}>{summary?.source === "ai" ? "AI 草稿" : "规则生成"}</span>
-          </header>
-          {#if summary}
-            <div class="summary-text">
-              <strong>{summary.headline}</strong>
-              {#each summary.lines as line}<span>{line}</span>{/each}
-            </div>
-          {:else}
-            <div class="daily-empty compact">今天还没有足够的数据生成总结。</div>
-          {/if}
-          {#if summaryNotice}<p class="summary-notice">{summaryNotice}</p>{/if}
-          <footer>
-            {#if dailyApi.generateSummary}
-              <button type="button" disabled={Boolean(busy)} on:click={() => generateSummary("rules")}><RefreshCw size={14} />重新生成</button>
-              <button type="button" disabled={Boolean(busy)} on:click={() => generateSummary("ai")}><Sparkles size={14} />AI 改写</button>
-            {/if}
-            {#if dailyApi.writeSummary && summary}
-              <button class="primary" type="button" disabled={Boolean(busy)} on:click={() => run("write-summary", writeCurrentSummary)}><FilePlus2 size={14} />写回今日日记</button>
-            {/if}
-            {#if dailyApi.sendSummaryToDevice && summary}
-              <button type="button" disabled={Boolean(busy)} on:click={() => run("send-summary", () => dailyApi?.sendSummaryToDevice?.())}><MonitorUp size={14} />发送总结</button>
-            {/if}
-          </footer>
-        </section>
       </details>
     {/if}
   </section>
@@ -2398,10 +2342,30 @@
 
   .previous-tasks-card > summary > span { display: flex; align-items: center; gap: 7px; }
   .previous-tasks-card > summary small { color: var(--text-muted); }
-  .previous-task-list { display: grid; gap: 4px; padding: 0 12px 8px; }
-  .previous-task-list label { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 7px; }
-  .previous-task-list label:hover { background: var(--background-modifier-hover); }
-  .previous-tasks-card footer { display: flex; justify-content: flex-end; padding: 0 12px 12px; }
+  .previous-task-list { display: grid; gap: 9px; padding: 0 12px 10px; }
+  .previous-date-group { overflow: hidden; border: 1px solid var(--daily-border); border-radius: 9px; background: var(--daily-raised); }
+  .previous-date-group > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; background: var(--background-secondary); }
+  .previous-date-group > header > span { display: flex; align-items: center; gap: 7px; }
+  .previous-date-group em { color: var(--text-muted); font-size: .65rem; font-style: normal; font-weight: 500; }
+  .previous-date-group button { display: inline-grid; padding: 4px; place-items: center; color: var(--text-muted); background: transparent; }
+  .previous-project-group { border-top: 1px solid var(--daily-border); }
+  .previous-project-group > summary { display: flex; align-items: center; gap: 7px; padding: 7px 10px; cursor: pointer; list-style: none; }
+  .previous-project-group > summary strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .previous-project-group > summary em { margin-left: auto; }
+  .previous-task-row { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 7px; padding: 6px 9px 6px 13px; border-top: 1px solid var(--daily-border); }
+  .previous-task-row:hover,
+  .previous-task-row.previewing { background: var(--background-modifier-hover); }
+  .previous-task-row > input { margin: 0; justify-self: center; }
+  .previous-task-title { min-width: 0; padding: 2px 0; overflow: hidden; border: 0; color: var(--text-normal); background: transparent; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+  .previous-task-actions { display: flex; align-items: center; gap: 2px; opacity: .55; }
+  .previous-task-row:hover .previous-task-actions,
+  .previous-task-row:focus-within .previous-task-actions { opacity: 1; }
+  .previous-task-preview { grid-column: 2 / -1; display: grid; gap: 4px; padding: 8px 9px; border: 1px solid var(--daily-border); border-radius: 7px; background: var(--background-primary); }
+  .previous-task-preview > span { display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 7px; color: var(--text-muted); font-size: .68rem; overflow-wrap: anywhere; }
+  .previous-task-preview > span strong { color: var(--text-normal); }
+  .previous-task-preview footer { display: flex; justify-content: flex-start; gap: 6px; padding: 4px 0 0; }
+  .previous-task-preview footer button { display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px; border: 1px solid var(--daily-border); }
+  .previous-tasks-card > footer { display: flex; justify-content: flex-end; gap: 7px; padding: 0 12px 12px; }
 
   .analytics-overview {
     display: grid;
@@ -2843,20 +2807,54 @@
     opacity: 0.75;
   }
 
+  .project-color-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 1001;
+    width: auto;
+    min-width: 0;
+    height: auto;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: rgb(0 0 0 / 12%);
+    box-shadow: none;
+    cursor: default;
+  }
+
+  .project-color-scrim:hover,
+  .project-color-scrim:focus-visible {
+    background: rgb(0 0 0 / 12%);
+    box-shadow: none;
+  }
+
   .project-color-popover {
-    position: absolute;
-    z-index: 20;
-    right: 14px;
-    bottom: 14px;
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 1002;
     display: grid;
-    gap: 9px;
-    width: min(320px, 100%);
+    grid-template-rows: auto auto auto auto;
+    align-content: start;
+    gap: 18px;
+    width: min(440px, calc(100vw - 32px));
+    min-width: 0;
+    max-width: calc(100vw - 24px);
+    min-height: min(300px, calc(100vh - 32px));
+    max-height: min(440px, calc(100vh - 24px));
+    overflow: auto;
     margin-top: 0;
-    padding: 10px;
-    border: 1px solid var(--background-modifier-border);
-    border-radius: 9px;
+    padding: 18px;
+    border: 1px solid color-mix(in srgb, var(--interactive-accent) 28%, var(--background-modifier-border));
+    border-radius: 14px;
     background: var(--background-primary);
-    box-shadow: var(--shadow-s);
+    box-shadow: 0 16px 44px rgb(0 0 0 / 22%);
+  }
+
+  .project-color-popover > strong {
+    font-size: 1.05rem;
+    line-height: 1.3;
   }
 
   .project-color-popover label,
@@ -2867,6 +2865,12 @@
     gap: 8px;
   }
 
+  .project-color-popover footer {
+    align-self: start;
+    margin-top: 2px;
+    padding-top: 4px;
+  }
+
   .project-color-popover input[type="color"] {
     width: 42px;
     height: 28px;
@@ -2874,14 +2878,15 @@
   }
 
   .project-color-presets {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 7px;
+    display: grid;
+    grid-template-columns: repeat(4, 34px);
+    align-content: center;
+    gap: 12px;
   }
 
   .project-color-presets button {
-    width: 24px;
-    height: 24px;
+    width: 34px;
+    height: 34px;
     min-width: 0;
     padding: 0;
     border: 2px solid var(--background-primary);
@@ -2952,7 +2957,6 @@
   }
 
   .theme-editor label,
-  .planner-form label > span,
   .inline-editor label > span {
     color: var(--text-muted);
     font-size: 0.7rem;
@@ -2960,7 +2964,6 @@
 
   .theme-editor button,
   .preview-actions button,
-  .summary-card button,
   .candidate-list button,
   .inline-actions button {
     display: inline-flex;
@@ -2975,7 +2978,6 @@
     border-top: 1px solid var(--daily-border);
   }
 
-  .planner-form label,
   .inline-editor label {
     display: grid;
     gap: 4px;
@@ -3005,10 +3007,6 @@
     margin: 0;
   }
 
-  .planning-footer .primary {
-    margin-left: auto;
-  }
-
   .due-field {
     grid-column: span 2;
   }
@@ -3020,7 +3018,6 @@
     gap: 4px;
   }
 
-  .date-shortcuts button,
   .edit-date-shortcuts button {
     min-height: 24px;
     padding: 2px 7px;
@@ -3201,8 +3198,7 @@
   }
 
   .plan-list-card > header,
-  .eink-card > header,
-  .summary-card > header {
+  .eink-card > header {
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
@@ -3211,14 +3207,12 @@
     border-bottom: 1px solid var(--daily-border);
   }
 
-  .plan-list-card h3,
-  .summary-card h3 {
+  .plan-list-card h3 {
     margin: 0;
     font-size: 0.95rem;
   }
 
-  .plan-list-card header p,
-  .summary-card header p {
+  .plan-list-card header p {
     margin: 2px 0 0;
     color: var(--text-muted);
     font-size: 0.7rem;
@@ -3300,23 +3294,6 @@
 
   .quick-add > :global(svg) {
     color: var(--text-muted);
-  }
-
-  .quick-add input {
-    width: 100%;
-    border-color: transparent;
-    background: transparent;
-    box-shadow: none;
-  }
-
-  .quick-add input:focus {
-    border-color: var(--background-modifier-border-focus);
-    background: var(--background-primary);
-  }
-
-  .quick-add button {
-    min-height: 28px;
-    padding: 4px 9px;
   }
 
   .view-hidden {
@@ -3584,7 +3561,7 @@
     align-items: center;
     gap: 6px;
     padding: 6px 4px;
-    padding-left: calc(4px + var(--task-depth, 0) * 14px);
+    padding-left: 4px;
     border-bottom: 1px solid var(--daily-border);
     transition: background 120ms ease;
   }
@@ -3604,8 +3581,13 @@
   }
 
   .check-button {
+    display: grid;
+    width: 34px;
+    height: 34px;
     align-self: center;
-    padding: 5px;
+    margin: 0;
+    padding: 0;
+    place-items: center;
     border: 0;
     color: var(--text-muted);
     background: transparent;
@@ -3900,6 +3882,26 @@
     padding: 5px;
     color: var(--text-muted);
     background: transparent;
+  }
+
+  .item-actions .timer-direct-action {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-height: 26px;
+    padding: 3px 7px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+
+  .item-actions .timer-direct-action.active {
+    border-color: var(--interactive-accent);
+    color: var(--text-accent);
+  }
+
+  .item-actions .timer-direct-action span {
+    font-size: 0.64rem;
   }
 
   .item-more {
@@ -4391,35 +4393,10 @@
     border-radius: 10px;
   }
 
-  .summary-card > header > span {
-    padding: 3px 7px;
-    border-radius: 999px;
-    color: var(--text-muted);
-    background: var(--daily-soft);
-    font-size: 0.68rem;
-  }
-
-  .summary-card > header > span.ai {
-    color: var(--text-accent);
-  }
-
   .summary-text {
     display: grid;
     gap: 5px;
     padding: 13px 14px;
-  }
-
-  .summary-text span {
-    color: var(--text-muted);
-    font-size: 0.78rem;
-  }
-
-  .summary-card > footer {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    padding: 10px 14px;
-    border-top: 1px solid var(--daily-border);
   }
 
   .workspace-arrange-bar {
@@ -4451,8 +4428,7 @@
     gap: 2px;
   }
 
-  .workspace-arrange-bar small,
-  .workspace-summary span {
+  .workspace-arrange-bar small {
     color: var(--text-muted);
     font-size: 0.72rem;
   }
@@ -4496,9 +4472,8 @@
     }
 
     .project-color-popover {
-      right: 10px;
-      bottom: 10px;
-      width: calc(100% - 20px);
+      width: min(320px, calc(100vw - 20px));
+      min-width: 0;
     }
 
     .workspace-arrange-bar { align-items: stretch; flex-direction: column; }
@@ -4537,10 +4512,6 @@
 
     .quick-add {
       grid-template-columns: auto minmax(0, 1fr) auto;
-    }
-
-    .quick-add > button:first-of-type {
-      display: none;
     }
 
     .view-switcher {
@@ -4596,11 +4567,6 @@
     .planning-footer {
       align-items: stretch;
       flex-direction: column;
-    }
-
-    .planning-footer .primary {
-      justify-content: center;
-      margin-left: 0;
     }
 
     .theme-editor {

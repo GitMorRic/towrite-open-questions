@@ -359,6 +359,8 @@ export interface ToWriteSavedData {
    * again, so dismissing an empty/unwanted review never hides later work.
    */
   dailyCarryoverReviews?: Record<string, string>;
+  /** Per planning date historical items the user explicitly chose to ignore. */
+  dailyCarryoverIgnored?: Record<string, string[]>;
   /** Bounded, content-free idempotency journal for desktop UI side effects. */
   deviceCommandJournal?: Array<{
     eventId: string;

@@ -187,33 +187,6 @@ function buildControls(
     }
   }
 
-  for (const preview of options.getNormalizationPreviews()) {
-    if (preview.sourcePath !== activePath) continue;
-    for (const edit of preview.edits) {
-      if (edit.line < 1 || edit.line > state.doc.lines) continue;
-      const line = state.doc.line(edit.line);
-      entries.push({
-        from: line.from,
-        to: line.from,
-        decoration: Decoration.line({
-          attributes: {
-            class: "towrite-daily-task-card-line towrite-daily-task-candidate-line"
-          }
-        })
-      });
-      if (!selectedLines.has(edit.line)) {
-        entries.push({
-          from: line.to,
-          to: line.to,
-          decoration: Decoration.widget({
-            side: 11,
-            widget: new DailyTaskEnrichmentWidget(edit, options)
-          })
-        });
-      }
-    }
-  }
-
   for (const projection of options.getLinkedTaskProjections()) {
     if (
       projection.sourcePath !== activePath
@@ -420,71 +393,6 @@ class DailyTaskControlWidget extends WidgetType {
     disclosure.append(details);
     if (hasNavigableTarget(this.item.targetResolution)) {
       const open = iconActionButton(doc, "↗", "打开关联文档", () => this.options.onOpen(this.item));
-      wrapper.append(open);
-    }
-    wrapper.append(disclosure);
-    dailyTaskDisclosureCleanup.set(wrapper, disposeDisclosure);
-    return wrapper;
-  }
-
-  destroy(dom: HTMLElement): void {
-    disposeDailyTaskDisclosure(dom);
-  }
-
-  ignoreEvent(): boolean {
-    return true;
-  }
-}
-
-class DailyTaskEnrichmentWidget extends WidgetType {
-  constructor(
-    private readonly edit: DailyPlanNormalizationEdit,
-    private readonly options: DailyTaskControlsOptions
-  ) {
-    super();
-  }
-
-  eq(other: DailyTaskEnrichmentWidget): boolean {
-    return other.edit.line === this.edit.line
-      && other.edit.before === this.edit.before
-      && other.edit.proposedBlockId === this.edit.proposedBlockId;
-  }
-
-  toDOM(view: EditorView): HTMLElement {
-    const doc = view.dom.ownerDocument;
-    const wrapper = createSpan();
-    wrapper.className = "towrite-daily-line-controls towrite-note-task-line-controls towrite-daily-task-enrichment-controls";
-    wrapper.setAttribute("role", "group");
-    wrapper.setAttribute("aria-label", "ToWrite 新待办");
-
-    const disclosure = createEl("details");
-    disclosure.className = "towrite-note-task-disclosure";
-    const disposeDisclosure = installDailyTaskDisclosureDismiss(disclosure);
-    const disclosureToggle = createEl("summary");
-    disclosureToggle.className = "towrite-note-task-disclosure-toggle";
-    disclosureToggle.textContent = "···";
-    disclosureToggle.title = "查看新待办操作";
-    disclosureToggle.setAttribute("aria-label", "展开 ToWrite 新待办操作");
-    disclosure.append(disclosureToggle);
-
-    const details = createSpan();
-    details.className = "towrite-note-task-disclosure-content towrite-daily-enrichment-content";
-    const state = createSpan();
-    state.className = "towrite-daily-enrichment-state";
-    state.textContent = "新待办";
-    details.append(state);
-
-    const enrich = actionButton(doc, "补充属性", () => this.options.onEnrich(this.edit));
-    enrich.classList.add("towrite-daily-enrich");
-    details.append(enrich);
-
-    const track = actionButton(doc, "跳过属性", () => this.options.onTrackOnly(this.edit));
-    track.classList.add("towrite-daily-track-only");
-    track.title = "只补稳定 ID，不添加任何属性";
-    details.append(track);
-    disclosure.append(details);
-    if (hasNavigableTarget(this.edit.targetResolution)) {
-      const open = iconActionButton(doc, "↗", "打开关联文档", () => this.options.onOpenPending(this.edit));
       wrapper.append(open);
     }
     wrapper.append(disclosure);

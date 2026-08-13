@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.3.8 - 2026-08-13
+
+- Kept Workbench navigation responsive when Workflow is not configured: switching between Today, Work Pool, Status, and Journal is now local-first and no longer depends on successfully persisting the Obsidian workspace layout.
+- Added a zero-configuration Workflow guide with a one-click recommended sequence (`Inbox → Raw → Sparks → Initialize → Processing → Archive`), clear distinctions between Workflow stages, question states, article types, and tags, and direct access to advanced tag mapping.
+- Preserved hierarchical Daily planning for Book Sprint-style notes: numbered linked project entries and nested checkbox tasks inherit their nearest linked target while ordinary numbered notes remain descriptive content.
+- Stabilized current-task and Today surfaces across draft materialization, carry-over handling, timing actions, popovers, and progressive plan loading.
+- Added regression coverage for navigation without Workflow data, zero-config onboarding, hierarchical linked tasks, Daily draft behavior, and narrow-layout scrolling.
+
 ## 0.3.7 - 2026-08-12
 
 - Prevented deleted or edited provisional Daily tasks from leaving stale `draft_*` timing errors that replaced the Today workspace with an error banner.
