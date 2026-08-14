@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## 0.4.6 - 2026-08-14
+
+- Fixed carry-over migration rejecting top-level checkbox categories with `A Daily task with child tasks cannot be migrated as one leaf`. A level-one task such as `项目`, `创作`, `其他`, or `稍后阅读和记录` is now migrated as one authored Markdown subtree.
+- Kept these dual-purpose task/category parents in their own preview and Today groups instead of placing them under `未分类`, while retaining the parent task itself and its nested numbered, checkbox, linked, and deeper child rows.
+- Extended exact-duplicate consolidation to category subtrees. Matching parent categories merge their immediate child subtrees; byte-equivalent child structures are deduplicated conservatively, different children are retained, and colliding child block IDs are deterministically remapped.
+- Added live subtask summaries inside the sticky merged-result preview so the final nested effect is visible before confirmation.
+- Added regression coverage for subtree preflight, full-tree migration and source audit replacement, category grouping, nested child preservation, exact child merging, and conflicting block IDs.
+- Production verification: 127 test files and 799 tests, Obsidian lint with zero warnings, TypeScript checks, production build, Release asset validation, and the 2 MiB bundle limit.
+
+中文摘要：
+
+- 修复一级复选框分类因“父任务仍有子任务”而迁移失败的问题；`项目`、`创作`、`其他`、`稍后阅读和记录` 现在会作为一棵完整的 Markdown 子树迁移。
+- 一级节点继续同时充当任务和分类，预览与迁移后的今日视图都会归入它自己的分类，不再落入“未分类”；编号项、复选框、链接及更深层子任务都会保留。
+- 同名一级分类合并时会继续合并各自的子任务树；只有结构和正文完全相同的子树才去重，不同内容全部保留，冲突的子任务 block ID 会被稳定重映射。
+- 置顶的“合并后预览”现在会直接显示每个分类将带入的子任务摘要，确认前即可检查最终层级。
+- 新增子树预检、完整迁移、来源审计替换、分类归组、嵌套结构保留、重复子树合并及 block ID 冲突的回归测试。
+- 生产验证：127 个测试文件、799 项测试，以及 Obsidian lint、类型检查、生产构建、Release 资产校验和 2 MiB 包体限制全部通过。
+
 ## 0.4.5 - 2026-08-14
 
 - Fixed migrated tasks losing their authored Markdown classification and appearing under `未分类`. When a historical leaf has no explicit category, migration now materializes its nearest containing group as the destination task's explicit category before the source lineage disappears.

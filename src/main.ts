@@ -7648,12 +7648,19 @@ export default class ToWritePlugin extends Plugin {
             : "A historical Daily task changed while the migration batch was being prepared. Nothing was moved; refresh and select again."
         );
       }
-      await this.dailyPlanService.validateMigrationSource(
+      const validatedSource = await this.dailyPlanService.validateMigrationSubtreeSource(
         current.id,
         current.revision,
         sourceDate
       );
-      await this.assertDailyLifecycleLeaf(current, sourceDate);
+      if (current.taskRef && (validatedSource.structuralChildren?.length ?? 0) > 0) {
+        throw new DailyPlanConflictError(
+          "invalid-state",
+          this.settings.language === "zh"
+            ? "任务池分配不能作为分类父任务整体迁移；请先处理它的子任务。"
+            : "A Task Pool assignment cannot migrate as a category subtree; handle its children first."
+        );
+      }
       if (current.taskRef) {
         const poolTask = await this.taskPoolService.get(current.taskRef);
         if (!poolTask) {
@@ -7689,6 +7696,8 @@ export default class ToWritePlugin extends Plugin {
             destinationTaskId: entry.destinationId,
             destinationText,
             placement: "prepend",
+            includeSubtree: true,
+            mergeExactChildren: Boolean(options.mergeExactDuplicates),
             refreshCache: false
           }
         );
@@ -7696,13 +7705,16 @@ export default class ToWritePlugin extends Plugin {
         unitMigrations.push(migrated);
       }
       const mergedSources = unit.destinationItem ? unit.items : unit.items.slice(1);
+      let expectedDestinationRevision = unit.destinationItem?.revision;
       for (const item of mergedSources) {
         unitMigrations.push(await this.recordDailyMigrationToExistingDestination(
           item,
           targetDate,
           destinationTaskId,
-          unit.destinationItem?.revision
+          expectedDestinationRevision,
+          Boolean(options.mergeExactDuplicates)
         ));
+        expectedDestinationRevision = undefined;
       }
       migrations.unshift(...unitMigrations);
     }
@@ -10728,6 +10740,8 @@ export default class ToWritePlugin extends Plugin {
       destinationTaskId?: string;
       destinationText?: string;
       placement?: "append" | "prepend";
+      includeSubtree?: boolean;
+      mergeExactChildren?: boolean;
       refreshCache?: boolean;
     } = {}
   ): Promise<DailyTaskMigration> {
@@ -10736,7 +10750,7 @@ export default class ToWritePlugin extends Plugin {
     if (!item || item.revision.value !== revision.value) {
       throw new DailyPlanConflictError("revision-changed", "The Daily task changed after it was loaded.");
     }
-    await this.assertDailyLifecycleLeaf(item, date);
+    if (!options.includeSubtree) await this.assertDailyLifecycleLeaf(item, date);
     const tomorrow = new Date(`${date}T12:00:00`);
     tomorrow.setDate(tomorrow.getDate() + 1);
     const tomorrowDate = options.destinationDate
@@ -10748,7 +10762,9 @@ export default class ToWritePlugin extends Plugin {
     let reassignedPool: TaskPoolItem | undefined;
     let reassignedPoolChanged = false;
     let migration: DailyTaskMigration | undefined;
-    const destinationCategory = dailyMigrationDestinationCategory(item);
+    const destinationCategory = item.structuralCategory && options.destinationText?.trim()
+      ? options.destinationText.trim()
+      : dailyMigrationDestinationCategory(item);
     try {
       if (item.taskRef) {
         const poolTask = await this.taskPoolService.get(item.taskRef);
@@ -10765,7 +10781,7 @@ export default class ToWritePlugin extends Plugin {
         );
         reassignedPool = assignment.task;
         reassignedPoolChanged = !assignment.idempotent;
-        const creation = await this.dailyPlanService.createWithResult({
+        const createInput: DailyPlanCreateInput = {
           id: targetTaskId,
           date: tomorrowDate,
           text: poolTask.text,
@@ -10781,11 +10797,28 @@ export default class ToWritePlugin extends Plugin {
           nextStep: item.nextStep,
           priority: item.priority,
           tags: item.tags
-        }, undefined, { placement: options.placement ?? "prepend" });
+        };
+        const creation = options.includeSubtree
+          ? await this.dailyPlanService.createMigrationSubtreeWithResult(
+              item.id,
+              item.revision,
+              date,
+              createInput,
+              undefined,
+              {
+                placement: options.placement ?? "prepend",
+                mergeExactChildren: options.mergeExactChildren
+              }
+            )
+          : await this.dailyPlanService.createWithResult(
+              createInput,
+              undefined,
+              { placement: options.placement ?? "prepend" }
+            );
         createdTomorrow = creation.item;
         createdTomorrowWasNew = creation.created;
       } else {
-        const creation = await this.dailyPlanService.createWithResult({
+        const createInput: DailyPlanCreateInput = {
           id: targetTaskId,
           date: tomorrowDate,
           text: options.destinationText ?? item.text,
@@ -10804,7 +10837,24 @@ export default class ToWritePlugin extends Plugin {
           tags: item.tags,
           primary: item.primary,
           minimum: item.minimum
-        }, undefined, { placement: options.placement ?? "prepend" });
+        };
+        const creation = options.includeSubtree
+          ? await this.dailyPlanService.createMigrationSubtreeWithResult(
+              item.id,
+              item.revision,
+              date,
+              createInput,
+              undefined,
+              {
+                placement: options.placement ?? "prepend",
+                mergeExactChildren: options.mergeExactChildren
+              }
+            )
+          : await this.dailyPlanService.createWithResult(
+              createInput,
+              undefined,
+              { placement: options.placement ?? "prepend" }
+            );
         createdTomorrow = creation.item;
         createdTomorrowWasNew = creation.created;
       }
@@ -10818,7 +10868,8 @@ export default class ToWritePlugin extends Plugin {
       migration = await this.dailyPlanService.recordMigration(item.id, item.revision, {
         date: tomorrowDate,
         taskId: createdTomorrow.id,
-        migrationId: `mig_${randomTokenFragment()}`
+        migrationId: `mig_${randomTokenFragment()}`,
+        includeSubtree: options.includeSubtree
       }, date);
     } catch (error) {
       if (createdTomorrow && createdTomorrowWasNew) {
@@ -10860,7 +10911,8 @@ export default class ToWritePlugin extends Plugin {
     item: DailyPlanItem,
     destinationDate: string,
     destinationTaskId: string,
-    expectedDestinationRevision?: DailyTaskRevision
+    expectedDestinationRevision?: DailyTaskRevision,
+    mergeExactChildren = false
   ): Promise<DailyTaskMigration> {
     const sourceDate = item.revision.date;
     if (!sourceDate) throw new DailyPlanConflictError("invalid-state", "Historical task has no source date.");
@@ -10881,11 +10933,28 @@ export default class ToWritePlugin extends Plugin {
         "The exact-duplicate destination changed while the migration was running."
       );
     }
-    await this.assertDailyLifecycleLeaf(source, sourceDate);
+    if (source.taskRef && (source.structuralChildren?.length ?? 0) > 0) {
+      throw new DailyPlanConflictError(
+        "invalid-state",
+        "A Task Pool assignment cannot be consolidated as a category subtree."
+      );
+    }
+    if ((source.structuralChildren?.length ?? 0) > 0) {
+      await this.dailyPlanService.mergeMigrationSubtreeChildren(
+        source.id,
+        source.revision,
+        sourceDate,
+        destination.id,
+        destination.revision,
+        destinationDate,
+        { mergeExactChildren }
+      );
+    }
     const migration = await this.dailyPlanService.recordMigration(source.id, source.revision, {
       date: destinationDate,
       taskId: destination.id,
-      migrationId: `mig_${randomTokenFragment()}`
+      migrationId: `mig_${randomTokenFragment()}`,
+      includeSubtree: true
     }, sourceDate);
     await this.recordDailyTransition("migrate", source, {
       eventId: migration.migrationId,

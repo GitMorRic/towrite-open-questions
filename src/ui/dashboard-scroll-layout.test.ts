@@ -89,17 +89,22 @@ describe("dashboard viewport layout", () => {
     expect(component).toContain("确认迁移 ${selectedPreviousIds.size} 项");
     expect(component).toContain('on:click={migrateSelectedPrevious}');
     expect(component).toContain('class="migration-preview-feedback"');
+    expect(component).toContain('class="migration-preview-subtasks"');
     expect(component).toContain("migrationPreviewTextDrafts");
     expect(component).toContain("dailyMigrationMergeUnitKey");
     expect(component).toContain("destinationTextByUnit");
     expect(component).toContain('draggable="true"');
     expect(component).toContain("moveMigrationPreviewUnit(unitKey, -1)");
     expect(component).toContain("编辑迁移后的标题");
-    const sourcePreflight = plugin.indexOf("this.dailyPlanService.validateMigrationSource(");
+    const sourcePreflight = plugin.indexOf("this.dailyPlanService.validateMigrationSubtreeSource(");
     const migrationWrites = plugin.indexOf("const migrations: DailyTaskMigration[]", sourcePreflight);
     expect(sourcePreflight).toBeGreaterThan(-1);
     expect(migrationWrites).toBeGreaterThan(sourcePreflight);
-    expect(plugin).toContain("const destinationCategory = dailyMigrationDestinationCategory(item)");
+    expect(plugin).toContain("this.dailyPlanService.createMigrationSubtreeWithResult(");
+    expect(plugin).toContain("this.dailyPlanService.mergeMigrationSubtreeChildren(");
+    expect(plugin).toContain("includeSubtree: true");
+    expect(plugin).toContain("dailyMigrationDestinationCategory(item)");
+    expect(plugin).toContain("item.structuralCategory && options.destinationText?.trim()");
     expect(plugin).toContain("category: destinationCategory");
   });
 

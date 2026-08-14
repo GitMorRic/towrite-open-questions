@@ -9,10 +9,11 @@ import type { DailyPlanItem, DailyTaskRevision } from "./types";
  * explicit category instead of silently turning the task into unclassified.
  */
 export function dailyMigrationDestinationCategory(
-  item: Pick<DailyPlanItem, "category" | "lineage">
+  item: Pick<DailyPlanItem, "category" | "lineage" | "structuralCategory" | "text">
 ): string | undefined {
   const explicit = normalizedMigrationCategory(item.category);
   if (explicit) return explicit;
+  if (item.structuralCategory) return normalizedMigrationCategory(item.text);
   const group = item.lineage?.groups.at(-1);
   if (!group) return undefined;
   return normalizedMigrationCategory(
@@ -257,7 +258,24 @@ export function unfinishedDailyLeafItems(
   const parentIds = new Set(items
     .map((item) => item.parentTaskId)
     .filter((id): id is string => Boolean(id)));
-  return items.filter((item) => item.status !== "done" && !parentIds.has(item.id));
+  const byId = new Map(items.map((item) => [item.id, item]));
+  const hasStructuralAncestor = (item: DailyPlanItem): boolean => {
+    const seen = new Set<string>();
+    let parentId = item.parentTaskId;
+    while (parentId && !seen.has(parentId)) {
+      seen.add(parentId);
+      const parent = byId.get(parentId);
+      if (!parent) return false;
+      if (parent.structuralCategory) return true;
+      parentId = parent.parentTaskId;
+    }
+    return false;
+  };
+  return items.filter((item) => item.status !== "done" && (
+    item.structuralCategory
+      ? !hasStructuralAncestor(item)
+      : !hasStructuralAncestor(item) && !parentIds.has(item.id)
+  ));
 }
 
 /**
@@ -280,6 +298,10 @@ export function expandDailyMigrationSelections(
   const visit = (item: DailyPlanItem, seen: Set<string>): void => {
     if (seen.has(item.id)) return;
     seen.add(item.id);
+    if (item.structuralCategory) {
+      if (item.status !== "done") selectedLeaves.add(item.id);
+      return;
+    }
     const children = childrenByParent.get(item.id) ?? [];
     if (children.length === 0) {
       if (item.status !== "done") selectedLeaves.add(item.id);

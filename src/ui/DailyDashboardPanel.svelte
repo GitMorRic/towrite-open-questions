@@ -257,6 +257,26 @@
     return !unit.destinationItem;
   }
 
+  function migrationPreviewChildren(
+    unit: DailyMigrationMergeUnit
+  ): NonNullable<DailyPlanItem["structuralChildren"]> {
+    const children = [
+      ...(unit.destinationItem?.structuralChildren ?? []),
+      ...unit.items.flatMap((item) => item.structuralChildren ?? [])
+    ];
+    if (!mergeExactPreviousDuplicates) return children;
+    return [...new Map(children.map((child) => [child.mergeKey, child])).values()];
+  }
+
+  function migrationPreviewDescendantCount(
+    child: NonNullable<DailyPlanItem["structuralChildren"]>[number]
+  ): number {
+    return child.children.reduce(
+      (count, nested) => count + 1 + migrationPreviewDescendantCount(nested),
+      0
+    );
+  }
+
   function beginMigrationPreviewEdit(unit: DailyMigrationMergeUnit): void {
     if (!canRenameMigrationPreviewUnit(unit)) return;
     const key = dailyMigrationMergeUnitKey(unit);
@@ -1634,6 +1654,7 @@
                     {#each group.units as unit (dailyMigrationMergeUnitKey(unit))}
                   {@const finalItem = unit.destinationItem ?? unit.items[0]}
                   {@const unitKey = dailyMigrationMergeUnitKey(unit)}
+                  {@const previewChildren = migrationPreviewChildren(unit)}
                   <article
                     role="listitem"
                     class:dragging={draggedMigrationPreviewKey === unitKey}
@@ -1670,6 +1691,19 @@
                       <small>
                         来源 {unit.items.map((item) => item.revision.date).filter(Boolean).join("、") || "未知日期"}
                       </small>
+                      {#if previewChildren.length > 0}
+                        <ul class="migration-preview-subtasks" aria-label={`${finalItem.text}的迁移子任务`}>
+                          {#each previewChildren as child (child.mergeKey)}
+                            <li>
+                              <span>{child.checkbox ? "☐" : "↳"}</span>
+                              <strong>{compactTaskText(child.text)}</strong>
+                              {#if migrationPreviewDescendantCount(child) > 0}
+                                <small>另有 {migrationPreviewDescendantCount(child)} 个下级</small>
+                              {/if}
+                            </li>
+                          {/each}
+                        </ul>
+                      {/if}
                     </span>
                     <div class="migration-preview-actions">
                       <em class:existing={Boolean(unit.destinationItem)}>
@@ -2861,6 +2895,10 @@
   .migration-preview-children article input { width: 100%; min-width: 0; padding: 4px 6px; font-size: .72rem; }
   .migration-preview-children article input.invalid { border-color: var(--text-error); }
   .migration-preview-children article small.invalid { color: var(--text-error); }
+  .migration-preview-subtasks { display: grid; gap: 2px; margin: 3px 0 0; padding: 0; list-style: none; }
+  .migration-preview-subtasks li { display: grid; grid-template-columns: 15px minmax(0, 1fr) auto; align-items: center; gap: 4px; color: var(--text-muted); }
+  .migration-preview-subtasks li > span { color: var(--interactive-accent); }
+  .migration-preview-subtasks li strong { font-size: .66rem; font-weight: 500; }
   .migration-preview-children article em { padding: 2px 5px; border-radius: 999px; color: var(--text-accent); background: color-mix(in srgb, var(--interactive-accent) 11%, transparent); font-size: .6rem; font-style: normal; white-space: nowrap; }
   .migration-preview-children article em.existing { color: var(--text-success); background: color-mix(in srgb, var(--text-success) 11%, transparent); }
   .migration-preview-actions { display: flex; align-items: center; justify-content: flex-end; gap: 2px; }

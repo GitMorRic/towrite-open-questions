@@ -477,6 +477,119 @@ describe("DailyPlanService", () => {
     expect(storage.files.get(path)).toContain("- [ ] Second copy ^daily_reused_source");
   });
 
+  it("moves a checkbox category with numbered and checkbox children as one subtree", async () => {
+    const storage = new MemoryDailyStorage();
+    storage.files.set("Daily/2026-07-22.md", [
+      "# 2026-07-22",
+      "## 今日计划",
+      "- [ ] 项目 ^daily_category_source",
+      "  1. [[Project A]]",
+      "  - [ ] 子任务 ^daily_category_child"
+    ].join("\n"));
+    const service = new DailyPlanService(storage);
+    const source = (await service.list("2026-07-22"))[0];
+
+    expect(source).toMatchObject({
+      structuralCategory: true,
+      structuralChildren: [
+        { text: "[[Project A]]" },
+        { text: "子任务" }
+      ]
+    });
+    await expect(service.validateMigrationSubtreeSource(
+      source.id,
+      source.revision,
+      source.date
+    )).resolves.toMatchObject({ id: source.id, structuralCategory: true });
+
+    const creation = await service.createMigrationSubtreeWithResult(
+      source.id,
+      source.revision,
+      source.date,
+      {
+        id: "daily_category_destination",
+        date: "2026-07-23",
+        text: source.text,
+        category: "项目"
+      },
+      undefined,
+      { placement: "prepend", mergeExactChildren: true }
+    );
+    expect(creation.item).toMatchObject({
+      structuralCategory: true,
+      category: "项目",
+      structuralChildren: [
+        { text: "[[Project A]]" },
+        { text: "子任务" }
+      ]
+    });
+    await service.recordMigration(source.id, source.revision, {
+      date: "2026-07-23",
+      taskId: creation.item.id,
+      migrationId: "mig_category_tree",
+      includeSubtree: true
+    }, source.date);
+
+    const sourceMarkdown = storage.files.get("Daily/2026-07-22.md") ?? "";
+    const destinationMarkdown = storage.files.get("Daily/2026-07-23.md") ?? "";
+    expect(sourceMarkdown).toContain("towrite:daily-task-migrated from=daily_category_source");
+    expect(sourceMarkdown).not.toContain("Project A");
+    expect(destinationMarkdown).toContain("- [ ] 项目");
+    expect(destinationMarkdown).toContain("  1. [[Project A]]");
+    expect(destinationMarkdown).toContain("  - [ ] 子任务 ^daily_category_child");
+  });
+
+  it("merges exact category children and remaps a conflicting nonduplicate child id", async () => {
+    const storage = new MemoryDailyStorage();
+    storage.files.set("Daily/2026-07-21.md", [
+      "# 2026-07-21",
+      "## 今日计划",
+      "- [ ] 项目 ^daily_category_older",
+      "  - [ ] 相同子任务 ^daily_reused_child",
+      "  - [ ] 旧来源独有 ^daily_unique_child"
+    ].join("\n"));
+    storage.files.set("Daily/2026-07-22.md", [
+      "# 2026-07-22",
+      "## 今日计划",
+      "- [ ] 项目 ^daily_category_recent",
+      "  - [ ] 相同子任务 ^daily_reused_child",
+      "  - [ ] 新来源不同内容 ^daily_unique_child"
+    ].join("\n"));
+    const service = new DailyPlanService(storage);
+    const older = (await service.list("2026-07-21"))[0];
+    const recent = (await service.list("2026-07-22"))[0];
+    const destination = (await service.createMigrationSubtreeWithResult(
+      older.id,
+      older.revision,
+      older.date,
+      {
+        id: "daily_category_today",
+        date: "2026-07-23",
+        text: "项目",
+        category: "项目"
+      },
+      undefined,
+      { placement: "prepend", mergeExactChildren: true }
+    )).item;
+
+    const merged = await service.mergeMigrationSubtreeChildren(
+      recent.id,
+      recent.revision,
+      recent.date,
+      destination.id,
+      destination.revision,
+      destination.date,
+      { mergeExactChildren: true }
+    );
+    const markdown = storage.files.get("Daily/2026-07-23.md") ?? "";
+
+    expect((markdown.match(/相同子任务/gu) ?? [])).toHaveLength(1);
+    expect(markdown).toContain("旧来源独有 ^daily_unique_child");
+    expect(markdown).toContain("新来源不同内容 ^daily_");
+    expect((markdown.match(/\^daily_unique_child(?=\s|$)/gmu) ?? [])).toHaveLength(1);
+    expect(merged.structuralChildren).toHaveLength(3);
+  });
+
   it("writes the deterministic summary idempotently without disturbing ToDo", async () => {
     const storage = new MemoryDailyStorage();
     const service = new DailyPlanService(storage, {

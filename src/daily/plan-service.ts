@@ -60,6 +60,10 @@ export interface DailyPlanCreateOptions {
   placement?: "append" | "prepend";
 }
 
+export interface DailyMigrationSubtreeOptions extends DailyPlanCreateOptions {
+  mergeExactChildren?: boolean;
+}
+
 export class DailyPlanConflictError extends Error {
   constructor(
     public readonly code:
@@ -274,6 +278,176 @@ export class DailyPlanService {
     });
   }
 
+  /**
+   * Creates a migration destination from the complete authored list subtree.
+   * The parent is normalized through the ordinary writer while numbered,
+   * checkbox, linked, and nested children retain their Markdown structure.
+   */
+  async createMigrationSubtreeWithResult(
+    sourceId: string,
+    expectedSourceRevision: string | DailyTaskRevision,
+    sourceDateValue: Date | string,
+    input: DailyPlanCreateInput,
+    now = this.now(),
+    options: DailyMigrationSubtreeOptions = {}
+  ): Promise<{ item: DailyPlanItem; created: boolean }> {
+    const sourceDate = normalizeDate(sourceDateValue);
+    const sourcePath = this.pathForDate(sourceDate);
+    const sourceMarkdown = await this.storage.readText(sourcePath);
+    if (sourceMarkdown === undefined) {
+      throw new DailyPlanConflictError("not-found", `Daily plan file does not exist: ${sourcePath}`);
+    }
+    const sourceDocument = this.parse(sourceMarkdown, sourcePath, sourceDate);
+    const source = resolveMigrationSource(
+      sourceDocument,
+      sourceMarkdown,
+      sourceId,
+      expectedSourceRevision,
+      true
+    );
+    assertMigrationSubtreeWritable(sourceDocument, source.node);
+    const sourceChildren = immediateChildBlocks(sourceMarkdown, source.node);
+
+    const date = normalizeDate(input.date ?? now);
+    const path = this.pathForDate(date);
+    const id = normalizeBlockId(input.id) || normalizeBlockId(this.createId());
+    if (!id) throw new Error("Daily plan item id is invalid.");
+    const desired = createItemShape({ id, date, sourcePath: path, input });
+
+    return this.withPathLock(path, async () => {
+      const current = await this.storage.readText(path) ?? "";
+      const document = this.parse(current, path, date);
+      assertWritable(document);
+      const existing = document.items.find((item) => item.id === id);
+      if (existing) {
+        throw new DailyPlanConflictError("id-reused", `Daily plan item id is already used: ${id}`);
+      }
+
+      const changedItems = new Map<string, DailyPlanItem>();
+      if (desired.primary) {
+        for (const item of document.items.filter((entry) => entry.primary)) {
+          changedItems.set(item.id, { ...(changedItems.get(item.id) ?? item), primary: false });
+        }
+      }
+      if (desired.minimum) {
+        for (const item of document.items.filter((entry) => entry.minimum)) {
+          changedItems.set(item.id, { ...(changedItems.get(item.id) ?? item), minimum: false });
+        }
+      }
+      const replacements = new Map<number, string>();
+      for (const item of document.items) {
+        const changed = changedItems.get(item.id);
+        if (changed) replacements.set(item.line, formatTaskBlock(changed, item.rawBlock, {
+          tasksCompatibilityOutput: this.tasksCompatibilityOutput
+        }));
+      }
+      let next = replaceTaskBlocks(current, document.items, replacements);
+      const parent = formatTaskBlock(desired, source.target.rawBlock, {
+        tasksCompatibilityOutput: this.tasksCompatibilityOutput
+      });
+      let block = [
+        parent,
+        ...sourceChildren.map((child) => reindentListBlock(child, 2))
+      ].join("\n");
+      block = remapCollidingMigrationBlockIds(
+        block,
+        next,
+        `${sourceDate}\u0000${date}\u0000${sourceId}`,
+        id
+      );
+      next = appendToPlanningSurface(next, date, this.resolveSource(date), {
+        planHeading: this.planHeading,
+        todoHeading: this.todoHeading
+      }, block, options.placement ?? "append");
+      const parsed = this.parse(next, path, date);
+      assertWritable(parsed);
+      const created = parsed.items.find((item) => item.id === id);
+      if (!created) throw new Error("Daily migration subtree could not be verified after writing.");
+      await this.storage.writeText(path, next);
+      await this.notify(path);
+      return { item: created, created: true };
+    });
+  }
+
+  /** Adds missing immediate child subtrees to an existing category parent. */
+  async mergeMigrationSubtreeChildren(
+    sourceId: string,
+    expectedSourceRevision: string | DailyTaskRevision,
+    sourceDateValue: Date | string,
+    destinationId: string,
+    expectedDestinationRevision: string | DailyTaskRevision,
+    destinationDateValue: Date | string,
+    options: DailyMigrationSubtreeOptions = {}
+  ): Promise<DailyPlanItem> {
+    const sourceDate = normalizeDate(sourceDateValue);
+    const sourcePath = this.pathForDate(sourceDate);
+    const sourceMarkdown = await this.storage.readText(sourcePath);
+    if (sourceMarkdown === undefined) {
+      throw new DailyPlanConflictError("not-found", `Daily plan file does not exist: ${sourcePath}`);
+    }
+    const sourceDocument = this.parse(sourceMarkdown, sourcePath, sourceDate);
+    const source = resolveMigrationSource(
+      sourceDocument,
+      sourceMarkdown,
+      sourceId,
+      expectedSourceRevision,
+      true
+    );
+    assertMigrationSubtreeWritable(sourceDocument, source.node);
+    const sourceChildren = immediateChildBlocks(sourceMarkdown, source.node);
+    if (sourceChildren.length === 0) {
+      const destination = await this.get(destinationId, destinationDateValue);
+      if (!destination) throw new DailyPlanConflictError("not-found", `Daily destination does not exist: ${destinationId}`);
+      assertRevision(destination, expectedDestinationRevision);
+      return destination;
+    }
+
+    const destinationDate = normalizeDate(destinationDateValue);
+    const destinationPath = this.pathForDate(destinationDate);
+    return this.withPathLock(destinationPath, async () => {
+      const current = await this.storage.readText(destinationPath);
+      if (current === undefined) {
+        throw new DailyPlanConflictError("not-found", `Daily plan file does not exist: ${destinationPath}`);
+      }
+      const document = this.parse(current, destinationPath, destinationDate);
+      const destination = resolveMigrationSource(
+        document,
+        current,
+        destinationId,
+        expectedDestinationRevision,
+        true
+      );
+      assertMigrationSubtreeWritable(document, destination.node);
+      const existingKeys = new Set(immediateChildBlocks(current, destination.node)
+        .map(structuralMigrationBlockKey));
+      const additions: string[] = [];
+      for (const child of sourceChildren) {
+        const key = structuralMigrationBlockKey(child);
+        if (options.mergeExactChildren && existingKeys.has(key)) continue;
+        existingKeys.add(key);
+        let block = reindentListBlock(child, destination.node.indent + 2);
+        block = remapCollidingMigrationBlockIds(
+          block,
+          `${current}\n${additions.join("\n")}`,
+          `${sourceDate}\u0000${destinationDate}\u0000${sourceId}\u0000${key}`
+        );
+        additions.push(block);
+      }
+      if (additions.length === 0) return destination.target;
+      const lines = current.split(/\r?\n/u);
+      const insertion = trimTrailingBlankLines(lines, destination.node.start, destination.node.end);
+      lines.splice(insertion, 0, ...additions.flatMap((block) => block.split("\n")));
+      const next = lines.join(current.includes("\r\n") ? "\r\n" : "\n");
+      const parsed = this.parse(next, destinationPath, destinationDate);
+      assertWritable(parsed);
+      const updated = parsed.items.find((item) => item.id === destinationId);
+      if (!updated) throw new Error("Daily migration destination subtree could not be verified after merging.");
+      await this.storage.writeText(destinationPath, next);
+      await this.notify(destinationPath);
+      return updated;
+    });
+  }
+
   update(
     id: string,
     expectedRevision: string | DailyTaskRevision,
@@ -481,7 +655,13 @@ export class DailyPlanService {
   async recordMigration(
     id: string,
     expectedRevision: string | DailyTaskRevision,
-    destination: { date: string; taskId: string; migrationId: string; migratedAt?: string },
+    destination: {
+      date: string;
+      taskId: string;
+      migrationId: string;
+      migratedAt?: string;
+      includeSubtree?: boolean;
+    },
     value: Date | string = this.now()
   ): Promise<DailyTaskMigration> {
     const fromDate = normalizeDate(value);
@@ -493,7 +673,14 @@ export class DailyPlanService {
         throw new DailyPlanConflictError("not-found", `Daily plan file does not exist: ${path}`);
       }
       const document = this.parse(current, path, fromDate);
-      const { target, node } = resolveMigrationSource(document, current, id, expectedRevision);
+      const { target, node } = resolveMigrationSource(
+        document,
+        current,
+        id,
+        expectedRevision,
+        destination.includeSubtree === true
+      );
+      if (destination.includeSubtree) assertMigrationSubtreeWritable(document, node);
       const migratedAt = normalizeAbsoluteIso(destination.migratedAt ?? this.now().toISOString());
       const indent = /^\s*/u.exec(target.rawLine)?.[0] ?? "";
       const marker = `${indent}%% ${DAILY_MIGRATION_MARKER} from=${safeMarkerValue(id)} to=${safeMarkerValue(destination.taskId)} date=${toDate} migration=${safeMarkerValue(destination.migrationId)} at=${migratedAt} %%`;
@@ -539,6 +726,26 @@ export class DailyPlanService {
       }
       const document = this.parse(current, path, date);
       return resolveMigrationSource(document, current, id, expectedRevision).target;
+    });
+  }
+
+  /** Validates a category parent and every list row that will move with it. */
+  async validateMigrationSubtreeSource(
+    id: string,
+    expectedRevision: string | DailyTaskRevision,
+    value: Date | string = this.now()
+  ): Promise<DailyPlanItem> {
+    const date = normalizeDate(value);
+    const path = this.pathForDate(date);
+    return this.withPathLock(path, async () => {
+      const current = await this.storage.readText(path);
+      if (current === undefined) {
+        throw new DailyPlanConflictError("not-found", `Daily plan file does not exist: ${path}`);
+      }
+      const document = this.parse(current, path, date);
+      const resolved = resolveMigrationSource(document, current, id, expectedRevision, true);
+      assertMigrationSubtreeWritable(document, resolved.node);
+      return resolved.target;
     });
   }
 
@@ -894,6 +1101,8 @@ function mergeHierarchyIntoPlanDocument(
 ): DailyPlanDocument {
   const merged: DailyPlanItem[] = [];
   const hierarchyByLine = new Map(hierarchy.tasks.map((task) => [task.line, task]));
+  const structuralGroupLines = new Set(hierarchy.groups.map((group) => group.line));
+  const structuralChildrenByLine = projectStructuralChildren(hierarchy);
   for (const task of hierarchy.tasks) {
     if (!task.blockId || task.normalizationRequired) continue;
     const taskLines = task.rawBlock.split(/\r?\n/u);
@@ -942,6 +1151,8 @@ function mergeHierarchyIntoPlanDocument(
       rawBlock: task.rawBlock,
       detachedOwnedLines: task.detachedOwnedLines,
       groupId: task.lineage.groups[task.lineage.groups.length - 1]?.id,
+      structuralCategory: structuralGroupLines.has(task.line),
+      structuralChildren: structuralChildrenByLine.get(task.line) ?? [],
       lineage: task.lineage,
       lineageRevision: task.lineageRevision,
       targetResolution: task.targetResolution,
@@ -955,6 +1166,45 @@ function mergeHierarchyIntoPlanDocument(
   }
   merged.sort((left, right) => left.line - right.line);
   return { ...document, items: merged };
+}
+
+function projectStructuralChildren(
+  hierarchy: DailyPlanHierarchy
+): Map<number, DailyPlanItem["structuralChildren"]> {
+  const childrenByParentLine = new Map<number, typeof hierarchy.tasks>();
+  for (const task of hierarchy.tasks) {
+    if (!task.parentTaskLine) continue;
+    const children = childrenByParentLine.get(task.parentTaskLine) ?? [];
+    children.push(task);
+    childrenByParentLine.set(task.parentTaskLine, children);
+  }
+  const projected = new Map<number, NonNullable<DailyPlanItem["structuralChildren"]>>();
+  const visit = (line: number): NonNullable<DailyPlanItem["structuralChildren"]> => {
+    const cached = projected.get(line);
+    if (cached) return cached;
+    const children = (childrenByParentLine.get(line) ?? []).map((task) => {
+      const nested = visit(task.line);
+      return {
+        text: task.text,
+        status: task.status,
+        checkbox: task.checkbox,
+        mergeKey: structuralTaskMergeKey(task.rawBlock, nested.map((child) => child.mergeKey)),
+        children: nested
+      };
+    });
+    projected.set(line, children);
+    return children;
+  };
+  for (const task of hierarchy.tasks) visit(task.line);
+  return projected;
+}
+
+function structuralTaskMergeKey(rawBlock: string, childKeys: readonly string[] = []): string {
+  const normalized = rawBlock
+    .replace(/(?:^|\s)\^[A-Za-z0-9_-]+(?=\s|$)/gmu, "")
+    .replace(/\s+/gu, " ")
+    .trim();
+  return contentHash128(JSON.stringify([normalized, childKeys]));
 }
 
 function parseTaskEntry(
@@ -2100,7 +2350,8 @@ function resolveMigrationSource(
   document: DailyPlanDocument,
   markdown: string,
   id: string,
-  expectedRevision: string | DailyTaskRevision
+  expectedRevision: string | DailyTaskRevision,
+  allowChildren = false
 ): { target: DailyPlanItem; node: MovableListNode } {
   const targets = document.items.filter((item) => item.id === id);
   const idOccurrences = countDailyBlockIdOccurrences(markdown, id);
@@ -2119,13 +2370,88 @@ function resolveMigrationSource(
       `Daily plan item is not backed by a migratable list node: ${id}`
     );
   }
-  if (document.items.some((item) => item.parentTaskId === id)) {
+  if (!allowChildren && document.items.some((item) => item.parentTaskId === id)) {
     throw new DailyPlanConflictError(
       "invalid-state",
       "A Daily task with child tasks cannot be migrated as one leaf."
     );
   }
   return { target, node };
+}
+
+function assertMigrationSubtreeWritable(
+  document: DailyPlanDocument,
+  node: MovableListNode
+): void {
+  const blocking = document.diagnostics.filter((entry) =>
+    entry.code !== "missing-block-id"
+    && entry.line >= node.start + 1
+    && entry.line <= node.end
+  );
+  if (blocking.length === 0) return;
+  throw new DailyPlanConflictError(
+    "invalid-document",
+    `The selected Daily subtree must be repaired before migration: ${blocking[0].code} at line ${blocking[0].line}`
+  );
+}
+
+function immediateChildBlocks(markdown: string, root: MovableListNode): string[] {
+  const lines = markdown.split(/\r?\n/u);
+  return parseMovableListNodes(markdown)
+    .filter((node) => node.parentLine === root.line)
+    .map((node) => lines.slice(node.start, trimTrailingBlankLines(lines, node.start, node.end)).join("\n"));
+}
+
+function reindentListBlock(block: string, targetIndent: number): string {
+  const lines = block.split(/\r?\n/u);
+  const sourceIndent = /^[ \t]*/u.exec(lines[0] ?? "")?.[0] ?? "";
+  const prefix = " ".repeat(Math.max(0, targetIndent));
+  return lines.map((line) => {
+    if (!line.trim()) return "";
+    return `${prefix}${line.startsWith(sourceIndent) ? line.slice(sourceIndent.length) : line.trimStart()}`;
+  }).join("\n");
+}
+
+function structuralMigrationBlockKey(block: string): string {
+  return contentHash128(block
+    .replace(/(?:^|\s)\^[A-Za-z0-9_-]+(?=\s|$)/gmu, "")
+    .replace(/\s+/gu, " ")
+    .trim());
+}
+
+function remapCollidingMigrationBlockIds(
+  block: string,
+  destinationMarkdown: string,
+  context: string,
+  protectedId?: string
+): string {
+  const occupied = new Set([...destinationMarkdown.matchAll(/(?:^|\s)\^(?<id>[A-Za-z0-9_-]+)(?=\s|$)/gmu)]
+    .map((match) => match.groups?.id)
+    .filter((id): id is string => Boolean(id)));
+  const ids = [...new Set([...block.matchAll(/(?:^|\s)\^(?<id>[A-Za-z0-9_-]+)(?=\s|$)/gmu)]
+    .map((match) => match.groups?.id)
+    .filter((id): id is string => Boolean(id)))];
+  const replacements = new Map<string, string>();
+  for (const id of ids) {
+    if (id === protectedId || !occupied.has(id)) {
+      occupied.add(id);
+      continue;
+    }
+    let attempt = 0;
+    let replacement = "";
+    do {
+      replacement = `daily_${contentHash128(`${context}\u0000${id}\u0000${attempt}`)}`;
+      attempt += 1;
+    } while (occupied.has(replacement));
+    occupied.add(replacement);
+    replacements.set(id, replacement);
+  }
+  let result = block;
+  for (const [id, replacement] of replacements) {
+    const escaped = id.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+    result = result.replace(new RegExp(`\\^${escaped}(?=\\s|$)`, "gmu"), `^${replacement}`);
+  }
+  return result;
 }
 
 function countDailyBlockIdOccurrences(markdown: string, id: string): number {

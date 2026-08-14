@@ -65,6 +65,28 @@ describe("Daily migration hierarchy", () => {
       .map((entry) => entry.id)).toEqual(["design", "pcb"]);
   });
 
+  it("selects a structural category as one subtree instead of rejecting or flattening its children", () => {
+    const category = item("category");
+    category.text = "项目";
+    category.structuralCategory = true;
+    category.structuralChildren = [{
+      text: "Project A",
+      status: "todo",
+      checkbox: false,
+      mergeKey: "child-project-a",
+      children: []
+    }];
+    const child = item("category-child", category.id);
+
+    expect(unfinishedDailyLeafItems([category, child]).map((entry) => entry.id))
+      .toEqual([category.id]);
+    expect(expandDailyMigrationSelections(
+      [category, child],
+      new Set([category.id])
+    ).map((entry) => entry.id)).toEqual([category.id]);
+    expect(dailyMigrationDestinationCategory(category)).toBe("项目");
+  });
+
   it("keeps reused ids distinct across historical date scopes", () => {
     const first = item("reused");
     first.revision.date = "2026-08-10";

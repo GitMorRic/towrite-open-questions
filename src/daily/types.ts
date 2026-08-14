@@ -142,6 +142,10 @@ export interface DailyPlanItem {
   lineageRevision?: string;
   /** Nearest containing plain-list category, when the source uses groups. */
   groupId?: string;
+  /** This checkbox is also the root of an authored Markdown category tree. */
+  structuralCategory?: boolean;
+  /** Read-only direct child projection used by carry-over review and merging. */
+  structuralChildren?: DailyPlanStructuralChild[];
   /** Full local-only group chain used to explain target inheritance. */
   lineage?: DailyPlanLineage;
   /** Unified open target used by Dashboard, device, NFC and Capture callers. */
@@ -160,6 +164,15 @@ export interface DailyPlanItem {
   draftLine?: number;
   /** Read-only roll-up of descendant and linked-note work. */
   aggregate?: DailyTaskAggregate;
+}
+
+export interface DailyPlanStructuralChild {
+  text: string;
+  status: DailyPlanStatus;
+  checkbox: boolean;
+  /** Exact-content key with block ids removed; safe for conservative merging. */
+  mergeKey: string;
+  children: DailyPlanStructuralChild[];
 }
 
 export interface DailyTaskAggregate {

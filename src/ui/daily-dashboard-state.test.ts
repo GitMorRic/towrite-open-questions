@@ -292,6 +292,35 @@ describe("Daily dashboard summary basis", () => {
     ]);
   });
 
+  it("uses a top-level checkbox category as its own carry-over group", () => {
+    const category = item("project_category", "todo", {
+      text: "项目",
+      date: "2026-08-10",
+      revision: {
+        value: "rev_project_category",
+        sourcePath: "Daily/2026-08-10.md",
+        blockId: "project_category",
+        date: "2026-08-10"
+      },
+      structuralCategory: true,
+      structuralChildren: [{
+        text: "项目 A",
+        status: "todo",
+        checkbox: false,
+        mergeKey: "project-a",
+        children: []
+      }]
+    });
+
+    expect(groupPreviousDailyItems([category])[0].projects.map(({ label }) => label))
+      .toEqual(["项目"]);
+    expect(groupDailyItems([category]).map(({ key, label }) => [key, label]))
+      .toEqual([["structural-category:项目", "项目"]]);
+    expect(groupDailyMigrationPreviewUnits([{ items: [category] }])
+      .map(({ key, label }) => [key, label]))
+      .toEqual([["structural-category:项目", "项目"]]);
+  });
+
   it("projects migration results into the same category tree as the final Today list", () => {
     const projectGroup = group("group_project", "项目", 1, 8, 0);
     const selectedProject = item("project_source", "todo", {

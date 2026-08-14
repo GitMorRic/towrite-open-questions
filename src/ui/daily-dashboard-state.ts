@@ -156,7 +156,12 @@ export function groupDailyItems(
       ?? (item.groupId ? hierarchy?.groups.find((candidate) => candidate.id === item.groupId) : undefined);
     const explicitCategory = item.category?.trim();
     const destinationCategory = dailyMigrationDestinationCategory(item);
-    const key = explicitCategory ? `category:${explicitCategory}` : (group?.id ?? "__ungrouped");
+    const key = explicitCategory
+      ? `category:${explicitCategory}`
+      : group?.id
+        ?? (item.structuralCategory && destinationCategory
+          ? `structural-category:${destinationCategory}`
+          : "__ungrouped");
     let bucket = byKey.get(key);
     if (!bucket) {
       bucket = {
@@ -238,6 +243,7 @@ export function groupPreviousDailyItems(
 }
 
 function previousDailyProjectLabel(item: DailyPlanItem): string {
+  if (item.structuralCategory) return dailyMigrationDestinationCategory(item) || "未分类";
   const explicit = item.category?.trim();
   if (explicit) return explicit;
   const rootGroup = item.lineage?.groups[0];
