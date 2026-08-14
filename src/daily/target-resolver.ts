@@ -10,6 +10,7 @@ import type {
 const WIKILINK_RE = /(?<!!)\[\[(?<target>[^\]\r\n]+)\]\]/gu;
 const MARKDOWN_LINK_RE = /(?<!!)\[(?<label>[^\]\r\n]*)\]\((?<target>[^)\r\n]+)\)/gu;
 const TARGET_FIELD_RE = /\[towrite-target::\s*(?<value>\[\[[^\]\r\n]+\]\]|[^\]\r\n]+)\]/iu;
+const ACTION_FIELD_RE = /\[towrite-action::\s*(?<value>[^\]\r\n]*)\]/iu;
 const ATTACHMENT_EXTENSION_RE =
   /\.(?:avif|bmp|canvas|csv|docx?|excalidraw|gif|heic|ico|jpe?g|json|m4a|m4v|mkv|mov|mp3|mp4|ogg|opus|pdf|png|pptx?|svg|tiff?|wav|webm|webp|xlsx?|zip)$/iu;
 
@@ -19,6 +20,7 @@ export interface DailyTargetResolverInput {
   rawBlock?: string;
   blockId?: string;
   explicitTarget?: string;
+  explicitActionId?: string;
   lineage?: DailyPlanLineage | readonly DailyPlanGroup[];
 }
 
@@ -79,6 +81,10 @@ export function extractExplicitDailyTarget(rawBlock: string): string | undefined
   return TARGET_FIELD_RE.exec(rawBlock)?.groups?.value.trim();
 }
 
+export function extractExplicitDailyAction(rawBlock: string): string | undefined {
+  return ACTION_FIELD_RE.exec(rawBlock)?.groups?.value.trim();
+}
+
 export function createDailyLineage(
   groups: readonly DailyPlanGroup[],
   sourcePath: string,
@@ -97,6 +103,17 @@ export function createDailyLineage(
 
 export function resolveDailyTarget(input: DailyTargetResolverInput): DailyTargetResolution {
   const lineage = normalizeLineage(input.lineage, input.sourcePath);
+  const authoredAction = input.explicitActionId
+    ?? (input.rawBlock ? extractExplicitDailyAction(input.rawBlock) : undefined);
+  if (authoredAction !== undefined) {
+    const actionId = normalizeDailyActionId(authoredAction);
+    return {
+      source: "action",
+      actionId,
+      displayLabel: actionId || "Invalid desktop action",
+      lineageRevision: lineage.revision
+    };
+  }
   const explicit = input.explicitTarget
     ?? (input.rawBlock ? extractExplicitDailyTarget(input.rawBlock) : undefined);
   const explicitLink = explicit
@@ -138,6 +155,11 @@ export function resolveDailyTarget(input: DailyTargetResolverInput): DailyTarget
     displayLabel: "ToWrite 今日",
     lineageRevision: lineage.revision
   };
+}
+
+export function normalizeDailyActionId(value: unknown): string | undefined {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return /^[a-z0-9][a-z0-9_-]{0,63}$/u.test(normalized) ? normalized : undefined;
 }
 
 function normalizeLineage(

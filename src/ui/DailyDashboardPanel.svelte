@@ -1177,9 +1177,10 @@
   }
 
   function deckTargetSourceLabel(
-    source: "explicit" | "task-link" | "ancestor-link" | "task-block" | "dashboard"
+    source: "action" | "explicit" | "task-link" | "ancestor-link" | "task-block" | "dashboard"
   ): string {
     return {
+      action: "命名动作",
       explicit: "显式",
       "task-link": "任务",
       "ancestor-link": "父分类",

@@ -1,6 +1,7 @@
 import { App, Notice, PluginSettingTab, Setting, setIcon, type SettingDefinitionItem } from "obsidian";
 import {
   DEFAULT_ARTICLE_TYPES,
+  DEFAULT_DESKTOP_ACTIONS,
   DEFAULT_STATUS_OPTIONS,
   DEFAULT_DEVICE_PROFILES,
   DEFAULT_REMINDER_PRESETS,
@@ -10,11 +11,14 @@ import {
   normalizeExternalApiPublicBaseUrl,
   normalizeInboxSettings,
   normalizeArticleTypesSettings,
+  normalizeDesktopActionId,
+  normalizeDesktopActions,
   normalizeDeviceProfiles,
   normalizePushSettings,
   normalizeQuote0ApiBaseUrl,
   normalizeReminderPresets,
   type ToWriteDeviceProfileSettings,
+  type ToWriteDesktopActionProfile,
   type ToWriteLanguage,
   type ToWriteReminderPreset,
   type ToWriteSettings,
@@ -850,6 +854,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
   private readonly openArticleTypeIds = new Set<string>();
   private readonly openWorkflowStageIds = new Set<string>();
   private readonly openDeviceProfileIds = new Set<string>();
+  private readonly openDesktopActionIds = new Set<string>();
   private quote0Devices: Quote0Device[] = [];
   private aiModels: AiModelInfo[] = [];
   private aiDiagnosticsStatus = "";
@@ -1986,6 +1991,99 @@ export class ToWriteSettingTab extends PluginSettingTab {
           this.refreshSettingsUi();
         });
       });
+
+    this.renderDesktopActions(containerEl, zh);
+  }
+
+  private renderDesktopActions(containerEl: HTMLElement, zh: boolean): void {
+    new Setting(containerEl)
+      .setName(zh ? "命名桌面动作" : "Named desktop actions")
+      .setDesc(zh
+        ? "任务写入 [towrite-action:: action-id] 后，设备按钮只发送这个不透明 ID；文件、网址和深链接只在本机解析。"
+        : "Tasks can use [towrite-action:: action-id]. Devices send only the opaque id; files, URLs, and deep links resolve locally.");
+
+    const actions = normalizeDesktopActions(this.plugin.settings.desktopActions);
+    this.plugin.settings.desktopActions = actions;
+    const list = containerEl.createDiv({ cls: "towrite-device-profile-editor" });
+    for (const [index, action] of actions.entries()) {
+      const card = list.createEl("details", { cls: "towrite-device-profile-card" });
+      card.open = this.openDesktopActionIds.has(action.id);
+      card.addEventListener("toggle", () => {
+        if (card.open) this.openDesktopActionIds.add(action.id);
+        else this.openDesktopActionIds.delete(action.id);
+      });
+      const header = card.createEl("summary", { cls: "towrite-device-profile-header" });
+      const title = header.createDiv({ cls: "towrite-device-profile-title" });
+      title.createEl("strong", { text: action.name || action.id });
+      title.createSpan({
+        cls: "towrite-device-profile-meta",
+        text: `${action.id} · ${action.kind}${action.enabled ? "" : " · disabled"}`
+      });
+      const actionButtons = header.createDiv({ cls: "towrite-device-profile-actions" });
+      const remove = createIconButton(actionButtons, "trash-2", zh ? "删除动作" : "Remove action");
+      remove.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const next = [...actions];
+        const removed = next.splice(index, 1)[0];
+        if (removed) this.openDesktopActionIds.delete(removed.id);
+        void this.saveDesktopActions(next, true);
+      });
+
+      const body = card.createDiv({ cls: "towrite-device-profile-body" });
+      new Setting(body)
+        .setName(zh ? "启用" : "Enabled")
+        .addToggle((toggle) => toggle.setValue(action.enabled).onChange(async (value) => {
+          await this.patchDesktopAction(index, { enabled: value });
+        }));
+      new Setting(body)
+        .setName(zh ? "显示名称" : "Display name")
+        .addText((input) => input.setValue(action.name).onChange(async (value) => {
+          await this.patchDesktopAction(index, { name: value.trim() });
+        }));
+      new Setting(body)
+        .setName(zh ? "动作 ID" : "Action id")
+        .setDesc(zh ? "Markdown 中只引用这个 ID。" : "This is the only value authored in Markdown.")
+        .addText((input) => input.setValue(action.id).setPlaceholder("writing-focus").onChange(async (value) => {
+          await this.patchDesktopAction(index, { id: normalizeDesktopActionId(value) }, true);
+        }));
+      new Setting(body)
+        .setName(zh ? "动作类型" : "Action kind")
+        .addDropdown((dropdown) => dropdown
+          .addOption("today", zh ? "打开今日工作台" : "Open Today workspace")
+          .addOption("focus", zh ? "打开专注小窗" : "Open Focus Now")
+          .addOption("obsidian", zh ? "打开 Vault 文件/位置" : "Open Vault location")
+          .addOption("https", zh ? "打开 HTTPS 链接" : "Open HTTPS URL")
+          .addOption("deep-link", zh ? "打开已批准应用深链接" : "Open approved app deep link")
+          .setValue(action.kind)
+          .onChange(async (value) => {
+            await this.patchDesktopAction(index, { kind: value as ToWriteDesktopActionProfile["kind"] }, true);
+          }));
+      if (action.kind !== "today" && action.kind !== "focus") {
+        new Setting(body)
+          .setName(zh ? "本地目标" : "Local target")
+          .setDesc(action.kind === "obsidian"
+            ? (zh ? "Vault 路径、[[双链]]、#heading 或 ^block。" : "Vault path, [[wikilink]], #heading, or ^block.")
+            : action.kind === "https"
+              ? (zh ? "只接受无账号密码的 https:// URL。" : "Only credential-free https:// URLs are accepted.")
+              : (zh ? "例如 vscode://file/...；危险浏览器和系统协议会被拒绝。" : "For example vscode://file/...; dangerous browser and OS schemes are blocked."))
+          .addText((input) => input.setValue(action.target).onChange(async (value) => {
+            await this.patchDesktopAction(index, { target: value.trim() });
+          }));
+      }
+    }
+
+    const add = containerEl.createEl("button", {
+      text: zh ? "添加桌面动作" : "Add desktop action",
+      attr: { type: "button" }
+    });
+    add.addEventListener("click", () => {
+      const id = nextDesktopActionId(actions);
+      this.openDesktopActionIds.add(id);
+      void this.saveDesktopActions([
+        ...actions,
+        { ...DEFAULT_DESKTOP_ACTIONS[0], id, name: zh ? "新桌面动作" : "New desktop action" }
+      ], true);
+    });
   }
 
   private renderDeviceLibrarySettings(containerEl: HTMLElement, zh: boolean): void {
@@ -5653,6 +5751,27 @@ export class ToWriteSettingTab extends PluginSettingTab {
     }
   }
 
+  private async patchDesktopAction(
+    index: number,
+    patch: Partial<ToWriteDesktopActionProfile>,
+    redisplay = false
+  ): Promise<void> {
+    const actions = [...normalizeDesktopActions(this.plugin.settings.desktopActions)];
+    const current = actions[index];
+    if (!current) return;
+    actions[index] = { ...current, ...patch };
+    await this.saveDesktopActions(actions, redisplay);
+  }
+
+  private async saveDesktopActions(
+    actions: ToWriteDesktopActionProfile[],
+    redisplay = false
+  ): Promise<void> {
+    this.plugin.settings.desktopActions = normalizeDesktopActions(actions);
+    await this.plugin.savePluginData();
+    if (redisplay) this.refreshSettingsUi();
+  }
+
   private async savePushSettings(redisplay = false): Promise<void> {
     this.plugin.settings.push = normalizePushSettings(this.plugin.settings.push, this.plugin.settings.quote0);
     await this.plugin.savePluginData();
@@ -6243,6 +6362,13 @@ function nextDeviceProfileId(profiles: ToWriteDeviceProfileSettings[]): string {
     index += 1;
   }
   return "device-" + index;
+}
+
+function nextDesktopActionId(actions: ToWriteDesktopActionProfile[]): string {
+  const ids = new Set(actions.map((action) => action.id));
+  let index = actions.length + 1;
+  while (ids.has(`desktop-action-${index}`)) index += 1;
+  return `desktop-action-${index}`;
 }
 
 function nextArticleTypeId(types: ArticleTypeSettings[]): string {

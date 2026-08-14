@@ -161,12 +161,17 @@ export function buildDeviceInputPageHtml(): string {
           <button class="secondary" id="voice" type="button">语音输入</button>
           <button id="submit" type="button">提交</button>
         </div>
+        <div class="toolbar" id="handoffActions" hidden>
+          <button class="secondary" id="later" type="button">稍后 30 分钟</button>
+          <button id="complete" type="button">安全完成</button>
+        </div>
         <p class="status" id="status"></p>
       </section>
     </main>
 
     <script>
       const params = new URLSearchParams(location.search);
+      const handoff = params.get("handoff") || "";
       const token = params.get("token") || localStorage.getItem("towrite-device-token") || "";
       if (token) {
         localStorage.setItem("towrite-device-token", token);
@@ -176,7 +181,7 @@ export function buildDeviceInputPageHtml(): string {
         const cleanQuery = params.toString();
         history.replaceState(null, "", location.pathname + (cleanQuery ? "?" + cleanQuery : "") + location.hash);
       }
-      const questionId = params.get("questionId") || "";
+      let questionId = params.get("questionId") || "";
       const interaction = {
         targetId: params.get("targetId") || "",
         candidateId: params.get("candidateId") || "",
@@ -199,6 +204,9 @@ export function buildDeviceInputPageHtml(): string {
       const tagsEl = document.getElementById("tags");
       const voiceEl = document.getElementById("voice");
       const submitEl = document.getElementById("submit");
+      const handoffActionsEl = document.getElementById("handoffActions");
+      const laterEl = document.getElementById("later");
+      const completeEl = document.getElementById("complete");
       const statusEl = document.getElementById("status");
       const backLinkEl = document.getElementById("backLink");
       let context = null;
@@ -216,7 +224,7 @@ export function buildDeviceInputPageHtml(): string {
       }
 
       async function loadContext() {
-        if (!token) {
+        if (!token && !handoff) {
           setStatus("URL 缺少 token。", true);
           submitEl.disabled = true;
           return;
@@ -227,15 +235,30 @@ export function buildDeviceInputPageHtml(): string {
         for (const key of Object.keys(interaction)) {
           if (interaction[key]) query.set(key, interaction[key]);
         }
+        if (handoff) query.set("handoff", handoff);
         const response = await fetch("/api/v1/device-input-context?" + query.toString(), {
           cache: "no-store",
-          headers: { "authorization": "Bearer " + token }
+          headers: authorizationHeaders()
         });
         if (!response.ok) {
           throw new Error("HTTP " + response.status);
         }
         context = await response.json();
+        if (context.question && context.question.id) questionId = context.question.id;
+        if (context.interaction) {
+          interaction.targetId = context.interaction.targetId || interaction.targetId;
+          interaction.candidateId = context.interaction.candidateId || interaction.candidateId;
+          interaction.deliveryId = context.interaction.deliveryId || interaction.deliveryId;
+          interaction.intent = context.interaction.intent || interaction.intent;
+          const source = context.interaction.sourceRef || {};
+          interaction.sourceFile = source.filePath || interaction.sourceFile;
+          interaction.sourceLine = source.lineStart || interaction.sourceLine;
+          interaction.sourceEndLine = source.lineEnd || interaction.sourceEndLine;
+          interaction.sourceBlockId = source.blockId || interaction.sourceBlockId;
+          interaction.sourcePage = source.page || interaction.sourcePage;
+        }
         renderContext();
+        await restorePendingSubmission();
       }
 
       function renderContext() {
@@ -254,6 +277,12 @@ export function buildDeviceInputPageHtml(): string {
           modeRowEl.hidden = true;
         }
         tagsEl.value = (context.capture.defaultTags || []).join(", ");
+        const allowedActions = context.interaction && context.interaction.handoff
+          ? context.interaction.handoff.allowedActions || []
+          : [];
+        handoffActionsEl.hidden = allowedActions.length === 0;
+        laterEl.hidden = !allowedActions.includes("later");
+        completeEl.hidden = !allowedActions.includes("complete");
         renderTargets();
         syncMode();
         setupVoice();
@@ -369,13 +398,18 @@ export function buildDeviceInputPageHtml(): string {
         }
         submitEl.disabled = true;
         setStatus("正在提交...");
+        let pendingRequest = null;
         try {
           if (modeEl.value === "answer" && questionId) {
-            await postJson("/api/v1/questions/" + encodeURIComponent(questionId) + "/notes", {
-              text,
-              clientId: "device-input",
-              metadata: interactionMetadata("answer")
-            });
+            pendingRequest = {
+              path: "/api/v1/questions/" + encodeURIComponent(questionId) + "/notes",
+              payload: {
+                text,
+                clientId: "device-input",
+                metadata: interactionMetadata("answer")
+              }
+            };
+            await postJson(pendingRequest.path, pendingRequest.payload);
             setStatus("已追加到卡片。", false);
           } else {
             let selection = targetEl.value ? JSON.parse(targetEl.value) : { target: { kind: "inboxFile" } };
@@ -398,13 +432,20 @@ export function buildDeviceInputPageHtml(): string {
                 targetRevision: selection.targetRevision
               } : {})
             };
+            pendingRequest = { path: "/api/v1/captures", payload };
             const result = await postJson("/api/v1/captures", payload);
             setStatus("已保存到 " + (result.data && result.data.filePath ? result.data.filePath : "Inbox") + "。", false);
           }
           textEl.value = "";
+          await deletePendingSubmission();
           captureDraftId = newCaptureId();
           renderTargets();
         } catch (error) {
+          if (pendingRequest && isNetworkFailure(error)) {
+            await savePendingSubmission(pendingRequest);
+            setStatus("网络不可用，内容已保存在本机；联网后会自动重试。", false);
+            return;
+          }
           setStatus("提交失败：" + (error.message || error), true);
         } finally {
           submitEl.disabled = false;
@@ -412,10 +453,10 @@ export function buildDeviceInputPageHtml(): string {
       }
 
       async function postJson(path, payload) {
-        const response = await fetch(path, {
+        const response = await fetch(withHandoff(path), {
           method: "POST",
           headers: {
-            "authorization": "Bearer " + token,
+            ...authorizationHeaders(),
             "content-type": "application/json"
           },
           body: JSON.stringify(payload)
@@ -426,6 +467,131 @@ export function buildDeviceInputPageHtml(): string {
         }
         return body;
       }
+
+      async function performHandoffAction(action) {
+        if (textEl.value.trim() && !window.confirm("当前输入尚未提交。继续会保留草稿，但本次 handoff 将被使用。")) {
+          return;
+        }
+        if (action === "complete" && !window.confirm("只完成屏幕双击时显示的这项任务，确定继续？")) {
+          return;
+        }
+        if (textEl.value.trim()) {
+          localStorage.setItem("towrite-device-emergency-draft", textEl.value);
+        }
+        laterEl.disabled = true;
+        completeEl.disabled = true;
+        try {
+          await postJson("/api/v1/device/handoff-actions", {
+            action,
+            eventId: "phone_" + newCaptureId().slice("capture_".length)
+          });
+          setStatus(action === "complete" ? "已安全完成当前任务。" : "已推迟 30 分钟。", false);
+          handoffActionsEl.hidden = true;
+        } catch (error) {
+          setStatus("操作失败：" + (error.message || error), true);
+          laterEl.disabled = false;
+          completeEl.disabled = false;
+        }
+      }
+
+      function withHandoff(path) {
+        if (!handoff) return path;
+        const separator = path.includes("?") ? "&" : "?";
+        return path + separator + "handoff=" + encodeURIComponent(handoff);
+      }
+
+      function authorizationHeaders() {
+        return token ? { "authorization": "Bearer " + token } : {};
+      }
+
+      function isNetworkFailure(error) {
+        return navigator.onLine === false || error instanceof TypeError;
+      }
+
+      function pendingKey() {
+        return handoff ? "handoff:" + handoff : "capture:" + captureDraftId;
+      }
+
+      function openQueueDatabase() {
+        return new Promise(function(resolve, reject) {
+          if (!("indexedDB" in window)) return reject(new Error("IndexedDB unavailable"));
+          const request = indexedDB.open("towrite-device-input", 1);
+          request.onupgradeneeded = function() {
+            if (!request.result.objectStoreNames.contains("submissions")) {
+              request.result.createObjectStore("submissions", { keyPath: "key" });
+            }
+          };
+          request.onsuccess = function() { resolve(request.result); };
+          request.onerror = function() { reject(request.error); };
+        });
+      }
+
+      async function queueOperation(mode, value) {
+        const database = await openQueueDatabase();
+        return new Promise(function(resolve, reject) {
+          const transaction = database.transaction("submissions", "readwrite");
+          const store = transaction.objectStore("submissions");
+          const request = mode === "get"
+            ? store.get(pendingKey())
+            : mode === "delete"
+              ? store.delete(pendingKey())
+              : store.put(value);
+          request.onsuccess = function() { resolve(request.result); };
+          request.onerror = function() { reject(request.error); };
+          transaction.oncomplete = function() { database.close(); };
+        });
+      }
+
+      async function savePendingSubmission(request) {
+        try {
+          await queueOperation("put", {
+            key: pendingKey(),
+            path: request.path,
+            payload: request.payload,
+            handoff,
+            createdAt: new Date().toISOString(),
+            expiresAt: context && context.interaction && context.interaction.handoff
+              ? context.interaction.handoff.expiresAt
+              : ""
+          });
+        } catch {
+          localStorage.setItem("towrite-device-emergency-draft", textEl.value);
+        }
+      }
+
+      async function deletePendingSubmission() {
+        try { await queueOperation("delete"); } catch { /* IndexedDB is an optional enhancement. */ }
+        localStorage.removeItem("towrite-device-emergency-draft");
+      }
+
+      async function restorePendingSubmission() {
+        let queued = null;
+        try { queued = await queueOperation("get"); } catch { /* Fall back to emergency draft. */ }
+        const emergency = localStorage.getItem("towrite-device-emergency-draft") || "";
+        const queuedText = queued && queued.payload && queued.payload.text ? queued.payload.text : emergency;
+        if (queuedText && !textEl.value) textEl.value = queuedText;
+        if (!queued) return;
+        if (queued.expiresAt && Date.parse(queued.expiresAt) <= Date.now()) {
+          setStatus("手机 handoff 已过期，内容仍保存在本机；请从墨水屏重新双击后提交。", true);
+          return;
+        }
+        if (navigator.onLine) {
+          try {
+            await postJson(queued.path, queued.payload);
+            await deletePendingSubmission();
+            textEl.value = "";
+            setStatus("离线记录已写回 Markdown。", false);
+          } catch (error) {
+            if (!isNetworkFailure(error)) {
+              setStatus("离线记录仍保留：" + (error.message || error), true);
+            }
+          }
+        }
+      }
+
+      window.addEventListener("online", function() {
+        restorePendingSubmission().catch(function() { /* Keep the local draft. */ });
+      });
 
       function interactionMetadata(inputMode) {
         return {
@@ -460,6 +626,8 @@ export function buildDeviceInputPageHtml(): string {
       titleEl.addEventListener("input", scheduleRecommendations);
       tagsEl.addEventListener("input", scheduleRecommendations);
       submitEl.addEventListener("click", submit);
+      laterEl.addEventListener("click", function() { performHandoffAction("later"); });
+      completeEl.addEventListener("click", function() { performHandoffAction("complete"); });
       voiceEl.addEventListener("click", function() {
         if (!recognition) return;
         setStatus("正在听写...");

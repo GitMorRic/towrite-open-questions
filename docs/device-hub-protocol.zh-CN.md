@@ -235,7 +235,7 @@ Tap Router 优先冻结最近成功的 displayed；尚无任何成功 ACK 时才
 GET /v1/hub/capabilities
 ```
 
-返回协议版本、最多候选数、内容/上下文类型、最大长轮询时间、ACK 支持、`device_events` 与鉴权要求。客户端必须在不兼容的 major version 下停止使用 Hub，并回退本地能力。
+返回协议版本、最多候选数、内容/上下文类型、最大长轮询时间、ACK 支持、`device_events`、可选 `web_push` 与鉴权要求。客户端必须在不兼容的 major version 下停止使用 Hub，并回退本地能力。
 
 ### 6.2 上传候选批次
 
@@ -369,6 +369,8 @@ Content-Type: application/json
 
 请求体见 4.4。响应包含 `accepted`、`duplicate` 和原因。设备应在完整刷新成功后 ACK；不要在开始绘制前 ACK。若刷新失败，提交 `failed` 便于诊断，然后继续保留上一个本地 displayed/version。
 
+本地 External API 的 ACK 还可附带 `firmwareVersion`、`screenModel`、`capabilities[]` 与 `batteryPercent`。这些字段只用于兼容性和诊断，不参与鉴权或 displayed tuple 比较；Hub 实现可以用等价的 snake_case 可选字段保存去敏设备遥测。
+
 #### 6.6.1 设备提交受限反馈
 
 ```http
@@ -475,6 +477,23 @@ Capture 请求示例：
 明文在客户端加密，包含 `protocolVersion`、唯一 `captureId`、冻结的 `selectionId`/`contentId`、`intent`、回答 `body`、opaque `writeTargetRef`、冻结 `targetRevision` 和 `createdAt`。HKDF `info` 与 AES-GCM AAD 都固定为 UTF-8 `towrite-hub-capture-v1`；`additional_data` 是它的 base64url，AES-GCM ciphertext 包含 128-bit tag。Hub 复用现有 E2EE Capture 队列，只保存密文、必要加密元数据和 opaque 关联，供 Connector 拉取后交给 CaptureService 完成追加、新建、问题回答、冲突检测、幂等提交和安全撤销。
 
 `vault_path`、`absolute_path`、`selection_text`、`clipboard` 等字段不得出现在 Hub 加密元数据中。相同 `idempotency_key` 重试返回原 capture，不得产生第二次写入。
+
+#### 6.10.1 手机 Web Push 与一次性 handoff
+
+Connector 使用 Receiver 凭据代理 PWA 订阅，不把 Hub token 交给浏览器：
+
+```http
+GET /v1/hub/devices/{deviceId}/mobile-push/config
+POST /v1/hub/devices/{deviceId}/mobile-push/subscriptions
+POST /v1/hub/devices/{deviceId}/phone-handoffs
+Authorization: Bearer <connector_token>
+```
+
+config 返回 `supported` 与 VAPID `application_server_key`。subscription 只保存浏览器 Push endpoint、`p256dh`、`auth`、可选过期时间和最小诊断 user agent；必须支持撤销与 endpoint 失效清理。
+
+phone-handoff 请求包含 `handoff_id`、同源短地址、`expires_at`，以及可选的冻结 `selection_id`、`content_id`、`revision_id`、`state_version`。Push payload 只发送 `handoff_id`；标题和正文由 Service Worker 使用通用文案生成，不把任务标题或正文放在锁屏通知中。
+
+PWA 点击通知后向 Connector 读取冻结卡片。读取不消耗 handoff；一次成功的批注或 Capture 原子地消费它。并发提交只有一个成功，过期或已消费返回拒绝。离线输入先存 IndexedDB；如果五分钟后仍未写回，保留正文并要求用户从屏幕重新生成 handoff。
 
 ### 6.11 设备与 Tap 密钥轮换
 

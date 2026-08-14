@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_ARTICLE_TYPES, DEFAULT_DEVICE_PROFILES, DEFAULT_REMINDER_PRESETS, DEFAULT_SETTINGS, ensureInboxWorkflowStage, normalizeArticleTypesSettings, normalizeDailySettings, normalizeDeviceProfiles, normalizeExternalApiBindHost, normalizeExternalApiPublicBaseUrl, normalizeInboxSettings, normalizePushSettings, normalizeQuote0Settings, normalizeReminderPresets, normalizeRibbonSettings, normalizeWorkPoolSettings } from "./settings";
+import { DEFAULT_ARTICLE_TYPES, DEFAULT_DEVICE_PROFILES, DEFAULT_REMINDER_PRESETS, DEFAULT_SETTINGS, ensureInboxWorkflowStage, normalizeArticleTypesSettings, normalizeDailySettings, normalizeDesktopActions, normalizeDeviceProfiles, normalizeExternalApiBindHost, normalizeExternalApiPublicBaseUrl, normalizeInboxSettings, normalizePushSettings, normalizeQuote0Settings, normalizeReminderPresets, normalizeRibbonSettings, normalizeWorkPoolSettings } from "./settings";
 
 describe("settings normalization", () => {
   it("shows only the core Todo Workspace Ribbon shortcut by default", () => {
@@ -35,6 +35,17 @@ describe("settings normalization", () => {
       scheduleOccurrenceIds: []
     });
     expect(DEFAULT_SETTINGS.echoCards).toEqual([]);
+  });
+
+  it("normalizes named desktop actions without retaining executable input from duplicate ids", () => {
+    expect(normalizeDesktopActions([
+      { id: " Writing Focus ", name: " Focus ", enabled: true, kind: "focus", target: "" },
+      { id: "writing-focus", name: "Duplicate", enabled: true, kind: "deep-link", target: "file:///secret" },
+      { id: "Editor", name: "VS Code", enabled: true, kind: "deep-link", target: "vscode://file/C:/Project" }
+    ])).toEqual([
+      { id: "writing-focus", name: "Focus", enabled: true, kind: "focus", target: "" },
+      { id: "editor", name: "VS Code", enabled: true, kind: "deep-link", target: "vscode://file/C:/Project" }
+    ]);
   });
 
   it("normalizes Inbox folders and preserves safe defaults for upgraded data", () => {

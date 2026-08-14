@@ -24,7 +24,8 @@ transition.
 Daily targets resolve in this order:
 
 ```text
-explicit towrite-target
+named `[towrite-action:: action-id]`
+  → explicit towrite-target
   → task's own link
   → nearest ancestor-group link
   → task ^daily_* block
@@ -65,13 +66,17 @@ They carry the displayed tuple and opaque refs. The Connector maps the frozen
 local snapshot to a versioned `NavigationTarget`, then dispatches it through a
 `NavigationRouter`.
 
-V1 registers `ObsidianNavigationAdapter` and a constrained
-`WebNavigationAdapter`.
+V1 registers `ObsidianNavigationAdapter`, a constrained
+`WebNavigationAdapter`, and a local-only `DeepLinkNavigationAdapter`.
 
 - `web` is accepted only from an explicit local
   `[towrite-target:: https://...]` field. The adapter revalidates HTTPS,
   rejects credentials and executable/non-web schemes, and opens with
   `noopener,noreferrer`. A URL found only in task prose is never executable.
+- `deep-link` can only be constructed by a locally configured named desktop
+  action. Hardware and Hub payloads contain only the opaque action/card ID.
+  Browser-owned, file, command, settings, telephone, and messaging schemes are
+  rejected; shell commands and executable arguments are never supported.
 - `provider` remains reserved for a future note-app adapter ID plus stable
   resource/location IDs.
 

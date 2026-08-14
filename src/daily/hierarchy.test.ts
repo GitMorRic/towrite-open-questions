@@ -1108,3 +1108,31 @@ function userSample(): string {
     "   - [[浏览器的窗口可以预览各种手机尺寸以及响应式布局]]"
   ].join("\n");
 }
+
+describe("named desktop action targets", () => {
+  it("gives an explicit local action priority over note and web targets", () => {
+    expect(resolveDailyTarget({
+      sourcePath: PATH,
+      taskText: "[[Fallback note]]",
+      rawBlock: [
+        "- [ ] Continue writing [[Fallback note]]",
+        "  [towrite-action:: writing-focus]",
+        "  [towrite-target:: https://example.com/fallback]",
+        "  ^daily_action"
+      ].join("\n"),
+      blockId: "daily_action"
+    })).toMatchObject({
+      source: "action",
+      actionId: "writing-focus",
+      displayLabel: "writing-focus"
+    });
+  });
+
+  it("fails closed for a malformed action id", () => {
+    expect(resolveDailyTarget({
+      sourcePath: PATH,
+      taskText: "[[Fallback note]]",
+      rawBlock: "- [ ] Continue writing\n  [towrite-action:: ../../shell]"
+    })).toMatchObject({ source: "action", actionId: undefined });
+  });
+});

@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+## 0.4.0 - 2026-08-14
+
+- Added safe, local named desktop actions through `[towrite-action:: action-id]`, with settings-managed mappings for ToWrite focus views, exact Vault positions, HTTPS URLs, and explicitly approved deep links. Remote devices continue to exchange opaque IDs instead of paths or commands.
+- Changed the primary-button double click into a five-minute, one-time mobile handoff bound to the physically displayed card revision. The Hub never receives a reusable desktop action or Vault path, and replayed or concurrent submissions are rejected after the first successful write.
+- Added the Web Push subscription contract, privacy-safe generic lock-screen notifications, PWA notification routing, and an IndexedDB offline queue for mobile notes, captures, later actions, and revision-guarded completion.
+- Extended device display acknowledgements and heartbeats with optional firmware, screen, capability, and battery metadata while keeping the existing Device Event V2 tuple compatible.
+- Added a fail-closed ESP32-S3 panel-driver boundary: firmware acknowledges a card and enables buttons only after a real driver reports a successful physical refresh. The supplied template intentionally remains disabled until the actual 2.7-inch controller and pinout are confirmed.
+- Added the 90-day hardware Alpha roadmap, hardware bring-up checklist, launch copy, protocol documentation, and mobile/desktop security boundaries.
+- Production verification: 127 test files and 781 tests, Obsidian lint with zero warnings, TypeScript checks, production build, Release asset validation, and the 2 MiB bundle limit.
+
+中文摘要：
+
+- 新增安全的本地命名动作 `[towrite-action:: action-id]`，可在设置中映射到 ToWrite 专注布局、Vault 内精确位置、HTTPS 链接和用户明确批准的深链接；远端设备仍只交换不透明 ID，不接触路径和系统命令。
+- 主键双击改为创建五分钟有效、一次性使用的手机 handoff，并绑定到物理屏幕当时显示的卡片修订；首次成功写入后，重放或并发提交会被拒绝。
+- 新增 Web Push 订阅协议、锁屏隐私通知、PWA 通知跳转，以及基于 IndexedDB 的离线记录队列；手机可记录文字、捕获内容、稍后处理，或在修订校验通过后完成任务。
+- 设备显示 ACK 与心跳新增可选的固件、屏幕、能力和电量信息，同时保持现有 Device Event V2 tuple 兼容。
+- 新增 fail-closed 的 ESP32-S3 屏幕驱动边界：只有真实驱动确认物理刷新成功后才回传 ACK 并启用按键。由于实际 2.7 英寸屏幕控制器和引脚尚未确认，仓库中的驱动模板会刻意保持禁用，避免把串口模拟误当成真机完成。
+- 新增 90 天硬件 Alpha 路线图、硬件 bring-up 清单、宣传文案、协议说明，以及手机与电脑的安全边界文档。
+- 生产验证：127 个测试文件、781 项测试，以及 Obsidian lint、类型检查、生产构建、Release 资产和 2 MiB 包体限制全部通过。
+
 ## 0.3.9 - 2026-08-13
 
 - Made project progress interactive: hover previews project tasks, left click pins details, and right click opens project colour controls, with equivalent keyboard actions and valid progress accessibility metadata.

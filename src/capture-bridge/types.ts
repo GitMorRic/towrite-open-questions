@@ -123,7 +123,7 @@ export interface TapSelectionSnapshot {
     /** Phone-safe hierarchy and timer presentation; no Vault path is exposed. */
     groupId?: string;
     groupLabel?: string;
-    targetSource?: "explicit" | "task-link" | "ancestor-link" | "task-block" | "dashboard";
+    targetSource?: "action" | "explicit" | "task-link" | "ancestor-link" | "task-block" | "dashboard";
     activeMinutes?: number;
     estimateMinutes?: number;
     interruptionCount?: number;
@@ -148,7 +148,7 @@ export interface CaptureBridgeHandoffResponse {
     timingRevision?: string;
     groupId?: string;
     groupLabel?: string;
-    targetSource?: "explicit" | "task-link" | "ancestor-link" | "task-block" | "dashboard";
+    targetSource?: "action" | "explicit" | "task-link" | "ancestor-link" | "task-block" | "dashboard";
     timingStatus?: "not_started" | "running" | "paused" | "completed";
     activeMinutes?: number;
     estimateMinutes?: number;

@@ -32,6 +32,7 @@ import {
   normalizeExternalApiPublicBaseUrl,
   normalizeArticleTypesSettings,
   normalizeDailySettings,
+  normalizeDesktopActions,
   normalizeDeviceProfiles,
   normalizeInboxSettings,
   normalizeRibbonSettings,
@@ -353,10 +354,13 @@ import { noteTaskTimingReconciliationAction } from "./obsidian/note-task-timing"
 import {
   NavigationCheckpointService,
   NavigationRouter,
+  DeepLinkNavigationAdapter,
   WebNavigationAdapter,
+  NAVIGATION_TARGET_SCHEMA_VERSION,
   dailyNavigationTargetKey,
   navigationTargetForDailyItem,
   navigationTargetForMarkdownTarget,
+  type NavigationTarget,
   type ObsidianNavigationTarget
 } from "./navigation";
 import { AddQuestionModal } from "./obsidian/modal";
@@ -542,6 +546,9 @@ export default class ToWritePlugin extends Plugin {
     taskDate?: string;
     taskSourcePath?: string;
     batteryPercent?: number;
+    firmwareVersion?: string;
+    screenModel?: string;
+    capabilities?: string[];
   }>();
   private lastLocalDeviceBatteryPercent?: number;
   private readonly deviceCommandJournal = new Map<string, {
@@ -609,6 +616,7 @@ export default class ToWritePlugin extends Plugin {
     this.navigationRouter = new NavigationRouter();
     this.navigationRouter.register(new ObsidianNavigationAdapter(this.app));
     this.navigationRouter.register(new WebNavigationAdapter());
+    this.navigationRouter.register(new DeepLinkNavigationAdapter());
     const navigationCheckpointPath =
       `${normalizeVaultPath(this.settings.exportDirectory)}/daily/navigation-checkpoints.json`;
     this.navigationCheckpointService = new NavigationCheckpointService({
@@ -735,10 +743,20 @@ export default class ToWritePlugin extends Plugin {
       advanceDevicePage: (direction) => this.advanceLocalDevicePage(direction),
       getDeviceCompletionGuard: (targetId) => this.getCurrentDeviceCompletionGuard(targetId),
       completeDeviceCard: (event) => this.completeDailyFromDeviceEvent(event),
+      laterDeviceCard: (event) => this.laterDailyFromDeviceEvent(event),
       acknowledgeDeviceDisplay: (acknowledgement, targetId) => this.acknowledgeLocalDeviceDisplay(acknowledgement, targetId),
       getDeviceDisplayedTuple: (targetId) => this.getCurrentDeviceDisplayedTuple(targetId),
       resolveDeviceGestureReplay: (event) => this.resolveLocalDeviceGestureReplay(event),
       handleDeviceGesture: (event) => this.handleLocalDeviceGesture(event),
+      getMobilePushConfig: (deviceId) =>
+        this.hubClient.getMobilePushConfig(this.settings.hub.deviceId.trim() || deviceId),
+      registerMobilePushSubscription: (deviceId, subscription) =>
+        this.hubClient.registerMobilePushSubscription(
+          this.settings.hub.deviceId.trim() || deviceId,
+          subscription
+        ),
+      publishDeviceHandoff: (deviceId, handoff) =>
+        this.hubClient.publishPhoneHandoff(this.settings.hub.deviceId.trim() || deviceId, handoff),
       getDailySnapshot: () => this.getDailyDashboardSnapshot(),
       getDailyPlan: (date) => this.dailyPlanService.read(date),
       getPreviousDailyUnfinished: (date) => this.getPreviousDailyUnfinished(date),
@@ -3973,7 +3991,10 @@ export default class ToWritePlugin extends Plugin {
       timingRevision: servedTask?.timingRevision,
       taskDate: servedTask?.taskDate,
       taskSourcePath: servedTask?.taskSourcePath,
-      batteryPercent: acknowledgement.batteryPercent
+      batteryPercent: acknowledgement.batteryPercent,
+      firmwareVersion: acknowledgement.firmwareVersion,
+      screenModel: acknowledgement.screenModel,
+      capabilities: acknowledgement.capabilities
     });
     if (acknowledgement.batteryPercent !== undefined) {
       this.lastLocalDeviceBatteryPercent = acknowledgement.batteryPercent;
@@ -4220,7 +4241,7 @@ export default class ToWritePlugin extends Plugin {
       let timingRevision: string | undefined;
       let resolvedAction = action;
       let displayMessage = deviceCommandMessage(action);
-      let status: "executed" | "unsupported" | "conflict" = "executed";
+      let status: "executed" | "waiting" | "unsupported" | "conflict" = "executed";
 
       if (action === "record_reserved") {
         status = "unsupported";
@@ -4254,8 +4275,8 @@ export default class ToWritePlugin extends Plugin {
         timingRevision = transitioned.timing.timingRevision;
         displayMessage = dailyTimingStatusLabel(transitioned.timing.status, this.settings.language);
       } else if (action === "create_note") {
-        await this.openCreateOnlyCaptureForDisplayed(event.cardId, frozenDaily);
-        displayMessage = this.settings.language === "zh" ? "已打开新建记录" : "New capture opened";
+        status = "waiting";
+        displayMessage = this.settings.language === "zh" ? "正在发送到手机" : "Preparing phone handoff";
       } else if (action === "open_current" || action === "start_open") {
         const opened = await this.openDisplayedCard(
           event.cardId,
@@ -4274,7 +4295,7 @@ export default class ToWritePlugin extends Plugin {
       this.deviceCommandJournal.set(event.eventId, {
         eventId: event.eventId,
         fingerprint,
-        status,
+        status: status === "waiting" ? "executed" : status,
         processedAt: new Date().toISOString(),
         action: resolvedAction,
         resultRevision,
@@ -4657,6 +4678,12 @@ export default class ToWritePlugin extends Plugin {
       explicitTarget: item.target,
       lineage: item.lineage
     });
+    if (resolution?.source === "action") {
+      return this.openConfiguredDesktopAction(resolution.actionId, item, {
+        eventId: context.eventId,
+        displayedValidated: context.displayedValidated ?? !context.eventId
+      });
+    }
     const target = resolution?.target;
     const linked = target ? this.resolveDailyMarkdownTargetFile(target, item.sourcePath) : undefined;
     let navigationTarget = resolution
@@ -4703,6 +4730,70 @@ export default class ToWritePlugin extends Plugin {
     }
     await this.activateDashboard();
     return bestEffortFocusObsidian();
+  }
+
+  private async openConfiguredDesktopAction(
+    actionId: string | undefined,
+    item: DailyPlanItem,
+    context: { eventId?: string; displayedValidated: boolean }
+  ): Promise<boolean> {
+    const profile = this.settings.desktopActions.find((candidate) => candidate.id === actionId);
+    if (!actionId || !profile || !profile.enabled) {
+      throw new DailyPlanConflictError(
+        "invalid-state",
+        actionId
+          ? `The desktop action is missing or disabled: ${actionId}`
+          : "The task contains an invalid towrite-action id."
+      );
+    }
+    if (profile.kind === "today") {
+      await this.activateDashboard({ activeTab: "today" });
+      return bestEffortFocusObsidian();
+    }
+    if (profile.kind === "focus") {
+      await this.activateTodayFloating();
+      return bestEffortFocusObsidian();
+    }
+
+    let target: NavigationTarget | undefined;
+    if (profile.kind === "deep-link") {
+      target = {
+        schemaVersion: NAVIGATION_TARGET_SCHEMA_VERSION,
+        provider: "deep-link" as const,
+        url: profile.target,
+        label: profile.name
+      };
+    } else {
+      const configured = resolveDailyTarget({
+        sourcePath: item.sourcePath,
+        taskText: "",
+        explicitTarget: profile.target
+      });
+      if (profile.kind === "obsidian" && configured.target) {
+        target = navigationTargetForMarkdownTarget(configured.target, item.sourcePath);
+      } else if (profile.kind === "https" && configured.webTarget) {
+        target = {
+          schemaVersion: NAVIGATION_TARGET_SCHEMA_VERSION,
+          provider: "web" as const,
+          url: configured.webTarget.url,
+          label: profile.name
+        };
+      }
+    }
+    if (!target) {
+      throw new DailyPlanConflictError(
+        "invalid-state",
+        `Desktop action ${profile.id} has an invalid ${profile.kind} target.`
+      );
+    }
+    const result = await this.navigationRouter.open(target, context);
+    if (result.status !== "opened") {
+      throw new DailyPlanConflictError(
+        result.status === "not-found" ? "not-found" : "invalid-state",
+        result.message
+      );
+    }
+    return result.focused;
   }
 
   private applyDailyNavigationCheckpoint(
@@ -5071,6 +5162,30 @@ export default class ToWritePlugin extends Plugin {
       served.lineageRevision
     );
     await this.advanceAfterDailyCompletion(id);
+  }
+
+  private async laterDailyFromDeviceEvent(event: DeviceEventInput): Promise<void> {
+    const cardId = event.cardId?.trim() ?? "";
+    if (!cardId.startsWith("daily-plan:")) {
+      throw new DailyPlanConflictError("revision-changed", "Only a displayed Daily plan card can be deferred.");
+    }
+    const id = cardId.slice("daily-plan:".length);
+    const served = this.localDeviceCompletionGuards.get(localDeviceTargetKey(event.targetId));
+    const item = await this.dailyPlanService.get(id, served?.taskDate);
+    if (!item) throw new DailyPlanConflictError("not-found", `Daily item does not exist: ${id}`);
+    if (!served?.taskRevision || item.revision.value !== served.taskRevision) {
+      throw new DailyPlanConflictError("revision-changed", "The Daily task changed after this card was rendered.");
+    }
+    if (served.lineageRevision && item.lineageRevision !== served.lineageRevision) {
+      throw new DailyPlanConflictError(
+        "revision-changed",
+        "The Daily task inherited target changed after this card was rendered."
+      );
+    }
+    await this.updateDailyItem(id, item.revision, {
+      devicePolicy: "scheduled",
+      scheduledFor: new Date(Date.now() + 30 * 60_000).toISOString()
+    }, item.date);
   }
 
   private async applyPendingHubDeviceEvent(
@@ -13370,6 +13485,7 @@ function normalizeSettings(settings?: Partial<ToWriteSettings>): ToWriteSettings
     echoCards: normalizeEchoCards(settings?.echoCards),
     hub: normalizeHubSettings(settings?.hub),
     deviceProfiles: normalizeDeviceProfiles(settings?.deviceProfiles),
+    desktopActions: normalizeDesktopActions(settings?.desktopActions),
     articleTypes: normalizeArticleTypesSettings(settings?.articleTypes),
     workflowStages: normalizeWorkflowStages(settings?.workflowStages),
     reminderPresets: normalizeReminderPresets(settings?.reminderPresets),

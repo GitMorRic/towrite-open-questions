@@ -20,6 +20,7 @@ import {
   type DailyWorkKind
 } from "./types";
 import { parseDailyPlanHierarchy, resolveDailyPlanWriteSurface } from "./hierarchy";
+import { normalizeDailyActionId } from "./target-resolver";
 
 export interface DailyPlanStorage {
   readText(path: string): Promise<string | undefined>;
@@ -78,7 +79,7 @@ const ANY_TASK_RE = /^(?<indent>\s*)(?:[-+*]|\d+[.)])(?<spacing>\s+)(?<checkbox>
 const LIST_NODE_RE = /^(?<indent>[ \t]*)(?:[-+*]|\d+[.)])[ \t]+.*$/u;
 const INLINE_BLOCK_RE = /(?:^|\s)\^(?<id>[A-Za-z0-9_-]+)\s*$/u;
 const STANDALONE_BLOCK_RE = /^(?<indent>\s+)\^(?<id>[A-Za-z0-9_-]+)\s*$/u;
-const OWNED_FIELD_RE = /\[towrite-(?<key>kind|category|task-ref|pool-revision|work-kind|work-ref|work-revision|device|at|scheduled|due|primary|minimum|goal|next|estimate|target|started)::\s*(?<value>\[\[[^\]]+\]\]|[^\]]*)\]/giu;
+const OWNED_FIELD_RE = /\[towrite-(?<key>kind|category|task-ref|pool-revision|work-kind|work-ref|work-revision|device|at|scheduled|due|primary|minimum|goal|next|estimate|action|target|started)::\s*(?<value>\[\[[^\]]+\]\]|[^\]]*)\]/giu;
 const THEME_FIELD_RE = /\[towrite-theme::\s*(?<value>[^\]]*)\]/giu;
 const PRIORITY_RE = /(?:^|\s)(?<emoji>🔺|⏫|🔼|🔽|⏬)(?=\s|$)/gu;
 const DATE_RE = {
@@ -1075,6 +1076,7 @@ function parseTaskEntry(
       goal: normalizeOptionalText(fields.goal, 1_000),
       nextStep: normalizeOptionalText(fields.next, 1_000),
       estimateMinutes: parseEstimateMinutes(fields.estimate),
+      desktopActionId: normalizeDailyActionId(fields.action),
       target,
       startedAt: normalizeScheduledFor(fields.started)
     }
@@ -1128,6 +1130,7 @@ function createItemShape(args: {
     goal: normalizeOptionalText(args.input.goal, 1_000),
     nextStep: normalizeOptionalText(args.input.nextStep, 1_000),
     estimateMinutes: normalizeEstimateMinutes(args.input.estimateMinutes),
+    desktopActionId: normalizeDailyActionId(args.input.desktopActionId),
     target
   };
 }
@@ -1179,6 +1182,9 @@ function applyUpdate(item: DailyPlanItem, patch: DailyPlanUpdate): DailyPlanItem
     estimateMinutes: patch.estimateMinutes === undefined
       ? item.estimateMinutes
       : normalizeEstimateMinutes(patch.estimateMinutes),
+    desktopActionId: patch.desktopActionId === undefined
+      ? item.desktopActionId
+      : normalizeDailyActionId(patch.desktopActionId),
     target,
     // Legacy compatibility is read-only. Runtime timing transitions belong to
     // the JSONL timer ledger and must never be authored through plan updates.
@@ -1227,6 +1233,7 @@ function formatTaskBlock(
     ...optionalFieldLine(childIndent, "goal", item.goal),
     ...optionalFieldLine(childIndent, "next", item.nextStep),
     ...optionalFieldLine(childIndent, "estimate", item.estimateMinutes ? `${item.estimateMinutes}m` : undefined),
+    ...optionalFieldLine(childIndent, "action", item.desktopActionId),
     ...optionalFieldLine(childIndent, "target", item.target),
     // `towrite-started` is a legacy, read-only field. Preserve it when it
     // already exists, but never synthesize runtime timing into plan Markdown.

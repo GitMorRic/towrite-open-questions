@@ -13,11 +13,15 @@ import {
   type HubDeviceState,
   type HubDisplayedState,
   type HubFeedbackReceipt,
+  type HubPhoneHandoffInput,
+  type HubMobilePushConfig,
   type HubPendingCapture,
   type HubPendingCaptureEncryption,
   type HubPendingDeviceEvent,
   type HubSelectionFeedback,
-  type HubSelectionRequest
+  type HubSelectionRequest,
+  type HubWebPushSubscriptionInput,
+  type HubWebPushSubscriptionReceipt
 } from "./types";
 import { requestHub } from "./http";
 
@@ -62,7 +66,16 @@ export interface HubDeviceEventClientLike {
   ): Promise<HubDeviceEventAckReceipt>;
 }
 
-export class HubClient implements HubClientLike, HubCaptureClientLike, HubDeviceEventClientLike {
+export interface HubMobilePushClientLike {
+  getMobilePushConfig(deviceId: string): Promise<HubMobilePushConfig>;
+  registerMobilePushSubscription(
+    deviceId: string,
+    subscription: HubWebPushSubscriptionInput
+  ): Promise<HubWebPushSubscriptionReceipt>;
+  publishPhoneHandoff(deviceId: string, handoff: HubPhoneHandoffInput): Promise<void>;
+}
+
+export class HubClient implements HubClientLike, HubCaptureClientLike, HubDeviceEventClientLike, HubMobilePushClientLike {
   private readonly fetcher?: typeof fetch;
 
   constructor(
@@ -74,6 +87,67 @@ export class HubClient implements HubClientLike, HubCaptureClientLike, HubDevice
 
   async getCapabilities(): Promise<HubCapabilities> {
     return normalizeCapabilities(await this.requestJson("/v1/hub/capabilities", { method: "GET" }));
+  }
+
+  async getMobilePushConfig(deviceId: string): Promise<HubMobilePushConfig> {
+    assertIdentifier(deviceId, "device ID");
+    const record = asRecord(await this.requestJson(
+      `/v1/hub/devices/${encodeURIComponent(deviceId)}/mobile-push/config`,
+      { method: "GET" }
+    ), "mobile push config");
+    return {
+      protocolVersion: readString(record, "protocol_version", "protocolVersion") || HUB_PROTOCOL_VERSION,
+      supported: readBoolean(record, "supported"),
+      applicationServerKey: readOptionalString(record, "application_server_key", "applicationServerKey")
+    };
+  }
+
+  async registerMobilePushSubscription(
+    deviceId: string,
+    subscription: HubWebPushSubscriptionInput
+  ): Promise<HubWebPushSubscriptionReceipt> {
+    assertIdentifier(deviceId, "device ID");
+    assertWebPushSubscription(subscription);
+    const record = asRecord(await this.requestJson(
+      `/v1/hub/devices/${encodeURIComponent(deviceId)}/mobile-push/subscriptions`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          protocol_version: HUB_PROTOCOL_VERSION,
+          endpoint: subscription.endpoint,
+          expiration_time: subscription.expirationTime,
+          keys: subscription.keys,
+          user_agent: subscription.userAgent
+        })
+      }
+    ), "mobile push subscription receipt");
+    return {
+      protocolVersion: readString(record, "protocol_version", "protocolVersion") || HUB_PROTOCOL_VERSION,
+      subscriptionId: readRequiredString(record, "subscription_id", "subscriptionId"),
+      createdAt: readRequiredString(record, "created_at", "createdAt")
+    };
+  }
+
+  async publishPhoneHandoff(deviceId: string, handoff: HubPhoneHandoffInput): Promise<void> {
+    assertIdentifier(deviceId, "device ID");
+    assertIdentifier(handoff.handoffId, "handoff ID");
+    await this.requestJson(`/v1/hub/devices/${encodeURIComponent(deviceId)}/phone-handoffs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        protocol_version: HUB_PROTOCOL_VERSION,
+        handoff_id: handoff.handoffId,
+        url: handoff.url,
+        expires_at: handoff.expiresAt,
+        displayed: handoff.displayed ? {
+          selection_id: handoff.displayed.selectionId,
+          content_id: handoff.displayed.contentId,
+          revision_id: handoff.displayed.revisionId,
+          state_version: handoff.displayed.stateVersion
+        } : undefined
+      })
+    });
   }
 
   async submitCandidateBatch(receiverId: string, batch: HubCandidateBatch): Promise<HubCandidateReceipt> {
@@ -378,8 +452,24 @@ function normalizeCapabilities(value: unknown): HubCapabilities {
     deviceEvents: readOptionalBoolean(record, "device_events", "deviceEvents"),
     longPolling: readOptionalBoolean(record, "long_polling", "longPolling"),
     encryptedCapture: readOptionalBoolean(record, "encrypted_capture", "encryptedCapture"),
+    webPush: readOptionalBoolean(record, "web_push", "webPush"),
     maxCandidates: readNonNegativeInteger(record, "max_candidates", "maxCandidates") || 20
   };
+}
+
+function assertWebPushSubscription(subscription: HubWebPushSubscriptionInput): void {
+  let endpoint: URL;
+  try {
+    endpoint = new URL(subscription.endpoint);
+  } catch {
+    throw new Error("Web Push subscription endpoint must be an absolute URL.");
+  }
+  if (endpoint.protocol !== "https:") {
+    throw new Error("Web Push subscription endpoint must use HTTPS.");
+  }
+  if (!subscription.keys.p256dh.trim() || !subscription.keys.auth.trim()) {
+    throw new Error("Web Push subscription keys are required.");
+  }
 }
 
 function normalizeSelection(value: unknown): HubContentSelection {

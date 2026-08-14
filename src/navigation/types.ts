@@ -3,6 +3,7 @@ export const NAVIGATION_TARGET_SCHEMA_VERSION = 1 as const;
 export type NavigationTarget =
   | ObsidianNavigationTarget
   | WebNavigationTarget
+  | DeepLinkNavigationTarget
   | ProviderNavigationTarget;
 
 export type ObsidianNavigationLocation =
@@ -72,6 +73,18 @@ export interface WebNavigationTarget {
   provider: "web";
   url: string;
   fragment?: string;
+  label?: string;
+}
+
+/**
+ * A local-only application deep link selected from an enabled desktop action
+ * profile. Device and Hub payloads carry only the profile's opaque action id;
+ * they never carry this URI.
+ */
+export interface DeepLinkNavigationTarget {
+  schemaVersion: typeof NAVIGATION_TARGET_SCHEMA_VERSION;
+  provider: "deep-link";
+  url: string;
   label?: string;
 }
 

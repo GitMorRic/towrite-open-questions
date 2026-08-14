@@ -117,6 +117,50 @@ describe("HubClient", () => {
     expect(contextBody.observations[0].confidence).toBe(1);
   });
 
+  it("registers Web Push and publishes only an opaque frozen handoff", async () => {
+    const responses: unknown[] = [
+      { protocol_version: "1", supported: true, application_server_key: "vapid_public" },
+      { protocol_version: "1", subscription_id: "wps_test", created_at: "2026-08-13T09:00:00Z" },
+      { ok: true }
+    ];
+    const fetcher = vi.fn(async () => jsonResponse(responses.shift()));
+    const client = createClient(fetcher);
+
+    await expect(client.getMobilePushConfig("dev_test")).resolves.toMatchObject({
+      supported: true,
+      applicationServerKey: "vapid_public"
+    });
+    await expect(client.registerMobilePushSubscription("dev_test", {
+      endpoint: "https://push.example.test/subscription/opaque",
+      expirationTime: null,
+      keys: { p256dh: "p256dh_public", auth: "auth_secret" },
+      userAgent: "Mobile Safari"
+    })).resolves.toMatchObject({ subscriptionId: "wps_test" });
+    await expect(client.publishPhoneHandoff("dev_test", {
+      handoffId: "dho_test",
+      url: "https://device.example.test/device/go?handoff=dho_test",
+      expiresAt: "2026-08-13T09:05:00Z",
+      displayed: {
+        selectionId: "sel_test",
+        contentId: "cnt_test",
+        revisionId: "rev_test",
+        stateVersion: 7
+      }
+    })).resolves.toBeUndefined();
+
+    expect(fetcher.mock.calls.map((call) => String((call as unknown as [unknown])[0]))).toEqual([
+      "https://hub.example.com/v1/hub/devices/dev_test/mobile-push/config",
+      "https://hub.example.com/v1/hub/devices/dev_test/mobile-push/subscriptions",
+      "https://hub.example.com/v1/hub/devices/dev_test/phone-handoffs"
+    ]);
+    const published = JSON.parse(String((fetcher.mock.calls[2] as unknown as [unknown, RequestInit])[1].body));
+    expect(published).toMatchObject({
+      handoff_id: "dho_test",
+      displayed: { content_id: "cnt_test", state_version: 7 }
+    });
+    expect(JSON.stringify(published)).not.toContain("Vault");
+  });
+
   it("rejects unsafe base URLs, oversized candidate batches, and HTTP errors", async () => {
     const unsafe = new HubClient(() => ({
       baseUrl: "https://secret:password@hub.example.com?token=bad",

@@ -206,6 +206,21 @@ export interface ToWriteDeviceProfileSettings {
   refreshSeconds: number;
 }
 
+export type ToWriteDesktopActionKind = "today" | "focus" | "obsidian" | "https" | "deep-link";
+
+/**
+ * A local allowlisted action. Device and Hub payloads carry only `id`; the
+ * executable target never leaves this Obsidian installation.
+ */
+export interface ToWriteDesktopActionProfile {
+  id: string;
+  name: string;
+  enabled: boolean;
+  kind: ToWriteDesktopActionKind;
+  /** Vault link/path, HTTPS URL, or application URI depending on `kind`. */
+  target: string;
+}
+
 export interface ToWriteReminderPreset {
   label: string;
   value: string;
@@ -330,6 +345,7 @@ export interface ToWriteSettings {
   echoCards: EchoCard[];
   hub: ToWriteHubSettings;
   deviceProfiles: ToWriteDeviceProfileSettings[];
+  desktopActions: ToWriteDesktopActionProfile[];
   articleTypes: ArticleTypesSettings;
   workflowStages: WorkflowStagesSettings;
   reminderPresets: ToWriteReminderPreset[];
@@ -496,6 +512,23 @@ export const DEFAULT_DEVICE_PROFILES: ToWriteDeviceProfileSettings[] = [
     defaultPage: "home",
     defaultLane: "",
     refreshSeconds: 300
+  }
+];
+
+export const DEFAULT_DESKTOP_ACTIONS: ToWriteDesktopActionProfile[] = [
+  {
+    id: "today-workspace",
+    name: "ToWrite Today workspace",
+    enabled: true,
+    kind: "today",
+    target: ""
+  },
+  {
+    id: "writing-focus",
+    name: "Focus Now window",
+    enabled: true,
+    kind: "focus",
+    target: ""
   }
 ];
 
@@ -818,6 +851,7 @@ export const DEFAULT_SETTINGS: ToWriteSettings = {
     lastDisplayedContentId: ""
   },
   deviceProfiles: DEFAULT_DEVICE_PROFILES,
+  desktopActions: DEFAULT_DESKTOP_ACTIONS,
   articleTypes: {
     enabled: true,
     parseHierarchicalTags: true,
@@ -1185,6 +1219,36 @@ export function normalizeDeviceProfiles(profiles?: ToWriteDeviceProfileSettings[
   }
 
   return output.length > 0 ? output : DEFAULT_DEVICE_PROFILES;
+}
+
+export function normalizeDesktopActions(
+  actions?: ToWriteDesktopActionProfile[]
+): ToWriteDesktopActionProfile[] {
+  const source = Array.isArray(actions) && actions.length > 0 ? actions : DEFAULT_DESKTOP_ACTIONS;
+  const seen = new Set<string>();
+  const output: ToWriteDesktopActionProfile[] = [];
+  for (const action of source.slice(0, 32)) {
+    const id = normalizeDesktopActionId(action.id || action.name);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    output.push({
+      id,
+      name: String(action.name ?? "").replace(/\s+/gu, " ").trim().slice(0, 100) || id,
+      enabled: action.enabled !== false,
+      kind: normalizeDesktopActionKind(action.kind),
+      target: String(action.target ?? "").trim().slice(0, 2_048)
+    });
+  }
+  return output.length > 0 ? output : DEFAULT_DESKTOP_ACTIONS.map((action) => ({ ...action }));
+}
+
+export function normalizeDesktopActionId(value: unknown): string {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/gu, "-")
+    .replace(/^-+|-+$/gu, "")
+    .slice(0, 64);
 }
 
 export function normalizeReminderPresets(presets?: ToWriteReminderPreset[]): ToWriteReminderPreset[] {
@@ -1613,6 +1677,15 @@ function normalizeDeviceProfileKind(value: unknown): ToWriteDeviceProfileKind {
 
 function normalizeDeviceProfilePage(value: unknown): ToWriteDeviceProfilePage {
   return value === "cards" || value === "workflow" || value === "articles" || value === "home" ? value : "home";
+}
+
+function normalizeDesktopActionKind(value: unknown): ToWriteDesktopActionKind {
+  return value === "focus"
+    || value === "obsidian"
+    || value === "https"
+    || value === "deep-link"
+    ? value
+    : "today";
 }
 
 function clampIntegerSetting(value: unknown, min: number, max: number, fallback: number): number {

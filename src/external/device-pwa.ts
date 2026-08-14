@@ -33,7 +33,7 @@ export function buildDeviceIconSvg(): string {
 
 export function buildDeviceServiceWorker(): string {
   return `
-const CACHE_NAME = "towrite-device-shell-v7";
+const CACHE_NAME = "towrite-device-shell-v8";
 const SHELL_URLS = ["/device", "/device/input", "/device.webmanifest", "/device-icon.svg"];
 
 self.addEventListener("install", (event) => {
@@ -63,6 +63,43 @@ self.addEventListener("fetch", (event) => {
       fetch(event.request).catch(() => caches.match(event.request).then((cached) => cached || caches.match("/device")))
     );
   }
+});
+
+self.addEventListener("push", (event) => {
+  let payload = {};
+  try {
+    payload = event.data ? event.data.json() : {};
+  } catch {
+    payload = {};
+  }
+  const handoffId = typeof payload.handoff_id === "string"
+    && /^dho_[A-Za-z0-9._:-]+$/.test(payload.handoff_id)
+    ? payload.handoff_id
+    : "";
+  const targetUrl = handoffId
+    ? "/device/go?handoff=" + encodeURIComponent(handoffId)
+    : "/device";
+  event.waitUntil(self.registration.showNotification("ToWrite 当前卡片", {
+    body: "点按查看墨水屏按键时的内容并快速记录。",
+    icon: "/device-icon.svg",
+    badge: "/device-icon.svg",
+    tag: handoffId ? "towrite-handoff-" + handoffId : "towrite-device",
+    data: { url: targetUrl }
+  }));
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const targetUrl = event.notification.data && typeof event.notification.data.url === "string"
+    ? event.notification.data.url
+    : "/device";
+  event.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
+    const existing = clients[0];
+    if (existing) {
+      return existing.navigate(targetUrl).then(() => existing.focus());
+    }
+    return self.clients.openWindow(targetUrl);
+  }));
 });
 `;
 }

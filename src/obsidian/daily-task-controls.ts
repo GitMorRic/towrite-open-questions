@@ -565,6 +565,6 @@ function ownedMetadataLineNumbers(state: EditorState, item: DailyPlanItem): numb
 export function isOwnedDailyMetadataLine(value: string): boolean {
   const line = value.trim().replace(/^%%\s*/u, "").replace(/\s*%%$/u, "").trim();
   if (/^\^daily_[a-f0-9]{32}$/u.test(line)) return true;
-  return /^\[towrite-(?:kind|category|task-ref|pool-revision|work-kind|work-ref|work-revision|device|at|scheduled|due|primary|minimum|goal|next|estimate|target|started)::/u.test(line)
+  return /^\[towrite-(?:kind|category|task-ref|pool-revision|work-kind|work-ref|work-revision|device|at|scheduled|due|primary|minimum|goal|next|estimate|action|target|started)::/u.test(line)
     && line.endsWith("]");
 }

@@ -129,6 +129,26 @@ describe("DailyPlanService", () => {
     );
   });
 
+  it("round-trips a local named desktop action without exposing its target", async () => {
+    const storage = new MemoryDailyStorage();
+    const service = new DailyPlanService(storage, {
+      createId: () => "daily_named_action",
+      now: () => new Date("2026-07-23T08:00:00+08:00")
+    });
+    const created = await service.create({
+      text: "继续写作",
+      desktopActionId: "writing-focus"
+    });
+    expect(created.desktopActionId).toBe("writing-focus");
+    expect(created.targetResolution).toMatchObject({ source: "action", actionId: "writing-focus" });
+    expect(storage.files.get(created.sourcePath)).toContain("[towrite-action:: writing-focus]");
+    expect(storage.files.get(created.sourcePath)).not.toContain("vscode://");
+
+    const updated = await service.update(created.id, created.revision, { desktopActionId: null });
+    expect(updated.desktopActionId).toBeUndefined();
+    expect(storage.files.get(updated.sourcePath)).not.toContain("[towrite-action::");
+  });
+
   it("can opt into legacy Tasks-compatible date output while retaining clean parsing", async () => {
     const storage = new MemoryDailyStorage();
     const service = new DailyPlanService(storage, {

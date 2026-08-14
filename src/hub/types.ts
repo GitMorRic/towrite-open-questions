@@ -115,7 +115,43 @@ export interface HubCapabilities {
   deviceEvents?: boolean;
   longPolling?: boolean;
   encryptedCapture?: boolean;
+  webPush?: boolean;
   maxCandidates: number;
+}
+
+export interface HubMobilePushConfig {
+  protocolVersion: string;
+  supported: boolean;
+  /** Base64url-encoded VAPID public key. The private key remains on Device Hub. */
+  applicationServerKey?: string;
+}
+
+export interface HubWebPushSubscriptionInput {
+  endpoint: string;
+  expirationTime?: number | null;
+  keys: {
+    p256dh: string;
+    auth: string;
+  };
+  userAgent?: string;
+}
+
+export interface HubWebPushSubscriptionReceipt {
+  protocolVersion: string;
+  subscriptionId: string;
+  createdAt: string;
+}
+
+export interface HubPhoneHandoffInput {
+  handoffId: string;
+  url: string;
+  expiresAt: string;
+  displayed?: {
+    selectionId: string;
+    contentId: string;
+    revisionId: string;
+    stateVersion: number;
+  };
 }
 
 export interface HubSelectionRequest {

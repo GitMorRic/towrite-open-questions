@@ -83,6 +83,12 @@ import type {
   DailyTimerCorrectionOptions,
   DailyTimerTransitionOptions
 } from "../daily/task-timer-types";
+import type {
+  HubMobilePushConfig,
+  HubPhoneHandoffInput,
+  HubWebPushSubscriptionInput,
+  HubWebPushSubscriptionReceipt
+} from "../hub/types";
 
 export interface ExternalApiRuntimeStatus {
   running: boolean;
@@ -140,6 +146,8 @@ interface ExternalApiServerOptions {
   getDeviceCompletionGuard?(targetId?: string): DeviceCompletionGuard | undefined;
   /** Completes a Daily item only after the server has validated the displayed guard. */
   completeDeviceCard?(event: DeviceEventInput): Promise<void>;
+  /** Defers a displayed Daily item without accepting a client-supplied revision. */
+  laterDeviceCard?(event: DeviceEventInput): Promise<void>;
   /** Explicit display ACK is the only source of authoritative local displayed state. */
   acknowledgeDeviceDisplay?(
     acknowledgement: DeviceDisplayAcknowledgement,
@@ -151,6 +159,12 @@ interface ExternalApiServerOptions {
    * Schema-v1 events never enter this callback.
    */
   handleDeviceGesture?(event: DeviceEventInput): Promise<DeviceCommandExecutionResult>;
+  getMobilePushConfig?(deviceId: string): Promise<HubMobilePushConfig>;
+  registerMobilePushSubscription?(
+    deviceId: string,
+    subscription: HubWebPushSubscriptionInput
+  ): Promise<HubWebPushSubscriptionReceipt>;
+  publishDeviceHandoff?(deviceId: string, handoff: HubPhoneHandoffInput): Promise<void>;
   /**
    * Resolves an already persisted terminal command before comparing the
    * event with today's displayed tuple. New events must return undefined.
@@ -298,6 +312,9 @@ interface DeviceHandoff {
   candidateId?: string;
   deliveryId?: string;
   sourceRef?: DeviceSourceRef;
+  displayed?: DeviceDisplayedTuple;
+  claimedAt?: string;
+  consumedAt?: string;
 }
 
 interface DeviceEventRecord {
@@ -713,6 +730,16 @@ export class ToWriteExternalApiServer {
       return;
     }
 
+    if (url.pathname === "/api/v1/device/push/config") {
+      if (!this.options.getMobilePushConfig) {
+        throw new ExternalApiError(501, "Device Hub Web Push is not configured.");
+      }
+      const requestedTargetId = url.searchParams.get("targetId")?.trim();
+      const targetId = this.authorizedDeviceTarget(request, url, "GET", requestedTargetId);
+      this.writeJson(response, 200, await this.options.getMobilePushConfig(targetId));
+      return;
+    }
+
     if (url.pathname === "/api/v1/push/feed") {
       this.writeJson(response, 200, this.buildPushFeed(url));
       return;
@@ -860,6 +887,7 @@ export class ToWriteExternalApiServer {
         goal: readOptionalText(body, "goal"),
         nextStep: readOptionalText(body, "nextStep"),
         estimateMinutes: readOptionalPositiveInteger(body, "estimateMinutes"),
+        desktopActionId: readOptionalText(body, "desktopActionId"),
         target: readOptionalText(body, "target")
       });
       this.writeJson(response, 201, { data: item });
@@ -990,16 +1018,27 @@ export class ToWriteExternalApiServer {
     const notesMatch = /^\/api\/v1\/questions\/([^/]+)\/notes$/u.exec(url.pathname);
     if (notesMatch) {
       const id = decodeURIComponent(notesMatch[1]);
+      this.assertHandoffQuestionScope(url, id);
       const body = await readJsonBody(request);
       const text = readOptionalText(body, "text");
       if (!text) {
         throw new ExternalApiError(400, "Missing note text.");
       }
       const clientId = readOptionalText(body, "clientId");
-      const updated = await this.options.appendQuestionNote(id, text, clientId, readWritebackMetadata(body));
+      const metadata = readWritebackMetadata(body);
+      const handoffClaim = this.claimDeviceHandoff(url);
+      let updated: OpenQuestion | undefined;
+      try {
+        updated = await this.options.appendQuestionNote(id, text, clientId, metadata);
+      } catch (error) {
+        this.releaseDeviceHandoffClaim(handoffClaim);
+        throw error;
+      }
       if (!updated) {
+        this.releaseDeviceHandoffClaim(handoffClaim);
         throw new ExternalApiError(404, "Question not found.");
       }
+      this.consumeDeviceHandoff(handoffClaim);
       this.writeJson(response, 200, buildQuestionsPayload(this.options.getVaultName(), [updated]));
       return;
     }
@@ -1062,7 +1101,15 @@ export class ToWriteExternalApiServer {
         clientId: readOptionalText(body, "clientId"),
         metadata: readWritebackMetadata(body)
       };
-      const result = await this.options.createDeviceCapture(capture);
+      const handoffClaim = this.claimDeviceHandoff(url);
+      let result: DeviceCaptureResult;
+      try {
+        result = await this.options.createDeviceCapture(capture);
+      } catch (error) {
+        this.releaseDeviceHandoffClaim(handoffClaim);
+        throw error;
+      }
+      this.consumeDeviceHandoff(handoffClaim);
       this.writeJson(response, 201, {
         data: result
       });
@@ -1145,6 +1192,12 @@ export class ToWriteExternalApiServer {
           cardId: acknowledgement.cardId,
           playlistRevision: acknowledgement.playlistRevision,
           displayedAt: acknowledgement.displayedAt
+        },
+        telemetry: {
+          batteryPercent: acknowledgement.batteryPercent,
+          firmwareVersion: acknowledgement.firmwareVersion,
+          screenModel: acknowledgement.screenModel,
+          capabilities: acknowledgement.capabilities
         }
       });
       return;
@@ -1152,12 +1205,80 @@ export class ToWriteExternalApiServer {
 
     if (url.pathname === "/api/v1/device/handoffs") {
       const body = await readJsonBody(request);
-      const handoff = this.createDeviceHandoff(body);
+      const requestedTargetId = readString(body, "targetId");
+      const targetId = this.authorizedDeviceTarget(request, url, "POST", requestedTargetId);
+      const handoff = this.createDeviceHandoff({ ...body, targetId });
+      const handoffUrl = buildDeviceGoUrl(this.baseUrlForRequest(request), { handoff: handoff.id });
+      const notification = await this.publishDeviceHandoff(targetId, handoff, handoffUrl);
       this.writeJson(response, 201, {
         id: handoff.id,
         expiresAt: handoff.expiresAt,
-        url: buildDeviceGoUrl(this.baseUrlForRequest(request), { handoff: handoff.id })
+        url: handoffUrl,
+        notification
       });
+      return;
+    }
+
+    if (url.pathname === "/api/v1/device/push/subscriptions") {
+      if (!this.options.registerMobilePushSubscription) {
+        throw new ExternalApiError(501, "Device Hub Web Push is not configured.");
+      }
+      const body = await readJsonBody(request);
+      const requestedTargetId = readString(body, "targetId");
+      const targetId = this.authorizedDeviceTarget(request, url, "POST", requestedTargetId);
+      const receipt = await this.options.registerMobilePushSubscription(
+        targetId,
+        readWebPushSubscription(body)
+      );
+      this.writeJson(response, 201, receipt);
+      return;
+    }
+
+    if (url.pathname === "/api/v1/device/handoff-actions") {
+      const body = await readJsonBody(request);
+      const action = readString(body, "action");
+      if (action !== "complete" && action !== "later") {
+        throw new ExternalApiError(400, "Phone handoff action must be complete or later.");
+      }
+      const handoff = this.resolveDeviceHandoff(url.searchParams.get("handoff"));
+      if (!handoff?.targetId || !handoff.displayed) {
+        throw new ExternalApiError(409, "This phone handoff has no frozen displayed card.");
+      }
+      const current = this.acknowledgedDisplayTuples.get(localDeviceTargetKey(handoff.targetId))
+        ?? this.options.getDeviceDisplayedTuple?.(handoff.targetId);
+      const conflict = current ? compareDisplayedTuple(handoff.displayed, current) : "displayed-missing";
+      if (conflict) {
+        throw new ExternalApiError(409, `The displayed card changed (${conflict}).`);
+      }
+      const handoffClaim = this.claimDeviceHandoff(url);
+      const event: DeviceEventInput = {
+        schemaVersion: 2,
+        eventId: readString(body, "eventId") || `phone_${randomFragment()}`,
+        targetId: handoff.targetId,
+        deviceId: handoff.displayed.deviceId,
+        selectionId: handoff.displayed.selectionId,
+        stateVersion: handoff.displayed.stateVersion,
+        contentId: handoff.displayed.contentId,
+        revisionId: handoff.displayed.revisionId,
+        cardId: handoff.displayed.cardId,
+        playlistRevision: handoff.displayed.playlistRevision,
+        action,
+        occurredAt: new Date().toISOString()
+      };
+      try {
+        if (action === "complete") {
+          if (!this.options.completeDeviceCard) throw new ExternalApiError(501, "Phone completion is unavailable.");
+          await this.options.completeDeviceCard(event);
+        } else {
+          if (!this.options.laterDeviceCard) throw new ExternalApiError(501, "Phone deferral is unavailable.");
+          await this.options.laterDeviceCard(event);
+        }
+      } catch (error) {
+        this.releaseDeviceHandoffClaim(handoffClaim);
+        throw error;
+      }
+      this.consumeDeviceHandoff(handoffClaim);
+      this.writeJson(response, 200, { ok: true, action, eventId: event.eventId });
       return;
     }
 
@@ -1343,6 +1464,11 @@ export class ToWriteExternalApiServer {
       if (Object.prototype.hasOwnProperty.call(body, "target")) {
         patch.target = body.target === null ? null : readOptionalText(body, "target") ?? null;
       }
+      if (Object.prototype.hasOwnProperty.call(body, "desktopActionId")) {
+        patch.desktopActionId = body.desktopActionId === null
+          ? null
+          : readOptionalText(body, "desktopActionId") ?? null;
+      }
       if (Object.prototype.hasOwnProperty.call(body, "status")) {
         const status = readOptionalText(body, "status");
         if (status !== "todo" && status !== "in-progress") {
@@ -1463,11 +1589,12 @@ export class ToWriteExternalApiServer {
     const deliveryId = event?.deliveryId || handoff?.deliveryId || url.searchParams.get("deliveryId")?.trim() || feed?.decision.deliveryId || deliveryIdFor(targetId, candidateId, new Date().toISOString());
     const questionId = handoff?.questionId || candidate?.questionId || (candidateType === "question" ? candidateId : undefined);
     const sourceRef = handoff?.sourceRef || candidate?.sourceRef || sourceRefFromUrl(url, this.options.getVaultName());
-    const token = this.deviceTokenForRequest(request, url, targetId);
+    const token = handoff ? undefined : this.deviceTokenForRequest(request, url, targetId);
     const baseUrl = this.baseUrlForRequest(request);
     // A hardware event response must never reflect its long-lived Bearer token
     // into a URL. Phone input uses the separate one-time handoff endpoint.
     const openUrl = event ? undefined : this.openUrlForIntent(intent, baseUrl, token, {
+      handoff: handoff?.id,
       questionId,
       targetId,
       candidateId,
@@ -1496,6 +1623,7 @@ export class ToWriteExternalApiServer {
   }
 
   private openUrlForIntent(intent: DeviceActionIntent, baseUrl: string, token: string | undefined, options: {
+    handoff?: string;
     questionId?: string;
     targetId: string;
     candidateId?: string;
@@ -1516,6 +1644,7 @@ export class ToWriteExternalApiServer {
     }
     return buildDeviceInputUrl(baseUrl, {
       token,
+      handoff: options.handoff,
       questionId: intent === "capture" ? undefined : options.questionId,
       targetId: options.targetId,
       candidateId: options.candidateId,
@@ -1571,6 +1700,21 @@ export class ToWriteExternalApiServer {
       result.action = outcome.action ?? result.action;
       result.commandStatus = outcome.status;
       result.displayMessage = outcome.displayMessage;
+      if (event.action === "create_note" && outcome.status !== "conflict" && outcome.status !== "unsupported") {
+        const handoff = this.createDeviceHandoff({
+          targetId: event.targetId,
+          intent: "capture",
+          candidateId: event.candidateId,
+          deliveryId: event.deliveryId,
+          ttlSeconds: 300
+        });
+        const handoffUrl = buildDeviceGoUrl(this.baseUrlForRequest(request), { handoff: handoff.id });
+        const notification = await this.publishDeviceHandoff(event.targetId, handoff, handoffUrl);
+        result.openUrl = handoffUrl;
+        result.displayMessage = notification.status === "queued"
+          ? "Phone notification queued"
+          : "Phone handoff ready; notification unavailable";
+      }
       result.cardId = current.cardId;
       result.stateVersion = current.stateVersion;
       result.playlistRevision = current.playlistRevision;
@@ -1712,20 +1856,57 @@ export class ToWriteExternalApiServer {
     const intent = readDeviceIntent(readString(body, "intent")) || "respond";
     const targetId = readString(body, "targetId");
     const candidateId = readString(body, "candidateId");
+    const feed = targetId ? this.options.getPushFeed?.(targetId) : undefined;
+    const frozenCandidate = !candidateId || feed?.decision.candidateId === candidateId
+      ? feed?.candidate
+      : undefined;
     const id = `dho_${randomFragment()}`;
     const handoff: DeviceHandoff = {
       id,
       expiresAt: new Date(Date.now() + ttlSeconds * 1000).toISOString(),
       targetId,
       intent,
-      questionId: readString(body, "questionId"),
+      questionId: readString(body, "questionId") || frozenCandidate?.questionId,
       candidateId,
       deliveryId: readString(body, "deliveryId") || deliveryIdFor(targetId || "device", candidateId, new Date().toISOString()),
-      sourceRef: readSourceRefBody(body)
+      sourceRef: readSourceRefBody(body) || frozenCandidate?.sourceRef,
+      displayed: targetId
+        ? this.acknowledgedDisplayTuples.get(localDeviceTargetKey(targetId))
+          ?? this.options.getDeviceDisplayedTuple?.(targetId)
+        : undefined
     };
     this.handoffs.set(id, handoff);
     this.purgeHandoffs();
     return handoff;
+  }
+
+  private async publishDeviceHandoff(
+    targetId: string,
+    handoff: DeviceHandoff,
+    url: string | undefined
+  ): Promise<{ status: "queued" | "unavailable" | "failed"; message?: string }> {
+    if (!url || !this.options.publishDeviceHandoff) {
+      return { status: "unavailable" };
+    }
+    try {
+      await this.options.publishDeviceHandoff(targetId, {
+        handoffId: handoff.id,
+        url,
+        expiresAt: handoff.expiresAt,
+        displayed: handoff.displayed ? {
+          selectionId: handoff.displayed.selectionId,
+          contentId: handoff.displayed.contentId,
+          revisionId: handoff.displayed.revisionId,
+          stateVersion: handoff.displayed.stateVersion
+        } : undefined
+      });
+      return { status: "queued" };
+    } catch (error) {
+      return {
+        status: "failed",
+        message: (error instanceof Error ? error.message : String(error)).slice(0, 160)
+      };
+    }
   }
 
   private resolveDeviceHandoff(id: string | null): DeviceHandoff | undefined {
@@ -1733,7 +1914,42 @@ export class ToWriteExternalApiServer {
       return undefined;
     }
     this.purgeHandoffs();
-    return this.handoffs.get(id) ?? undefined;
+    const handoff = this.handoffs.get(id);
+    return handoff && !handoff.claimedAt && !handoff.consumedAt ? handoff : undefined;
+  }
+
+  private claimDeviceHandoff(url: URL): string | undefined {
+    const id = url.searchParams.get("handoff");
+    if (!id) return undefined;
+    const handoff = this.resolveDeviceHandoff(id);
+    if (!handoff) {
+      throw new ExternalApiError(401, "This phone handoff has expired or was already used.");
+    }
+    handoff.claimedAt = new Date().toISOString();
+    return id;
+  }
+
+  private consumeDeviceHandoff(id: string | undefined): void {
+    if (!id) return;
+    const handoff = this.handoffs.get(id);
+    if (!handoff || handoff.consumedAt) return;
+    handoff.claimedAt = undefined;
+    handoff.consumedAt = new Date().toISOString();
+  }
+
+  private releaseDeviceHandoffClaim(id: string | undefined): void {
+    if (!id) return;
+    const handoff = this.handoffs.get(id);
+    if (handoff && !handoff.consumedAt) handoff.claimedAt = undefined;
+  }
+
+  private assertHandoffQuestionScope(url: URL, questionId: string): void {
+    const id = url.searchParams.get("handoff");
+    if (!id) return;
+    const handoff = this.resolveDeviceHandoff(id);
+    if (!handoff || handoff.questionId !== questionId) {
+      throw new ExternalApiError(403, "This phone handoff is not bound to that card.");
+    }
   }
 
   private purgeHandoffs(): void {
@@ -1746,7 +1962,8 @@ export class ToWriteExternalApiServer {
   }
 
   private buildDeviceInputContext(url: URL) {
-    const questionId = url.searchParams.get("questionId")?.trim();
+    const handoff = this.resolveDeviceHandoff(url.searchParams.get("handoff"));
+    const questionId = handoff?.questionId || url.searchParams.get("questionId")?.trim();
     const question = questionId
       ? this.options.getQuestions().find((item) => item.id === questionId)
       : undefined;
@@ -1760,16 +1977,24 @@ export class ToWriteExternalApiServer {
       blockId: question.source.blockId,
       page: question.source.page
     } : undefined;
-    const sourceRef = sourceRefFromUrl(url, this.options.getVaultName()) || questionSourceRef;
+    const sourceRef = handoff?.sourceRef || sourceRefFromUrl(url, this.options.getVaultName()) || questionSourceRef;
     return {
       schemaVersion: 1,
       interaction: {
-        targetId: url.searchParams.get("targetId")?.trim() || undefined,
-        candidateId: url.searchParams.get("candidateId")?.trim() || questionId || undefined,
-        deliveryId: url.searchParams.get("deliveryId")?.trim() || undefined,
-        intent: readDeviceIntent(url.searchParams.get("intent")) || (questionId ? "respond" : "capture"),
+        targetId: handoff?.targetId || url.searchParams.get("targetId")?.trim() || undefined,
+        candidateId: handoff?.candidateId || url.searchParams.get("candidateId")?.trim() || questionId || undefined,
+        deliveryId: handoff?.deliveryId || url.searchParams.get("deliveryId")?.trim() || undefined,
+        intent: handoff?.intent || readDeviceIntent(url.searchParams.get("intent")) || (questionId ? "respond" : "capture"),
         sourceRef,
-        obsidianUri: sourceRefToObsidianUri(sourceRef, this.options.getVaultName())
+        obsidianUri: sourceRefToObsidianUri(sourceRef, this.options.getVaultName()),
+        handoff: handoff ? {
+          id: handoff.id,
+          expiresAt: handoff.expiresAt,
+          displayed: handoff.displayed,
+          allowedActions: handoff.displayed?.cardId.startsWith("daily-plan:")
+            ? ["later", "complete"]
+            : []
+        } : undefined
       },
       capture: {
         enabled: capture.enabled,
@@ -1854,7 +2079,8 @@ export class ToWriteExternalApiServer {
     if (this.isMasterAuthorized(request, url, method)) {
       return true;
     }
-    if (method === "GET" && url.pathname === "/device/go" && this.resolveDeviceHandoff(url.searchParams.get("handoff"))) {
+    if (this.isDeviceHandoffRoute(method, url.pathname)
+      && this.resolveDeviceHandoff(url.searchParams.get("handoff"))) {
       return true;
     }
     const restrictedTokens = this.restrictedTokens();
@@ -1868,6 +2094,21 @@ export class ToWriteExternalApiServer {
     }
     const queryToken = url.searchParams.get("token")?.trim();
     return method === "GET" && Boolean(queryToken && restrictedTokens.includes(queryToken));
+  }
+
+  private isDeviceHandoffRoute(method: string, pathname: string): boolean {
+    if (method === "GET") {
+      return pathname === "/device/go"
+        || pathname === "/device/input"
+        || pathname === "/api/v1/device-input-context";
+    }
+    if (method === "POST") {
+      return pathname === "/api/v1/captures"
+        || pathname === "/api/v1/capture/recommendations"
+        || pathname === "/api/v1/device/handoff-actions"
+        || /^\/api\/v1\/questions\/[^/]+\/notes$/u.test(pathname);
+    }
+    return false;
   }
 
   private isMasterAuthorized(request: HttpRequest, url: URL, method: string): boolean {
@@ -1947,6 +2188,7 @@ export class ToWriteExternalApiServer {
       return pathname === "/device/input"
         || pathname === "/device/go"
         || pathname === "/api/v1/device-input-context"
+        || pathname === "/api/v1/device/push/config"
         || pathname === "/api/v1/eink";
     }
     if (method === "POST") {
@@ -1956,6 +2198,8 @@ export class ToWriteExternalApiServer {
         || pathname === "/api/v1/device/events"
         || pathname === "/api/v1/device/display-acks"
         || pathname === "/api/v1/device/handoffs"
+        || pathname === "/api/v1/device/handoff-actions"
+        || pathname === "/api/v1/device/push/subscriptions"
         || pathname === "/api/v1/push/feedback"
         || /^\/api\/v1\/questions\/[^/]+\/notes$/u.test(pathname);
     }
@@ -2153,6 +2397,32 @@ function readDailyRevision(body: Record<string, unknown>): DailyTaskRevision {
     }
   }
   throw new ExternalApiError(400, "A daily task revision is required.");
+}
+
+function readWebPushSubscription(body: Record<string, unknown>): HubWebPushSubscriptionInput {
+  const value = body.subscription;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new ExternalApiError(400, "Missing Web Push subscription.");
+  }
+  const subscription = value as Record<string, unknown>;
+  const keysValue = subscription.keys;
+  const keys = keysValue && typeof keysValue === "object" && !Array.isArray(keysValue)
+    ? keysValue as Record<string, unknown>
+    : {};
+  const endpoint = readString(subscription, "endpoint");
+  const p256dh = readString(keys, "p256dh");
+  const auth = readString(keys, "auth");
+  if (!endpoint || !p256dh || !auth) {
+    throw new ExternalApiError(400, "Web Push endpoint and subscription keys are required.");
+  }
+  return {
+    endpoint,
+    expirationTime: typeof subscription.expirationTime === "number"
+      ? subscription.expirationTime
+      : null,
+    keys: { p256dh, auth },
+    userAgent: readOptionalText(body, "userAgent")
+  };
 }
 
 function readOptionalDailyRevisionDate(body: Record<string, unknown>): string | undefined {

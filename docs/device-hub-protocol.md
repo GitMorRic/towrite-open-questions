@@ -234,7 +234,7 @@ The Tap Router freezes the most recent successfully displayed selection. It fall
 GET /v1/hub/capabilities
 ```
 
-Returns the protocol version, maximum candidate count, supported content/context types, maximum long-poll wait, ACK support, `device_events`, and authentication requirements. An incompatible major version causes clients to stop using the Hub and keep local behavior.
+Returns the protocol version, maximum candidate count, supported content/context types, maximum long-poll wait, ACK support, `device_events`, optional `web_push`, and authentication requirements. An incompatible major version causes clients to stop using the Hub and keep local behavior.
 
 ### 6.2 Upload a candidate batch
 
@@ -366,6 +366,8 @@ Content-Type: application/json
 
 The body is specified in section 4.4. The response reports `accepted`, `duplicate`, and a reason. The device sends the ACK after a complete successful refresh, never before rendering. A failed refresh should send `failed` for diagnostics while retaining the previous local displayed/version state.
 
+The local External API ACK may also include `firmwareVersion`, `screenModel`, `capabilities[]`, and `batteryPercent`. These are diagnostics only and never participate in authentication or displayed-tuple comparison. A Hub may retain equivalent optional snake-case telemetry.
+
 #### 6.6.1 Submit bounded device feedback
 
 ```http
@@ -472,6 +474,21 @@ Capture example:
 Plaintext is encrypted in the client and contains `protocolVersion`, a unique `captureId`, the frozen `selectionId` and `contentId`, `intent`, answer `body`, opaque `writeTargetRef`, frozen `targetRevision`, and `createdAt`. HKDF `info` and AES-GCM AAD are the UTF-8 bytes of `towrite-hub-capture-v1`; `additional_data` is that value in base64url, and AES-GCM ciphertext includes its 128-bit tag. The Hub reuses the existing E2EE Capture queue and stores only ciphertext, necessary encryption metadata, and opaque linkage. The Connector decrypts a pulled capture and delegates append, create, question answer, conflict checks, idempotency, and safe undo to CaptureService.
 
 Encryption metadata must not contain `vault_path`, `absolute_path`, `selection_text`, `clipboard`, or equivalent private fields. Retrying the same `idempotency_key` returns the original capture rather than creating a second write.
+
+#### 6.10.1 Mobile Web Push and one-time handoff
+
+The Connector proxies PWA registration with Receiver credentials, so the browser never receives the Hub token:
+
+```http
+GET /v1/hub/devices/{deviceId}/mobile-push/config
+POST /v1/hub/devices/{deviceId}/mobile-push/subscriptions
+POST /v1/hub/devices/{deviceId}/phone-handoffs
+Authorization: Bearer <connector_token>
+```
+
+Config returns `supported` and the public VAPID `application_server_key`. A phone handoff carries an opaque `handoff_id`, same-origin short URL, expiry, and an optional frozen selection/content/revision/state tuple. The Push payload contains only `handoff_id`; the service worker supplies generic notification text so lock screens do not reveal task content.
+
+Reading the frozen card does not consume the handoff. One successful note or Capture atomically consumes it; concurrent, expired, or replayed writes are rejected. Offline input remains in IndexedDB. If the five-minute handoff expires, the text remains local and the user must request a fresh handoff from the screen.
 
 ### 6.11 Device secret and Tap ID rotation
 

@@ -48,7 +48,7 @@ export interface DailyDeckPlanItemInput {
   projectLabel?: string;
   projectColor?: string;
   targetLabel?: string;
-  targetProvenance?: "explicit" | "task-link" | "ancestor-link" | "task-block" | "dashboard";
+  targetProvenance?: "action" | "explicit" | "task-link" | "ancestor-link" | "task-block" | "dashboard";
   lineageRevision?: string;
   timing?: DailyDeckTimingInput;
 }
@@ -634,7 +634,8 @@ function optionalIdentifier(value: string | undefined): string | undefined {
 function normalizeTargetProvenance(
   value: DailyDeckPlanItemInput["targetProvenance"]
 ): DailyDeckPlanItemInput["targetProvenance"] {
-  return value === "explicit"
+  return value === "action"
+    || value === "explicit"
     || value === "task-link"
     || value === "ancestor-link"
     || value === "task-block"

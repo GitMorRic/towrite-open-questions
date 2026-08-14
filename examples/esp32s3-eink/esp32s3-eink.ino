@@ -2,6 +2,11 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <esp_system.h>
+#include "towrite-panel-driver.h"
+
+const char* FIRMWARE_VERSION = "towrite-esp32s3/0.4.0-alpha.1";
+// Replace this only after reading the controller marking or board schematic.
+const char* SCREEN_MODEL = "unconfigured-264x176";
 
 // Network and ToWrite External API.
 const char* WIFI_SSID = "YOUR_WIFI";
@@ -122,10 +127,16 @@ uint32_t eventCounter = 0;
 String lastRenderedCardId;
 String lastPlaylistRevision;
 String lastStatusFingerprint;
+ToWritePanelDriver panel;
+bool panelReady = false;
 
 void setup() {
   Serial.begin(115200);
   delay(500);
+  panelReady = panel.begin();
+  if (!panelReady) {
+    Serial.println("Panel driver is not configured; display ACK and gestures remain disabled.");
+  }
   bootNonce = esp_random();
   configureButton(mainButton);
   configureButton(leftButton);
@@ -421,6 +432,12 @@ bool acknowledgeDisplayed(const DisplayTuple& desired) {
   ack["revisionId"] = desired.revisionId;
   ack["cardId"] = desired.cardId;
   ack["playlistRevision"] = desired.playlistRevision;
+  ack["firmwareVersion"] = FIRMWARE_VERSION;
+  ack["screenModel"] = SCREEN_MODEL;
+  JsonArray capabilities = ack.createNestedArray("capabilities");
+  capabilities.add("three-buttons");
+  capabilities.add("display-ack");
+  capabilities.add("idempotent-events");
   String payload;
   serializeJson(ack, payload);
 
@@ -612,9 +629,8 @@ bool renderCard(
   const String& pageText,
   const String& connectionText
 ) {
-  // Replace this Serial output with GxEPD2/Waveshare/LilyGo drawing calls.
-  // Return true only after the physical controller has completed the refresh.
-  // Reserve a narrow footer for connectionText and command status.
+  // Serial remains diagnostic only. The panel contract must return true only
+  // after the controller has completed the physical refresh.
   Serial.println("----- ToWrite E-ink Card -----");
   Serial.println(pageText);
   Serial.println(displayCategory + " | " + article);
@@ -622,7 +638,9 @@ bool renderCard(
   Serial.println(body);
   Serial.println(connectionText);
   Serial.println("------------------------------");
-  return true;
+  return panelReady && panel.renderCard(
+    title, body, article, displayCategory, pageText, connectionText
+  );
 }
 
 bool renderEmpty(
@@ -641,13 +659,16 @@ bool renderEmpty(
   Serial.println(blockedArticles);
   Serial.println(connectionText);
   Serial.println("------------------------------");
-  return true;
+  return panelReady && panel.renderEmpty(
+    openCount, candidateCount, blockedArticles, connectionText
+  );
 }
 
 void renderCommandStatus(const String& message, bool isError) {
   // Replace this with a small partial refresh. Keep the current card visible.
   Serial.print(isError ? "[command:error] " : "[command:ok] ");
   Serial.println(message);
+  if (panelReady) panel.renderStatus(message, isError);
 }
 
 void renderError(const String& message, const String& connectionText) {
@@ -658,6 +679,7 @@ void renderError(const String& message, const String& connectionText) {
   Serial.println(message);
   Serial.println(connectionText);
   Serial.println("-----------------------------");
+  if (panelReady) panel.renderStatus(message + " | " + connectionText, true);
 }
 
 void renderConnectionStatus(const String& connectionText, bool isError) {
@@ -666,6 +688,7 @@ void renderConnectionStatus(const String& connectionText, bool isError) {
   // so healthy five-second polling does not full-refresh the entire panel.
   Serial.print(isError ? "[status:error] " : "[status:ok] ");
   Serial.println(connectionText);
+  if (panelReady) panel.renderStatus(connectionText, isError);
 }
 
 void markConnectionSuccess(int httpStatus) {

@@ -132,6 +132,8 @@ export interface DailyPlanItem {
   estimateMinutes?: number;
   /** Raw user-facing target, normally an Obsidian wikilink. */
   target?: string;
+  /** Local-only named desktop action selected through `[towrite-action:: ...]`. */
+  desktopActionId?: string;
   startedAt?: string;
   /**
    * Opaque revision of the task's inherited group chain. Hierarchy-aware
@@ -193,6 +195,7 @@ export interface DraftDailyTaskReference {
 export type DailyTaskReference = StableDailyTaskReference | DraftDailyTaskReference;
 
 export type DailyTargetSource =
+  | "action"
   | "explicit"
   | "task-link"
   | "ancestor-link"
@@ -244,6 +247,8 @@ export interface DailyPlanLineage {
 
 export interface DailyTargetResolution {
   source: DailyTargetSource;
+  /** Opaque local settings key; never expanded into device or Hub payloads. */
+  actionId?: string;
   target?: DailyMarkdownTarget;
   webTarget?: DailyWebTarget;
   /** Source-note block fallback. */
@@ -278,6 +283,7 @@ export interface DailyPlanHierarchyTask {
   checkbox: boolean;
   rawLine: string;
   rawBlock: string;
+  explicitActionId?: string;
   explicitTarget?: string;
   links: DailyMarkdownTarget[];
   lineage: DailyPlanLineage;
@@ -408,6 +414,7 @@ export interface DailyPlanCreateInput {
   nextStep?: string;
   estimateMinutes?: number;
   target?: string;
+  desktopActionId?: string;
 }
 
 export interface DailyPlanUpdate {
@@ -432,6 +439,7 @@ export interface DailyPlanUpdate {
   nextStep?: string | null;
   estimateMinutes?: number | null;
   target?: string | null;
+  desktopActionId?: string | null;
   startedAt?: string | null;
 }
 

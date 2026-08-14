@@ -29,7 +29,7 @@ Wire three momentary buttons between GPIO and GND. The sketch enables
 | Button | Single click | Double click | Long press |
 | --- | --- | --- | --- |
 | Left | Previous page | Previous task card | Start / pause / resume current task |
-| Main | Start/open the displayed note | Open create-only Capture | Recording reserved |
+| Main | Start/open the displayed note | Send the frozen card to the phone PWA | Recording reserved |
 | Right | Next page | Next task card | Safely complete displayed task |
 
 The firmware uses:
@@ -74,6 +74,11 @@ const int RIGHT_BUTTON_PIN = 4;
 Choose GPIOs that are free on your exact ESP32-S3 board and display carrier.
 Install `ArduinoJson` and the driver for your panel, such as `GxEPD2`.
 
+The checked-in `towrite-panel-driver.h` is intentionally fail-closed and never
+reports a successful refresh. Identify the controller and carrier first, then
+implement that hardware boundary. Until `begin()` and the render methods return
+real controller results, the sketch sends no display ACK and accepts no gesture.
+
 A normal ESP32 is not itself a Tailscale node, so a private `*.ts.net` Serve
 origin is usually not directly reachable. Use the same LAN, a computer hotspot,
 or a subnet router unless your network explicitly routes the tailnet to the
@@ -108,8 +113,9 @@ tuple:
 ```
 
 The sketch verifies that `focus[0].id` matches `desired.cardId`, then calls
-`renderCard()`. Replace the Serial stub with your panel driver and return
-`true` only after the controller successfully finishes the refresh.
+`renderCard()`. Serial output is diagnostic only; the provided panel driver
+template returns `false`. Return `true` only after the physical controller
+successfully finishes the refresh.
 
 Only after that does it send:
 

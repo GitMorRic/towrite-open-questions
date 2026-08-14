@@ -11,6 +11,7 @@ import {
 } from "./types";
 import {
   createDailyLineage,
+  extractExplicitDailyAction,
   extractExplicitDailyTarget,
   parseDailyMarkdownTargets,
   resolveDailyTarget
@@ -19,7 +20,7 @@ import {
 const LIST_RE = /^(?<indent>[ \t]*)(?<marker>(?:[-+*]|\d+[.)]))[ \t]+(?:(?<checkbox>\[(?<mark>[^\]])\])[ \t]+)?(?<body>.*)$/u;
 const STANDALONE_BLOCK_RE = /^(?<indent>[ \t]+)\^(?<id>[A-Za-z0-9_-]+)\s*$/u;
 const INLINE_BLOCK_RE = /(?:^|\s)\^(?<id>[A-Za-z0-9_-]+)\s*$/u;
-const OWNED_FIELD_RE = /\[towrite-(?<key>kind|category|task-ref|pool-revision|work-kind|work-ref|work-revision|device|at|scheduled|due|primary|minimum|goal|next|estimate|target|started)::\s*(?<value>\[\[[^\]]+\]\]|[^\]]*)\]/giu;
+const OWNED_FIELD_RE = /\[towrite-(?<key>kind|category|task-ref|pool-revision|work-kind|work-ref|work-revision|device|at|scheduled|due|primary|minimum|goal|next|estimate|action|target|started)::\s*(?<value>\[\[[^\]]+\]\]|[^\]]*)\]/giu;
 const MARKDOWN_LINK_LIKE_RE = /(?<!!)\[[^\]\r\n]*\]\((?<target>[^)\r\n]+)\)/gu;
 
 export interface DailyPlanHierarchyParseOptions {
@@ -159,6 +160,7 @@ export function parseDailyPlanHierarchy(
       : node.index;
     const rawBlock = [node.rawLine, ...node.directLines.map((line) => lines[line])].join("\n");
     const directBlock = [node.rawLine, ...node.directLines.map((index) => lines[index])].join("\n");
+    const explicitActionId = extractExplicitDailyAction(directBlock);
     const explicitTarget = extractExplicitDailyTarget(directBlock);
     const category = normalizeOptionalField(readOwnedField(directBlock, "category"), 120);
     const taskRef = normalizeTaskRef(readOwnedField(directBlock, "task-ref"));
@@ -170,6 +172,7 @@ export function parseDailyPlanHierarchy(
       taskText: text,
       rawBlock: directBlock,
       blockId,
+      explicitActionId,
       explicitTarget,
       lineage
     });
@@ -192,6 +195,7 @@ export function parseDailyPlanHierarchy(
       rawLine: node.rawLine,
       rawBlock,
       detachedOwnedLines: detachedDirect.map((line) => line + 1),
+      explicitActionId,
       explicitTarget,
       links,
       lineage,

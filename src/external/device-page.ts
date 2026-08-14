@@ -875,6 +875,7 @@ export function buildDevicePageHtml(): string {
       const params = new URLSearchParams(location.search);
       const state = {
         token: params.get("token") || localStorage.getItem("towrite-device-token") || "",
+        targetId: params.get("targetId") || localStorage.getItem("towrite-device-target") || "quote0",
         profile: params.get("profile") || localStorage.getItem("towrite-device-profile") || "mobile-eink",
         screenPreset: params.get("screen") || localStorage.getItem("towrite-device-screen") || "eink-2.7-landscape",
         screenWidth: params.get("width") || localStorage.getItem("towrite-device-width") || "264",
@@ -886,6 +887,7 @@ export function buildDevicePageHtml(): string {
         payload: null,
         eventSource: null,
         lastEventSummary: "",
+        webPushEnabled: false,
         isRecording: false,
         isSavingVoice: false,
         voiceStatus: "",
@@ -1040,6 +1042,7 @@ export function buildDevicePageHtml(): string {
           if (!response.ok) throw new Error("HTTP " + response.status);
           state.payload = await response.json();
           localStorage.setItem("towrite-device-token", state.token);
+          localStorage.setItem("towrite-device-target", state.targetId);
           localStorage.setItem("towrite-device-profile", state.profile);
           localStorage.setItem("towrite-device-screen", screenPresetEl.value);
           localStorage.setItem("towrite-device-width", screenWidthEl.value);
@@ -1703,9 +1706,55 @@ export function buildDevicePageHtml(): string {
           : await Notification.requestPermission();
         updateNotifyButton();
         if (permission === "granted") {
+          try {
+            state.webPushEnabled = await registerWebPush();
+          } catch (error) {
+            state.webPushEnabled = false;
+            console.warn("ToWrite Web Push registration failed", error);
+          }
           startEvents();
           notify("ToWrite 提醒已开启", "页面打开时，卡片或 Workflow 状态变化会提醒你。");
         }
+      }
+
+      async function registerWebPush() {
+        if (!("serviceWorker" in navigator) || !("PushManager" in window) || !state.token) {
+          return false;
+        }
+        const registration = await navigator.serviceWorker.ready;
+        const configResponse = await fetch(
+          "/api/v1/device/push/config?targetId=" + encodeURIComponent(state.targetId),
+          { cache: "no-store", headers: { Authorization: "Bearer " + state.token } }
+        );
+        if (!configResponse.ok) return false;
+        const config = await configResponse.json();
+        if (!config.supported || !config.applicationServerKey) return false;
+        let subscription = await registration.pushManager.getSubscription();
+        if (!subscription) {
+          subscription = await registration.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: decodeBase64Url(config.applicationServerKey)
+          });
+        }
+        const response = await fetch("/api/v1/device/push/subscriptions", {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer " + state.token,
+            "content-type": "application/json"
+          },
+          body: JSON.stringify({
+            targetId: state.targetId,
+            subscription: subscription.toJSON(),
+            userAgent: navigator.userAgent
+          })
+        });
+        return response.ok;
+      }
+
+      function decodeBase64Url(value) {
+        const padding = "=".repeat((4 - value.length % 4) % 4);
+        const raw = atob((value + padding).replace(/-/g, "+").replace(/_/g, "/"));
+        return Uint8Array.from(raw, function(character) { return character.charCodeAt(0); });
       }
 
       function startEvents() {

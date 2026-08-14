@@ -1911,8 +1911,145 @@ describe("external server", () => {
 
     expect(follow.statusCode).toBe(302);
     expect(follow.headers.location).toContain("/device/input?");
-    expect(follow.headers.location).toContain("token=desk-token");
+    expect(follow.headers.location).toContain(`handoff=${encodeURIComponent(created.id)}`);
+    expect(follow.headers.location).not.toContain("desk-token");
     expect(follow.headers.location).toContain("intent=capture");
+
+    const context = new FakeResponse();
+    await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
+      .handleRequest(new FakeRequest(
+        "GET",
+        `/api/v1/device-input-context?handoff=${encodeURIComponent(created.id)}`,
+        {},
+        { authorization: undefined }
+      ), context);
+    expect(context.statusCode).toBe(200);
+    expect(JSON.parse(context.body).interaction).toMatchObject({
+      targetId: "desk",
+      candidateId: "oq_one",
+      handoff: { id: created.id }
+    });
+
+    const notePath = `/api/v1/questions/oq_one/notes?handoff=${encodeURIComponent(created.id)}`;
+    const firstWrite = new FakeResponse();
+    await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
+      .handleRequest(new FakeRequest("POST", notePath, { text: "Frozen card note" }, { authorization: undefined }), firstWrite);
+    expect(firstWrite.statusCode).toBe(200);
+
+    const replayWrite = new FakeResponse();
+    await (server as unknown as { handleRequest(request: FakeRequest, response: FakeResponse): Promise<void> })
+      .handleRequest(new FakeRequest("POST", notePath, { text: "Duplicate" }, { authorization: undefined }), replayWrite);
+    expect(replayWrite.statusCode).toBe(401);
+  });
+
+  it("binds phone complete/later actions to the frozen displayed tuple and consumes the handoff", async () => {
+    const displayed = {
+      deviceId: "desk",
+      selectionId: "sel_frozen",
+      stateVersion: 9,
+      contentId: "cnt_frozen",
+      revisionId: "rev_frozen",
+      cardId: "daily-plan:daily_abc",
+      playlistRevision: "einkrev_frozen"
+    };
+    const completeDeviceCard = vi.fn(async () => undefined);
+    const laterDeviceCard = vi.fn(async () => undefined);
+    const server = makeServer({
+      getRestrictedAccessTokens: () => ["desk-token"],
+      getPushTargets: () => [{
+        id: "desk", name: "Desk", type: "local-web", enabled: true,
+        profile: "eink-bw", width: 264, height: 176, inches: 2.7,
+        defaultPage: "cards", defaultLane: "", refreshSeconds: 60,
+        quietHoursStart: "", quietHoursEnd: "", token: "desk-token",
+        capabilities: ["buttons", "input"]
+      }],
+      getDeviceDisplayedTuple: () => displayed,
+      completeDeviceCard,
+      laterDeviceCard
+    });
+    const handle = server as unknown as {
+      handleRequest(request: FakeRequest, response: FakeResponse): Promise<void>;
+    };
+    const create = new FakeResponse();
+    await handle.handleRequest(new FakeRequest("POST", "/api/v1/device/handoffs", {
+      targetId: "desk", intent: "capture", ttlSeconds: 300
+    }, { authorization: "Bearer desk-token" }), create);
+    const handoff = JSON.parse(create.body);
+
+    const complete = new FakeResponse();
+    await handle.handleRequest(new FakeRequest(
+      "POST",
+      `/api/v1/device/handoff-actions?handoff=${encodeURIComponent(handoff.id)}`,
+      { action: "complete", eventId: "phone_complete_1" },
+      { authorization: undefined }
+    ), complete);
+    expect(complete.statusCode).toBe(200);
+    expect(completeDeviceCard).toHaveBeenCalledWith(expect.objectContaining({
+      eventId: "phone_complete_1",
+      action: "complete",
+      cardId: displayed.cardId,
+      revisionId: displayed.revisionId
+    }));
+
+    const replay = new FakeResponse();
+    await handle.handleRequest(new FakeRequest(
+      "POST",
+      `/api/v1/device/handoff-actions?handoff=${encodeURIComponent(handoff.id)}`,
+      { action: "later" },
+      { authorization: undefined }
+    ), replay);
+    expect(replay.statusCode).toBe(401);
+    expect(laterDeviceCard).not.toHaveBeenCalled();
+  });
+
+  it("proxies a browser Web Push subscription through the target-scoped connector", async () => {
+    const registerMobilePushSubscription = vi.fn(async () => ({
+      protocolVersion: "1",
+      subscriptionId: "wps_local",
+      createdAt: "2026-08-13T09:00:00Z"
+    }));
+    const server = makeServer({
+      getRestrictedAccessTokens: () => ["desk-token"],
+      getPushTargets: () => [{
+        id: "desk", name: "Desk", type: "local-web", enabled: true,
+        profile: "eink-bw", width: 264, height: 176, inches: 2.7,
+        defaultPage: "cards", defaultLane: "", refreshSeconds: 60,
+        quietHoursStart: "", quietHoursEnd: "", token: "desk-token",
+        capabilities: ["web-push"]
+      }],
+      getMobilePushConfig: async () => ({
+        protocolVersion: "1",
+        supported: true,
+        applicationServerKey: "vapid_public"
+      }),
+      registerMobilePushSubscription
+    });
+    const handle = server as unknown as {
+      handleRequest(request: FakeRequest, response: FakeResponse): Promise<void>;
+    };
+    const config = new FakeResponse();
+    await handle.handleRequest(new FakeRequest(
+      "GET", "/api/v1/device/push/config?targetId=desk", {},
+      { authorization: "Bearer desk-token" }
+    ), config);
+    expect(config.statusCode).toBe(200);
+    expect(JSON.parse(config.body)).toMatchObject({ supported: true });
+
+    const registration = new FakeResponse();
+    await handle.handleRequest(new FakeRequest("POST", "/api/v1/device/push/subscriptions", {
+      targetId: "desk",
+      userAgent: "Mobile Safari",
+      subscription: {
+        endpoint: "https://push.example.test/opaque",
+        expirationTime: null,
+        keys: { p256dh: "p256dh_public", auth: "auth_secret" }
+      }
+    }, { authorization: "Bearer desk-token" }), registration);
+    expect(registration.statusCode).toBe(201);
+    expect(registerMobilePushSubscription).toHaveBeenCalledWith("desk", expect.objectContaining({
+      endpoint: "https://push.example.test/opaque",
+      keys: { p256dh: "p256dh_public", auth: "auth_secret" }
+    }));
   });
 });
 

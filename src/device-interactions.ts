@@ -72,6 +72,9 @@ export interface DeviceDisplayAcknowledgement extends DeviceDisplayedTuple {
   renderHash?: string;
   /** Optional ESP32 telemetry. It is presentation data, never an auth signal. */
   batteryPercent?: number;
+  firmwareVersion?: string;
+  screenModel?: string;
+  capabilities?: string[];
 }
 
 export interface DeviceCompletionGuard {
@@ -318,7 +321,10 @@ export function normalizeDeviceDisplayAcknowledgement(
     ...displayed,
     displayedAt: normalizeIso(body.displayedAt ?? body.displayed_at),
     renderHash: normalizeHash(body.renderHash ?? body.render_hash),
-    batteryPercent: normalizeBatteryPercent(body.batteryPercent ?? body.battery_percent)
+    batteryPercent: normalizeBatteryPercent(body.batteryPercent ?? body.battery_percent),
+    firmwareVersion: normalizeShort(body.firmwareVersion ?? body.firmware_version, 80),
+    screenModel: normalizeShort(body.screenModel ?? body.screen_model, 120),
+    capabilities: normalizeDeviceCapabilities(body.capabilities)
   };
 }
 
@@ -327,6 +333,15 @@ function normalizeBatteryPercent(value: unknown): number | undefined {
   return Number.isFinite(number) && number >= 0 && number <= 100
     ? Math.round(number)
     : undefined;
+}
+
+function normalizeDeviceCapabilities(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const capabilities = [...new Set(value
+    .map((item) => normalizeOpaqueIdentifier(item, 48))
+    .filter((item): item is string => Boolean(item)))]
+    .slice(0, 24);
+  return capabilities.length > 0 ? capabilities : undefined;
 }
 
 export function resolveDeviceGestureAction(
@@ -437,6 +452,7 @@ export function feedbackActionForIntent(intent: DeviceActionIntent): PushFeedbac
 
 export function buildDeviceInputUrl(baseUrl: string | undefined, params: {
   token?: string;
+  handoff?: string;
   questionId?: string;
   targetId?: string;
   candidateId?: string;
@@ -448,11 +464,16 @@ export function buildDeviceInputUrl(baseUrl: string | undefined, params: {
     return undefined;
   }
   const normalizedToken = params.token?.trim();
-  if (!normalizedToken) {
+  const handoff = params.handoff?.trim();
+  if (!normalizedToken && !handoff) {
     return undefined;
   }
   const search = new URLSearchParams();
-  search.set("token", normalizedToken);
+  if (handoff) {
+    search.set("handoff", handoff);
+  } else if (normalizedToken) {
+    search.set("token", normalizedToken);
+  }
   appendOptional(search, "questionId", params.questionId);
   appendOptional(search, "targetId", params.targetId);
   appendOptional(search, "candidateId", params.candidateId);

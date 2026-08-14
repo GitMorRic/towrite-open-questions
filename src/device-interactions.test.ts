@@ -152,13 +152,19 @@ describe("device interaction protocol", () => {
       card_id: "daily-plan:daily_abc",
       playlist_revision: "einkrev_0123abcd",
       displayed_at: "2026-07-24T08:00:00+08:00",
-      battery_percent: 76.4
+      battery_percent: 76.4,
+      firmware_version: "0.4.0-alpha.1",
+      screen_model: "2.7in-264x176-prototype",
+      capabilities: ["buttons", "partial-refresh", "buttons", "invalid capability"]
     })).toMatchObject({
       eventId: "evt_ack_1",
       cardId: "daily-plan:daily_abc",
       stateVersion: 7,
       displayedAt: "2026-07-24T00:00:00.000Z",
-      batteryPercent: 76
+      batteryPercent: 76,
+      firmwareVersion: "0.4.0-alpha.1",
+      screenModel: "2.7in-264x176-prototype",
+      capabilities: ["buttons", "partial-refresh"]
     });
   });
 

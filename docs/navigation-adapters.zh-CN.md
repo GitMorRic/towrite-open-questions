@@ -2,13 +2,26 @@
 
 ## 当前已启用的目标
 
-当前版本注册了 Obsidian 与受限网页两种 Adapter：
+当前版本注册了 Obsidian、受限网页与本机批准深链接三种 Adapter：
 
 - Obsidian：支持文件、heading、block、上下文文本锚点、行号和 PDF 页码。
 - 网页：只识别用户显式填写的
   `[towrite-target:: https://example.com/path#fragment]`。普通任务正文中的
   URL 不会执行；HTTP、带账号密码的 URL、`file:`、`data:` 和
   `javascript:` 会被拒绝，打开时使用 `noopener,noreferrer`。
+- 本机深链接：只能来自设置页中的命名动作，例如 `vscode://`。硬件只知道
+  action ID；`file:`、`javascript:`、`ms-settings:`、浏览器协议、电话/短信
+  与任何 Shell/可执行文件调用都会被拒绝。
+
+Daily 任务可以声明：
+
+```md
+[towrite-action:: writing-focus]
+```
+
+`writing-focus` 必须先在 ToWrite 设置的“命名桌面动作”中创建并启用。动作
+可打开今日页、专注布局、Vault 内明确目标、显式 HTTPS，或单独批准的应用
+深链接。远端和 ESP32 永远只看到 opaque action/card ID。
 
 用户在悬浮今日小窗点击“稍后”后，插件会把当前笔记的上下文文本锚点和
 最后行号写到本地
@@ -38,10 +51,11 @@ ESP32 拉取 desired
 概要页和任务页都采用“先开始/继续，再打开”的一致语义。已经进行中的
 任务只打开，不重复写入计时转换。
 
-Daily 任务的目标优先级仍是：
+Daily 任务的目标优先级是：
 
 ```text
-显式 [towrite-target:: ...]
+命名 [towrite-action:: ...]
+  → 显式 [towrite-target:: ...]
   → 子任务自己的链接
   → 最近父分类的链接
   → 任务自己的 ^daily_* block
@@ -100,10 +114,11 @@ const int RIGHT_BUTTON_PIN = 4;
 代码现在使用版本化 `NavigationTarget` 和 `NavigationAdapter`：
 
 - `obsidian`：本地文件 + heading/block/text/line/PDF page；
-- `web`：预留 HTTPS URL + fragment/text fragment；
+- `web`：显式 HTTPS URL + fragment/text fragment；
+- `deep-link`：只由本机命名动作构造的应用 URI；
 - `provider`：预留其他笔记软件的 adapter ID + resource ID + location ID。
 
-V1 只注册 `ObsidianNavigationAdapter`。未来新增能力时，不修改按键协议，只增加受控 Adapter：
+V1 已注册 Obsidian、Web 与 DeepLink Adapter。未来新增能力时，不修改按键协议，只增加受控 Adapter：
 
 ```text
 displayed card
@@ -111,7 +126,8 @@ displayed card
   → Connector 本地授权与解析
   → NavigationRouter
       ├─ ObsidianAdapter（已启用）
-      ├─ WebAdapter（未来；仅 HTTPS + origin allowlist）
+      ├─ WebAdapter（已启用；仅显式 HTTPS）
+      ├─ DeepLinkAdapter（已启用；仅本机命名白名单）
       └─ OtherNotesAdapter（未来；固定 provider + resource ID）
 ```
 
