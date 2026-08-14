@@ -69,6 +69,11 @@ describe("dashboard viewport layout", () => {
     expect(component).toContain('class="previous-task-preview"');
     expect(component).toContain("打开这天的日记");
     expect(component).toContain("打开任务目标");
+    expect(component).toContain("togglePreviousGroup(dateItems)");
+    expect(component).toContain("indeterminate={dateSelected > 0 && dateSelected < dateItems.length}");
+    expect(component).toContain("合并完全重复项");
+    expect(component).toContain("migrationFeedbackError");
+    expect(component).toContain("正在迁移 ${selectedPreviousIds.size} 项");
   });
 
   it("uses left click and hover for project details while reserving right click for color", () => {

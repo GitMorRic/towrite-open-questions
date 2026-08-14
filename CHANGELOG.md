@@ -9,8 +9,9 @@
 - Added the Web Push subscription contract, privacy-safe generic lock-screen notifications, PWA notification routing, and an IndexedDB offline queue for mobile notes, captures, later actions, and revision-guarded completion.
 - Extended device display acknowledgements and heartbeats with optional firmware, screen, capability, and battery metadata while keeping the existing Device Event V2 tuple compatible.
 - Added a fail-closed ESP32-S3 panel-driver boundary: firmware acknowledges a card and enables buttons only after a real driver reports a successful physical refresh. The supplied template intentionally remains disabled until the actual 2.7-inch controller and pinout are confirmed.
+- Made historical carry-over visibly actionable: migration now reports in-place progress and errors, supports whole-day selection, prepends carried work to the safe top of today's planning surface, and can explicitly consolidate exact duplicates into one canonical destination while retaining an audit marker in every source note.
 - Added the 90-day hardware Alpha roadmap, hardware bring-up checklist, launch copy, protocol documentation, and mobile/desktop security boundaries.
-- Production verification: 127 test files and 781 tests, Obsidian lint with zero warnings, TypeScript checks, production build, Release asset validation, and the 2 MiB bundle limit.
+- Production verification: 127 test files and 786 tests, Obsidian lint with zero warnings, TypeScript checks, production build, Release asset validation, and the 2 MiB bundle limit.
 
 中文摘要：
 
@@ -19,8 +20,9 @@
 - 新增 Web Push 订阅协议、锁屏隐私通知、PWA 通知跳转，以及基于 IndexedDB 的离线记录队列；手机可记录文字、捕获内容、稍后处理，或在修订校验通过后完成任务。
 - 设备显示 ACK 与心跳新增可选的固件、屏幕、能力和电量信息，同时保持现有 Device Event V2 tuple 兼容。
 - 新增 fail-closed 的 ESP32-S3 屏幕驱动边界：只有真实驱动确认物理刷新成功后才回传 ACK 并启用按键。由于实际 2.7 英寸屏幕控制器和引脚尚未确认，仓库中的驱动模板会刻意保持禁用，避免把串口模拟误当成真机完成。
+- 历史迁移现在会在按钮附近显示进度与错误，支持按日期整组选中，并把迁入任务放到今日计划区域的安全顶部；用户还可以显式开启“完全重复合并”，让多个来源归入一个今日任务，同时在每份原日记保留迁移审计记录。
 - 新增 90 天硬件 Alpha 路线图、硬件 bring-up 清单、宣传文案、协议说明，以及手机与电脑的安全边界文档。
-- 生产验证：127 个测试文件、781 项测试，以及 Obsidian lint、类型检查、生产构建、Release 资产和 2 MiB 包体限制全部通过。
+- 生产验证：127 个测试文件、786 项测试，以及 Obsidian lint、类型检查、生产构建、Release 资产和 2 MiB 包体限制全部通过。
 
 ## 0.3.9 - 2026-08-13
 

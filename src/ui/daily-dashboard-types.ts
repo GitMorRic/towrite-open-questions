@@ -12,8 +12,10 @@ import type {
   DailyJournalDaySnapshot,
   DailyJournalMonthSnapshot,
   DailyJournalWriteBackResult,
+  DailyMigrationOptions,
   DailyPlanUpdate,
   DailySummary,
+  DailyTaskMigration,
   DailyTaskRevision
 } from "../daily/types";
 import type {
@@ -235,8 +237,9 @@ export interface DailyDashboardAdapter {
   getPreviousUnfinished?(date: string): DailyPlanItem[] | Promise<DailyPlanItem[]>;
   migratePreviousItems?(
     date: string,
-    items: Array<{ id: string; revision: DailyTaskRevision }>
-  ): void | Promise<void>;
+    items: Array<{ id: string; revision: DailyTaskRevision }>,
+    options?: DailyMigrationOptions
+  ): DailyTaskMigration[] | void | Promise<DailyTaskMigration[] | void>;
   dismissPreviousItems?(date: string): void | Promise<void>;
   dismissPreviousItem?(
     date: string,

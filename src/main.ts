@@ -163,6 +163,7 @@ import {
   dailyMigrationSelectionKey,
   expandDailyMigrationSelections,
   planDailyMigrationDestinations,
+  planDailyMigrationMergeUnits,
   unfinishedDailyLeafItems,
   DailyPlanConflictError,
   DailyPlanService,
@@ -196,6 +197,7 @@ import {
   type DailyPlanUpdate,
   type DailySummary,
   type DailyTaskMigration,
+  type DailyMigrationOptions,
   type DailyTaskTimingSnapshot,
   type DailyTimerCorrectionOptions,
   type TaskPoolDocument,
@@ -760,7 +762,8 @@ export default class ToWritePlugin extends Plugin {
       getDailySnapshot: () => this.getDailyDashboardSnapshot(),
       getDailyPlan: (date) => this.dailyPlanService.read(date),
       getPreviousDailyUnfinished: (date) => this.getPreviousDailyUnfinished(date),
-      migratePreviousDailyItems: (date, selections) => this.migratePreviousDailyItems(date, selections),
+      migratePreviousDailyItems: (date, selections, options) =>
+        this.migratePreviousDailyItems(date, selections, options),
       getDailyAnalyticsRange: (from, to) => this.getDailyAnalyticsRange(from, to),
       getDailyMonthlySummary: (month) => this.getDailyMonthlySummary(month),
       getDailyJournalDay: (date) => this.getDailyJournalDay(date),
@@ -7546,7 +7549,8 @@ export default class ToWritePlugin extends Plugin {
 
   private async migratePreviousDailyItems(
     date: string,
-    selections: Array<{ id: string; revision: DailyTaskRevision }>
+    selections: Array<{ id: string; revision: DailyTaskRevision }>,
+    options: DailyMigrationOptions = {}
   ): Promise<DailyTaskMigration[]> {
     const targetDate = formatDailyInputDate(date);
     const historicalItems = await this.collectHistoricalDailyUnfinished(targetDate, true);
@@ -7605,8 +7609,17 @@ export default class ToWritePlugin extends Plugin {
           : `The destination Daily note must be repaired before migration: ${destinationBlocking[0].message}`
       );
     }
-    const planned = planDailyMigrationDestinations(validated, destination.items, targetDate);
-    for (const { item } of planned) {
+    const units = planDailyMigrationMergeUnits(
+      validated,
+      destination.items,
+      Boolean(options.mergeExactDuplicates)
+    );
+    const representatives = units
+      .filter((unit) => !unit.destinationItem)
+      .map((unit) => unit.items[0]);
+    const planned = planDailyMigrationDestinations(representatives, destination.items, targetDate);
+    const planBySource = new Map(planned.map((entry) => [dailyMigrationSelectionKey(entry.item), entry]));
+    for (const item of validated) {
       const sourceDate = item.revision.date!;
       const current = await this.dailyPlanService.get(item.id, sourceDate);
       if (!current || current.revision.value !== item.revision.value) {
@@ -7628,14 +7641,40 @@ export default class ToWritePlugin extends Plugin {
     }
 
     const migrations: DailyTaskMigration[] = [];
-    for (const { item, destinationId } of planned) {
-      migrations.push(await this.moveDailyItemToTomorrow(
-        item.id,
-        item.revision,
-        targetDate,
-        destinationId
-      ));
+    // Prepending each unit in reverse preserves the review order at the top of
+    // today's planning surface instead of reversing the selected batch.
+    for (const unit of [...units].reverse()) {
+      const unitMigrations: DailyTaskMigration[] = [];
+      let destinationTaskId = unit.destinationItem?.id;
+      if (!destinationTaskId) {
+        const representative = unit.items[0];
+        const entry = planBySource.get(dailyMigrationSelectionKey(representative));
+        if (!entry) throw new Error("Daily migration destination plan is incomplete.");
+        const migrated = await this.moveDailyItemToTomorrow(
+          representative.id,
+          representative.revision,
+          {
+            destinationDate: targetDate,
+            destinationTaskId: entry.destinationId,
+            placement: "prepend",
+            refreshCache: false
+          }
+        );
+        destinationTaskId = migrated.destinationTaskId;
+        unitMigrations.push(migrated);
+      }
+      const mergedSources = unit.destinationItem ? unit.items : unit.items.slice(1);
+      for (const item of mergedSources) {
+        unitMigrations.push(await this.recordDailyMigrationToExistingDestination(
+          item,
+          targetDate,
+          destinationTaskId,
+          unit.destinationItem?.revision
+        ));
+      }
+      migrations.unshift(...unitMigrations);
     }
+    await this.refreshDailyPlanCache();
     delete this.dailyCarryoverReviews[targetDate];
     this.historicalDailyUnfinishedCache.delete(targetDate);
     await this.savePluginData();
@@ -10277,8 +10316,26 @@ export default class ToWritePlugin extends Plugin {
         }
         return this.getPreviousDailyUnfinished(normalizedDate);
       },
-      migratePreviousItems: async (date, selections) => {
-        await this.migratePreviousDailyItems(formatDailyInputDate(date), selections);
+      migratePreviousItems: async (date, selections, options) => {
+        try {
+          const migrations = await this.migratePreviousDailyItems(
+            formatDailyInputDate(date),
+            selections,
+            options
+          );
+          new Notice(
+            this.settings.language === "zh"
+              ? `已迁移 ${migrations.length} 项到今天${options?.mergeExactDuplicates ? "；完全重复项已合并" : ""}。`
+              : `Migrated ${migrations.length} item(s) into today${options?.mergeExactDuplicates ? "; exact duplicates were consolidated" : ""}.`
+          );
+          return migrations;
+        } catch (error) {
+          new Notice(
+            `${this.settings.language === "zh" ? "迁移失败" : "Migration failed"}: ${messageForError(error)}`,
+            10000
+          );
+          throw error;
+        }
       },
       dismissPreviousItems: async (date) => {
         await this.dismissPreviousDailyUnfinished(formatDailyInputDate(date));
@@ -10631,8 +10688,12 @@ export default class ToWritePlugin extends Plugin {
   private async moveDailyItemToTomorrow(
     id: string,
     revision: DailyTaskRevision,
-    destinationDate?: string,
-    destinationTaskId?: string
+    options: {
+      destinationDate?: string;
+      destinationTaskId?: string;
+      placement?: "append" | "prepend";
+      refreshCache?: boolean;
+    } = {}
   ): Promise<DailyTaskMigration> {
     const date = await this.dateForDailyItem(id, revision);
     const item = await this.dailyPlanService.get(id, date);
@@ -10642,10 +10703,10 @@ export default class ToWritePlugin extends Plugin {
     await this.assertDailyLifecycleLeaf(item, date);
     const tomorrow = new Date(`${date}T12:00:00`);
     tomorrow.setDate(tomorrow.getDate() + 1);
-    const tomorrowDate = destinationDate
-      ? formatDailyInputDate(destinationDate)
+    const tomorrowDate = options.destinationDate
+      ? formatDailyInputDate(options.destinationDate)
       : formatDailyInputDate(tomorrow);
-    const targetTaskId = destinationTaskId ?? item.id;
+    const targetTaskId = options.destinationTaskId ?? item.id;
     let createdTomorrow: DailyPlanItem | undefined;
     let createdTomorrowWasNew = false;
     let reassignedPool: TaskPoolItem | undefined;
@@ -10683,7 +10744,7 @@ export default class ToWritePlugin extends Plugin {
           nextStep: item.nextStep,
           priority: item.priority,
           tags: item.tags
-        });
+        }, undefined, { placement: options.placement ?? "prepend" });
         createdTomorrow = creation.item;
         createdTomorrowWasNew = creation.created;
       } else {
@@ -10706,12 +10767,12 @@ export default class ToWritePlugin extends Plugin {
           tags: item.tags,
           primary: item.primary,
           minimum: item.minimum
-        });
+        }, undefined, { placement: options.placement ?? "prepend" });
         createdTomorrow = creation.item;
         createdTomorrowWasNew = creation.created;
       }
       if (!createdTomorrow) throw new Error("Daily migration did not create its destination task.");
-      if (destinationTaskId && !createdTomorrowWasNew) {
+      if (options.destinationTaskId && !createdTomorrowWasNew) {
         throw new DailyPlanConflictError(
           "id-reused",
           "The preflighted Daily migration destination id became occupied before it could be written."
@@ -10748,12 +10809,51 @@ export default class ToWritePlugin extends Plugin {
       }
       throw error;
     }
-    await this.refreshDailyPlanCache();
+    if (options.refreshCache !== false) await this.refreshDailyPlanCache();
     if (!migration) throw new Error("Daily migration did not produce an audit record.");
     await this.recordDailyTransition("migrate", item, {
       eventId: migration.migrationId,
       sourceDate: date,
       destinationDate: tomorrowDate
+    });
+    return migration;
+  }
+
+  private async recordDailyMigrationToExistingDestination(
+    item: DailyPlanItem,
+    destinationDate: string,
+    destinationTaskId: string,
+    expectedDestinationRevision?: DailyTaskRevision
+  ): Promise<DailyTaskMigration> {
+    const sourceDate = item.revision.date;
+    if (!sourceDate) throw new DailyPlanConflictError("invalid-state", "Historical task has no source date.");
+    const [source, destination] = await Promise.all([
+      this.dailyPlanService.get(item.id, sourceDate),
+      this.dailyPlanService.get(destinationTaskId, destinationDate)
+    ]);
+    if (!source || source.revision.value !== item.revision.value) {
+      throw new DailyPlanConflictError(
+        "revision-changed",
+        "A historical Daily task changed while exact duplicates were being consolidated."
+      );
+    }
+    if (!destination || (expectedDestinationRevision
+      && destination.revision.value !== expectedDestinationRevision.value)) {
+      throw new DailyPlanConflictError(
+        "revision-changed",
+        "The exact-duplicate destination changed while the migration was running."
+      );
+    }
+    await this.assertDailyLifecycleLeaf(source, sourceDate);
+    const migration = await this.dailyPlanService.recordMigration(source.id, source.revision, {
+      date: destinationDate,
+      taskId: destination.id,
+      migrationId: `mig_${randomTokenFragment()}`
+    }, sourceDate);
+    await this.recordDailyTransition("migrate", source, {
+      eventId: migration.migrationId,
+      sourceDate,
+      destinationDate
     });
     return migration;
   }

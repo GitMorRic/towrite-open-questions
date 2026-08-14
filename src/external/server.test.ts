@@ -90,13 +90,16 @@ describe("external server", () => {
     await handle.handleRequest(new FakeRequest(
       "POST",
       "/api/v1/daily/plans/2026-07-24/migrate-previous",
-      { selections: [{ id: item.id, revision: migrationRevision }] }
+      {
+        selections: [{ id: item.id, revision: migrationRevision }],
+        options: { mergeExactDuplicates: true }
+      }
     ), migrated);
     expect(migrated.statusCode).toBe(200);
     expect(migratePreviousDailyItems).toHaveBeenCalledWith("2026-07-24", [{
       id: item.id,
       revision: migrationRevision
-    }]);
+    }], { mergeExactDuplicates: true });
 
     const invalidMigrationDate = new FakeResponse();
     await handle.handleRequest(new FakeRequest(

@@ -391,6 +391,15 @@ export interface DailyTaskMigration {
   destinationTaskId: string;
 }
 
+/** User-approved policy for one historical carry-over batch. */
+export interface DailyMigrationOptions {
+  /**
+   * Consolidate only byte-equivalent task intent into one destination item.
+   * Similar text with different context is never merged automatically.
+   */
+  mergeExactDuplicates?: boolean;
+}
+
 export interface DailyPlanCreateInput {
   id?: string;
   date?: string | Date;

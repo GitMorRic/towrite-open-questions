@@ -78,6 +78,8 @@ export interface DailyPlanWriteSurface {
   kind: "todo" | "plan" | "free-form" | "none";
   /** Zero-based first source line owned by this surface. */
   start: number;
+  /** Safe insertion point for a task that should lead this planning surface. */
+  prepend: number;
   /** Zero-based insertion point before the next source line. */
   insertion: number;
 }
@@ -263,12 +265,13 @@ export function resolveDailyPlanWriteSurface(
     return {
       kind: "free-form",
       start: surface.documentScope.start,
+      prepend: Math.min(...surface.nodes.map((node) => node.index)),
       insertion: Math.max(...insertionNodes.map((node) => node.endIndex + 1))
     };
   }
   if (surface.canonicalScope) return sectionWriteSurface("todo", surface.canonicalScope);
   if (surface.planScope) return sectionWriteSurface("plan", surface.planScope);
-  return { kind: "none", start: 0, insertion: lines.length };
+  return { kind: "none", start: 0, prepend: 0, insertion: lines.length };
 }
 
 function resolveDailyPlanningSurface(
@@ -368,7 +371,7 @@ function sectionWriteSurface(
   kind: "todo" | "plan",
   scope: TodoScope
 ): DailyPlanWriteSurface {
-  return { kind, start: scope.start, insertion: scope.end };
+  return { kind, start: scope.start, prepend: scope.start, insertion: scope.end };
 }
 
 function nodeIsInScope(node: ListNode, scope: TodoScope | undefined): boolean {

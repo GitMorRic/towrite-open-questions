@@ -55,6 +55,11 @@ export interface DailyPlanFormatOptions {
   tasksCompatibilityOutput?: boolean;
 }
 
+export interface DailyPlanCreateOptions {
+  /** Defaults to append. Migration uses prepend to surface carried work first. */
+  placement?: "append" | "prepend";
+}
+
 export class DailyPlanConflictError extends Error {
   constructor(
     public readonly code:
@@ -211,7 +216,8 @@ export class DailyPlanService {
    */
   async createWithResult(
     input: DailyPlanCreateInput,
-    now = this.now()
+    now = this.now(),
+    options: DailyPlanCreateOptions = {}
   ): Promise<{ item: DailyPlanItem; created: boolean }> {
     const date = normalizeDate(input.date ?? now);
     const path = this.pathForDate(date);
@@ -259,7 +265,7 @@ export class DailyPlanService {
         todoHeading: this.todoHeading
       }, formatTaskBlock(desired, undefined, {
         tasksCompatibilityOutput: this.tasksCompatibilityOutput
-      }));
+      }), options.placement ?? "append");
       await this.storage.writeText(path, next);
       await this.notify(path);
       const created = this.parse(next, path, date).items.find((item) => item.id === id);
@@ -1452,7 +1458,8 @@ function appendToPlanningSurface(
   date: string,
   source: ResolvedSource,
   headings: { planHeading: string; todoHeading: string },
-  block: string
+  block: string,
+  placement: "append" | "prepend" = "append"
 ): string {
   let current = ensureDateScope(markdown, date, source);
   let surface = resolveDailyPlanWriteSurface(current, date, {
@@ -1470,6 +1477,21 @@ function appendToPlanningSurface(
   }
   const lines = current.replace(/\s+$/u, "").split(/\r?\n/u);
   const start = Math.min(surface.start, lines.length);
+  if (placement === "prepend") {
+    let insertion = Math.min(surface.prepend, lines.length);
+    // Explicit sections conventionally keep one visual blank after their
+    // heading. Insert after that whitespace but before the first task.
+    while (surface.kind !== "free-form" && insertion < surface.insertion && !lines[insertion].trim()) {
+      insertion += 1;
+    }
+    lines.splice(
+      insertion,
+      0,
+      ...block.split("\n"),
+      ...(insertion < lines.length && lines[insertion].trim() ? [""] : [])
+    );
+    return ensureTrailingNewline(lines.join("\n"));
+  }
   let insertion = Math.min(surface.insertion, lines.length);
   while (surface.kind !== "free-form" && insertion > start && !lines[insertion - 1].trim()) {
     insertion -= 1;

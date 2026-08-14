@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { DailyPlanItem } from "./types";
 import {
+  analyzeDailyMigrationDuplicates,
   dailyMigrationSelectionKey,
   expandDailyMigrationSelections,
   planDailyMigrationDestinations,
+  planDailyMigrationMergeUnits,
   unfinishedDailyLeafItems
 } from "./migration";
 
@@ -103,5 +105,74 @@ describe("Daily migration hierarchy", () => {
     expect(new Set(planned.map((entry) => entry.destinationId)).size).toBe(2);
     expect(planned.every((entry) => entry.destinationId !== occupied.id)).toBe(true);
     expect(planned.every((entry) => /^daily_[0-9a-f]{32}$/u.test(entry.destinationId))).toBe(true);
+  });
+
+  it("previews exact duplicate intent across dates and an existing destination", () => {
+    const older = item("older");
+    older.text = "继续 [[同一个项目]]";
+    older.revision.date = "2026-08-10";
+    const recent = item("recent");
+    recent.text = "继续   [[同一个项目]]";
+    recent.revision.date = "2026-08-12";
+    const today = item("today");
+    today.date = "2026-08-13";
+    today.scheduledDate = "2026-08-13";
+    today.text = "继续 [[同一个项目]]";
+
+    const groups = analyzeDailyMigrationDuplicates([older, recent], [today]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].sourceItems.map((entry) => entry.id)).toEqual(["older", "recent"]);
+    expect(groups[0].destinationItem?.id).toBe("today");
+    expect(planDailyMigrationMergeUnits([older, recent], [today], true)).toEqual([{
+      items: [older, recent],
+      destinationItem: today
+    }]);
+  });
+
+  it("never auto-merges same-text items with different authored context or Task Pool identity", () => {
+    const first = item("first");
+    first.text = "Prepare launch";
+    first.dueDate = "2026-08-14";
+    first.dueDateExplicit = true;
+    const differentDue = item("different-due");
+    differentDue.text = "Prepare launch";
+    differentDue.dueDate = "2026-08-15";
+    differentDue.dueDateExplicit = true;
+    const poolFirst = item("pool-first");
+    poolFirst.text = "Prepare launch";
+    poolFirst.taskRef = "pool_task";
+    const poolSecond = item("pool-second");
+    poolSecond.text = "Prepare launch";
+    poolSecond.taskRef = "pool_task";
+
+    expect(analyzeDailyMigrationDuplicates([first, differentDue, poolFirst, poolSecond])).toEqual([]);
+    expect(planDailyMigrationMergeUnits([first, differentDue, poolFirst, poolSecond], [], true)
+      .map((unit) => unit.items.map((entry) => entry.id)))
+      .toEqual([["first"], ["different-due"], ["pool-first"], ["pool-second"]]);
+  });
+
+  it("keeps exact duplicates separate unless the user enables consolidation", () => {
+    const first = item("first-exact");
+    first.text = "same";
+    const second = item("second-exact");
+    second.text = "same";
+
+    expect(planDailyMigrationMergeUnits([first, second], [], false)
+      .map((unit) => unit.items.map((entry) => entry.id)))
+      .toEqual([["first-exact"], ["second-exact"]]);
+    expect(planDailyMigrationMergeUnits([first, second], [], true)
+      .map((unit) => unit.items.map((entry) => entry.id)))
+      .toEqual([["first-exact", "second-exact"]]);
+  });
+
+  it("does not consolidate unfinished carry-over into a completed destination", () => {
+    const source = item("unfinished-source");
+    source.text = "same";
+    const completed = item("completed-today", undefined, "done");
+    completed.text = "same";
+
+    expect(analyzeDailyMigrationDuplicates([source], [completed])).toEqual([]);
+    expect(planDailyMigrationMergeUnits([source], [completed], true)).toEqual([{ items: [source] }]);
   });
 });

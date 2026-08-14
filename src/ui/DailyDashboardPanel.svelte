@@ -79,7 +79,10 @@
   } from "./daily-dashboard-state";
   import WorkPoolPanel from "./WorkPoolPanel.svelte";
   import { dailyDisplayText } from "../daily/display-text";
-  import { dailyMigrationSelectionKey } from "../daily/migration";
+  import {
+    analyzeDailyMigrationDuplicates,
+    dailyMigrationSelectionKey
+  } from "../daily/migration";
 
   export let dailyApi: DailyDashboardAdapter | undefined = undefined;
   export let onOpenCapture: (() => void) | undefined = undefined;
@@ -174,6 +177,9 @@
   let projectColorPopover: HTMLElement | undefined;
   let previousUnfinished: DailyPlanItem[] = [];
   let selectedPreviousIds = new Set<string>();
+  let mergeExactPreviousDuplicates = false;
+  let migrationFeedback = "";
+  let migrationFeedbackError = false;
   let previewPreviousItemId = "";
   let analyticsRange: DailyAnalyticsRange | undefined;
   let monthlySummary: DailyMonthlySummary | undefined;
@@ -209,13 +215,49 @@
     selectedPreviousIds = next;
   }
 
+  function selectedPreviousCount(items: readonly DailyPlanItem[]): number {
+    return items.filter((item) => selectedPreviousIds.has(dailyMigrationSelectionKey(item))).length;
+  }
+
+  function togglePreviousGroup(items: readonly DailyPlanItem[]): void {
+    const next = new Set(selectedPreviousIds);
+    const allSelected = selectedPreviousCount(items) === items.length;
+    for (const item of items) {
+      const key = dailyMigrationSelectionKey(item);
+      if (allSelected) next.delete(key);
+      else next.add(key);
+    }
+    selectedPreviousIds = next;
+  }
+
+  function toggleAllPrevious(): void {
+    togglePreviousGroup(previousUnfinished);
+  }
+
   async function migrateSelectedPrevious(): Promise<void> {
     const selected = previousUnfinished.filter((item) => selectedPreviousIds.has(dailyMigrationSelectionKey(item)));
-    if (!selected.length || !dailyApi?.migratePreviousItems) return;
-    await run("migrate-previous", () => dailyApi?.migratePreviousItems?.(
-      selectedDate,
-      selected.map((item) => ({ id: item.id, revision: item.revision }))
-    ));
+    if (!selected.length || !dailyApi?.migratePreviousItems || busy) return;
+    busy = "migrate-previous";
+    error = "";
+    migrationFeedbackError = false;
+    migrationFeedback = `正在预检并迁移 ${selected.length} 项，请稍候…`;
+    try {
+      await dailyApi.migratePreviousItems(
+        selectedDate,
+        selected.map((item) => ({ id: item.id, revision: item.revision })),
+        { mergeExactDuplicates: mergeExactPreviousDuplicates }
+      );
+      selectedPreviousIds = new Set();
+      migrationFeedback = `已迁移 ${selected.length} 项到今日计划顶部。`;
+      await refresh();
+    } catch (cause) {
+      const message = messageForError(cause);
+      error = message;
+      migrationFeedbackError = true;
+      migrationFeedback = `迁移失败：${message}`;
+    } finally {
+      busy = "";
+    }
   }
 
   async function dismissPreviousItem(item: DailyPlanItem): Promise<void> {
@@ -293,6 +335,10 @@
   $: selectedDate = dailyDateForPlanningDay(planningDay);
   $: previousMigrationGroups = groupPreviousDailyItems(previousUnfinished);
   $: items = (snapshot?.plan.items ?? []) as DailyPlanItemPresentation[];
+  $: previousDuplicateGroups = analyzeDailyMigrationDuplicates(previousUnfinished, items);
+  $: previousDuplicateByItem = new Map(previousDuplicateGroups.flatMap((group) =>
+    group.sourceItems.map((item) => [dailyMigrationSelectionKey(item), group] as const)
+  ));
   $: overview = selectDailyOverview(items);
   $: todoItems = items.filter((item) => !isDailyItemComplete(item) && item.status === "todo");
   $: inProgressItems = items.filter((item) => !isDailyItemComplete(item) && item.status === "in-progress");
@@ -1389,10 +1435,46 @@
           <ChevronDown size={15} />
         </summary>
         <div class="previous-task-list">
+          {#if previousDuplicateGroups.length > 0}
+            <section class="migration-preflight" aria-label="迁移重复项预检">
+              <div>
+                <strong>迁移预检发现 {previousDuplicateGroups.length} 组完全重复</strong>
+                <small>仅正文和关键上下文完全一致时才允许合并；来源日记仍会分别保留迁移记录。</small>
+              </div>
+              <label>
+                <input type="checkbox" bind:checked={mergeExactPreviousDuplicates} />
+                <span>合并完全重复项</span>
+              </label>
+              <div class="migration-duplicate-list">
+                {#each previousDuplicateGroups as duplicate (duplicate.key)}
+                  <span>
+                    <b>{compactTaskText(duplicate.sourceItems[0].text)}</b>
+                    <small>
+                      {duplicate.sourceItems.map((item) => item.revision.date).filter(Boolean).join("、")}
+                      {duplicate.destinationItem ? " · 今天已有，将归入现有任务" : ` · ${duplicate.sourceItems.length} 项归为一项`}
+                    </small>
+                  </span>
+                {/each}
+              </div>
+            </section>
+          {/if}
           {#each previousMigrationGroups as dateGroup (dateGroup.date)}
+            {@const dateItems = dateGroup.projects.flatMap((project) => project.items)}
+            {@const dateSelected = selectedPreviousCount(dateItems)}
             <details class="previous-date-group" open>
               <summary>
-                <span><CalendarDays size={14} /><strong>{dateGroup.date}</strong><em>{dateGroup.count} 项</em></span>
+                <span>
+                  <input
+                    class="previous-date-select"
+                    type="checkbox"
+                    aria-label={`选择 ${dateGroup.date} 的全部 ${dateGroup.count} 项`}
+                    checked={dateSelected === dateItems.length}
+                    indeterminate={dateSelected > 0 && dateSelected < dateItems.length}
+                    on:click|stopPropagation
+                    on:change|stopPropagation={() => togglePreviousGroup(dateItems)}
+                  />
+                  <CalendarDays size={14} /><strong>{dateGroup.date}</strong><em>{dateSelected}/{dateGroup.count} 项</em>
+                </span>
                 <span class="previous-date-actions">
                   {#if dailyApi.openPlanSource}
                     <button
@@ -1423,7 +1505,14 @@
                           type="button"
                           aria-expanded={previewPreviousItemId === dailyMigrationSelectionKey(item)}
                           on:click={() => (previewPreviousItemId = previewPreviousItemId === dailyMigrationSelectionKey(item) ? "" : dailyMigrationSelectionKey(item))}
-                        >{compactTaskText(item.text)}</button>
+                        >
+                          <span>{compactTaskText(item.text)}</span>
+                          {#if previousDuplicateByItem.has(dailyMigrationSelectionKey(item))}
+                            <em class="duplicate-badge">
+                              {previousDuplicateByItem.get(dailyMigrationSelectionKey(item))?.destinationItem ? "今天已有" : "完全重复"}
+                            </em>
+                          {/if}
+                        </button>
                         <div class="previous-task-actions">
                           <button
                             type="button"
@@ -1457,12 +1546,20 @@
           {/each}
         </div>
         <footer>
+          <div class="migration-footer-status">
+            <button class="secondary" type="button" disabled={Boolean(busy)} on:click={toggleAllPrevious}>
+              {selectedPreviousIds.size === previousUnfinished.length ? "清除全部" : "选择全部"}
+            </button>
+            {#if migrationFeedback}
+              <span class:error={migrationFeedbackError} role={migrationFeedbackError ? "alert" : "status"}>{migrationFeedback}</span>
+            {/if}
+          </div>
           <button
             class="primary"
             type="button"
             disabled={Boolean(busy) || selectedPreviousIds.size === 0}
             on:click={migrateSelectedPrevious}
-          >迁移所选 {selectedPreviousIds.size} 项到今天</button>
+          >{busy === "migrate-previous" ? `正在迁移 ${selectedPreviousIds.size} 项…` : `迁移所选 ${selectedPreviousIds.size} 项到今天顶部`}</button>
         </footer>
       </details>
     {/if}
@@ -2465,10 +2562,18 @@
   .previous-tasks-card > summary > span { display: flex; align-items: center; gap: 7px; }
   .previous-tasks-card > summary small { color: var(--text-muted); }
   .previous-task-list { display: grid; gap: 9px; padding: 0 12px 10px; }
+  .migration-preflight { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; padding: 10px; border: 1px solid color-mix(in srgb, var(--interactive-accent) 30%, var(--daily-border)); border-radius: 9px; background: color-mix(in srgb, var(--interactive-accent) 7%, var(--daily-raised)); }
+  .migration-preflight > div:first-child { display: grid; gap: 2px; }
+  .migration-preflight small { color: var(--text-muted); font-size: .68rem; }
+  .migration-preflight > label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-size: .72rem; }
+  .migration-duplicate-list { grid-column: 1 / -1; display: grid; gap: 4px; }
+  .migration-duplicate-list > span { display: flex; justify-content: space-between; gap: 10px; min-width: 0; padding-top: 4px; border-top: 1px solid var(--daily-border); }
+  .migration-duplicate-list b { min-width: 0; overflow: hidden; font-size: .7rem; text-overflow: ellipsis; white-space: nowrap; }
   .previous-date-group { overflow: hidden; border: 1px solid var(--daily-border); border-radius: 9px; background: var(--daily-raised); }
   .previous-date-group > summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; cursor: pointer; list-style: none; background: var(--background-secondary); }
   .previous-date-group > summary::-webkit-details-marker { display: none; }
   .previous-date-group > summary > span { display: flex; align-items: center; gap: 7px; }
+  .previous-date-select { flex: none; margin: 0 2px 0 0; }
   .previous-date-group em { color: var(--text-muted); font-size: .65rem; font-style: normal; font-weight: 500; }
   .previous-date-group button { display: inline-grid; padding: 4px; place-items: center; color: var(--text-muted); background: transparent; }
   .previous-date-actions { margin-left: auto; }
@@ -2482,7 +2587,9 @@
   .previous-task-row:hover,
   .previous-task-row.previewing { background: var(--background-modifier-hover); }
   .previous-task-row > input { margin: 0; justify-self: center; }
-  .previous-task-title { min-width: 0; padding: 2px 0; overflow: hidden; border: 0; color: var(--text-normal); background: transparent; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+  .previous-task-title { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 2px 0; overflow: hidden; border: 0; color: var(--text-normal); background: transparent; text-align: left; }
+  .previous-task-title > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .duplicate-badge { flex: none; padding: 2px 5px; border-radius: 999px; color: var(--interactive-accent); background: color-mix(in srgb, var(--interactive-accent) 12%, transparent); font-size: .6rem; font-style: normal; }
   .previous-task-actions { display: flex; align-items: center; gap: 2px; opacity: .55; }
   .previous-task-row:hover .previous-task-actions,
   .previous-task-row:focus-within .previous-task-actions { opacity: 1; }
@@ -2491,7 +2598,11 @@
   .previous-task-preview > span strong { color: var(--text-normal); }
   .previous-task-preview footer { display: flex; justify-content: flex-start; gap: 6px; padding: 4px 0 0; }
   .previous-task-preview footer button { display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px; border: 1px solid var(--daily-border); }
-  .previous-tasks-card > footer { display: flex; justify-content: flex-end; gap: 7px; padding: 0 12px 12px; }
+  .previous-tasks-card > footer { display: flex; align-items: center; justify-content: space-between; gap: 9px; padding: 0 12px 12px; }
+  .migration-footer-status { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .migration-footer-status > span { color: var(--text-muted); font-size: .68rem; overflow-wrap: anywhere; }
+  .migration-footer-status > span.error { color: var(--text-error); }
+  .migration-footer-status .secondary { padding: 6px 9px; }
 
   .analytics-overview {
     display: grid;

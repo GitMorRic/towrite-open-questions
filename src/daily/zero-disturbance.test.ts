@@ -158,6 +158,41 @@ describe("zero-disturbance Daily editing", () => {
     ]);
   });
 
+  it("can prepend migrated work to the planning surface without crossing the date heading", async () => {
+    const path = "sync/Todo_and_tosolve/20260814.md";
+    const original = [
+      "---",
+      "created: 2026-08-14",
+      "---",
+      "# 2026-08-14",
+      "",
+      "- [ ] 今天原有任务 ^daily_existing0000000000000000000000",
+      "",
+      "## 随记",
+      "正文"
+    ].join("\n");
+    const storage = new MemoryStorage(path, original);
+    const service = new DailyPlanService(storage, {
+      source: {
+        kind: "daily-note",
+        dailyRoot: "sync/Todo_and_tosolve",
+        dateFormat: "YYYYMMDD"
+      }
+    });
+
+    await service.createWithResult({
+      id: "daily_carried00000000000000000000000",
+      text: "迁入并置顶",
+      date: "2026-08-14"
+    }, undefined, { placement: "prepend" });
+
+    const written = storage.files.get(path) ?? "";
+    expect(written.indexOf("created: 2026-08-14")).toBeLessThan(written.indexOf("迁入并置顶"));
+    expect(written.indexOf("# 2026-08-14")).toBeLessThan(written.indexOf("迁入并置顶"));
+    expect(written.indexOf("迁入并置顶")).toBeLessThan(written.indexOf("今天原有任务"));
+    expect(written.indexOf("迁入并置顶")).toBeLessThan(written.indexOf("## 随记"));
+  });
+
   it("writes into an empty explicit ToDo instead of beside an isolated journal checkbox", async () => {
     const path = "Daily/2026-08-13.md";
     const original = [

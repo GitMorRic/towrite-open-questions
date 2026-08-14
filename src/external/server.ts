@@ -61,6 +61,7 @@ import {
   type DailyJournalDaySnapshot,
   type DailyJournalMonthSnapshot,
   type DailyJournalWriteBackResult,
+  type DailyMigrationOptions,
   type DailyMonthlySummary,
   type DailyPlanCreateInput,
   type DailyPlanDocument,
@@ -177,7 +178,8 @@ interface ExternalApiServerOptions {
   getPreviousDailyUnfinished?(date: string): Promise<DailyPlanItem[]>;
   migratePreviousDailyItems?(
     date: string,
-    selections: Array<{ id: string; revision: DailyTaskRevision }>
+    selections: Array<{ id: string; revision: DailyTaskRevision }>,
+    options?: DailyMigrationOptions
   ): Promise<DailyTaskMigration[]>;
   getDailyAnalyticsRange?(from: string, to: string): Promise<DailyAnalyticsRange>;
   getDailyMonthlySummary?(month: string): Promise<DailyMonthlySummary>;
@@ -821,8 +823,9 @@ export class ToWriteExternalApiServer {
       }
       const body = await readJsonBody(request);
       const selections = readDailyMigrationSelections(body);
+      const options = readDailyMigrationOptions(body);
       this.writeJson(response, 200, {
-        data: await this.options.migratePreviousDailyItems(migratePreviousMatch[1], selections)
+        data: await this.options.migratePreviousDailyItems(migratePreviousMatch[1], selections, options)
       });
       return;
     }
@@ -2468,6 +2471,18 @@ function readDailyMigrationSelections(
     if (!id) throw new ExternalApiError(400, "Each Daily migration selection requires an id.");
     return { id, revision: readDailyRevision(record) };
   });
+}
+
+function readDailyMigrationOptions(body: Record<string, unknown>): DailyMigrationOptions {
+  if (body.options === undefined) return {};
+  if (!body.options || typeof body.options !== "object" || Array.isArray(body.options)) {
+    throw new ExternalApiError(400, "Daily migration options must be an object.");
+  }
+  const options = body.options as Record<string, unknown>;
+  if (options.mergeExactDuplicates !== undefined && typeof options.mergeExactDuplicates !== "boolean") {
+    throw new ExternalApiError(400, "mergeExactDuplicates must be a boolean.");
+  }
+  return { mergeExactDuplicates: options.mergeExactDuplicates === true };
 }
 
 function requireDateQuery(url: URL, key: string): string {
