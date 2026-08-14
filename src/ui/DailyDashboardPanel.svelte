@@ -16,6 +16,7 @@
     FileDiff,
     FilePlus2,
     FolderTree,
+    GripVertical,
     History,
     EyeOff,
     LayoutList,
@@ -81,6 +82,10 @@
   import { dailyDisplayText } from "../daily/display-text";
   import {
     analyzeDailyMigrationDuplicates,
+    buildDailyMigrationPreview,
+    dailyMigrationMergeUnitKey,
+    orderDailyMigrationMergeUnits,
+    type DailyMigrationMergeUnit,
     dailyMigrationSelectionKey
   } from "../daily/migration";
 
@@ -178,6 +183,10 @@
   let previousUnfinished: DailyPlanItem[] = [];
   let selectedPreviousIds = new Set<string>();
   let mergeExactPreviousDuplicates = false;
+  let migrationPreviewOrder: string[] = [];
+  let migrationPreviewTextDrafts: Record<string, string> = {};
+  let editingMigrationPreviewKey = "";
+  let draggedMigrationPreviewKey = "";
   let migrationFeedback = "";
   let migrationFeedbackError = false;
   let previewPreviousItemId = "";
@@ -234,9 +243,101 @@
     togglePreviousGroup(previousUnfinished);
   }
 
+  function migrationPreviewText(unit: DailyMigrationMergeUnit): string {
+    const key = dailyMigrationMergeUnitKey(unit);
+    return migrationPreviewTextDrafts[key] ?? unit.destinationItem?.text ?? unit.items[0]?.text ?? "";
+  }
+
+  function canRenameMigrationPreviewUnit(unit: DailyMigrationMergeUnit): boolean {
+    return !unit.destinationItem && !unit.items[0]?.taskRef;
+  }
+
+  function canReorderMigrationPreviewUnit(unit: DailyMigrationMergeUnit): boolean {
+    return !unit.destinationItem;
+  }
+
+  function beginMigrationPreviewEdit(unit: DailyMigrationMergeUnit): void {
+    if (!canRenameMigrationPreviewUnit(unit)) return;
+    const key = dailyMigrationMergeUnitKey(unit);
+    if (migrationPreviewTextDrafts[key] === undefined) {
+      migrationPreviewTextDrafts = { ...migrationPreviewTextDrafts, [key]: migrationPreviewText(unit) };
+    }
+    editingMigrationPreviewKey = key;
+  }
+
+  function updateMigrationPreviewText(key: string, event: Event): void {
+    const input = event.currentTarget as HTMLInputElement;
+    migrationPreviewTextDrafts = { ...migrationPreviewTextDrafts, [key]: input.value };
+  }
+
+  function finishMigrationPreviewEdit(key: string): void {
+    const value = migrationPreviewTextDrafts[key]?.trim() ?? "";
+    if (!value) return;
+    migrationPreviewTextDrafts = { ...migrationPreviewTextDrafts, [key]: value };
+    editingMigrationPreviewKey = "";
+  }
+
+  function resetMigrationPreviewEdit(unit: DailyMigrationMergeUnit): void {
+    const key = dailyMigrationMergeUnitKey(unit);
+    const next = { ...migrationPreviewTextDrafts };
+    delete next[key];
+    migrationPreviewTextDrafts = next;
+    editingMigrationPreviewKey = "";
+  }
+
+  function handleMigrationPreviewEditKeydown(event: KeyboardEvent, unit: DailyMigrationMergeUnit): void {
+    const key = dailyMigrationMergeUnitKey(unit);
+    if (event.key === "Enter") {
+      event.preventDefault();
+      finishMigrationPreviewEdit(key);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      resetMigrationPreviewEdit(unit);
+    }
+  }
+
+  function moveMigrationPreviewUnit(key: string, direction: -1 | 1): void {
+    const movable = previousMigrationPreviewUnits.filter(canReorderMigrationPreviewUnit);
+    const index = movable.findIndex((unit) => dailyMigrationMergeUnitKey(unit) === key);
+    const target = movable[index + direction];
+    if (index < 0 || !target) return;
+    const keys = movable.map(dailyMigrationMergeUnitKey);
+    const targetIndex = index + direction;
+    [keys[index], keys[targetIndex]] = [keys[targetIndex], keys[index]];
+    migrationPreviewOrder = keys;
+  }
+
+  function startMigrationPreviewDrag(key: string, event: DragEvent): void {
+    draggedMigrationPreviewKey = key;
+    event.dataTransfer?.setData("text/plain", key);
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+  }
+
+  function dropMigrationPreviewUnit(targetKey: string): void {
+    const sourceKey = draggedMigrationPreviewKey;
+    draggedMigrationPreviewKey = "";
+    if (!sourceKey || sourceKey === targetKey) return;
+    const keys = previousMigrationPreviewUnits
+      .filter(canReorderMigrationPreviewUnit)
+      .map(dailyMigrationMergeUnitKey);
+    const from = keys.indexOf(sourceKey);
+    const to = keys.indexOf(targetKey);
+    if (from < 0 || to < 0) return;
+    keys.splice(to, 0, keys.splice(from, 1)[0]);
+    migrationPreviewOrder = keys;
+  }
+
   async function migrateSelectedPrevious(): Promise<void> {
-    const selected = previousUnfinished.filter((item) => selectedPreviousIds.has(dailyMigrationSelectionKey(item)));
-    if (!selected.length || !dailyApi?.migratePreviousItems || busy) return;
+    const selected = selectedPreviousItems;
+    if (!selected.length || !dailyApi?.migratePreviousItems || busy || migrationPreviewHasInvalidText) return;
+    const destinationTextByUnit = Object.fromEntries(previousMigrationPreviewUnits
+      .filter(canRenameMigrationPreviewUnit)
+      .map((unit) => {
+        const key = dailyMigrationMergeUnitKey(unit);
+        return [key, migrationPreviewText(unit).trim()] as const;
+      })
+      .filter(([key, text]) => text !== (previousMigrationPreview.units
+        .find((unit) => dailyMigrationMergeUnitKey(unit) === key)?.items[0]?.text ?? "")));
     busy = "migrate-previous";
     error = "";
     migrationFeedbackError = false;
@@ -245,9 +346,16 @@
       await dailyApi.migratePreviousItems(
         selectedDate,
         selected.map((item) => ({ id: item.id, revision: item.revision })),
-        { mergeExactDuplicates: mergeExactPreviousDuplicates }
+        {
+          mergeExactDuplicates: mergeExactPreviousDuplicates,
+          unitOrder: previousMigrationPreviewUnits.map(dailyMigrationMergeUnitKey),
+          destinationTextByUnit
+        }
       );
       selectedPreviousIds = new Set();
+      migrationPreviewOrder = [];
+      migrationPreviewTextDrafts = {};
+      editingMigrationPreviewKey = "";
       migrationFeedback = `已迁移 ${selected.length} 项到今日计划顶部。`;
       await refresh();
     } catch (cause) {
@@ -335,6 +443,23 @@
   $: selectedDate = dailyDateForPlanningDay(planningDay);
   $: previousMigrationGroups = groupPreviousDailyItems(previousUnfinished);
   $: items = (snapshot?.plan.items ?? []) as DailyPlanItemPresentation[];
+  $: selectedPreviousItems = previousUnfinished.filter((item) =>
+    selectedPreviousIds.has(dailyMigrationSelectionKey(item))
+  );
+  $: previousMigrationPreview = buildDailyMigrationPreview(
+    selectedPreviousItems,
+    items,
+    mergeExactPreviousDuplicates
+  );
+  $: previousMigrationPreviewUnits = (() => {
+    const ordered = orderDailyMigrationMergeUnits(previousMigrationPreview.units, migrationPreviewOrder);
+    return [
+      ...ordered.filter((unit) => !unit.destinationItem),
+      ...ordered.filter((unit) => unit.destinationItem)
+    ];
+  })();
+  $: migrationPreviewHasInvalidText = previousMigrationPreviewUnits
+    .some((unit) => canRenameMigrationPreviewUnit(unit) && !migrationPreviewText(unit).trim());
   $: previousDuplicateGroups = analyzeDailyMigrationDuplicates(previousUnfinished, items);
   $: previousDuplicateByItem = new Map(previousDuplicateGroups.flatMap((group) =>
     group.sourceItems.map((item) => [dailyMigrationSelectionKey(item), group] as const)
@@ -1435,6 +1560,91 @@
           <ChevronDown size={15} />
         </summary>
         <div class="previous-task-list">
+          <section class="migration-result-preview" aria-label="合并后预览">
+            <header>
+              <div>
+                <span><FileDiff size={15} /><strong>合并后预览</strong></span>
+                <small>随下方勾选实时更新；这里只计算结果，不会修改 Markdown。</small>
+              </div>
+              <output aria-live="polite">
+                {previousMigrationPreview.selectedCount} 项 → {previousMigrationPreview.destinationCount} 个最终任务
+              </output>
+            </header>
+            {#if previousMigrationPreview.selectedCount === 0}
+              <p>勾选下方任务后，这里会预览它们迁移到今天并完成去重后的完整结果。</p>
+            {:else}
+              <div class="migration-preview-counts">
+                <span>顶部新增 <strong>{previousMigrationPreview.createCount}</strong></span>
+                <span>归入今天现有 <strong>{previousMigrationPreview.mergeIntoExistingCount}</strong></span>
+                <span>减少重复 <strong>{previousMigrationPreview.consolidatedSourceCount}</strong></span>
+              </div>
+              <div class="migration-preview-list" role="list" aria-label="迁移后的最终任务">
+                {#each previousMigrationPreviewUnits as unit (dailyMigrationMergeUnitKey(unit))}
+                  {@const finalItem = unit.destinationItem ?? unit.items[0]}
+                  {@const unitKey = dailyMigrationMergeUnitKey(unit)}
+                  <article
+                    role="listitem"
+                    class:dragging={draggedMigrationPreviewKey === unitKey}
+                    class:readonly={Boolean(unit.destinationItem)}
+                    on:dragover|preventDefault
+                    on:drop|preventDefault={() => dropMigrationPreviewUnit(unitKey)}
+                  >
+                    {#if canReorderMigrationPreviewUnit(unit)}
+                      <button
+                        class="migration-preview-drag"
+                        type="button"
+                        title="拖动调整迁移后的顶部顺序"
+                        draggable="true"
+                        on:dragstart={(event) => startMigrationPreviewDrag(unitKey, event)}
+                        on:dragend={() => (draggedMigrationPreviewKey = "")}
+                      ><GripVertical size={14} /></button>
+                    {:else}
+                      <span class="migration-preview-fixed" title="今天已有任务保持原位置">•</span>
+                    {/if}
+                    <span>
+                      {#if editingMigrationPreviewKey === unitKey}
+                        <input
+                          class:invalid={!migrationPreviewText(unit).trim()}
+                          aria-label="编辑迁移后的任务标题"
+                          maxlength="2000"
+                          value={migrationPreviewText(unit)}
+                          on:input={(event) => updateMigrationPreviewText(unitKey, event)}
+                          on:keydown={(event) => handleMigrationPreviewEditKeydown(event, unit)}
+                        />
+                        {#if !migrationPreviewText(unit).trim()}<small class="invalid">标题不能为空</small>{/if}
+                      {:else}
+                        <strong>{compactTaskText(migrationPreviewText(unit))}</strong>
+                      {/if}
+                      <small>
+                        来源 {unit.items.map((item) => item.revision.date).filter(Boolean).join("、") || "未知日期"}
+                      </small>
+                    </span>
+                    <div class="migration-preview-actions">
+                      <em class:existing={Boolean(unit.destinationItem)}>
+                        {unit.destinationItem
+                          ? "归入今天现有"
+                          : unit.items.length > 1
+                            ? `${unit.items.length} 项合为 1 项`
+                            : "新增到顶部"}
+                      </em>
+                      {#if canRenameMigrationPreviewUnit(unit)}
+                        {#if editingMigrationPreviewKey === unitKey}
+                          <button type="button" title="完成编辑" disabled={!migrationPreviewText(unit).trim()} on:click={() => finishMigrationPreviewEdit(unitKey)}><Check size={13} /></button>
+                          <button type="button" title="恢复原标题" on:click={() => resetMigrationPreviewEdit(unit)}><RotateCcw size={13} /></button>
+                        {:else}
+                          <button type="button" title="编辑迁移后的标题" on:click={() => beginMigrationPreviewEdit(unit)}><PenLine size={13} /></button>
+                        {/if}
+                      {/if}
+                      {#if canReorderMigrationPreviewUnit(unit)}
+                        <button type="button" title="向上移动" disabled={!previousMigrationPreviewUnits.filter(canReorderMigrationPreviewUnit).some((candidate, index) => index > 0 && dailyMigrationMergeUnitKey(candidate) === unitKey)} on:click={() => moveMigrationPreviewUnit(unitKey, -1)}><ArrowUp size={13} /></button>
+                        <button type="button" title="向下移动" disabled={!previousMigrationPreviewUnits.filter(canReorderMigrationPreviewUnit).some((candidate, index, list) => index < list.length - 1 && dailyMigrationMergeUnitKey(candidate) === unitKey)} on:click={() => moveMigrationPreviewUnit(unitKey, 1)}><ArrowDown size={13} /></button>
+                      {/if}
+                    </div>
+                  </article>
+                {/each}
+              </div>
+            {/if}
+          </section>
           {#if previousDuplicateGroups.length > 0}
             <section class="migration-preflight" aria-label="迁移重复项预检">
               <div>
@@ -1557,7 +1767,7 @@
           <button
             class="primary"
             type="button"
-            disabled={Boolean(busy) || selectedPreviousIds.size === 0}
+            disabled={Boolean(busy) || selectedPreviousIds.size === 0 || migrationPreviewHasInvalidText}
             on:click={migrateSelectedPrevious}
           >{busy === "migrate-previous" ? `正在迁移 ${selectedPreviousIds.size} 项…` : `迁移所选 ${selectedPreviousIds.size} 项到今天顶部`}</button>
         </footer>
@@ -2562,6 +2772,35 @@
   .previous-tasks-card > summary > span { display: flex; align-items: center; gap: 7px; }
   .previous-tasks-card > summary small { color: var(--text-muted); }
   .previous-task-list { display: grid; gap: 9px; padding: 0 12px 10px; }
+  .migration-result-preview { position: sticky; top: 8px; z-index: 4; display: grid; gap: 8px; padding: 10px; border: 1px solid color-mix(in srgb, var(--interactive-accent) 42%, var(--daily-border)); border-radius: 9px; background: color-mix(in srgb, var(--interactive-accent) 5%, var(--background-primary)); box-shadow: 0 8px 24px color-mix(in srgb, var(--background-modifier-box-shadow) 55%, transparent); }
+  .migration-result-preview > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+  .migration-result-preview > header > div { display: grid; gap: 2px; min-width: 0; }
+  .migration-result-preview > header span { display: inline-flex; align-items: center; gap: 6px; }
+  .migration-result-preview > header small,
+  .migration-result-preview > p { margin: 0; color: var(--text-muted); font-size: .68rem; }
+  .migration-result-preview output { flex: none; padding: 4px 7px; border-radius: 999px; color: var(--text-accent); background: color-mix(in srgb, var(--interactive-accent) 11%, transparent); font-size: .68rem; font-weight: 700; }
+  .migration-preview-counts { display: flex; flex-wrap: wrap; gap: 6px; }
+  .migration-preview-counts > span { padding: 3px 6px; border: 1px solid var(--daily-border); border-radius: 6px; color: var(--text-muted); font-size: .66rem; }
+  .migration-preview-counts strong { color: var(--text-normal); }
+  .migration-preview-list { display: grid; max-height: 220px; overflow-y: auto; border: 1px solid var(--daily-border); border-radius: 7px; background: var(--daily-raised); }
+  .migration-preview-list article { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 7px; padding: 6px 8px; border-top: 1px solid var(--daily-border); transition: opacity 120ms ease, background 120ms ease; }
+  .migration-preview-list article:first-child { border-top: 0; }
+  .migration-preview-list article.dragging { opacity: .48; background: var(--background-modifier-hover); }
+  .migration-preview-list article.readonly { background: color-mix(in srgb, var(--background-secondary) 60%, transparent); }
+  .migration-preview-drag,
+  .migration-preview-fixed { display: inline-grid; width: 24px; height: 28px; padding: 0; place-items: center; color: var(--text-muted); background: transparent; }
+  .migration-preview-drag { cursor: grab; }
+  .migration-preview-drag:active { cursor: grabbing; }
+  .migration-preview-list article > span { display: grid; gap: 1px; min-width: 0; }
+  .migration-preview-list article strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .72rem; }
+  .migration-preview-list article small { color: var(--text-muted); font-size: .62rem; }
+  .migration-preview-list article input { width: 100%; min-width: 0; padding: 4px 6px; font-size: .72rem; }
+  .migration-preview-list article input.invalid { border-color: var(--text-error); }
+  .migration-preview-list article small.invalid { color: var(--text-error); }
+  .migration-preview-list article em { padding: 2px 5px; border-radius: 999px; color: var(--text-accent); background: color-mix(in srgb, var(--interactive-accent) 11%, transparent); font-size: .6rem; font-style: normal; white-space: nowrap; }
+  .migration-preview-list article em.existing { color: var(--text-success); background: color-mix(in srgb, var(--text-success) 11%, transparent); }
+  .migration-preview-actions { display: flex; align-items: center; justify-content: flex-end; gap: 2px; }
+  .migration-preview-actions button { display: inline-grid; width: 25px; height: 25px; padding: 0; place-items: center; color: var(--text-muted); background: transparent; }
   .migration-preflight { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; padding: 10px; border: 1px solid color-mix(in srgb, var(--interactive-accent) 30%, var(--daily-border)); border-radius: 9px; background: color-mix(in srgb, var(--interactive-accent) 7%, var(--daily-raised)); }
   .migration-preflight > div:first-child { display: grid; gap: 2px; }
   .migration-preflight small { color: var(--text-muted); font-size: .68rem; }
@@ -4734,6 +4973,10 @@
   }
 
   @media (max-width: 860px) {
+
+    .migration-result-preview {
+      position: static;
+    }
 
     .planning-fields,
     .daily-metrics,

@@ -28,6 +28,15 @@ export interface DailyMigrationMergeUnit {
   destinationItem?: DailyPlanItem;
 }
 
+export interface DailyMigrationPreview {
+  selectedCount: number;
+  destinationCount: number;
+  createCount: number;
+  mergeIntoExistingCount: number;
+  consolidatedSourceCount: number;
+  units: DailyMigrationMergeUnit[];
+}
+
 /**
  * Returns a conservative task-intent fingerprint. Task Pool projections are
  * deliberately excluded because their canonical assignment must be resolved
@@ -123,6 +132,60 @@ export function planDailyMigrationMergeUnits(
     units.push({ items: group.sourceItems, destinationItem: group.destinationItem });
   }
   return units;
+}
+
+/** Stable identity shared by preview editing and revision-guarded execution. */
+export function dailyMigrationMergeUnitKey(unit: DailyMigrationMergeUnit): string {
+  const destination = unit.destinationItem
+    ? dailyMigrationSelectionKey(unit.destinationItem)
+    : "";
+  const sources = unit.items.map(dailyMigrationSelectionKey).sort().join("\u0001");
+  return `migration_unit_${contentHash128(`${destination}\u0000${sources}`)}`;
+}
+
+/** Applies a partial preferred order while retaining every unmentioned unit. */
+export function orderDailyMigrationMergeUnits(
+  units: readonly DailyMigrationMergeUnit[],
+  preferredOrder: readonly string[] = []
+): DailyMigrationMergeUnit[] {
+  if (preferredOrder.length === 0) return [...units];
+  const byKey = new Map(units.map((unit) => [dailyMigrationMergeUnitKey(unit), unit]));
+  const seen = new Set<string>();
+  const ordered: DailyMigrationMergeUnit[] = [];
+  for (const key of preferredOrder) {
+    if (seen.has(key)) continue;
+    const unit = byKey.get(key);
+    if (!unit) continue;
+    seen.add(key);
+    ordered.push(unit);
+  }
+  for (const unit of units) {
+    const key = dailyMigrationMergeUnitKey(unit);
+    if (!seen.has(key)) ordered.push(unit);
+  }
+  return ordered;
+}
+
+/**
+ * Uses the execution planner itself to describe the exact post-migration
+ * effect. Keeping preview and write planning on one path prevents the UI from
+ * promising a merge that the migration service would execute differently.
+ */
+export function buildDailyMigrationPreview(
+  sourceItems: readonly DailyPlanItem[],
+  destinationItems: readonly DailyPlanItem[],
+  mergeExactDuplicates: boolean
+): DailyMigrationPreview {
+  const units = planDailyMigrationMergeUnits(sourceItems, destinationItems, mergeExactDuplicates);
+  const createCount = units.filter((unit) => !unit.destinationItem).length;
+  return {
+    selectedCount: sourceItems.length,
+    destinationCount: units.length,
+    createCount,
+    mergeIntoExistingCount: units.length - createCount,
+    consolidatedSourceCount: sourceItems.length - createCount,
+    units
+  };
 }
 
 /**

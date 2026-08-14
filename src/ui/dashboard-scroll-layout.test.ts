@@ -74,6 +74,17 @@ describe("dashboard viewport layout", () => {
     expect(component).toContain("合并完全重复项");
     expect(component).toContain("migrationFeedbackError");
     expect(component).toContain("正在迁移 ${selectedPreviousIds.size} 项");
+    expect(component).toContain("buildDailyMigrationPreview");
+    expect(component).toContain('class="migration-result-preview"');
+    expect(component).toContain("合并后预览");
+    expect(component).toContain("previousMigrationPreview.consolidatedSourceCount");
+    expect(component).toMatch(/\.migration-result-preview\s*\{[^}]*position:\s*sticky;/su);
+    expect(component).toContain("migrationPreviewTextDrafts");
+    expect(component).toContain("dailyMigrationMergeUnitKey");
+    expect(component).toContain("destinationTextByUnit");
+    expect(component).toContain('draggable="true"');
+    expect(component).toContain("moveMigrationPreviewUnit(unitKey, -1)");
+    expect(component).toContain("编辑迁移后的标题");
   });
 
   it("uses left click and hover for project details while reserving right click for color", () => {

@@ -398,6 +398,10 @@ export interface DailyMigrationOptions {
    * Similar text with different context is never merged automatically.
    */
   mergeExactDuplicates?: boolean;
+  /** Stable merge-unit keys in the user's preferred top-to-bottom order. */
+  unitOrder?: string[];
+  /** User-authored destination titles for newly created, non-pool units. */
+  destinationTextByUnit?: Record<string, string>;
 }
 
 export interface DailyPlanCreateInput {

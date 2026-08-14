@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 0.4.2 - 2026-08-14
+
+- Added a sticky, live carry-over result preview that recalculates as individual tasks, whole dates, all tasks, or exact-duplicate consolidation are toggled. It shows selected sources, final destinations, new top tasks, merges into existing tasks, and duplicates removed.
+- Made new migration destinations editable before writing. Edited titles are bound to stable, revision-derived migration-unit keys and are applied by the migration service rather than remaining visual-only drafts.
+- Added pointer drag-and-drop plus accessible up/down controls for arranging the final top-of-day order. Existing destination tasks keep their authored position, and Task Pool projections keep their canonical title.
+- Added execution-side validation so stale, unknown, blank, existing-task, or Task-Pool title overrides fail before any Markdown is changed.
+- Production verification: 127 test files and 790 tests, Obsidian lint with zero warnings, TypeScript checks, production build, Release asset validation, and the 2 MiB bundle limit.
+
+中文摘要：
+
+- 新增置顶的实时迁移结果预览；单项、整日、全部勾选或切换完全重复合并时，会即时显示来源数量、最终任务、新增到顶部、归入今天现有以及减少的重复数量。
+- 新建型迁移结果可以在写入前编辑标题；编辑内容绑定到带修订信息的稳定迁移单元，并由实际迁移服务执行，不是仅修改界面。
+- 支持鼠标拖动和可访问的上下移动按钮调整今日顶部顺序；今天已有任务保持原位置，任务池投影保持规范标题。
+- 执行端会拒绝过期、未知、空标题、已有任务或任务池标题改写，且在修改 Markdown 前完成校验。
+- 生产验证：127 个测试文件、790 项测试，以及 Obsidian lint、类型检查、生产构建、Release 资产校验和 2 MiB 包体限制全部通过。
+
 ## 0.4.1 - 2026-08-14
 
 - Fixed historical Daily migration into an empty ToDo section at the end of a note. Trimming trailing blank lines can no longer leave the prepend cursor outside the Markdown line array and cause `Cannot read properties of undefined (reading 'trim')`.

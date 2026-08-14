@@ -2,10 +2,13 @@ import { describe, expect, it } from "vitest";
 import type { DailyPlanItem } from "./types";
 import {
   analyzeDailyMigrationDuplicates,
+  buildDailyMigrationPreview,
+  dailyMigrationMergeUnitKey,
   dailyMigrationSelectionKey,
   expandDailyMigrationSelections,
   planDailyMigrationDestinations,
   planDailyMigrationMergeUnits,
+  orderDailyMigrationMergeUnits,
   unfinishedDailyLeafItems
 } from "./migration";
 
@@ -174,5 +177,65 @@ describe("Daily migration hierarchy", () => {
 
     expect(analyzeDailyMigrationDuplicates([source], [completed])).toEqual([]);
     expect(planDailyMigrationMergeUnits([source], [completed], true)).toEqual([{ items: [source] }]);
+  });
+
+  it("previews the exact selected migration result with merge mode on and off", () => {
+    const older = item("older-preview");
+    older.text = "same selected task";
+    older.revision.date = "2026-08-10";
+    const recent = item("recent-preview");
+    recent.text = "same selected task";
+    recent.revision.date = "2026-08-12";
+    const today = item("today-preview");
+    today.text = "same selected task";
+    today.date = "2026-08-14";
+
+    expect(buildDailyMigrationPreview([older, recent], [today], false)).toMatchObject({
+      selectedCount: 2,
+      destinationCount: 2,
+      createCount: 2,
+      mergeIntoExistingCount: 0,
+      consolidatedSourceCount: 0
+    });
+    expect(buildDailyMigrationPreview([older, recent], [today], true)).toMatchObject({
+      selectedCount: 2,
+      destinationCount: 1,
+      createCount: 0,
+      mergeIntoExistingCount: 1,
+      consolidatedSourceCount: 2
+    });
+  });
+
+  it("previews duplicate sources becoming one new top task when today has no match", () => {
+    const first = item("first-new-preview");
+    first.text = "one future destination";
+    const second = item("second-new-preview");
+    second.text = "one future destination";
+
+    expect(buildDailyMigrationPreview([first, second], [], true)).toMatchObject({
+      selectedCount: 2,
+      destinationCount: 1,
+      createCount: 1,
+      mergeIntoExistingCount: 0,
+      consolidatedSourceCount: 1
+    });
+  });
+
+  it("applies a stable user-defined preview order without losing units", () => {
+    const first = item("first-ordered-preview");
+    const second = item("second-ordered-preview");
+    const third = item("third-ordered-preview");
+    const units = planDailyMigrationMergeUnits([first, second, third], [], false);
+    const thirdKey = dailyMigrationMergeUnitKey(units[2]);
+
+    const ordered = orderDailyMigrationMergeUnits(units, [thirdKey, "unknown", thirdKey]);
+
+    expect(ordered.map((unit) => unit.items[0].id)).toEqual([
+      "third-ordered-preview",
+      "first-ordered-preview",
+      "second-ordered-preview"
+    ]);
+    expect(dailyMigrationMergeUnitKey(units[0]))
+      .toBe(dailyMigrationMergeUnitKey(planDailyMigrationMergeUnits([first], [], false)[0]));
   });
 });

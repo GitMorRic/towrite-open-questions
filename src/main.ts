@@ -160,10 +160,12 @@ import {
   dailyMarkdownTimerTransactionId,
   dailyTaskTextForBackend,
   dailyWikiLink,
+  dailyMigrationMergeUnitKey,
   dailyMigrationSelectionKey,
   expandDailyMigrationSelections,
   planDailyMigrationDestinations,
   planDailyMigrationMergeUnits,
+  orderDailyMigrationMergeUnits,
   unfinishedDailyLeafItems,
   DailyPlanConflictError,
   DailyPlanService,
@@ -7609,11 +7611,26 @@ export default class ToWritePlugin extends Plugin {
           : `The destination Daily note must be repaired before migration: ${destinationBlocking[0].message}`
       );
     }
-    const units = planDailyMigrationMergeUnits(
+    const plannedUnits = planDailyMigrationMergeUnits(
       validated,
       destination.items,
       Boolean(options.mergeExactDuplicates)
     );
+    const units = orderDailyMigrationMergeUnits(plannedUnits, options.unitOrder);
+    const unitByKey = new Map(units.map((unit) => [dailyMigrationMergeUnitKey(unit), unit]));
+    for (const [key, value] of Object.entries(options.destinationTextByUnit ?? {})) {
+      const unit = unitByKey.get(key);
+      if (!unit
+        || unit.destinationItem
+        || unit.items[0]?.taskRef
+        || typeof value !== "string"
+        || !value.trim()) {
+        throw new DailyPlanConflictError(
+          "invalid-state",
+          "The edited Daily migration preview no longer matches the selected tasks. Refresh and review it again."
+        );
+      }
+    }
     const representatives = units
       .filter((unit) => !unit.destinationItem)
       .map((unit) => unit.items[0]);
@@ -7648,6 +7665,14 @@ export default class ToWritePlugin extends Plugin {
       let destinationTaskId = unit.destinationItem?.id;
       if (!destinationTaskId) {
         const representative = unit.items[0];
+        const unitKey = dailyMigrationMergeUnitKey(unit);
+        const destinationText = options.destinationTextByUnit?.[unitKey]?.trim();
+        if (destinationText && representative.taskRef) {
+          throw new DailyPlanConflictError(
+            "invalid-state",
+            "Task Pool projections keep their canonical Task Pool title and cannot be renamed during migration."
+          );
+        }
         const entry = planBySource.get(dailyMigrationSelectionKey(representative));
         if (!entry) throw new Error("Daily migration destination plan is incomplete.");
         const migrated = await this.moveDailyItemToTomorrow(
@@ -7656,6 +7681,7 @@ export default class ToWritePlugin extends Plugin {
           {
             destinationDate: targetDate,
             destinationTaskId: entry.destinationId,
+            destinationText,
             placement: "prepend",
             refreshCache: false
           }
@@ -10691,6 +10717,7 @@ export default class ToWritePlugin extends Plugin {
     options: {
       destinationDate?: string;
       destinationTaskId?: string;
+      destinationText?: string;
       placement?: "append" | "prepend";
       refreshCache?: boolean;
     } = {}
@@ -10751,7 +10778,7 @@ export default class ToWritePlugin extends Plugin {
         const creation = await this.dailyPlanService.createWithResult({
           id: targetTaskId,
           date: tomorrowDate,
-          text: item.text,
+          text: options.destinationText ?? item.text,
           kind: item.kind,
           category: item.category,
           dueDate: item.dueDateExplicit ? item.dueDate : undefined,
