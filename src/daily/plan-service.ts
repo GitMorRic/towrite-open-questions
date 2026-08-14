@@ -1479,16 +1479,17 @@ function appendToPlanningSurface(
   const start = Math.min(surface.start, lines.length);
   if (placement === "prepend") {
     let insertion = Math.min(surface.prepend, lines.length);
+    const surfaceEnd = Math.min(surface.insertion, lines.length);
     // Explicit sections conventionally keep one visual blank after their
     // heading. Insert after that whitespace but before the first task.
-    while (surface.kind !== "free-form" && insertion < surface.insertion && !lines[insertion].trim()) {
+    while (surface.kind !== "free-form" && insertion < surfaceEnd && !(lines[insertion] ?? "").trim()) {
       insertion += 1;
     }
     lines.splice(
       insertion,
       0,
       ...block.split("\n"),
-      ...(insertion < lines.length && lines[insertion].trim() ? [""] : [])
+      ...(insertion < lines.length && lines[insertion]?.trim() ? [""] : [])
     );
     return ensureTrailingNewline(lines.join("\n"));
   }

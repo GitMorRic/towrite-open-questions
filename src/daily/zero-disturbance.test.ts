@@ -193,6 +193,34 @@ describe("zero-disturbance Daily editing", () => {
     expect(written.indexOf("迁入并置顶")).toBeLessThan(written.indexOf("## 随记"));
   });
 
+  it("prepends into an empty trailing ToDo section whose blank lines are trimmed before insertion", async () => {
+    const path = "Daily/2026-08-14.md";
+    const original = [
+      "# 2026-08-14",
+      "",
+      "## ToDo",
+      "",
+      "",
+      ""
+    ].join("\n");
+    const storage = new MemoryStorage(path, original);
+    const service = new DailyPlanService(storage, {
+      source: { kind: "daily-note", dailyRoot: "Daily", dateFormat: "YYYY-MM-DD" },
+      todoHeading: "ToDo"
+    });
+
+    await expect(service.createWithResult({
+      id: "daily_carried_trailing_blank_lines_000000",
+      text: "Carried into empty section",
+      date: "2026-08-14"
+    }, undefined, { placement: "prepend" })).resolves.toMatchObject({ created: true });
+
+    const written = storage.files.get(path) ?? "";
+    expect(written.indexOf("## ToDo")).toBeLessThan(written.indexOf("Carried into empty section"));
+    expect((await service.list("2026-08-14")).map((item) => item.text))
+      .toContain("Carried into empty section");
+  });
+
   it("writes into an empty explicit ToDo instead of beside an isolated journal checkbox", async () => {
     const path = "Daily/2026-08-13.md";
     const original = [

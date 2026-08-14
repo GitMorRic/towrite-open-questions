@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.4.1 - 2026-08-14
+
+- Fixed historical Daily migration into an empty ToDo section at the end of a note. Trimming trailing blank lines can no longer leave the prepend cursor outside the Markdown line array and cause `Cannot read properties of undefined (reading 'trim')`.
+- Added a regression test for an empty trailing ToDo section with multiple final blank lines and verified that the migrated task remains parseable after insertion.
+- Production verification: 127 test files and 787 tests, Obsidian lint with zero warnings, TypeScript checks, production build, Release asset validation, and the 2 MiB bundle limit.
+
+中文摘要：
+
+- 修复历史任务迁移到文档末尾空 ToDo 区域时的越界错误；清理尾部空行后会重新限制插入索引，不再触发 `undefined.trim()`。
+- 新增“空 ToDo 位于文档末尾并带多个尾部空行”的回归测试，并验证迁移后的任务可以正常重新解析。
+- 生产验证：127 个测试文件、787 项测试，以及 Obsidian lint、类型检查、生产构建、Release 资产校验和 2 MiB 包体限制全部通过。
+
 ## 0.4.0 - 2026-08-14
 
 - Added safe, local named desktop actions through `[towrite-action:: action-id]`, with settings-managed mappings for ToWrite focus views, exact Vault positions, HTTPS URLs, and explicitly approved deep links. Remote devices continue to exchange opaque IDs instead of paths or commands.
