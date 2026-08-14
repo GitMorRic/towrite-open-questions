@@ -13,6 +13,7 @@ import {
   dailySnapshotFingerprint,
   filterAvailableTaskPoolItems,
   groupDailyItems,
+  groupDailyMigrationPreviewUnits,
   groupPreviousDailyItems,
   isDailySummaryCurrent,
   selectDailyOverview
@@ -288,6 +289,40 @@ describe("Daily dashboard summary basis", () => {
     expect(grouped[1].projects.map(({ label, items }) => [label, items.map(({ id }) => id)])).toEqual([
       ["Writing", ["editorial"]],
       ["Project Alpha", ["inherited"]]
+    ]);
+  });
+
+  it("projects migration results into the same category tree as the final Today list", () => {
+    const projectGroup = group("group_project", "项目", 1, 8, 0);
+    const selectedProject = item("project_source", "todo", {
+      date: "2026-08-10",
+      revision: { value: "rev_project", sourcePath: "Daily/2026-08-10.md", blockId: "project_source", date: "2026-08-10" },
+      lineage: { groups: [projectGroup], revision: "lineage_project" }
+    });
+    const selectedCreation = item("creation_source", "todo", {
+      date: "2026-08-09",
+      revision: { value: "rev_creation", sourcePath: "Daily/2026-08-09.md", blockId: "creation_source", date: "2026-08-09" },
+      category: "创作"
+    });
+    const todayCreation = item("creation_today", "todo", {
+      date: "2026-08-14",
+      revision: { value: "rev_today", sourcePath: "Daily/2026-08-14.md", blockId: "creation_today", date: "2026-08-14" },
+      category: "创作"
+    });
+
+    const grouped = groupDailyMigrationPreviewUnits([
+      { items: [selectedProject] },
+      { items: [selectedCreation] },
+      { items: [item("duplicate_source", "todo")], destinationItem: todayCreation }
+    ]);
+
+    expect(grouped.map(({ key, label, units }) => [
+      key,
+      label,
+      units.map((unit) => (unit.destinationItem ?? unit.items[0]).id)
+    ])).toEqual([
+      ["group_project", "项目", ["project_source"]],
+      ["category:创作", "创作", ["creation_source", "creation_today"]]
     ]);
   });
 });

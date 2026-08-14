@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 0.4.3 - 2026-08-14
+
+- Changed the live carry-over result preview from a flat list into the same category tree used by the final Today view. Explicit categories still win; otherwise the nearest authored Markdown group becomes the parent node.
+- Existing Today destinations are grouped from the destination task itself, while new destinations use their selected historical representative, so duplicate consolidation previews the structure that will actually remain after migration.
+- Kept pre-migration title editing and constrained drag-and-drop plus arrow controls to siblings within the same category. This prevents a cross-category visual order that the final grouped Today view could not preserve.
+- Added projection and component regression coverage for category parents, child tasks, existing-destination grouping, and category-scoped ordering controls.
+- Production verification: 127 test files and 791 tests, Obsidian lint with zero warnings, TypeScript checks, production build, Release asset validation, and the 2 MiB bundle limit.
+
+中文摘要：
+
+- 将实时迁移结果预览从扁平列表改为与最终 Today 列表一致的分类树；显式分类优先，否则使用 Markdown 最近一层父分组作为类型父节点。
+- 归入今日现有任务时按目标任务的最终分类展示；新建任务按被选中的历史代表项分类，因此重复合并后的预览结构与真正留下的结构一致。
+- 保留迁移前标题编辑，并把拖动和上下移动限制在同一类型的兄弟任务之间，避免出现最终分类视图无法保留的跨类型伪排序。
+- 新增分类父节点、任务子节点、现有目标归组以及同类型排序控件的投影与组件回归测试。
+- 生产验证：127 个测试文件、791 项测试，以及 Obsidian lint、类型检查、生产构建、Release 资产校验和 2 MiB 包体限制全部通过。
+
 ## 0.4.2 - 2026-08-14
 
 - Added a sticky, live carry-over result preview that recalculates as individual tasks, whole dates, all tasks, or exact-duplicate consolidation are toggled. It shows selected sources, final destinations, new top tasks, merges into existing tasks, and duplicates removed.

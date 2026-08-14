@@ -5,6 +5,7 @@ import type {
   DailyPlanItem,
   DailySummary
 } from "../daily/types";
+import type { DailyMigrationMergeUnit } from "../daily/migration";
 import type {
   DailyDueDateShortcut,
   DailyPlanItemPresentation,
@@ -65,6 +66,13 @@ export function selectDailyOverview(
     done: items.filter(isDailyItemComplete).length,
     total: items.length
   };
+}
+
+export interface DailyMigrationPreviewGroupProjection {
+  key: string;
+  label: string;
+  path?: string;
+  units: DailyMigrationMergeUnit[];
 }
 
 export interface PreviousDailyProjectGroup {
@@ -168,6 +176,33 @@ export function groupDailyItems(
   }
 
   return result;
+}
+
+/**
+ * Projects migration merge units through the same category/group rules as the
+ * final Today list. Existing destination tasks define their own final group;
+ * newly-created tasks use the representative historical task.
+ */
+export function groupDailyMigrationPreviewUnits(
+  units: readonly DailyMigrationMergeUnit[]
+): DailyMigrationPreviewGroupProjection[] {
+  const unitByFinalItem = new Map<DailyPlanItemPresentation, DailyMigrationMergeUnit>();
+  const finalItems = units.flatMap((unit) => {
+    const finalItem = unit.destinationItem ?? unit.items[0];
+    if (!finalItem) return [];
+    unitByFinalItem.set(finalItem, unit);
+    return [finalItem];
+  });
+
+  return groupDailyItems(finalItems, undefined, finalItems).map((group) => ({
+    key: group.key,
+    label: group.label,
+    path: group.path,
+    units: group.items.flatMap(({ item }) => {
+      const unit = unitByFinalItem.get(item);
+      return unit ? [unit] : [];
+    })
+  }));
 }
 
 /**

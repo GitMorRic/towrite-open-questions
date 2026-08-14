@@ -73,6 +73,7 @@
     filterAvailableTaskPoolItems,
     filterDailyItemsByCategory,
     groupDailyItems,
+    groupDailyMigrationPreviewUnits,
     groupPreviousDailyItems,
     isDailyItemComplete,
     selectDailyOverview,
@@ -297,14 +298,27 @@
   }
 
   function moveMigrationPreviewUnit(key: string, direction: -1 | 1): void {
-    const movable = previousMigrationPreviewUnits.filter(canReorderMigrationPreviewUnit);
+    const group = previousMigrationPreviewGroups.find((candidate) =>
+      candidate.units.some((unit) => dailyMigrationMergeUnitKey(unit) === key)
+    );
+    const movable = group?.units.filter(canReorderMigrationPreviewUnit) ?? [];
     const index = movable.findIndex((unit) => dailyMigrationMergeUnitKey(unit) === key);
     const target = movable[index + direction];
     if (index < 0 || !target) return;
-    const keys = movable.map(dailyMigrationMergeUnitKey);
-    const targetIndex = index + direction;
-    [keys[index], keys[targetIndex]] = [keys[targetIndex], keys[index]];
+    const keys = previousMigrationPreviewUnits.map(dailyMigrationMergeUnitKey);
+    const sourceIndex = keys.indexOf(key);
+    const targetIndex = keys.indexOf(dailyMigrationMergeUnitKey(target));
+    [keys[sourceIndex], keys[targetIndex]] = [keys[targetIndex], keys[sourceIndex]];
     migrationPreviewOrder = keys;
+  }
+
+  function canMoveMigrationPreviewUnit(key: string, direction: -1 | 1): boolean {
+    const group = previousMigrationPreviewGroups.find((candidate) =>
+      candidate.units.some((unit) => dailyMigrationMergeUnitKey(unit) === key)
+    );
+    const movable = group?.units.filter(canReorderMigrationPreviewUnit) ?? [];
+    const index = movable.findIndex((unit) => dailyMigrationMergeUnitKey(unit) === key);
+    return index >= 0 && index + direction >= 0 && index + direction < movable.length;
   }
 
   function startMigrationPreviewDrag(key: string, event: DragEvent): void {
@@ -317,9 +331,19 @@
     const sourceKey = draggedMigrationPreviewKey;
     draggedMigrationPreviewKey = "";
     if (!sourceKey || sourceKey === targetKey) return;
-    const keys = previousMigrationPreviewUnits
-      .filter(canReorderMigrationPreviewUnit)
-      .map(dailyMigrationMergeUnitKey);
+    const sourceGroup = previousMigrationPreviewGroups.find((group) =>
+      group.units.some((unit) => dailyMigrationMergeUnitKey(unit) === sourceKey)
+    );
+    const targetGroup = previousMigrationPreviewGroups.find((group) =>
+      group.units.some((unit) => dailyMigrationMergeUnitKey(unit) === targetKey)
+    );
+    if (!sourceGroup || sourceGroup.key !== targetGroup?.key) return;
+    const sourceUnit = sourceGroup.units.find((unit) => dailyMigrationMergeUnitKey(unit) === sourceKey);
+    const targetUnit = sourceGroup.units.find((unit) => dailyMigrationMergeUnitKey(unit) === targetKey);
+    if (!sourceUnit || !targetUnit
+      || !canReorderMigrationPreviewUnit(sourceUnit)
+      || !canReorderMigrationPreviewUnit(targetUnit)) return;
+    const keys = previousMigrationPreviewUnits.map(dailyMigrationMergeUnitKey);
     const from = keys.indexOf(sourceKey);
     const to = keys.indexOf(targetKey);
     if (from < 0 || to < 0) return;
@@ -453,11 +477,13 @@
   );
   $: previousMigrationPreviewUnits = (() => {
     const ordered = orderDailyMigrationMergeUnits(previousMigrationPreview.units, migrationPreviewOrder);
-    return [
+    const newBeforeExisting = [
       ...ordered.filter((unit) => !unit.destinationItem),
       ...ordered.filter((unit) => unit.destinationItem)
     ];
+    return groupDailyMigrationPreviewUnits(newBeforeExisting).flatMap((group) => group.units);
   })();
+  $: previousMigrationPreviewGroups = groupDailyMigrationPreviewUnits(previousMigrationPreviewUnits);
   $: migrationPreviewHasInvalidText = previousMigrationPreviewUnits
     .some((unit) => canRenameMigrationPreviewUnit(unit) && !migrationPreviewText(unit).trim());
   $: previousDuplicateGroups = analyzeDailyMigrationDuplicates(previousUnfinished, items);
@@ -1578,8 +1604,16 @@
                 <span>归入今天现有 <strong>{previousMigrationPreview.mergeIntoExistingCount}</strong></span>
                 <span>减少重复 <strong>{previousMigrationPreview.consolidatedSourceCount}</strong></span>
               </div>
-              <div class="migration-preview-list" role="list" aria-label="迁移后的最终任务">
-                {#each previousMigrationPreviewUnits as unit (dailyMigrationMergeUnitKey(unit))}
+              <div class="migration-preview-tree" aria-label="迁移后的最终任务树">
+                {#each previousMigrationPreviewGroups as group (group.key)}
+                  <section class="migration-preview-group">
+                    <header>
+                      <span><FolderTree size={14} /><strong>{group.label}</strong></span>
+                      <small>{group.units.length} 项</small>
+                    </header>
+                    {#if group.path && group.path !== group.label}<small class="migration-preview-path">{group.path}</small>{/if}
+                    <div class="migration-preview-children" role="list" aria-label={`${group.label}下的任务`}>
+                    {#each group.units as unit (dailyMigrationMergeUnitKey(unit))}
                   {@const finalItem = unit.destinationItem ?? unit.items[0]}
                   {@const unitKey = dailyMigrationMergeUnitKey(unit)}
                   <article
@@ -1593,7 +1627,7 @@
                       <button
                         class="migration-preview-drag"
                         type="button"
-                        title="拖动调整迁移后的顶部顺序"
+                        title="拖动调整同一类型内的顺序"
                         draggable="true"
                         on:dragstart={(event) => startMigrationPreviewDrag(unitKey, event)}
                         on:dragend={() => (draggedMigrationPreviewKey = "")}
@@ -1636,11 +1670,14 @@
                         {/if}
                       {/if}
                       {#if canReorderMigrationPreviewUnit(unit)}
-                        <button type="button" title="向上移动" disabled={!previousMigrationPreviewUnits.filter(canReorderMigrationPreviewUnit).some((candidate, index) => index > 0 && dailyMigrationMergeUnitKey(candidate) === unitKey)} on:click={() => moveMigrationPreviewUnit(unitKey, -1)}><ArrowUp size={13} /></button>
-                        <button type="button" title="向下移动" disabled={!previousMigrationPreviewUnits.filter(canReorderMigrationPreviewUnit).some((candidate, index, list) => index < list.length - 1 && dailyMigrationMergeUnitKey(candidate) === unitKey)} on:click={() => moveMigrationPreviewUnit(unitKey, 1)}><ArrowDown size={13} /></button>
+                        <button type="button" title="在此类型内向上移动" disabled={!canMoveMigrationPreviewUnit(unitKey, -1)} on:click={() => moveMigrationPreviewUnit(unitKey, -1)}><ArrowUp size={13} /></button>
+                        <button type="button" title="在此类型内向下移动" disabled={!canMoveMigrationPreviewUnit(unitKey, 1)} on:click={() => moveMigrationPreviewUnit(unitKey, 1)}><ArrowDown size={13} /></button>
                       {/if}
                     </div>
                   </article>
+                    {/each}
+                    </div>
+                  </section>
                 {/each}
               </div>
             {/if}
@@ -2782,23 +2819,31 @@
   .migration-preview-counts { display: flex; flex-wrap: wrap; gap: 6px; }
   .migration-preview-counts > span { padding: 3px 6px; border: 1px solid var(--daily-border); border-radius: 6px; color: var(--text-muted); font-size: .66rem; }
   .migration-preview-counts strong { color: var(--text-normal); }
-  .migration-preview-list { display: grid; max-height: 220px; overflow-y: auto; border: 1px solid var(--daily-border); border-radius: 7px; background: var(--daily-raised); }
-  .migration-preview-list article { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 7px; padding: 6px 8px; border-top: 1px solid var(--daily-border); transition: opacity 120ms ease, background 120ms ease; }
-  .migration-preview-list article:first-child { border-top: 0; }
-  .migration-preview-list article.dragging { opacity: .48; background: var(--background-modifier-hover); }
-  .migration-preview-list article.readonly { background: color-mix(in srgb, var(--background-secondary) 60%, transparent); }
+  .migration-preview-tree { display: grid; max-height: 260px; overflow-y: auto; border: 1px solid var(--daily-border); border-radius: 7px; background: var(--daily-raised); }
+  .migration-preview-group { display: grid; }
+  .migration-preview-group + .migration-preview-group { border-top: 1px solid var(--daily-border); }
+  .migration-preview-group > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 9px; background: var(--background-secondary); }
+  .migration-preview-group > header span { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+  .migration-preview-group > header strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .72rem; }
+  .migration-preview-group > header small { color: var(--text-muted); font-size: .62rem; }
+  .migration-preview-path { padding: 3px 9px; color: var(--text-muted); background: var(--background-secondary); font-size: .6rem; }
+  .migration-preview-children { display: grid; margin-left: 18px; border-left: 1px solid color-mix(in srgb, var(--interactive-accent) 32%, var(--daily-border)); }
+  .migration-preview-children article { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 7px; padding: 6px 8px; border-top: 1px solid var(--daily-border); transition: opacity 120ms ease, background 120ms ease; }
+  .migration-preview-children article:first-child { border-top: 0; }
+  .migration-preview-children article.dragging { opacity: .48; background: var(--background-modifier-hover); }
+  .migration-preview-children article.readonly { background: color-mix(in srgb, var(--background-secondary) 60%, transparent); }
   .migration-preview-drag,
   .migration-preview-fixed { display: inline-grid; width: 24px; height: 28px; padding: 0; place-items: center; color: var(--text-muted); background: transparent; }
   .migration-preview-drag { cursor: grab; }
   .migration-preview-drag:active { cursor: grabbing; }
-  .migration-preview-list article > span { display: grid; gap: 1px; min-width: 0; }
-  .migration-preview-list article strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .72rem; }
-  .migration-preview-list article small { color: var(--text-muted); font-size: .62rem; }
-  .migration-preview-list article input { width: 100%; min-width: 0; padding: 4px 6px; font-size: .72rem; }
-  .migration-preview-list article input.invalid { border-color: var(--text-error); }
-  .migration-preview-list article small.invalid { color: var(--text-error); }
-  .migration-preview-list article em { padding: 2px 5px; border-radius: 999px; color: var(--text-accent); background: color-mix(in srgb, var(--interactive-accent) 11%, transparent); font-size: .6rem; font-style: normal; white-space: nowrap; }
-  .migration-preview-list article em.existing { color: var(--text-success); background: color-mix(in srgb, var(--text-success) 11%, transparent); }
+  .migration-preview-children article > span { display: grid; gap: 1px; min-width: 0; }
+  .migration-preview-children article strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .72rem; }
+  .migration-preview-children article small { color: var(--text-muted); font-size: .62rem; }
+  .migration-preview-children article input { width: 100%; min-width: 0; padding: 4px 6px; font-size: .72rem; }
+  .migration-preview-children article input.invalid { border-color: var(--text-error); }
+  .migration-preview-children article small.invalid { color: var(--text-error); }
+  .migration-preview-children article em { padding: 2px 5px; border-radius: 999px; color: var(--text-accent); background: color-mix(in srgb, var(--interactive-accent) 11%, transparent); font-size: .6rem; font-style: normal; white-space: nowrap; }
+  .migration-preview-children article em.existing { color: var(--text-success); background: color-mix(in srgb, var(--text-success) 11%, transparent); }
   .migration-preview-actions { display: flex; align-items: center; justify-content: flex-end; gap: 2px; }
   .migration-preview-actions button { display: inline-grid; width: 25px; height: 25px; padding: 0; place-items: center; color: var(--text-muted); background: transparent; }
   .migration-preflight { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; padding: 10px; border: 1px solid color-mix(in srgb, var(--interactive-accent) 30%, var(--daily-border)); border-radius: 9px; background: color-mix(in srgb, var(--interactive-accent) 7%, var(--daily-raised)); }

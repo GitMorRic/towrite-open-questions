@@ -79,6 +79,11 @@ describe("dashboard viewport layout", () => {
     expect(component).toContain("合并后预览");
     expect(component).toContain("previousMigrationPreview.consolidatedSourceCount");
     expect(component).toMatch(/\.migration-result-preview\s*\{[^}]*position:\s*sticky;/su);
+    expect(component).toContain("groupDailyMigrationPreviewUnits");
+    expect(component).toContain('class="migration-preview-tree"');
+    expect(component).toContain('class="migration-preview-group"');
+    expect(component).toContain('class="migration-preview-children"');
+    expect(component).toContain("在此类型内向上移动");
     expect(component).toContain("migrationPreviewTextDrafts");
     expect(component).toContain("dailyMigrationMergeUnitKey");
     expect(component).toContain("destinationTextByUnit");
