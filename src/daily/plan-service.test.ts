@@ -422,6 +422,61 @@ describe("DailyPlanService", () => {
     expect(storage.files.get(item.sourcePath)).not.toContain("- [ ] Move this commitment");
   });
 
+  it("migrates a uniquely-addressable leaf even when an unrelated sibling has multiple block ids", async () => {
+    const storage = new MemoryDailyStorage();
+    const path = "Daily/2026-07-23.md";
+    storage.files.set(path, [
+      "# 2026-07-23",
+      "## ToDo",
+      "- [ ] Safe migration source ^daily_safe_source",
+      "- [ ] Unrelated malformed task ^daily_broken_one",
+      "  ^daily_broken_two"
+    ].join("\n"));
+    const service = new DailyPlanService(storage, {
+      now: () => new Date("2026-07-23T08:00:00+08:00")
+    });
+    const source = await service.get("daily_safe_source", "2026-07-23");
+    expect(source).toBeDefined();
+    await expect(service.validateMigrationSource(
+      source!.id,
+      source!.revision,
+      source!.date
+    )).resolves.toMatchObject({ id: "daily_safe_source" });
+
+    await expect(service.recordMigration(source!.id, source!.revision, {
+      date: "2026-07-24",
+      taskId: "daily_safe_destination",
+      migrationId: "mig_safe_source",
+      migratedAt: "2026-07-23T20:00:00+08:00"
+    }, source!.date)).resolves.toMatchObject({ destinationTaskId: "daily_safe_destination" });
+
+    const written = storage.files.get(path) ?? "";
+    expect(written).toContain("towrite:daily-task-migrated from=daily_safe_source");
+    expect(written).toContain("- [ ] Unrelated malformed task ^daily_broken_one");
+    expect(written).toContain("  ^daily_broken_two");
+  });
+
+  it("rejects migration preflight when the selected block id itself is reused", async () => {
+    const storage = new MemoryDailyStorage();
+    const path = "Daily/2026-07-23.md";
+    storage.files.set(path, [
+      "# 2026-07-23",
+      "## ToDo",
+      "- [ ] First copy ^daily_reused_source",
+      "- [ ] Second copy ^daily_reused_source"
+    ].join("\n"));
+    const service = new DailyPlanService(storage);
+    const source = (await service.list("2026-07-23"))[0];
+
+    await expect(service.validateMigrationSource(
+      source.id,
+      source.revision,
+      source.date
+    )).rejects.toMatchObject({ code: "invalid-document" });
+    expect(storage.files.get(path)).toContain("- [ ] First copy ^daily_reused_source");
+    expect(storage.files.get(path)).toContain("- [ ] Second copy ^daily_reused_source");
+  });
+
   it("writes the deterministic summary idempotently without disturbing ToDo", async () => {
     const storage = new MemoryDailyStorage();
     const service = new DailyPlanService(storage, {

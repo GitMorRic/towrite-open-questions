@@ -61,6 +61,7 @@ describe("dashboard viewport layout", () => {
 
   it("groups carry-over work by date and project with preview and open actions", () => {
     const component = readFileSync(new URL("./DailyDashboardPanel.svelte", import.meta.url), "utf8");
+    const plugin = readFileSync(new URL("../main.ts", import.meta.url), "utf8");
     expect(component).toContain("previousMigrationGroups");
     expect(component).toContain('<details class="previous-date-group" open>');
     expect(component).toContain('class="previous-date-chevron"');
@@ -84,12 +85,20 @@ describe("dashboard viewport layout", () => {
     expect(component).toContain('class="migration-preview-group"');
     expect(component).toContain('class="migration-preview-children"');
     expect(component).toContain("在此类型内向上移动");
+    expect(component).toContain('class="migration-preview-confirm"');
+    expect(component).toContain("确认迁移 ${selectedPreviousIds.size} 项");
+    expect(component).toContain('on:click={migrateSelectedPrevious}');
+    expect(component).toContain('class="migration-preview-feedback"');
     expect(component).toContain("migrationPreviewTextDrafts");
     expect(component).toContain("dailyMigrationMergeUnitKey");
     expect(component).toContain("destinationTextByUnit");
     expect(component).toContain('draggable="true"');
     expect(component).toContain("moveMigrationPreviewUnit(unitKey, -1)");
     expect(component).toContain("编辑迁移后的标题");
+    const sourcePreflight = plugin.indexOf("this.dailyPlanService.validateMigrationSource(");
+    const migrationWrites = plugin.indexOf("const migrations: DailyTaskMigration[]", sourcePreflight);
+    expect(sourcePreflight).toBeGreaterThan(-1);
+    expect(migrationWrites).toBeGreaterThan(sourcePreflight);
   });
 
   it("uses left click and hover for project details while reserving right click for color", () => {

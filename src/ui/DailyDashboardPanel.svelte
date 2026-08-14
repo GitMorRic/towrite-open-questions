@@ -1439,6 +1439,13 @@
     if (value.includes("Daily plan item id is already used")) {
       return "目标日期已有同一稳定任务，但内容不同，未自动覆盖。请先核对目标日记。";
     }
+    if (value.includes("selected Daily migration source is not uniquely addressable")) {
+      return "所选旧任务的稳定标识不唯一，无法安全迁移。请打开对应旧日记，检查重复的 ^daily_ 标识后重试。";
+    }
+    if (value.includes("multiple-block-ids")) {
+      const line = /line\s+(\d+)/iu.exec(value)?.[1];
+      return `日记${line ? `第 ${line} 行` : "中"}的一个任务包含多个稳定标识；本次未继续写入，请打开原文检查该行。`;
+    }
     return value;
   }
 </script>
@@ -1592,10 +1599,21 @@
                 <span><FileDiff size={15} /><strong>合并后预览</strong></span>
                 <small>随下方勾选实时更新；这里只计算结果，不会修改 Markdown。</small>
               </div>
-              <output aria-live="polite">
-                {previousMigrationPreview.selectedCount} 项 → {previousMigrationPreview.destinationCount} 个最终任务
-              </output>
+              <div class="migration-preview-confirm">
+                <output aria-live="polite">
+                  {previousMigrationPreview.selectedCount} 项 → {previousMigrationPreview.destinationCount} 个最终任务
+                </output>
+                <button
+                  class="primary"
+                  type="button"
+                  disabled={Boolean(busy) || selectedPreviousIds.size === 0 || migrationPreviewHasInvalidText}
+                  on:click={migrateSelectedPrevious}
+                >{busy === "migrate-previous" ? `正在迁移 ${selectedPreviousIds.size} 项…` : `确认迁移 ${selectedPreviousIds.size} 项`}</button>
+              </div>
             </header>
+            {#if migrationFeedback}
+              <span class="migration-preview-feedback" class:error={migrationFeedbackError} role={migrationFeedbackError ? "alert" : "status"}>{migrationFeedback}</span>
+            {/if}
             {#if previousMigrationPreview.selectedCount === 0}
               <p>勾选下方任务后，这里会预览它们迁移到今天并完成去重后的完整结果。</p>
             {:else}
@@ -1797,9 +1815,6 @@
             <button class="secondary" type="button" disabled={Boolean(busy)} on:click={toggleAllPrevious}>
               {selectedPreviousIds.size === previousUnfinished.length ? "清除全部" : "选择全部"}
             </button>
-            {#if migrationFeedback}
-              <span class:error={migrationFeedbackError} role={migrationFeedbackError ? "alert" : "status"}>{migrationFeedback}</span>
-            {/if}
           </div>
           <button
             class="primary"
@@ -2810,11 +2825,15 @@
   .previous-tasks-card > summary small { color: var(--text-muted); }
   .previous-task-list { display: grid; gap: 9px; padding: 0 12px 10px; }
   .migration-result-preview { position: sticky; top: 8px; z-index: 4; display: grid; gap: 8px; padding: 10px; border: 1px solid color-mix(in srgb, var(--interactive-accent) 42%, var(--daily-border)); border-radius: 9px; background: color-mix(in srgb, var(--interactive-accent) 5%, var(--background-primary)); box-shadow: 0 8px 24px color-mix(in srgb, var(--background-modifier-box-shadow) 55%, transparent); }
-  .migration-result-preview > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+  .migration-result-preview > header { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 8px 12px; }
   .migration-result-preview > header > div { display: grid; gap: 2px; min-width: 0; }
   .migration-result-preview > header span { display: inline-flex; align-items: center; gap: 6px; }
   .migration-result-preview > header small,
   .migration-result-preview > p { margin: 0; color: var(--text-muted); font-size: .68rem; }
+  .migration-result-preview > header > .migration-preview-confirm { display: flex; flex: none; align-items: center; gap: 7px; margin-left: auto; }
+  .migration-preview-confirm button { min-height: 30px; padding: 5px 9px; white-space: nowrap; }
+  .migration-preview-feedback { padding: 6px 8px; border-radius: 6px; color: var(--text-success); background: color-mix(in srgb, var(--text-success) 9%, transparent); font-size: .68rem; }
+  .migration-preview-feedback.error { color: var(--text-error); background: color-mix(in srgb, var(--text-error) 9%, transparent); }
   .migration-result-preview output { flex: none; padding: 4px 7px; border-radius: 999px; color: var(--text-accent); background: color-mix(in srgb, var(--interactive-accent) 11%, transparent); font-size: .68rem; font-weight: 700; }
   .migration-preview-counts { display: flex; flex-wrap: wrap; gap: 6px; }
   .migration-preview-counts > span { padding: 3px 6px; border: 1px solid var(--daily-border); border-radius: 6px; color: var(--text-muted); font-size: .66rem; }
@@ -2884,8 +2903,6 @@
   .previous-task-preview footer button { display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px; border: 1px solid var(--daily-border); }
   .previous-tasks-card > footer { display: flex; align-items: center; justify-content: space-between; gap: 9px; padding: 0 12px 12px; }
   .migration-footer-status { display: flex; align-items: center; gap: 8px; min-width: 0; }
-  .migration-footer-status > span { color: var(--text-muted); font-size: .68rem; overflow-wrap: anywhere; }
-  .migration-footer-status > span.error { color: var(--text-error); }
   .migration-footer-status .secondary { padding: 6px 9px; }
 
   .analytics-overview {

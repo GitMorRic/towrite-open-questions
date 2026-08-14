@@ -7647,6 +7647,11 @@ export default class ToWritePlugin extends Plugin {
             : "A historical Daily task changed while the migration batch was being prepared. Nothing was moved; refresh and select again."
         );
       }
+      await this.dailyPlanService.validateMigrationSource(
+        current.id,
+        current.revision,
+        sourceDate
+      );
       await this.assertDailyLifecycleLeaf(current, sourceDate);
       if (current.taskRef) {
         const poolTask = await this.taskPoolService.get(current.taskRef);
@@ -10356,8 +10361,11 @@ export default class ToWritePlugin extends Plugin {
           );
           return migrations;
         } catch (error) {
+          const detail = this.settings.language === "zh"
+            ? localizeDailyMigrationError(messageForError(error))
+            : messageForError(error);
           new Notice(
-            `${this.settings.language === "zh" ? "迁移失败" : "Migration failed"}: ${messageForError(error)}`,
+            `${this.settings.language === "zh" ? "迁移失败" : "Migration failed"}: ${detail}`,
             10000
           );
           throw error;
@@ -14064,6 +14072,17 @@ function projectCachedDailyTiming(
 
 function messageForError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function localizeDailyMigrationError(value: string): string {
+  if (value.includes("selected Daily migration source is not uniquely addressable")) {
+    return "所选旧任务的稳定标识不唯一；请打开对应旧日记，检查重复的 ^daily_ 标识。";
+  }
+  if (value.includes("multiple-block-ids")) {
+    const line = /line\s+(\d+)/iu.exec(value)?.[1];
+    return `日记${line ? `第 ${line} 行` : "中"}的一个任务包含多个稳定标识，请打开原文检查。`;
+  }
+  return value;
 }
 
 function normalizeHubContextState(value: string): HubContextState {

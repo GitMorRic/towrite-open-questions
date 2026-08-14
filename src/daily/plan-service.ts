@@ -493,17 +493,7 @@ export class DailyPlanService {
         throw new DailyPlanConflictError("not-found", `Daily plan file does not exist: ${path}`);
       }
       const document = this.parse(current, path, fromDate);
-      assertWritable(document);
-      const target = document.items.find((item) => item.id === id);
-      if (!target) throw new DailyPlanConflictError("not-found", `Daily plan item does not exist: ${id}`);
-      assertRevision(target, expectedRevision);
-      const node = parseMovableListNodes(current).find((entry) => entry.line === target.line);
-      if (!node) {
-        throw new DailyPlanConflictError("invalid-document", `Daily plan item is not backed by a migratable list node: ${id}`);
-      }
-      if (document.items.some((item) => item.parentTaskId === id)) {
-        throw new DailyPlanConflictError("invalid-state", "A Daily task with child tasks cannot be migrated as one leaf.");
-      }
+      const { target, node } = resolveMigrationSource(document, current, id, expectedRevision);
       const migratedAt = normalizeAbsoluteIso(destination.migratedAt ?? this.now().toISOString());
       const indent = /^\s*/u.exec(target.rawLine)?.[0] ?? "";
       const marker = `${indent}%% ${DAILY_MIGRATION_MARKER} from=${safeMarkerValue(id)} to=${safeMarkerValue(destination.taskId)} date=${toDate} migration=${safeMarkerValue(destination.migrationId)} at=${migratedAt} %%`;
@@ -527,6 +517,28 @@ export class DailyPlanService {
         migratedAt,
         destinationTaskId: destination.taskId
       };
+    });
+  }
+
+  /**
+   * Verifies a migration source before any destination Markdown is changed.
+   * Unrelated malformed tasks do not make a uniquely-addressable leaf unsafe,
+   * while reused ids and ambiguous source nodes still fail closed.
+   */
+  async validateMigrationSource(
+    id: string,
+    expectedRevision: string | DailyTaskRevision,
+    value: Date | string = this.now()
+  ): Promise<DailyPlanItem> {
+    const date = normalizeDate(value);
+    const path = this.pathForDate(date);
+    return this.withPathLock(path, async () => {
+      const current = await this.storage.readText(path);
+      if (current === undefined) {
+        throw new DailyPlanConflictError("not-found", `Daily plan file does not exist: ${path}`);
+      }
+      const document = this.parse(current, path, date);
+      return resolveMigrationSource(document, current, id, expectedRevision).target;
     });
   }
 
@@ -2082,6 +2094,43 @@ function assertRevision(item: DailyPlanItem, expectedRevision: string | DailyTas
   if (!expected || expected !== item.revision.value) {
     throw new DailyPlanConflictError("revision-changed", "The daily plan item changed after it was loaded.");
   }
+}
+
+function resolveMigrationSource(
+  document: DailyPlanDocument,
+  markdown: string,
+  id: string,
+  expectedRevision: string | DailyTaskRevision
+): { target: DailyPlanItem; node: MovableListNode } {
+  const targets = document.items.filter((item) => item.id === id);
+  const idOccurrences = countDailyBlockIdOccurrences(markdown, id);
+  if (targets.length !== 1 || idOccurrences !== 1) {
+    throw new DailyPlanConflictError(
+      "invalid-document",
+      `The selected Daily migration source is not uniquely addressable: ${id} (${targets.length} task records, ${idOccurrences} block ids).`
+    );
+  }
+  const target = targets[0];
+  assertRevision(target, expectedRevision);
+  const node = parseMovableListNodes(markdown).find((entry) => entry.line === target.line);
+  if (!node) {
+    throw new DailyPlanConflictError(
+      "invalid-document",
+      `Daily plan item is not backed by a migratable list node: ${id}`
+    );
+  }
+  if (document.items.some((item) => item.parentTaskId === id)) {
+    throw new DailyPlanConflictError(
+      "invalid-state",
+      "A Daily task with child tasks cannot be migrated as one leaf."
+    );
+  }
+  return { target, node };
+}
+
+function countDailyBlockIdOccurrences(markdown: string, id: string): number {
+  const escaped = id.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  return [...markdown.matchAll(new RegExp(`(?:^|\\s)\\^${escaped}(?=\\s|$)`, "gmu"))].length;
 }
 
 function assertWritable(document: DailyPlanDocument): void {

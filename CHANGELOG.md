@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 0.4.4 - 2026-08-14
+
+- Added a one-click confirmation button directly to the sticky merged-result preview. Its disabled state, progress label, and execution path are shared with the footer action, and success or failure feedback now remains visible beside the preview.
+- Fixed carry-over migration being blocked by an unrelated malformed task in a historical source note, such as `multiple-block-ids at line 8`. A selected leaf may now be replaced by its migration audit marker when its own id, revision, and structural node are all unique.
+- Added full-batch source preflight before any destination Markdown is changed. Reused selected ids, stale revisions, ambiguous nodes, and parent tasks still fail closed; unrelated malformed rows are never edited or guessed.
+- Localized the remaining migration identity errors in both the Dashboard and Obsidian notice instead of exposing the internal English diagnostic.
+- Production verification: 127 test files and 793 tests, Obsidian lint with zero warnings, TypeScript checks, production build, Release asset validation, and the 2 MiB bundle limit.
+
+中文摘要：
+
+- 在置顶的“合并后预览”中新增一键确认按钮；它与底部按钮共用禁用状态、进度和执行逻辑，成功或失败反馈也会直接保留在预览区。
+- 修复旧日记中无关的畸形任务（例如 `multiple-block-ids at line 8`）连带阻止已选任务迁移的问题；只要所选叶子任务自己的标识、修订和结构节点都唯一，就可以安全替换为迁移审计记录。
+- 整批迁移会在修改任何目标 Markdown 前验证全部来源；真正重复的所选 ID、过期修订、歧义节点和父任务仍会安全拒绝，无关畸形行不会被自动修改或猜测。
+- Dashboard 与 Obsidian 通知中的迁移标识错误均改为中文，不再直接显示内部英文诊断。
+- 生产验证：127 个测试文件、793 项测试，以及 Obsidian lint、类型检查、生产构建、Release 资产校验和 2 MiB 包体限制全部通过。
+
 ## 0.4.3 - 2026-08-14
 
 - Changed the live carry-over result preview from a flat list into the same category tree used by the final Today view. Explicit categories still win; otherwise the nearest authored Markdown group becomes the parent node.
