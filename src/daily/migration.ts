@@ -2,6 +2,32 @@ import { contentHash128 } from "../core/hash";
 import type { DailyPlanItem, DailyTaskRevision } from "./types";
 
 /**
+ * Resolves the category that a migrated root task must persist in the target
+ * note. Historical free-form plans often express classification only through
+ * a containing Markdown list group. Once the leaf is moved to today's top
+ * level that lineage no longer exists, so materialize its nearest group as an
+ * explicit category instead of silently turning the task into unclassified.
+ */
+export function dailyMigrationDestinationCategory(
+  item: Pick<DailyPlanItem, "category" | "lineage">
+): string | undefined {
+  const explicit = normalizedMigrationCategory(item.category);
+  if (explicit) return explicit;
+  const group = item.lineage?.groups.at(-1);
+  if (!group) return undefined;
+  return normalizedMigrationCategory(
+    group.text
+      .replace(
+        /\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]/gu,
+        (_match, target: string, alias?: string) => alias?.trim() || target.trim()
+      )
+      .replace(/\[([^\]]+)\]\([^)]+\)/gu, "$1")
+  )
+    ?? normalizedMigrationCategory(group.links[0]?.label)
+    ?? normalizedMigrationCategory(group.links[0]?.linkText);
+}
+
+/**
  * Historical Daily ids are only unique inside their original date scope.
  * Keep the source date and logical-block revision in every UI/service key so
  * an id reused on another day cannot select or validate the wrong task.
@@ -48,7 +74,7 @@ export function dailyMigrationExactMergeKey(item: DailyPlanItem): string | undef
   return contentHash128(JSON.stringify({
     text: normalize(item.text),
     kind: item.kind,
-    category: normalize(item.category),
+    category: normalize(dailyMigrationDestinationCategory(item)),
     workKind: item.workKind ?? "",
     workRef: normalize(item.workRef),
     workRevision: item.workRevision ?? "",
@@ -65,6 +91,11 @@ export function dailyMigrationExactMergeKey(item: DailyPlanItem): string | undef
     primary: Boolean(item.primary),
     minimum: Boolean(item.minimum)
   }));
+}
+
+function normalizedMigrationCategory(value: string | undefined): string | undefined {
+  const normalized = value?.replace(/\s+/gu, " ").trim();
+  return normalized || undefined;
 }
 
 /**

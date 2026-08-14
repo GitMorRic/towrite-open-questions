@@ -5,7 +5,10 @@ import type {
   DailyPlanItem,
   DailySummary
 } from "../daily/types";
-import type { DailyMigrationMergeUnit } from "../daily/migration";
+import {
+  dailyMigrationDestinationCategory,
+  type DailyMigrationMergeUnit
+} from "../daily/migration";
 import type {
   DailyDueDateShortcut,
   DailyPlanItemPresentation,
@@ -94,14 +97,7 @@ export function isDailyItemComplete(item: Pick<DailyPlanItem, "done" | "status">
 
 /** Returns the explicit category, then the nearest Markdown group, without mutating the task. */
 export function dailyItemCategory(item: DailyPlanItemPresentation): string {
-  const explicit = item.category?.trim();
-  if (explicit) return explicit;
-  const group = item.lineage?.groups.at(-1);
-  if (!group) return "未分类";
-  return stripMarkdownLink(group.text).trim()
-    || group.links[0]?.label
-    || group.links[0]?.linkText
-    || "未分类";
+  return dailyMigrationDestinationCategory(item) || "未分类";
 }
 
 export function dailyItemDepth(item: DailyPlanItemPresentation): number {
@@ -159,12 +155,13 @@ export function groupDailyItems(
     const group = groups.at(-1)
       ?? (item.groupId ? hierarchy?.groups.find((candidate) => candidate.id === item.groupId) : undefined);
     const explicitCategory = item.category?.trim();
+    const destinationCategory = dailyMigrationDestinationCategory(item);
     const key = explicitCategory ? `category:${explicitCategory}` : (group?.id ?? "__ungrouped");
     let bucket = byKey.get(key);
     if (!bucket) {
       bucket = {
         key,
-        label: explicitCategory || dailyGroupLabel(group),
+        label: destinationCategory || dailyGroupLabel(group),
         path: groups.length > 1 ? groups.map(dailyGroupLabel).join(" / ") : undefined,
         group,
         items: []

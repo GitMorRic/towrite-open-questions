@@ -99,6 +99,8 @@ describe("dashboard viewport layout", () => {
     const migrationWrites = plugin.indexOf("const migrations: DailyTaskMigration[]", sourcePreflight);
     expect(sourcePreflight).toBeGreaterThan(-1);
     expect(migrationWrites).toBeGreaterThan(sourcePreflight);
+    expect(plugin).toContain("const destinationCategory = dailyMigrationDestinationCategory(item)");
+    expect(plugin).toContain("category: destinationCategory");
   });
 
   it("uses left click and hover for project details while reserving right click for color", () => {

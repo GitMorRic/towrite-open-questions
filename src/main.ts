@@ -160,6 +160,7 @@ import {
   dailyMarkdownTimerTransactionId,
   dailyTaskTextForBackend,
   dailyWikiLink,
+  dailyMigrationDestinationCategory,
   dailyMigrationMergeUnitKey,
   dailyMigrationSelectionKey,
   expandDailyMigrationSelections,
@@ -10747,6 +10748,7 @@ export default class ToWritePlugin extends Plugin {
     let reassignedPool: TaskPoolItem | undefined;
     let reassignedPoolChanged = false;
     let migration: DailyTaskMigration | undefined;
+    const destinationCategory = dailyMigrationDestinationCategory(item);
     try {
       if (item.taskRef) {
         const poolTask = await this.taskPoolService.get(item.taskRef);
@@ -10770,7 +10772,7 @@ export default class ToWritePlugin extends Plugin {
           kind: item.kind,
           taskRef: poolTask.taskId,
           taskPoolRevision: assignment.task.revision.value,
-          category: poolTask.category ?? item.category,
+          category: poolTask.category ?? destinationCategory,
           dueDate: poolTask.dueDate,
           estimateMinutes: poolTask.estimateMinutes,
           target: poolTask.target ?? item.target,
@@ -10788,7 +10790,7 @@ export default class ToWritePlugin extends Plugin {
           date: tomorrowDate,
           text: options.destinationText ?? item.text,
           kind: item.kind,
-          category: item.category,
+          category: destinationCategory,
           dueDate: item.dueDateExplicit ? item.dueDate : undefined,
           estimateMinutes: item.estimateMinutes,
           target: item.target,

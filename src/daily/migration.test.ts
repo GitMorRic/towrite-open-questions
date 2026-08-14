@@ -3,6 +3,7 @@ import type { DailyPlanItem } from "./types";
 import {
   analyzeDailyMigrationDuplicates,
   buildDailyMigrationPreview,
+  dailyMigrationDestinationCategory,
   dailyMigrationMergeUnitKey,
   dailyMigrationSelectionKey,
   expandDailyMigrationSelections,
@@ -153,6 +154,75 @@ describe("Daily migration hierarchy", () => {
     expect(planDailyMigrationMergeUnits([first, differentDue, poolFirst, poolSecond], [], true)
       .map((unit) => unit.items.map((entry) => entry.id)))
       .toEqual([["first"], ["different-due"], ["pool-first"], ["pool-second"]]);
+  });
+
+  it("materializes the nearest historical Markdown group as the destination category", () => {
+    const inherited = item("inherited-project");
+    inherited.lineage = {
+      groups: [
+        {
+          id: "group-root",
+          text: "其他",
+          sourcePath: inherited.sourcePath,
+          line: 1,
+          endLine: 8,
+          depth: 0,
+          links: []
+        },
+        {
+          id: "group-project",
+          text: "[[Projects/Exoskeleton|项目]]",
+          sourcePath: inherited.sourcePath,
+          line: 2,
+          endLine: 8,
+          depth: 1,
+          parentGroupId: "group-root",
+          links: []
+        }
+      ],
+      revision: "lineage-project"
+    };
+
+    expect(dailyMigrationDestinationCategory(inherited)).toBe("项目");
+    inherited.category = "创作";
+    expect(dailyMigrationDestinationCategory(inherited)).toBe("创作");
+  });
+
+  it("uses the materialized destination category when deciding exact duplicate merges", () => {
+    const project = item("project-source");
+    project.text = "same visible task";
+    project.lineage = {
+      groups: [{
+        id: "group-project",
+        text: "项目",
+        sourcePath: project.sourcePath,
+        line: 1,
+        endLine: 3,
+        depth: 0,
+        links: []
+      }],
+      revision: "lineage-project"
+    };
+    const creation = item("creation-source");
+    creation.text = project.text;
+    creation.lineage = {
+      groups: [{
+        id: "group-creation",
+        text: "创作",
+        sourcePath: creation.sourcePath,
+        line: 1,
+        endLine: 3,
+        depth: 0,
+        links: []
+      }],
+      revision: "lineage-creation"
+    };
+    const todayProject = item("today-project");
+    todayProject.text = project.text;
+    todayProject.category = "项目";
+
+    expect(analyzeDailyMigrationDuplicates([project, creation])).toEqual([]);
+    expect(analyzeDailyMigrationDuplicates([project], [todayProject])).toHaveLength(1);
   });
 
   it("keeps exact duplicates separate unless the user enables consolidation", () => {

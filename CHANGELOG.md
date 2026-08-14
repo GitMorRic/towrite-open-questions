@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.4.5 - 2026-08-14
+
+- Fixed migrated tasks losing their authored Markdown classification and appearing under `未分类`. When a historical leaf has no explicit category, migration now materializes its nearest containing group as the destination task's explicit category before the source lineage disappears.
+- Unified migration duplicate analysis with the same destination-category rule. Identical text under different groups such as `项目` and `创作` is no longer considered an exact duplicate, while a historical structural group still matches an already-materialized destination category.
+- Kept explicit task categories and canonical Task Pool categories higher priority than inherited Markdown groups.
+- Added regression coverage for nested linked group labels, explicit-category precedence, classification-aware duplicate detection, and the actual migration create path.
+
+中文摘要：
+- 修复历史任务迁移后丢失原 Markdown 父分类、全部落入“未分类”的问题；任务本身没有显式分类时，会在迁移写入前把最近一层父分组固化为目标任务的显式分类。
+- 完全重复项预检现在使用同一套最终分类规则；“项目”和“创作”下即使正文相同也不会被误合并，而历史父分组可以与今天已经固化的同名分类正确匹配。
+- 任务自身的显式分类和任务池规范分类仍然优先，不会被父分组覆盖。
+- 新增嵌套链接分组、显式分类优先、按分类去重及实际迁移创建路径的回归测试。
+
 ## 0.4.4 - 2026-08-14
 
 - Added a one-click confirmation button directly to the sticky merged-result preview. Its disabled state, progress label, and execution path are shared with the footer action, and success or failure feedback now remains visible beside the preview.
