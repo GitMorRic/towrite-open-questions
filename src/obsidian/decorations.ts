@@ -1,4 +1,4 @@
-import { RangeSetBuilder, StateEffect, type Extension } from "@codemirror/state";
+import { RangeSetBuilder, StateEffect, type EditorState, type Extension } from "@codemirror/state";
 import {
   Decoration,
   type DecorationSet,
@@ -47,6 +47,9 @@ export function getQuestionDecorationUpdateStrategy(
   }
   if (signals.docChanged) {
     return "map";
+  }
+  if (signals.selectionSet) {
+    return "rebuild";
   }
   return "keep";
 }
@@ -155,6 +158,16 @@ function buildDecorations(view: EditorView, options: QuestionDecorationOptions):
     if (lineNumber < 1 || lineNumber > view.state.doc.lines) {
       continue;
     }
+    const endLineNumber = Math.min(
+      view.state.doc.lines,
+      Math.max(lineNumber, suggestion.source.lineEnd + 1)
+    );
+    if (selectionTouchesLineRange(view.state, lineNumber, endLineNumber)) {
+      // Suggestions are review affordances, not typing assistance. Keep them
+      // out of the paragraph that is currently being authored and show them
+      // only after the cursor leaves it.
+      continue;
+    }
 
     const line = view.state.doc.line(lineNumber);
     ranges.push({
@@ -179,6 +192,18 @@ function buildDecorations(view: EditorView, options: QuestionDecorationOptions):
     .forEach((range) => builder.add(range.from, range.to, range.decoration));
 
   return builder.finish();
+}
+
+export function selectionTouchesLineRange(
+  state: EditorState,
+  lineStart: number,
+  lineEnd: number
+): boolean {
+  return state.selection.ranges.some((range) => {
+    const selectionStartLine = state.doc.lineAt(range.from).number;
+    const selectionEndLine = state.doc.lineAt(range.to).number;
+    return selectionStartLine <= lineEnd && selectionEndLine >= lineStart;
+  });
 }
 
 class QuestionRemoveWidget extends WidgetType {

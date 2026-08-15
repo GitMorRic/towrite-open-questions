@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { EditorState } from "@codemirror/state";
 import {
   getQuestionDecorationUpdateStrategy,
+  selectionTouchesLineRange,
   type QuestionDecorationUpdateSignals
 } from "./decorations";
 
@@ -27,8 +29,8 @@ describe("getQuestionDecorationUpdateStrategy", () => {
     }))).toBe("map");
   });
 
-  it("keeps existing decorations for selection-only updates", () => {
-    expect(getQuestionDecorationUpdateStrategy(signals({ selectionSet: true }))).toBe("keep");
+  it("rebuilds after selection-only updates so the active paragraph stays quiet", () => {
+    expect(getQuestionDecorationUpdateStrategy(signals({ selectionSet: true }))).toBe("rebuild");
   });
 
   it("keeps existing decorations for viewport-only updates", () => {
@@ -49,5 +51,17 @@ describe("getQuestionDecorationUpdateStrategy", () => {
       docChanged: true,
       refreshRequested: true
     }))).toBe("rebuild");
+  });
+});
+
+describe("selectionTouchesLineRange", () => {
+  it("recognizes a cursor inside a multi-line candidate paragraph", () => {
+    const state = EditorState.create({
+      doc: "Introduction\nTODO draft\ncontinued detail\nFooter",
+      selection: { anchor: 25 }
+    });
+
+    expect(selectionTouchesLineRange(state, 2, 3)).toBe(true);
+    expect(selectionTouchesLineRange(state, 4, 4)).toBe(false);
   });
 });

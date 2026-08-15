@@ -346,10 +346,10 @@ const COPY: Record<ToWriteLanguage, SettingCopy> = {
     "autoOpenSidebarDesc": "Obsidian 布局加载完成后，自动在右侧展开 ToWrite 面板，避免第一次启用插件时找不到入口。",
     "groupCurrentByHeading": "当前笔记按标题分组",
     "groupCurrentByHeadingDesc": "关闭时，同一篇文章里的批注按位置直接列出；开启后才按 Markdown 标题分组。",
-    "candidateDetection": "触发词建议",
-    "candidateDetectionDesc": "只在正文中高亮并显示加号，不会自动加入右侧列表。",
+    "candidateDetection": "自动识别 ToWrite / ToThink",
+    "candidateDetectionDesc": "识别独立短段落中的待写、补充、TODO 等触发词，并显示添加按钮。关闭后立即停止识别和显示建议。",
     "editorDecorations": "编辑器标记",
-    "editorDecorationsDesc": "在编辑器中标记正式问题和可添加建议。修改后建议重载 Obsidian。",
+    "editorDecorationsDesc": "控制编辑器中的正式卡片标记和候选建议按钮；修改后立即生效。",
     "compactEditorDecorations": "紧凑编辑器标记",
     "compactEditorDecorationsDesc": "开启后，正文里只显示左侧竖线，不再铺满整行底色。关闭时恢复整行浅色高亮。",
     "triggerWords": "触发词",
@@ -589,10 +589,10 @@ const COPY: Record<ToWriteLanguage, SettingCopy> = {
     "autoOpenSidebarDesc": "After the Obsidian layout is ready, automatically open the ToWrite panel on the right so first-time users can find it.",
     "groupCurrentByHeading": "Group current note by heading",
     "groupCurrentByHeadingDesc": "When off, annotations in the same note are listed by position. Turn it on to group them by Markdown heading.",
-    "candidateDetection": "Trigger word suggestions",
-    "candidateDetectionDesc": "Highlight trigger words in the editor and show add buttons without adding them to the sidebar automatically.",
+    "candidateDetection": "Automatically detect ToWrite / ToThink",
+    "candidateDetectionDesc": "Detect trigger words such as TODO or continue writing in short standalone paragraphs and show an add button. Turning this off hides suggestions immediately.",
     "editorDecorations": "Editor markers",
-    "editorDecorationsDesc": "Mark saved questions and addable suggestions in the editor. Reload Obsidian after changing this if needed.",
+    "editorDecorationsDesc": "Show saved-card markers and candidate buttons in the editor. Changes take effect immediately.",
     "compactEditorDecorations": "Compact editor markers",
     "compactEditorDecorationsDesc": "When enabled, editor marks use a left rail only instead of a full-line background. Disable it to restore full-line highlights.",
     "triggerWords": "Trigger words",
@@ -1151,6 +1151,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.enableCandidateDetection = value;
             await this.plugin.savePluginData();
+            this.plugin.refreshEditorDecorations();
             await this.plugin.refreshIndex();
           });
       });
@@ -1164,6 +1165,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.enableEditorDecorations = value;
             await this.plugin.savePluginData();
+            this.plugin.refreshEditorDecorations();
           });
       });
 

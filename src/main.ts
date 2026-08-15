@@ -1192,31 +1192,34 @@ export default class ToWritePlugin extends Plugin {
       }
     });
 
-    if (this.settings.enableEditorDecorations) {
-      this.registerEditorExtension(
-        createQuestionDecorations({
-          getActiveFileQuestions: () => {
-            const activePath = this.getActiveFile();
-            if (!activePath) {
-              return [];
-            }
-            return this.store.getQuestionsForFile(activePath).filter((question) => question.status !== "ignored");
-          },
-          getActiveFileSuggestions: () => {
-            const activePath = this.getActiveFile();
-            return activePath ? this.store.getSuggestionsForFile(activePath) : [];
-          },
-          getCompactEditorDecorations: () => this.settings.compactEditorDecorations,
-          onDeleteQuestion: (id) => this.deleteQuestion(id),
-          onAcceptSuggestion: (id) => {
-            void this.acceptSuggestion(id);
-          },
-          onIgnoreSuggestion: (id) => {
-            void this.ignoreSuggestion(id);
+    // Keep the extension registered so both settings can take effect
+    // immediately. The callbacks are the runtime gate; no Obsidian reload is
+    // required when the user turns automatic recognition or all markers off.
+    this.registerEditorExtension(
+      createQuestionDecorations({
+        getActiveFileQuestions: () => {
+          if (!this.settings.enableEditorDecorations) return [];
+          const activePath = this.getActiveFile();
+          if (!activePath) {
+            return [];
           }
-        })
-      );
-    }
+          return this.store.getQuestionsForFile(activePath).filter((question) => question.status !== "ignored");
+        },
+        getActiveFileSuggestions: () => {
+          if (!this.settings.enableEditorDecorations || !this.settings.enableCandidateDetection) return [];
+          const activePath = this.getActiveFile();
+          return activePath ? this.store.getSuggestionsForFile(activePath) : [];
+        },
+        getCompactEditorDecorations: () => this.settings.compactEditorDecorations,
+        onDeleteQuestion: (id) => this.deleteQuestion(id),
+        onAcceptSuggestion: (id) => {
+          void this.acceptSuggestion(id);
+        },
+        onIgnoreSuggestion: (id) => {
+          void this.ignoreSuggestion(id);
+        }
+      })
+    );
     this.registerEditorExtension(createDailyTaskControls({
       isEnabled: () => this.settings.daily.enabled && this.settings.daily.editorTaskControls,
       getActiveFilePath: () => this.getActiveFile() ?? undefined,

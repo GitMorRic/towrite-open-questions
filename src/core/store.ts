@@ -205,18 +205,13 @@ export class OpenQuestionStore {
         .filter((question) => question.status !== "ignored")
         .map((question) => candidateSignature(question.lane, question.question || question.anchorText))
     );
-    const ignoredStateSignatures = new Set(
-      relevantStates
-        .filter((state) => state.status === "ignored" && state.lane)
-        .map((state) => candidateSignature(state.lane!, state.question || state.anchorText))
-        .filter((signature) => signature.endsWith(":") === false)
-    );
+    const ignoredStates = relevantStates.filter((state) => state.status === "ignored" && state.lane);
 
     return (this.suggestionsByFile.get(filePath) ?? [])
       .filter((suggestion) => !questionIds.has(suggestion.id))
       .filter((suggestion) => !this.stateById.has(suggestion.id))
       .filter((suggestion) => !questionSignatures.has(candidateSignature(suggestion.lane, suggestion.question || suggestion.anchorText)))
-      .filter((suggestion) => !ignoredStateSignatures.has(candidateSignature(suggestion.lane, suggestion.question || suggestion.anchorText)));
+      .filter((suggestion) => !ignoredStates.some((state) => matchesIgnoredSuggestionSignature(suggestion, state)));
   }
 
   getSuggestion(id: string): OpenQuestionSuggestion | undefined {
@@ -361,14 +356,27 @@ function matchesIgnoredSuggestionSignature(suggestion: OpenQuestionSuggestion, s
   }
   const stateText = normalizedCandidateText(state.question || state.anchorText);
   const suggestionText = normalizedCandidateText(suggestion.question || suggestion.anchorText);
-  if (!stateText || stateText !== suggestionText) {
+  if (!stateText) {
     return false;
   }
 
   if (state.source?.file) {
-    return state.source.file === suggestion.source.file;
+    if (state.source.file !== suggestion.source.file) return false;
+    if (stateText === suggestionText) return true;
+
+    // Clicking dismiss means "leave this paragraph alone", not "ignore only
+    // this exact snapshot". Appending text or pressing Enter changes the
+    // generated candidate id, but the paragraph keeps the same starting line.
+    // Require that stable local anchor so an unrelated paragraph with the same
+    // prefix is still eligible for a suggestion.
+    return state.source.rule === "candidate"
+      && suggestion.source.rule === "candidate"
+      && state.source.lineStart === suggestion.source.lineStart
+      && suggestion.source.lineEnd >= state.source.lineEnd
+      && suggestionText.startsWith(stateText);
   }
 
+  if (stateText !== suggestionText) return false;
   return state.id.startsWith(`oq_${slugify(suggestion.source.file.split(/[\\/]/u).pop() ?? suggestion.source.file)}_`);
 }
 

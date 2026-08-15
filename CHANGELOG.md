@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 0.5.3 - 2026-08-15
+
+- Keep automatic ToWrite / ToThink suggestions out of the paragraph currently being edited. Candidate buttons are review affordances and now appear only after the cursor leaves the detected paragraph.
+- Make dismissing a candidate apply to the same paragraph as it grows. Continuing on the same line or extending the paragraph onto following lines no longer creates a new suggestion merely because its generated id changed.
+- Rename the setting to `Automatically detect ToWrite / ToThink`, clarify what it controls, and make both candidate detection and all editor-marker toggles take effect immediately without reloading Obsidian.
+- Keep dismissal matching conservative: only an extension of the candidate at the same source start is suppressed; a different paragraph with the same prefix can still be detected.
+- Production verification: 129 test files and 813 tests, Obsidian lint with zero warnings, TypeScript checks, production build, Release asset validation, and the 2 MiB bundle limit.
+
+中文摘要：
+
+- 正在编辑的段落不再弹出 ToWrite / ToThink 自动识别按钮；候选按钮改为离开该段落后才出现，避免打断输入。
+- 点击 `×` 后，忽略状态会跟随同一段落继续生效；在句末追加文字或把段落扩展到后续行，不会因为候选 ID 改变而再次弹出。
+- 设置项改名为“自动识别 ToWrite / ToThink”并明确说明作用；自动识别和全部编辑器标记开关现在都无需重载 Obsidian，修改后立即生效。
+- 忽略匹配保持保守：只压制同一来源起始位置上的段落延续，其他位置恰好具有相同开头的段落仍可正常识别。
+- 生产验证：129 个测试文件、813 项测试，以及 Obsidian lint、类型检查、生产构建、Release 资产校验和 2 MiB 包体限制全部通过。
+
 ## 0.5.2 - 2026-08-15
 
 - Fixed repeated `昨日还有 N 项未完成 / 选择迁移` cards appearing between Live Preview blocks. The Markdown post-processor now leaves editor chunks to the single CodeMirror widget and inserts at most one prompt in the first Reading-view section.

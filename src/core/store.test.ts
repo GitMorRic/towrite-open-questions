@@ -43,6 +43,69 @@ describe("OpenQuestionStore suggestions", () => {
     expect(store.getSuggestions("note.md")).toHaveLength(0);
   });
 
+  it("keeps a dismissed paragraph hidden while the user continues writing on the same line", () => {
+    const first = parseOpenQuestionDocument("TODO draft\n", "note.md").suggestions[0];
+    const continued = parseOpenQuestionDocument(
+      "TODO draft with another concrete detail\n",
+      "note.md"
+    ).suggestions[0];
+    const store = new OpenQuestionStore();
+
+    store.replaceFileSuggestions("note.md", [first]);
+    store.patchQuestion(first.id, {
+      status: "ignored",
+      lane: first.lane,
+      question: first.question,
+      anchorText: first.anchorText,
+      source: first.source
+    });
+    store.replaceFileSuggestions("note.md", [continued]);
+
+    expect(store.getSuggestions("note.md")).toHaveLength(0);
+  });
+
+  it("keeps a dismissed paragraph hidden when it grows onto the next line", () => {
+    const first = parseOpenQuestionDocument("TODO draft\n", "note.md").suggestions[0];
+    const continued = parseOpenQuestionDocument(
+      "TODO draft\nwith another concrete detail\n",
+      "note.md"
+    ).suggestions[0];
+    const store = new OpenQuestionStore();
+
+    store.replaceFileSuggestions("note.md", [first]);
+    store.patchQuestion(first.id, {
+      status: "ignored",
+      lane: first.lane,
+      question: first.question,
+      anchorText: first.anchorText,
+      source: first.source
+    });
+    store.replaceFileSuggestions("note.md", [continued]);
+
+    expect(store.getSuggestions("note.md")).toHaveLength(0);
+  });
+
+  it("does not suppress a different paragraph that only shares dismissed text", () => {
+    const first = parseOpenQuestionDocument("TODO draft\n", "note.md").suggestions[0];
+    const separate = parseOpenQuestionDocument(
+      "Introduction\n\nTODO draft with another concrete detail\n",
+      "note.md"
+    ).suggestions[0];
+    const store = new OpenQuestionStore();
+
+    store.replaceFileSuggestions("note.md", [first]);
+    store.patchQuestion(first.id, {
+      status: "ignored",
+      lane: first.lane,
+      question: first.question,
+      anchorText: first.anchorText,
+      source: first.source
+    });
+    store.replaceFileSuggestions("note.md", [separate]);
+
+    expect(store.getSuggestions("note.md")).toEqual([separate]);
+  });
+
   it("keeps legacy ignored candidate suggestions hidden after line numbers move", () => {
     const moved = parseOpenQuestionDocument(
       "新增一段正文。\n\n这里后续还要继续写这一段\n",
