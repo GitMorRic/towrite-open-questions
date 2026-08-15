@@ -2005,6 +2005,175 @@ describe("external server", () => {
     expect(laterDeviceCard).not.toHaveBeenCalled();
   });
 
+  it("stages bounded audio under a one-time handoff and passes only opaque asset refs to capture", async () => {
+    const createDeviceCapture = vi.fn(async (request, assets = []) => ({
+      filePath: "00-Raw/Device Inbox.md",
+      title: request.title || "Voice",
+      tags: request.tags,
+      targetKind: "inboxFile" as const,
+      createdAt: "2026-08-15T00:00:00.000Z",
+      openUri: "obsidian://open?vault=Vault&file=00-Raw%2FDevice%20Inbox.md",
+      assetCount: assets.length
+    }));
+    const server = makeServer({
+      getRestrictedAccessTokens: () => ["desk-token"],
+      getPushTargets: () => [{
+        id: "desk", name: "Desk", type: "local-web", enabled: true,
+        profile: "eink-bw", width: 264, height: 176, inches: 2.7,
+        defaultPage: "cards", defaultLane: "", refreshSeconds: 60,
+        quietHoursStart: "", quietHoursEnd: "", token: "desk-token",
+        capabilities: ["handoff", "input"]
+      }],
+      createDeviceCapture
+    });
+    const handle = server as unknown as {
+      handleRequest(request: FakeRequest, response: FakeResponse): Promise<void>;
+    };
+    const create = new FakeResponse();
+    await handle.handleRequest(new FakeRequest("POST", "/api/v1/device/handoffs", {
+      targetId: "desk", intent: "capture"
+    }, { authorization: "Bearer desk-token" }), create);
+    const handoff = JSON.parse(create.body);
+
+    const upload = new FakeResponse();
+    await handle.handleRequest(new FakeRequest(
+      "POST",
+      `/api/v1/device/handoff-assets?handoff=${encodeURIComponent(handoff.id)}`,
+      {
+        idempotencyKey: "audio:capture_voice",
+        fileName: "voice.webm",
+        mimeType: "audio/webm",
+        base64: window.btoa("voice-bytes")
+      },
+      { authorization: undefined }
+    ), upload);
+    expect(upload.statusCode).toBe(201);
+    const asset = JSON.parse(upload.body);
+    expect(asset.assetRef).toMatch(/^asset_/u);
+
+    const capture = new FakeResponse();
+    await handle.handleRequest(new FakeRequest(
+      "POST",
+      `/api/v1/captures?handoff=${encodeURIComponent(handoff.id)}`,
+      { text: "语音记录", assetRefs: [asset.assetRef] },
+      { authorization: undefined }
+    ), capture);
+    expect(capture.statusCode).toBe(201);
+    expect(createDeviceCapture).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "语音记录" }),
+      [expect.objectContaining({ assetRef: asset.assetRef, mimeType: "audio/webm" })]
+    );
+
+    const replay = new FakeResponse();
+    await handle.handleRequest(new FakeRequest(
+      "POST",
+      `/api/v1/device/handoff-assets?handoff=${encodeURIComponent(handoff.id)}`,
+      { idempotencyKey: "audio:replay", fileName: "voice.webm", mimeType: "audio/webm", base64: window.btoa("x") },
+      { authorization: undefined }
+    ), replay);
+    expect(replay.statusCode).toBe(401);
+  });
+
+  it("keeps an Agent handoff alive for explicit approval, then consumes it", async () => {
+    const previewDeviceCaptureRoute = vi.fn(async (input) => ({
+      schemaVersion: 1 as const,
+      captureId: input.captureId,
+      routes: [{
+        kind: "agent_request" as const,
+        label: "Agent",
+        description: "Approval required",
+        targetLabel: "Local",
+        requiresApproval: true as const
+      }]
+    }));
+    const run = {
+      schemaVersion: 1 as const,
+      runId: "run_agent_1",
+      status: "proposed" as const,
+      createdAt: "2026-08-15T00:00:00.000Z",
+      updatedAt: "2026-08-15T00:00:00.000Z",
+      sourceCaptureId: "capture_agent_1",
+      message: "整理采访",
+      tool: "create_todo" as const,
+      arguments: { text: "整理采访" },
+      riskLevel: 1 as const,
+      requiresApproval: true as const,
+      idempotencyKey: "route:capture_agent_1"
+    };
+    const commitDeviceCaptureRoute = vi.fn(async () => ({ kind: "agent_request" as const, run }));
+    const approveDeviceAgentRun = vi.fn(async () => ({
+      ...run,
+      status: "succeeded" as const,
+      result: { taskId: "task_00000000000000000000000000000001", sourcePath: "Planning/Task Pool.md" }
+    }));
+    const server = makeServer({
+      getRestrictedAccessTokens: () => ["desk-token"],
+      getPushTargets: () => [{
+        id: "desk", name: "Desk", type: "local-web", enabled: true,
+        profile: "eink-bw", width: 264, height: 176, inches: 2.7,
+        defaultPage: "cards", defaultLane: "", refreshSeconds: 60,
+        quietHoursStart: "", quietHoursEnd: "", token: "desk-token",
+        capabilities: ["handoff", "input"]
+      }],
+      previewDeviceCaptureRoute,
+      commitDeviceCaptureRoute,
+      approveDeviceAgentRun
+    });
+    const handle = server as unknown as {
+      handleRequest(request: FakeRequest, response: FakeResponse): Promise<void>;
+    };
+    const create = new FakeResponse();
+    await handle.handleRequest(new FakeRequest("POST", "/api/v1/device/handoffs", {
+      targetId: "desk", intent: "capture"
+    }, { authorization: "Bearer desk-token" }), create);
+    const handoff = JSON.parse(create.body);
+    const query = `?handoff=${encodeURIComponent(handoff.id)}`;
+
+    const preview = new FakeResponse();
+    await handle.handleRequest(new FakeRequest("POST", `/api/v1/capture/route-preview${query}`, {
+      captureId: "capture_agent_1", text: "整理采访", tags: []
+    }, { authorization: undefined }), preview);
+    expect(preview.statusCode).toBe(200);
+
+    const proposed = new FakeResponse();
+    await handle.handleRequest(new FakeRequest("POST", `/api/v1/capture/route-commit${query}`, {
+      captureId: "capture_agent_1",
+      text: "整理采访",
+      tags: [],
+      route: "agent_request",
+      idempotencyKey: "route:capture_agent_1"
+    }, { authorization: undefined }), proposed);
+    expect(proposed.statusCode).toBe(201);
+
+    const unrelatedCreate = new FakeResponse();
+    await handle.handleRequest(new FakeRequest("POST", "/api/v1/device/handoffs", {
+      targetId: "desk", intent: "capture"
+    }, { authorization: "Bearer desk-token" }), unrelatedCreate);
+    const unrelated = JSON.parse(unrelatedCreate.body);
+    const crossApproval = new FakeResponse();
+    await handle.handleRequest(new FakeRequest(
+      "POST",
+      `/api/v1/agent-runs/run_agent_1/approve?handoff=${encodeURIComponent(unrelated.id)}`,
+      {},
+      { authorization: undefined }
+    ), crossApproval);
+    expect(crossApproval.statusCode).toBe(403);
+    expect(approveDeviceAgentRun).not.toHaveBeenCalled();
+
+    const approved = new FakeResponse();
+    await handle.handleRequest(new FakeRequest("POST", `/api/v1/agent-runs/run_agent_1/approve${query}`, {}, {
+      authorization: undefined
+    }), approved);
+    expect(approved.statusCode).toBe(200);
+    expect(approveDeviceAgentRun).toHaveBeenCalledWith("run_agent_1");
+
+    const replay = new FakeResponse();
+    await handle.handleRequest(new FakeRequest("POST", `/api/v1/agent-runs/run_agent_1/approve${query}`, {}, {
+      authorization: undefined
+    }), replay);
+    expect(replay.statusCode).toBe(401);
+  });
+
   it("proxies a browser Web Push subscription through the target-scoped connector", async () => {
     const registerMobilePushSubscription = vi.fn(async () => ({
       protocolVersion: "1",

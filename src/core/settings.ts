@@ -206,7 +206,7 @@ export interface ToWriteDeviceProfileSettings {
   refreshSeconds: number;
 }
 
-export type ToWriteDesktopActionKind = "today" | "focus" | "obsidian" | "https" | "deep-link";
+export type ToWriteDesktopActionKind = "today" | "focus" | "workspace" | "obsidian" | "https" | "deep-link";
 
 /**
  * A local allowlisted action. Device and Hub payloads carry only `id`; the
@@ -392,6 +392,8 @@ export interface ToWriteSavedData {
     timingRevision?: string;
     displayMessage?: string;
   }>;
+  /** Bounded local audit trail for phone-originated, approval-gated Agent proposals. */
+  deviceAgentRuns?: import("../device-capture-routing").DeviceAgentProposal[];
 }
 
 export const DEFAULT_STATUS_OPTIONS: QuestionStatusOption[] = [
@@ -528,6 +530,13 @@ export const DEFAULT_DESKTOP_ACTIONS: ToWriteDesktopActionProfile[] = [
     name: "Focus Now window",
     enabled: true,
     kind: "focus",
+    target: ""
+  },
+  {
+    id: "note-focus",
+    name: "Open note with Today tasks",
+    enabled: true,
+    kind: "workspace",
     target: ""
   }
 ];
@@ -1681,6 +1690,7 @@ function normalizeDeviceProfilePage(value: unknown): ToWriteDeviceProfilePage {
 
 function normalizeDesktopActionKind(value: unknown): ToWriteDesktopActionKind {
   return value === "focus"
+    || value === "workspace"
     || value === "obsidian"
     || value === "https"
     || value === "deep-link"

@@ -19,6 +19,14 @@ Daily 任务可以声明：
 [towrite-action:: writing-focus]
 ```
 
+内置 `note-focus` 会在主编辑区打开任务的真实目标，同时在右侧打开完整今日
+列表。它适合实体主键“一按回到上下文”的工作流：
+
+```md
+[towrite-action:: note-focus]
+[towrite-target:: [[项目/ToWrite#^next-action]]]
+```
+
 `writing-focus` 必须先在 ToWrite 设置的“命名桌面动作”中创建并启用。动作
 可打开今日页、专注布局、Vault 内明确目标、显式 HTTPS，或单独批准的应用
 深链接。远端和 ESP32 永远只看到 opaque action/card ID。

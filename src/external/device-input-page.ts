@@ -116,6 +116,16 @@ export function buildDeviceInputPageHtml(): string {
         color: #a32929;
         font-weight: 700;
       }
+      .route-preview {
+        border-left: 4px solid #1f6b3a;
+        background: #edf6ee;
+        padding: 9px 10px;
+        border-radius: 5px;
+      }
+      .recording {
+        background: #9b2424 !important;
+      }
+      audio { width: 100%; }
       @media (max-width: 480px) {
         .toolbar { grid-template-columns: 1fr; }
       }
@@ -157,10 +167,26 @@ export function buildDeviceInputPageHtml(): string {
           <label for="tags">Tags</label>
           <input id="tags" placeholder="capture, device" />
         </div>
+        <div class="row capture-only">
+          <label for="category">待办分类</label>
+          <input id="category" placeholder="例如：项目、创作、稍后阅读和记录" />
+        </div>
+        <div class="row capture-only">
+          <label for="route">确认后的处理方式</label>
+          <select id="route">
+            <option value="append_note">追加到笔记</option>
+            <option value="create_todo">创建工作池待办</option>
+            <option value="agent_request">交给 Agent（再次确认后执行）</option>
+          </select>
+          <p class="muted route-preview" id="routePreview">输入内容后显示最终写入预览。</p>
+        </div>
+        <audio id="audioPreview" controls hidden></audio>
         <div class="toolbar">
-          <button class="secondary" id="voice" type="button">语音输入</button>
+          <button class="secondary" id="voice" type="button">开始录音</button>
+          <button class="secondary" id="dictate" type="button">语音转文字</button>
           <button id="submit" type="button">提交</button>
         </div>
+        <button id="approveAgent" type="button" hidden>确认并执行 Agent 提案</button>
         <div class="toolbar" id="handoffActions" hidden>
           <button class="secondary" id="later" type="button">稍后 30 分钟</button>
           <button id="complete" type="button">安全完成</button>
@@ -202,8 +228,14 @@ export function buildDeviceInputPageHtml(): string {
       const textEl = document.getElementById("text");
       const targetEl = document.getElementById("target");
       const tagsEl = document.getElementById("tags");
+      const categoryEl = document.getElementById("category");
+      const routeEl = document.getElementById("route");
+      const routePreviewEl = document.getElementById("routePreview");
       const voiceEl = document.getElementById("voice");
+      const dictateEl = document.getElementById("dictate");
+      const audioPreviewEl = document.getElementById("audioPreview");
       const submitEl = document.getElementById("submit");
+      const approveAgentEl = document.getElementById("approveAgent");
       const handoffActionsEl = document.getElementById("handoffActions");
       const laterEl = document.getElementById("later");
       const completeEl = document.getElementById("complete");
@@ -211,7 +243,16 @@ export function buildDeviceInputPageHtml(): string {
       const backLinkEl = document.getElementById("backLink");
       let context = null;
       let recognition = null;
+      let mediaRecorder = null;
+      let mediaStream = null;
+      let mediaChunks = [];
+      let recordedAudio = null;
+      let recordedMimeType = "";
+      let recordedAudioUrl = "";
+      let recordingTimer = 0;
+      let pendingAgentRunId = "";
       let recommendationTimer = 0;
+      let routingTimer = 0;
       let captureDraftId = newCaptureId();
 
       function h(value) {
@@ -311,6 +352,28 @@ export function buildDeviceInputPageHtml(): string {
         recommendationTimer = window.setTimeout(function() {
           refreshRecommendations().catch(function() { /* keep configured fallback targets */ });
         }, 220);
+        scheduleRoutingPreview();
+      }
+
+      function scheduleRoutingPreview() {
+        window.clearTimeout(routingTimer);
+        if (modeEl.value !== "capture" || (!textEl.value.trim() && !recordedAudio)) return;
+        routingTimer = window.setTimeout(function() {
+          refreshRoutingPreview().catch(function(error) {
+            routePreviewEl.textContent = "预览失败：" + (error.message || error);
+          });
+        }, 260);
+      }
+
+      async function refreshRoutingPreview() {
+        const text = textEl.value.trim() || (recordedAudio ? "语音记录（待转写）" : "");
+        if (!text || modeEl.value !== "capture") return;
+        const preview = await postJson("/api/v1/capture/route-preview", routePayload(text));
+        const routes = Array.isArray(preview.routes) ? preview.routes : [];
+        const selected = routes.find(function(route) { return route.kind === routeEl.value; }) || routes[0];
+        if (!selected) return;
+        routeEl.value = selected.kind;
+        routePreviewEl.textContent = selected.label + " → " + selected.targetLabel + "。" + selected.description;
       }
 
       async function refreshRecommendations() {
@@ -365,23 +428,89 @@ export function buildDeviceInputPageHtml(): string {
       function setupVoice() {
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         if (!SpeechRecognition) {
-          voiceEl.textContent = "语音不可用";
+          dictateEl.textContent = "听写不可用";
+          dictateEl.disabled = true;
+        } else {
+          recognition = new SpeechRecognition();
+          recognition.lang = "zh-CN";
+          recognition.interimResults = false;
+          recognition.continuous = false;
+          recognition.onresult = function(event) {
+            const text = Array.from(event.results)
+              .map(function(result) { return result[0] && result[0].transcript ? result[0].transcript : ""; })
+              .join("");
+            appendText(text);
+            scheduleRecommendations();
+          };
+          recognition.onerror = function(event) {
+            setStatus("语音转文字失败：" + (event.error || "unknown") + "；仍可保存原始录音。", true);
+          };
+        }
+        if (!navigator.mediaDevices || !window.MediaRecorder) {
+          voiceEl.textContent = "录音不可用";
           voiceEl.disabled = true;
+        }
+      }
+
+      async function toggleRecording() {
+        if (mediaRecorder && mediaRecorder.state === "recording") {
+          mediaRecorder.stop();
           return;
         }
-        recognition = new SpeechRecognition();
-        recognition.lang = "zh-CN";
-        recognition.interimResults = false;
-        recognition.continuous = false;
-        recognition.onresult = function(event) {
-          const text = Array.from(event.results)
-            .map(function(result) { return result[0] && result[0].transcript ? result[0].transcript : ""; })
-            .join("");
-          appendText(text);
+        if (!navigator.mediaDevices || !window.MediaRecorder) return;
+        clearRecordedAudio();
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }
+        });
+        const preferred = ["audio/webm;codecs=opus", "audio/mp4", "audio/webm", "audio/ogg"]
+          .find(function(type) { return MediaRecorder.isTypeSupported(type); });
+        const options = { audioBitsPerSecond: 24000 };
+        if (preferred) options.mimeType = preferred;
+        mediaChunks = [];
+        mediaRecorder = new MediaRecorder(mediaStream, options);
+        mediaRecorder.ondataavailable = function(event) {
+          if (event.data && event.data.size) mediaChunks.push(event.data);
         };
-        recognition.onerror = function(event) {
-          setStatus("语音输入失败：" + (event.error || "unknown"), true);
+        mediaRecorder.onerror = function(event) {
+          setStatus("录音失败：" + (event.error && event.error.message ? event.error.message : "unknown"), true);
+          stopMediaTracks();
         };
+        mediaRecorder.onstop = function() {
+          window.clearTimeout(recordingTimer);
+          recordedMimeType = mediaRecorder.mimeType || preferred || "audio/webm";
+          recordedAudio = new Blob(mediaChunks, { type: recordedMimeType });
+          stopMediaTracks();
+          voiceEl.textContent = "重新录音";
+          voiceEl.classList.remove("recording");
+          if (recordedAudioUrl) URL.revokeObjectURL(recordedAudioUrl);
+          recordedAudioUrl = URL.createObjectURL(recordedAudio);
+          audioPreviewEl.src = recordedAudioUrl;
+          audioPreviewEl.hidden = false;
+          setStatus("原始录音已保存在本机，提交后写入 Markdown 附件。", false);
+          scheduleRoutingPreview();
+        };
+        mediaRecorder.start(1000);
+        voiceEl.textContent = "停止录音";
+        voiceEl.classList.add("recording");
+        setStatus("正在录音，最长 45 秒…", false);
+        recordingTimer = window.setTimeout(function() {
+          if (mediaRecorder && mediaRecorder.state === "recording") mediaRecorder.stop();
+        }, 45000);
+      }
+
+      function stopMediaTracks() {
+        if (mediaStream) mediaStream.getTracks().forEach(function(track) { track.stop(); });
+        mediaStream = null;
+      }
+
+      function clearRecordedAudio() {
+        recordedAudio = null;
+        recordedMimeType = "";
+        mediaChunks = [];
+        audioPreviewEl.hidden = true;
+        audioPreviewEl.removeAttribute("src");
+        if (recordedAudioUrl) URL.revokeObjectURL(recordedAudioUrl);
+        recordedAudioUrl = "";
       }
 
       function appendText(text) {
@@ -391,9 +520,13 @@ export function buildDeviceInputPageHtml(): string {
       }
 
       async function submit() {
-        const text = textEl.value.trim();
+        const text = textEl.value.trim() || (recordedAudio ? "语音记录（待转写）" : "");
         if (!text) {
-          setStatus("请先输入内容。", true);
+          setStatus("请先输入文字或录音。", true);
+          return;
+        }
+        if (modeEl.value === "answer" && recordedAudio) {
+          setStatus("原始录音需要保存为新记录；请切换到“保存为新想法”，或先使用语音转文字。", true);
           return;
         }
         submitEl.disabled = true;
@@ -412,34 +545,53 @@ export function buildDeviceInputPageHtml(): string {
             await postJson(pendingRequest.path, pendingRequest.payload);
             setStatus("已追加到卡片。", false);
           } else {
-            let selection = targetEl.value ? JSON.parse(targetEl.value) : { target: { kind: "inboxFile" } };
-            if (!selection.candidateId) {
-              await refreshRecommendations();
-              selection = targetEl.value ? JSON.parse(targetEl.value) : selection;
-            }
-            const versioned = Boolean(selection.candidateId);
-            const payload = {
-              title: titleEl.value.trim(),
+            const route = routeEl.value;
+            pendingRequest = {
+              path: route === "append_note" ? "/api/v1/captures" : "/api/v1/capture/route-commit",
+              payload: null,
               text,
-              tags: splitTags(tagsEl.value),
-              target: selection.target,
-              clientId: "device-input",
-              metadata: interactionMetadata("capture"),
-              ...(versioned ? {
-                captureId: captureDraftId,
-                candidateId: selection.candidateId,
-                action: selection.action,
-                targetRevision: selection.targetRevision
-              } : {})
+              route,
+              category: categoryEl.value.trim(),
+              audioBlob: recordedAudio,
+              audioMimeType: recordedMimeType
             };
-            pendingRequest = { path: "/api/v1/captures", payload };
-            const result = await postJson("/api/v1/captures", payload);
-            setStatus("已保存到 " + (result.data && result.data.filePath ? result.data.filePath : "Inbox") + "。", false);
+            let assetRefs = [];
+            if (recordedAudio) {
+              if (!handoff) throw new Error("原始录音上传需要一次性手机 handoff。");
+              assetRefs = [await uploadRecordedAudio(recordedAudio, recordedMimeType, captureDraftId)];
+            }
+            if (route === "append_note") {
+              const payload = await buildCapturePayload(text, assetRefs, false);
+              pendingRequest.payload = payload;
+              const result = await postJson(pendingRequest.path, payload);
+              setStatus("已保存到 " + (result.data && result.data.filePath ? result.data.filePath : "Inbox") + "。", false);
+            } else {
+              if (assetRefs.length) {
+                const audioCapture = await buildCapturePayload(text, assetRefs, true);
+                await postJson("/api/v1/captures", audioCapture);
+              }
+              const payload = {
+                ...routePayload(text),
+                route,
+                idempotencyKey: "route:" + captureDraftId
+              };
+              pendingRequest.payload = payload;
+              const result = await postJson(pendingRequest.path, payload);
+              if (result.data && result.data.kind === "agent_request") {
+                pendingAgentRunId = result.data.run.runId;
+                approveAgentEl.hidden = false;
+                setStatus("Agent 提案已生成：" + result.data.run.tool + "。请再次确认后执行。", false);
+                return;
+              }
+              setStatus("已创建工作池待办" + (result.data && result.data.idempotent ? "（幂等重试）" : "") + "。", false);
+            }
           }
           textEl.value = "";
           await deletePendingSubmission();
+          clearRecordedAudio();
           captureDraftId = newCaptureId();
           renderTargets();
+          routePreviewEl.textContent = "输入内容后显示最终写入预览。";
         } catch (error) {
           if (pendingRequest && isNetworkFailure(error)) {
             await savePendingSubmission(pendingRequest);
@@ -491,6 +643,87 @@ export function buildDeviceInputPageHtml(): string {
           setStatus("操作失败：" + (error.message || error), true);
           laterEl.disabled = false;
           completeEl.disabled = false;
+        }
+      }
+
+      function routePayload(text) {
+        return {
+          captureId: captureDraftId,
+          text,
+          title: titleEl.value.trim(),
+          tags: splitTags(tagsEl.value),
+          category: categoryEl.value.trim(),
+          metadata: interactionMetadata(recordedAudio ? "voice" : "capture")
+        };
+      }
+
+      async function buildCapturePayload(text, assetRefs, preserveHandoff) {
+        let selection = targetEl.value ? JSON.parse(targetEl.value) : { target: { kind: "inboxFile" } };
+        if (!selection.candidateId) {
+          await refreshRecommendations();
+          selection = targetEl.value ? JSON.parse(targetEl.value) : selection;
+        }
+        const versioned = Boolean(selection.candidateId);
+        return {
+          title: titleEl.value.trim(),
+          text,
+          tags: splitTags(tagsEl.value),
+          target: selection.target,
+          clientId: "device-input",
+          captureId: captureDraftId,
+          assetRefs,
+          preserveHandoff,
+          metadata: interactionMetadata(recordedAudio ? "voice" : "capture"),
+          ...(versioned ? {
+            candidateId: selection.candidateId,
+            action: selection.action,
+            targetRevision: selection.targetRevision
+          } : {})
+        };
+      }
+
+      async function uploadRecordedAudio(blob, mimeType, captureId) {
+        if (blob.size > 675000) throw new Error("录音过大，请控制在 45 秒内或重新录制。");
+        const base64 = await blobToBase64(blob);
+        const extension = mimeType.includes("mp4") ? "m4a" : mimeType.includes("ogg") ? "ogg" : "webm";
+        const result = await postJson("/api/v1/device/handoff-assets", {
+          idempotencyKey: "audio:" + captureId,
+          fileName: "voice-" + new Date().toISOString().replace(/[:.]/g, "-") + "." + extension,
+          mimeType: mimeType || "audio/webm",
+          base64
+        });
+        return result.assetRef;
+      }
+
+      function blobToBase64(blob) {
+        return new Promise(function(resolve, reject) {
+          const reader = new FileReader();
+          reader.onload = function() {
+            const value = String(reader.result || "");
+            resolve(value.slice(value.indexOf(",") + 1));
+          };
+          reader.onerror = function() { reject(reader.error || new Error("录音读取失败")); };
+          reader.readAsDataURL(blob);
+        });
+      }
+
+      async function approveAgentRun() {
+        if (!pendingAgentRunId) return;
+        approveAgentEl.disabled = true;
+        setStatus("正在执行本地白名单工具…", false);
+        try {
+          const result = await postJson("/api/v1/agent-runs/" + encodeURIComponent(pendingAgentRunId) + "/approve", {});
+          setStatus("Agent 已创建待办：" + result.data.result.taskId + "。", false);
+          approveAgentEl.hidden = true;
+          pendingAgentRunId = "";
+          textEl.value = "";
+          clearRecordedAudio();
+          await deletePendingSubmission();
+          captureDraftId = newCaptureId();
+        } catch (error) {
+          setStatus("Agent 执行失败：" + (error.message || error), true);
+        } finally {
+          approveAgentEl.disabled = false;
         }
       }
 
@@ -548,6 +781,11 @@ export function buildDeviceInputPageHtml(): string {
             key: pendingKey(),
             path: request.path,
             payload: request.payload,
+            text: request.text || (request.payload && request.payload.text) || "",
+            route: request.route || "append_note",
+            category: request.category || "",
+            audioBlob: request.audioBlob || null,
+            audioMimeType: request.audioMimeType || "",
             handoff,
             createdAt: new Date().toISOString(),
             expiresAt: context && context.interaction && context.interaction.handoff
@@ -568,14 +806,27 @@ export function buildDeviceInputPageHtml(): string {
         let queued = null;
         try { queued = await queueOperation("get"); } catch { /* Fall back to emergency draft. */ }
         const emergency = localStorage.getItem("towrite-device-emergency-draft") || "";
-        const queuedText = queued && queued.payload && queued.payload.text ? queued.payload.text : emergency;
+        const queuedText = queued && (queued.text || (queued.payload && queued.payload.text))
+          ? queued.text || queued.payload.text
+          : emergency;
         if (queuedText && !textEl.value) textEl.value = queuedText;
+        if (queued && queued.route) routeEl.value = queued.route;
+        if (queued && queued.category) categoryEl.value = queued.category;
+        if (queued && queued.audioBlob) {
+          recordedAudio = queued.audioBlob;
+          recordedMimeType = queued.audioMimeType || queued.audioBlob.type || "audio/webm";
+          if (recordedAudioUrl) URL.revokeObjectURL(recordedAudioUrl);
+          recordedAudioUrl = URL.createObjectURL(recordedAudio);
+          audioPreviewEl.src = recordedAudioUrl;
+          audioPreviewEl.hidden = false;
+          voiceEl.textContent = "重新录音";
+        }
         if (!queued) return;
         if (queued.expiresAt && Date.parse(queued.expiresAt) <= Date.now()) {
           setStatus("手机 handoff 已过期，内容仍保存在本机；请从墨水屏重新双击后提交。", true);
           return;
         }
-        if (navigator.onLine) {
+        if (navigator.onLine && queued.payload) {
           try {
             await postJson(queued.path, queued.payload);
             await deletePendingSubmission();
@@ -625,10 +876,19 @@ export function buildDeviceInputPageHtml(): string {
       textEl.addEventListener("input", scheduleRecommendations);
       titleEl.addEventListener("input", scheduleRecommendations);
       tagsEl.addEventListener("input", scheduleRecommendations);
+      categoryEl.addEventListener("input", scheduleRoutingPreview);
+      routeEl.addEventListener("change", scheduleRoutingPreview);
       submitEl.addEventListener("click", submit);
+      approveAgentEl.addEventListener("click", approveAgentRun);
       laterEl.addEventListener("click", function() { performHandoffAction("later"); });
       completeEl.addEventListener("click", function() { performHandoffAction("complete"); });
       voiceEl.addEventListener("click", function() {
+        toggleRecording().catch(function(error) {
+          setStatus("无法开始录音：" + (error.message || error), true);
+          stopMediaTracks();
+        });
+      });
+      dictateEl.addEventListener("click", function() {
         if (!recognition) return;
         setStatus("正在听写...");
         recognition.start();

@@ -90,6 +90,14 @@ import type {
   HubWebPushSubscriptionInput,
   HubWebPushSubscriptionReceipt
 } from "../hub/types";
+import type { CaptureBridgeStagedAsset } from "../capture-bridge";
+import type {
+  DeviceAgentProposal,
+  DeviceCaptureRouteCommitInput,
+  DeviceCaptureRouteCommitResult,
+  DeviceCaptureRoutingInput,
+  DeviceCaptureRoutingPreview
+} from "../device-capture-routing";
 
 export interface ExternalApiRuntimeStatus {
   running: boolean;
@@ -139,7 +147,13 @@ interface ExternalApiServerOptions {
   appendQuestionNote(id: string, text: string, clientId?: string, metadata?: DeviceWritebackMetadata): Promise<OpenQuestion | undefined>;
   updateQuestionFields(id: string, patch: QuestionFieldPatch): Promise<OpenQuestion | undefined>;
   recommendCapture?(draft: CaptureDraft): Promise<CaptureTargetCandidate[]>;
-  createDeviceCapture(request: DeviceCaptureRequest): Promise<DeviceCaptureResult>;
+  createDeviceCapture(
+    request: DeviceCaptureRequest,
+    assets?: readonly CaptureBridgeStagedAsset[]
+  ): Promise<DeviceCaptureResult>;
+  previewDeviceCaptureRoute?(request: DeviceCaptureRoutingInput): Promise<DeviceCaptureRoutingPreview>;
+  commitDeviceCaptureRoute?(request: DeviceCaptureRouteCommitInput): Promise<DeviceCaptureRouteCommitResult>;
+  approveDeviceAgentRun?(runId: string): Promise<DeviceAgentProposal>;
   undoCapture?(captureId: string, undoToken: string): Promise<CaptureUndoResult>;
   /** Advances the local small-screen playlist after a mapped hardware button event. */
   advanceDevicePage?(direction: "next" | "prev"): Promise<void>;
@@ -315,6 +329,10 @@ interface DeviceHandoff {
   deliveryId?: string;
   sourceRef?: DeviceSourceRef;
   displayed?: DeviceDisplayedTuple;
+  assets: Map<string, CaptureBridgeStagedAsset & { idempotencyKey: string }>;
+  preservedCaptureId?: string;
+  agentRunId?: string;
+  agentCaptureId?: string;
   claimedAt?: string;
   consumedAt?: string;
 }
@@ -1064,6 +1082,83 @@ export class ToWriteExternalApiServer {
       return;
     }
 
+    if (url.pathname === "/api/v1/capture/route-preview") {
+      if (!this.options.previewDeviceCaptureRoute) {
+        throw new ExternalApiError(501, "Capture routing is unavailable.");
+      }
+      const body = await readJsonBody(request);
+      this.writeJson(response, 200, await this.options.previewDeviceCaptureRoute(
+        readDeviceCaptureRoutingInput(body)
+      ));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/device/handoff-assets") {
+      const handoff = this.resolveDeviceHandoff(url.searchParams.get("handoff"));
+      if (!handoff) {
+        throw new ExternalApiError(401, "This phone handoff has expired or was already used.");
+      }
+      const staged = stageDeviceHandoffAsset(handoff, await readJsonBody(request));
+      this.writeJson(response, 201, {
+        assetRef: staged.assetRef,
+        fileName: staged.fileName,
+        mimeType: staged.mimeType,
+        bytes: staged.bytes.byteLength
+      });
+      return;
+    }
+
+    if (url.pathname === "/api/v1/capture/route-commit") {
+      if (!this.options.commitDeviceCaptureRoute) {
+        throw new ExternalApiError(501, "Capture routing is unavailable.");
+      }
+      const input = readDeviceCaptureRouteCommitInput(await readJsonBody(request));
+      const handoff = this.resolveDeviceHandoff(url.searchParams.get("handoff"));
+      if (handoff?.preservedCaptureId && handoff.preservedCaptureId !== input.captureId) {
+        throw new ExternalApiError(409, "The route does not match the audio capture preserved by this handoff.");
+      }
+      const handoffClaim = this.claimDeviceHandoff(url);
+      try {
+        const result = await this.options.commitDeviceCaptureRoute(input);
+        if (result.kind === "agent_request") {
+          if (handoff) {
+            handoff.agentRunId = result.run.runId;
+            handoff.agentCaptureId = input.captureId;
+          }
+          this.releaseDeviceHandoffClaim(handoffClaim);
+        } else {
+          this.consumeDeviceHandoff(handoffClaim);
+        }
+        this.writeJson(response, 201, { data: result });
+      } catch (error) {
+        this.releaseDeviceHandoffClaim(handoffClaim);
+        throw error;
+      }
+      return;
+    }
+
+    const approveAgentMatch = /^\/api\/v1\/agent-runs\/([^/]+)\/approve$/u.exec(url.pathname);
+    if (approveAgentMatch) {
+      if (!this.options.approveDeviceAgentRun) {
+        throw new ExternalApiError(501, "Agent approval is unavailable.");
+      }
+      const runId = decodeURIComponent(approveAgentMatch[1]);
+      const handoff = this.resolveDeviceHandoff(url.searchParams.get("handoff"));
+      if (handoff && (handoff.agentRunId !== runId || !handoff.agentCaptureId)) {
+        throw new ExternalApiError(403, "This phone handoff is not bound to that Agent proposal.");
+      }
+      const handoffClaim = this.claimDeviceHandoff(url);
+      try {
+        const run = await this.options.approveDeviceAgentRun(runId);
+        this.consumeDeviceHandoff(handoffClaim);
+        this.writeJson(response, 200, { data: run });
+      } catch (error) {
+        this.releaseDeviceHandoffClaim(handoffClaim);
+        throw error;
+      }
+      return;
+    }
+
     const undoCaptureMatch = /^\/api\/v1\/captures\/([^/]+)\/undo$/u.exec(url.pathname);
     if (undoCaptureMatch) {
       if (!this.options.undoCapture) {
@@ -1104,15 +1199,32 @@ export class ToWriteExternalApiServer {
         clientId: readOptionalText(body, "clientId"),
         metadata: readWritebackMetadata(body)
       };
+      const handoff = this.resolveDeviceHandoff(url.searchParams.get("handoff"));
+      const assets = readStringList(body, "assetRefs").map((assetRef) => {
+        const asset = handoff?.assets.get(assetRef);
+        if (!asset) throw new ExternalApiError(400, `Unknown handoff asset: ${assetRef}`);
+        return asset;
+      });
       const handoffClaim = this.claimDeviceHandoff(url);
+      const preserveHandoff = body.preserveHandoff === true && Boolean(handoffClaim);
+      if (preserveHandoff && (!capture.captureId
+        || (handoff?.preservedCaptureId && handoff.preservedCaptureId !== capture.captureId))) {
+        this.releaseDeviceHandoffClaim(handoffClaim);
+        throw new ExternalApiError(409, "A handoff may preserve only one stable capture before routing.");
+      }
       let result: DeviceCaptureResult;
       try {
-        result = await this.options.createDeviceCapture(capture);
+        result = await this.options.createDeviceCapture(capture, assets);
       } catch (error) {
         this.releaseDeviceHandoffClaim(handoffClaim);
         throw error;
       }
-      this.consumeDeviceHandoff(handoffClaim);
+      if (preserveHandoff) {
+        if (handoff && capture.captureId) handoff.preservedCaptureId = capture.captureId;
+        this.releaseDeviceHandoffClaim(handoffClaim);
+      } else {
+        this.consumeDeviceHandoff(handoffClaim);
+      }
       this.writeJson(response, 201, {
         data: result
       });
@@ -1876,7 +1988,8 @@ export class ToWriteExternalApiServer {
       displayed: targetId
         ? this.acknowledgedDisplayTuples.get(localDeviceTargetKey(targetId))
           ?? this.options.getDeviceDisplayedTuple?.(targetId)
-        : undefined
+        : undefined,
+      assets: new Map()
     };
     this.handoffs.set(id, handoff);
     this.purgeHandoffs();
@@ -2108,7 +2221,11 @@ export class ToWriteExternalApiServer {
     if (method === "POST") {
       return pathname === "/api/v1/captures"
         || pathname === "/api/v1/capture/recommendations"
+        || pathname === "/api/v1/capture/route-preview"
+        || pathname === "/api/v1/capture/route-commit"
+        || pathname === "/api/v1/device/handoff-assets"
         || pathname === "/api/v1/device/handoff-actions"
+        || /^\/api\/v1\/agent-runs\/[^/]+\/approve$/u.test(pathname)
         || /^\/api\/v1\/questions\/[^/]+\/notes$/u.test(pathname);
     }
     return false;
@@ -2197,11 +2314,15 @@ export class ToWriteExternalApiServer {
     if (method === "POST") {
       return pathname === "/api/v1/captures"
         || pathname === "/api/v1/capture/recommendations"
+        || pathname === "/api/v1/capture/route-preview"
+        || pathname === "/api/v1/capture/route-commit"
+        || pathname === "/api/v1/device/handoff-assets"
         || /^\/api\/v1\/captures\/[^/]+\/undo$/u.test(pathname)
         || pathname === "/api/v1/device/events"
         || pathname === "/api/v1/device/display-acks"
         || pathname === "/api/v1/device/handoffs"
         || pathname === "/api/v1/device/handoff-actions"
+        || /^\/api\/v1\/agent-runs\/[^/]+\/approve$/u.test(pathname)
         || pathname === "/api/v1/device/push/subscriptions"
         || pathname === "/api/v1/push/feedback"
         || /^\/api\/v1\/questions\/[^/]+\/notes$/u.test(pathname);
@@ -2349,6 +2470,100 @@ function readStringList(body: Record<string, unknown>, key: string): string[] {
     return splitListText(value).slice(0, 20);
   }
   return [];
+}
+
+function readDeviceCaptureRoutingInput(body: Record<string, unknown>): DeviceCaptureRoutingInput {
+  const captureId = readString(body, "captureId");
+  const text = readOptionalText(body, "text");
+  if (!captureId || !/^capture_[A-Za-z0-9_-]{6,100}$/u.test(captureId)) {
+    throw new ExternalApiError(400, "A valid captureId is required.");
+  }
+  if (!text) throw new ExternalApiError(400, "Capture routing requires text.");
+  const metadata = readWritebackMetadata(body);
+  return {
+    captureId,
+    text,
+    title: readOptionalText(body, "title"),
+    tags: readStringList(body, "tags"),
+    category: readOptionalText(body, "category")?.slice(0, 120),
+    metadata: metadata ? {
+      source_file: metadata.source_file,
+      source_block_id: metadata.source_block_id,
+      input_mode: metadata.input_mode
+    } : undefined
+  };
+}
+
+function readDeviceCaptureRouteCommitInput(body: Record<string, unknown>): DeviceCaptureRouteCommitInput {
+  const input = readDeviceCaptureRoutingInput(body);
+  const route = readString(body, "route");
+  if (route !== "create_todo" && route !== "agent_request") {
+    throw new ExternalApiError(400, "Route must be create_todo or agent_request.");
+  }
+  const idempotencyKey = readString(body, "idempotencyKey");
+  if (!idempotencyKey || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/u.test(idempotencyKey)) {
+    throw new ExternalApiError(400, "A valid idempotencyKey is required.");
+  }
+  return { ...input, route, idempotencyKey };
+}
+
+function stageDeviceHandoffAsset(
+  handoff: DeviceHandoff,
+  body: Record<string, unknown>
+): CaptureBridgeStagedAsset {
+  const idempotencyKey = readString(body, "idempotencyKey");
+  if (!idempotencyKey || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(idempotencyKey)) {
+    throw new ExternalApiError(400, "A valid asset idempotencyKey is required.");
+  }
+  const fileName = String(body.fileName ?? "")
+    .replace(/[/\\:]/gu, "-")
+    .replace(/\p{Cc}/gu, "-")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .slice(0, 180);
+  if (!fileName) throw new ExternalApiError(400, "Asset fileName is required.");
+  const mimeType = String(body.mimeType ?? "").trim().toLowerCase().slice(0, 120);
+  if (!/^audio\/(?:webm|mp4|mpeg|ogg|wav|x-m4a|aac)(?:;.*)?$/u.test(mimeType)) {
+    throw new ExternalApiError(415, "Only supported audio assets may be staged.");
+  }
+  const base64 = String(body.base64 ?? "").trim();
+  if (!base64 || base64.length > 900_000 || !/^[A-Za-z0-9+/]*={0,2}$/u.test(base64)) {
+    throw new ExternalApiError(400, "Audio must be a valid base64 payload below 675 KB.");
+  }
+  let bytes: Uint8Array;
+  try {
+    const decoded = window.atob(base64);
+    bytes = Uint8Array.from(decoded, (character) => character.charCodeAt(0));
+  } catch {
+    throw new ExternalApiError(400, "Audio base64 payload is invalid.");
+  }
+  if (!bytes.byteLength) throw new ExternalApiError(400, "Audio asset is empty.");
+
+  const existing = [...handoff.assets.values()].find((asset) => asset.idempotencyKey === idempotencyKey);
+  if (existing) {
+    if (existing.fileName !== fileName || existing.mimeType !== mimeType || !equalBytes(existing.bytes, bytes)) {
+      throw new ExternalApiError(409, "The asset idempotency key was reused with different audio.");
+    }
+    return existing;
+  }
+  if (handoff.assets.size >= 4) throw new ExternalApiError(413, "A phone handoff accepts at most four audio assets.");
+  const totalBytes = [...handoff.assets.values()].reduce((sum, asset) => sum + asset.bytes.byteLength, 0);
+  if (totalBytes + bytes.byteLength > 700_000) {
+    throw new ExternalApiError(413, "Phone handoff audio exceeds 700 KB.");
+  }
+  const asset = {
+    assetRef: `asset_${randomFragment().slice(0, 32)}`,
+    idempotencyKey,
+    fileName,
+    mimeType,
+    bytes
+  };
+  handoff.assets.set(asset.assetRef, asset);
+  return asset;
+}
+
+function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
+  return left.byteLength === right.byteLength && left.every((value, index) => value === right[index]);
 }
 
 function readDailyKind(value: unknown): DailyPlanCreateInput["kind"] {

@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+## 0.5.0 - 2026-08-15
+
+- Added the local-only `note-focus` desktop action. A physical primary-button event can now open the task's exact Obsidian file, block, heading, text checkpoint, line, or PDF page in the main editor while keeping the complete Today list visible on the right.
+- Added raw phone audio capture with `MediaRecorder`, a 45-second bounded recording session, local playback, IndexedDB Blob recovery, one-time handoff asset staging, and Markdown attachment persistence. Browser speech recognition remains an optional transcription enhancement instead of the only voice path.
+- Added a no-write routing preview for phone captures: append to a note, create an idempotent Task Pool todo, or generate an approval-gated Agent proposal.
+- Added a persisted Agent run state machine and local tool allowlist. Phone-originated Agent requests can currently propose only `create_todo`; a second explicit confirmation is required before the Connector calls TaskPoolService. Shell, deletion, credentials, and arbitrary model paths remain unavailable.
+- Kept hardware decoupled from Obsidian and Agent internals. Existing Device Event v2/v3 and displayed ACK payloads are unchanged; new phone routes use opaque handoff and asset references.
+- Added architecture documentation plus regression coverage for workspace action normalization, PWA script syntax, audio staging/consumption, route previews, Agent approval, replay rejection, and malformed persisted proposals.
+- Production verification: 129 test files and 805 tests, Obsidian lint with zero warnings, TypeScript checks, production build, Release asset validation, and the 2 MiB bundle limit.
+
+中文摘要：
+
+- 新增仅在本机解析的 `note-focus` 桌面动作：实体主键可打开任务对应的 Obsidian 文件、block、heading、文本检查点、行或 PDF 页，同时在右侧铺开完整今日任务列表。
+- 手机 PWA 新增 `MediaRecorder` 原始录音、45 秒限制、本地回放、IndexedDB Blob 恢复、一次性 handoff 音频暂存与 Markdown 附件写入；浏览器听写只作为可选增强。
+- 新增不写入 Markdown 的归类预览，可确认追加笔记、创建幂等的工作池待办，或生成需要再次确认的 Agent 提案。
+- 新增持久化 Agent 状态机和本地工具白名单。当前手机 Agent 只能提议 `create_todo`，再次确认后才由 Connector 调用 TaskPoolService；Shell、删除、凭据和模型提供的任意路径仍被禁止。
+- 保持软硬件解耦：Device Event v2/v3 与 displayed ACK 载荷不变，新手机接口只使用不透明 handoff 和 asset 引用。
+- 生产验证：129 个测试文件、805 项测试，以及 Obsidian lint、类型检查、生产构建、Release 资产校验和 2 MiB 包体限制全部通过。
+
 ## 0.4.6 - 2026-08-14
 
 - Fixed carry-over migration rejecting top-level checkbox categories with `A Daily task with child tasks cannot be migrated as one leaf`. A level-one task such as `项目`, `创作`, `其他`, or `稍后阅读和记录` is now migrated as one authored Markdown subtree.

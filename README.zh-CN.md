@@ -64,7 +64,7 @@ Markdown 与用户可读的 JSON/JSONL 是数据真源，索引均可重建。�
 | Device Hub / NFC | 关闭 | 发送隐私过滤后的卡片快照与 opaque 引用。 |
 | External API / Capture Bridge | 关闭 | 桌面端本地服务，使用请求头中的 scoped token。 |
 
-API Key 与长期 token 在支持的版本中使用 Obsidian SecretStorage，且不会进入 URL。启用联网功能前请阅读[隐私说明](PRIVACY.zh-CN.md)、[安全说明](SECURITY.zh-CN.md)与[架构](ARCHITECTURE.md)。
+API Key 与长期 token 在支持的版本中使用 Obsidian SecretStorage，且不会进入 URL。启用联网功能前请阅读[隐私说明](PRIVACY.zh-CN.md)、[安全说明](SECURITY.zh-CN.md)、[外部按键到 Agent 的完整链路](docs/device-action-pipeline.zh-CN.md)与[架构](ARCHITECTURE.md)。
 
 ## 兼容性
 

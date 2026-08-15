@@ -48,6 +48,22 @@ describe("settings normalization", () => {
     ]);
   });
 
+  it("keeps the local note workspace action kind", () => {
+    expect(normalizeDesktopActions([{
+      id: "note-focus",
+      name: "Note focus",
+      enabled: true,
+      kind: "workspace",
+      target: ""
+    }])).toEqual([{
+      id: "note-focus",
+      name: "Note focus",
+      enabled: true,
+      kind: "workspace",
+      target: ""
+    }]);
+  });
+
   it("normalizes Inbox folders and preserves safe defaults for upgraded data", () => {
     expect(normalizeInboxSettings(undefined)).toEqual(DEFAULT_SETTINGS.inbox);
     expect(normalizeInboxSettings({

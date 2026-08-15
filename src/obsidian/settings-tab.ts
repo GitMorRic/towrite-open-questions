@@ -2051,6 +2051,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
         .addDropdown((dropdown) => dropdown
           .addOption("today", zh ? "打开今日工作台" : "Open Today workspace")
           .addOption("focus", zh ? "打开专注小窗" : "Open Focus Now")
+          .addOption("workspace", zh ? "打开笔记与任务工作区" : "Open note and task workspace")
           .addOption("obsidian", zh ? "打开 Vault 文件/位置" : "Open Vault location")
           .addOption("https", zh ? "打开 HTTPS 链接" : "Open HTTPS URL")
           .addOption("deep-link", zh ? "打开已批准应用深链接" : "Open approved app deep link")
@@ -2058,7 +2059,7 @@ export class ToWriteSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             await this.patchDesktopAction(index, { kind: value as ToWriteDesktopActionProfile["kind"] }, true);
           }));
-      if (action.kind !== "today" && action.kind !== "focus") {
+      if (action.kind !== "today" && action.kind !== "focus" && action.kind !== "workspace") {
         new Setting(body)
           .setName(zh ? "本地目标" : "Local target")
           .setDesc(action.kind === "obsidian"

@@ -16,7 +16,7 @@ import {
 } from "obsidian";
 import { createQuestionAnchor, lineRangeForOffsets } from "./core/anchor";
 import { DeferredKeyedQueue } from "./core/deferred-keyed-queue";
-import { makeQuestionId, shortHash } from "./core/hash";
+import { contentHash128, makeQuestionId, shortHash } from "./core/hash";
 import {
   normalizeWorkflowStageId,
   readExplicitWorkflowStage,
@@ -220,6 +220,7 @@ import {
 } from "./daily";
 import { QuestionExporter } from "./export/exporter";
 import {
+  ExternalApiError,
   ToWriteExternalApiServer,
   type DeviceCommandExecutionResult,
   type DeviceCaptureRequest,
@@ -227,6 +228,16 @@ import {
   type DeviceWritebackMetadata,
   type ExternalApiRuntimeStatus
 } from "./external/server";
+import {
+  DEVICE_CAPTURE_ROUTING_SCHEMA_VERSION,
+  buildDeviceCaptureRoutingPreview,
+  normalizeDeviceAgentProposals,
+  type DeviceAgentProposal,
+  type DeviceCaptureRouteCommitInput,
+  type DeviceCaptureRouteCommitResult,
+  type DeviceCaptureRoutingInput,
+  type DeviceCaptureRoutingPreview
+} from "./device-capture-routing";
 import { PushEngine } from "./push/engine";
 import { normalizePushRuntimeState, type PushAnchorInput, type PushFeedbackInput } from "./push/state";
 import type { PushCandidate, PushFeedPayload, PushRuntimeState } from "./push/types";
@@ -614,6 +625,7 @@ export default class ToWritePlugin extends Plugin {
   private lastCaptureTargetCatalogJson = "";
   private readonly legacyEinkPlaylistCache = new Map<string, ExportEinkPayload>();
   private readonly bridgeCaptureAssets = new Map<string, Array<{ path: string; sha256: string }>>();
+  private readonly deviceAgentRuns = new Map<string, DeviceAgentProposal>();
 
   async onload(): Promise<void> {
     await this.loadPluginData();
@@ -741,9 +753,17 @@ export default class ToWritePlugin extends Plugin {
       appendQuestionNote: (id, text, clientId, metadata) => this.appendQuestionNoteFromExternal(id, text, clientId, metadata),
       updateQuestionFields: (id, patch) => this.updateQuestionFieldsFromExternal(id, patch),
       recommendCapture: (draft) => this.recommendCaptureTargets(draft),
-      createDeviceCapture: (request) => this.createDeviceCaptureFromExternal(request),
+      createDeviceCapture: (request, assets) => this.createDeviceCaptureWithAssets(request, assets),
+      previewDeviceCaptureRoute: (request) => Promise.resolve(this.previewDeviceCaptureRoute(request)),
+      commitDeviceCaptureRoute: (request) => this.commitDeviceCaptureRoute(request),
+      approveDeviceAgentRun: (runId) => this.approveDeviceAgentRun(runId),
       undoCapture: async (captureId, undoToken) => {
-        return this.captureService.undo(undoToken, captureId);
+        const result = await this.captureService.undo(undoToken, captureId);
+        if (result.undone) {
+          await this.removeUnreferencedBridgeAssets(this.bridgeCaptureAssets.get(captureId) ?? []);
+          this.bridgeCaptureAssets.delete(captureId);
+        }
+        return result;
       },
       advanceDevicePage: (direction) => this.advanceLocalDevicePage(direction),
       getDeviceCompletionGuard: (targetId) => this.getCurrentDeviceCompletionGuard(targetId),
@@ -2159,7 +2179,8 @@ export default class ToWritePlugin extends Plugin {
       dailyScheduleOccurrenceIds: [...this.dailyScheduleOccurrenceIds].slice(-200),
       dailyCarryoverReviews: this.dailyCarryoverReviews,
       dailyCarryoverIgnored: this.dailyCarryoverIgnored,
-      deviceCommandJournal: [...this.deviceCommandJournal.values()].slice(-256)
+      deviceCommandJournal: [...this.deviceCommandJournal.values()].slice(-256),
+      deviceAgentRuns: [...this.deviceAgentRuns.values()].slice(-100)
     };
     await this.saveData(data);
     await this.exportCaptureTargetCatalog();
@@ -4760,6 +4781,9 @@ export default class ToWritePlugin extends Plugin {
       await this.activateTodayFloating();
       return bestEffortFocusObsidian();
     }
+    if (profile.kind === "workspace") {
+      return this.openDailyItemWorkspace(item, context);
+    }
 
     let target: NavigationTarget | undefined;
     if (profile.kind === "deep-link") {
@@ -4800,6 +4824,49 @@ export default class ToWritePlugin extends Plugin {
       );
     }
     return result.focused;
+  }
+
+  /**
+   * Opens the task's ordinary target in the main editor and keeps a complete
+   * Today list visible on the right. The real note/block remains local while
+   * the device carries only the named action id.
+   */
+  private async openDailyItemWorkspace(
+    item: DailyPlanItem,
+    context: { eventId?: string; displayedValidated: boolean }
+  ): Promise<boolean> {
+    const resolution = resolveDailyTarget({
+      sourcePath: item.sourcePath,
+      taskText: item.text,
+      blockId: item.blockId,
+      explicitTarget: item.target,
+      lineage: item.lineage
+    });
+    let target = navigationTargetForDailyItem(item, resolution);
+    if (target?.provider === "obsidian") {
+      target = this.applyDailyNavigationCheckpoint(item, resolution, target);
+    }
+
+    if (target) {
+      const opened = await this.navigationRouter.open(target, context);
+      if (opened.status !== "opened") {
+        throw new DailyPlanConflictError(
+          opened.status === "not-found" ? "not-found" : "invalid-state",
+          opened.message
+        );
+      }
+    } else if (resolution.source === "dashboard") {
+      await this.activateDashboard({ activeTab: "today" });
+      return bestEffortFocusObsidian();
+    }
+
+    await activateWorkspaceView(this.app.workspace, {
+      type: TOWRITE_TODAY_FLOATING_VIEW,
+      location: "right",
+      state: { collapsed: false, mode: "list" },
+      focus: false
+    });
+    return bestEffortFocusObsidian();
   }
 
   private applyDailyNavigationCheckpoint(
@@ -5865,6 +5932,142 @@ export default class ToWritePlugin extends Plugin {
     return this.store.getQuestion(id);
   }
 
+  private async createDeviceCaptureWithAssets(
+    request: DeviceCaptureRequest,
+    assets: readonly CaptureBridgeStagedAsset[] = []
+  ): Promise<DeviceCaptureResult> {
+    if (!assets.length) return this.createDeviceCaptureFromExternal(request);
+    const captureId = request.captureId?.trim() || `capture_${randomTokenFragment()}`;
+    const written = await this.persistBridgeCaptureAssets(captureId, assets);
+    const audioMarkdown = written.map((asset) => `![[${asset.path}]]`).join("\n");
+    try {
+      const result = await this.createDeviceCaptureFromExternal({
+        ...request,
+        captureId,
+        text: `${request.text.trim()}\n\n${audioMarkdown}`.trim(),
+        metadata: {
+          ...request.metadata,
+          input_mode: request.metadata?.input_mode || "voice"
+        }
+      });
+      this.bridgeCaptureAssets.set(result.captureId ?? captureId, written);
+      return result;
+    } catch (error) {
+      await this.removeUnreferencedBridgeAssets(written);
+      throw error;
+    }
+  }
+
+  private previewDeviceCaptureRoute(input: DeviceCaptureRoutingInput): DeviceCaptureRoutingPreview {
+    return buildDeviceCaptureRoutingPreview(input, {
+      taskPoolPath: this.taskPoolService.path,
+      agentAvailable: true
+    });
+  }
+
+  private async commitDeviceCaptureRoute(
+    input: DeviceCaptureRouteCommitInput
+  ): Promise<DeviceCaptureRouteCommitResult> {
+    const source = deviceTaskSourceFromCapture(input);
+    const text = deviceTodoText(input);
+    const category = input.category?.trim() || input.tags[0]?.trim() || undefined;
+    if (input.route === "create_todo") {
+      const taskId = `task_${contentHash128(`device-route:${input.idempotencyKey}`)}`;
+      const existing = await this.taskPoolService.get(taskId);
+      const task = await this.taskPoolService.create({ id: taskId, text, category, source });
+      await this.refreshDailyPlanCache();
+      return {
+        kind: "create_todo",
+        taskId: task.taskId,
+        sourcePath: task.sourcePath,
+        idempotent: Boolean(existing)
+      };
+    }
+
+    const runId = `run_${contentHash128(`device-agent:${input.idempotencyKey}`)}`;
+    const existing = this.deviceAgentRuns.get(runId);
+    if (existing) {
+      if (existing.idempotencyKey !== input.idempotencyKey
+        || existing.arguments.text !== text
+        || existing.arguments.category !== category
+        || existing.arguments.source !== source) {
+        throw new ExternalApiError(409, "The Agent idempotency key was reused with different input.");
+      }
+      return { kind: "agent_request", run: existing };
+    }
+    const now = new Date().toISOString();
+    const run: DeviceAgentProposal = {
+      schemaVersion: DEVICE_CAPTURE_ROUTING_SCHEMA_VERSION,
+      runId,
+      status: "proposed",
+      createdAt: now,
+      updatedAt: now,
+      sourceCaptureId: input.captureId,
+      message: input.text,
+      tool: "create_todo",
+      arguments: { text, category, source },
+      riskLevel: 1,
+      requiresApproval: true,
+      idempotencyKey: input.idempotencyKey
+    };
+    this.deviceAgentRuns.set(runId, run);
+    await this.savePluginData();
+    return { kind: "agent_request", run };
+  }
+
+  private async approveDeviceAgentRun(runId: string): Promise<DeviceAgentProposal> {
+    const current = this.deviceAgentRuns.get(runId);
+    if (!current) throw new ExternalApiError(404, "Agent proposal not found.");
+    if (current.status === "succeeded") return current;
+    if (current.status !== "proposed" && current.status !== "approved" && current.status !== "failed") {
+      throw new ExternalApiError(409, `Agent proposal cannot be approved from ${current.status}.`);
+    }
+    const approved: DeviceAgentProposal = {
+      ...current,
+      status: "approved",
+      updatedAt: new Date().toISOString(),
+      error: undefined
+    };
+    this.deviceAgentRuns.set(runId, approved);
+    await this.savePluginData();
+    const executing: DeviceAgentProposal = {
+      ...approved,
+      status: "executing",
+      updatedAt: new Date().toISOString()
+    };
+    this.deviceAgentRuns.set(runId, executing);
+    await this.savePluginData();
+    try {
+      const taskId = `task_${contentHash128(`device-agent-run:${current.idempotencyKey}`)}`;
+      const task = await this.taskPoolService.create({
+        id: taskId,
+        text: current.arguments.text,
+        category: current.arguments.category,
+        source: current.arguments.source
+      });
+      const succeeded: DeviceAgentProposal = {
+        ...executing,
+        status: "succeeded",
+        updatedAt: new Date().toISOString(),
+        result: { taskId: task.taskId, sourcePath: task.sourcePath }
+      };
+      this.deviceAgentRuns.set(runId, succeeded);
+      await this.savePluginData();
+      await this.refreshDailyPlanCache();
+      return succeeded;
+    } catch (error) {
+      const failed: DeviceAgentProposal = {
+        ...executing,
+        status: "failed",
+        updatedAt: new Date().toISOString(),
+        error: messageForError(error)
+      };
+      this.deviceAgentRuns.set(runId, failed);
+      await this.savePluginData();
+      throw error;
+    }
+  }
+
   private async createDeviceCaptureFromExternal(request: DeviceCaptureRequest): Promise<DeviceCaptureResult> {
     if (request.captureId || request.candidateId || request.action || request.targetRevision || request.target?.kind === "existingNote") {
       return this.createVersionedDeviceCapture(request);
@@ -6122,6 +6325,10 @@ export default class ToWritePlugin extends Plugin {
           .filter(([, values]) => Array.isArray(values))
           .map(([date, values]) => [date, values.filter((value): value is string => typeof value === "string").slice(-512)]))
       : {};
+    this.deviceAgentRuns.clear();
+    for (const run of normalizeDeviceAgentProposals(data?.deviceAgentRuns)) {
+      this.deviceAgentRuns.set(run.runId, run);
+    }
     this.dailyDeviceStateVersion = Number.isSafeInteger(data?.dailyDeviceStateVersion)
       ? Math.max(1, Number(data?.dailyDeviceStateVersion))
       : 1;
@@ -14363,6 +14570,25 @@ function normalizeVaultPath(value: string): string {
     .map((part) => part.trim().replace(/[\\:*?"<>|]/gu, "-"))
     .filter(Boolean)
     .join("/");
+}
+
+function deviceTodoText(input: DeviceCaptureRoutingInput): string {
+  const title = input.title?.replace(/\s+/gu, " ").trim();
+  if (title) return title.slice(0, 500);
+  return input.text
+    .split(/\r?\n/u)
+    .map((line) => line.replace(/\s+/gu, " ").trim())
+    .find(Boolean)
+    ?.slice(0, 500) || "手机快速记录";
+}
+
+function deviceTaskSourceFromCapture(input: DeviceCaptureRoutingInput): string | undefined {
+  const file = input.metadata?.source_file?.trim().replace(/\\/gu, "/");
+  const blockId = input.metadata?.source_block_id?.trim();
+  if (!file || !blockId
+    || file.includes("[[") || file.includes("]]") || file.includes("#")
+    || !/^task_[0-9a-f]{32}$/u.test(blockId)) return undefined;
+  return `[[${file}#^${blockId}]]`;
 }
 
 function normalizeCaptureTags(values: string[]): string[] {
