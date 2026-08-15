@@ -258,7 +258,7 @@ describe("DailyPlanService", () => {
     expect(written).not.toContain("📅");
     expect(written).toContain("[towrite-scheduled:: 2026-07-23]");
     expect(written).toContain("[towrite-due:: 2026-07-24]");
-    expect(written).toContain("\n  %% [towrite-kind:: edit_note]");
+    expect(written).toContain("\n  <!-- [towrite-kind:: edit_note]");
     expect(written).toContain("^daily_multiline1");
     expect(written).toContain("这行与任务无关，必须保留。");
     expect(written).toContain("^daily_other1");

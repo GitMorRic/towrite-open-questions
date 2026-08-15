@@ -106,6 +106,9 @@ describe("dashboard viewport layout", () => {
     expect(plugin).toContain("dailyMigrationDestinationCategory(item)");
     expect(plugin).toContain("item.structuralCategory && options.destinationText?.trim()");
     expect(plugin).toContain("category: destinationCategory");
+    expect(plugin).toContain('if (el.closest(".markdown-source-view")) return;');
+    expect(plugin).toContain("context.getSectionInfo(el)");
+    expect(plugin).toContain("section.lineStart > 0");
   });
 
   it("uses left click and hover for project details while reserving right click for color", () => {

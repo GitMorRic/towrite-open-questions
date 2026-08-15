@@ -981,6 +981,13 @@ export default class ToWritePlugin extends Plugin {
         normalizePath(context.sourcePath) !== normalizePath(this.dailyPlanDocument?.sourcePath ?? "")
         || this.previousDailyUnfinished.length === 0
       ) return;
+      // Live Preview invokes Markdown post-processors for multiple rendered
+      // editor chunks. It already owns one CodeMirror migration widget; adding
+      // another prompt per chunk produced repeated cards between metadata
+      // lines. Reading view keeps one prompt at the first rendered section.
+      if (el.closest(".markdown-source-view")) return;
+      const section = context.getSectionInfo(el);
+      if (section && section.lineStart > 0) return;
       const previewRoot = el.closest(".markdown-preview-view") ?? el.parentElement ?? el;
       if (previewRoot.querySelector("[data-towrite-previous-migration]")) return;
       const prompt = createEl("aside");

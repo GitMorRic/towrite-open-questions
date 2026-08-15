@@ -1522,7 +1522,10 @@ function optionalFieldLine(indent: string, key: string, value: string | undefine
 
 function commentOwnedFieldLine(value: string): string {
   const indent = /^\s*/u.exec(value)?.[0] ?? "";
-  return `${indent}%% ${value.slice(indent.length)} %%`;
+  // HTML comments stay invisible in both Reading view and Live Preview even
+  // when Obsidian's inline-field parser runs before Markdown post-processors.
+  // The reader still accepts legacy `%% ... %%` control lines.
+  return `${indent}<!-- ${value.slice(indent.length)} -->`;
 }
 
 function safeMarkerValue(value: string): string {

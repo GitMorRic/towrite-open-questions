@@ -57,6 +57,8 @@ describe("Daily editor task controls", () => {
 
   it("folds only exact ToWrite-owned continuation lines", () => {
     expect(isOwnedDailyMetadataLine("  [towrite-kind:: task] [towrite-device:: none]")).toBe(true);
+    expect(isOwnedDailyMetadataLine("  <!-- [towrite-kind:: task] [towrite-device:: none] -->")).toBe(true);
+    expect(isOwnedDailyMetadataLine("  <!-- [towrite-action:: note-focus] -->")).toBe(true);
     expect(isOwnedDailyMetadataLine("  [towrite-target:: [[Echo 发布计划]]]")).toBe(true);
     expect(isOwnedDailyMetadataLine("  ^daily_1234567890abcdef1234567890abcdef")).toBe(true);
     expect(isOwnedDailyMetadataLine("  用户自己的说明")).toBe(false);
@@ -84,6 +86,14 @@ describe("Daily editor task controls", () => {
       "- [ ] 这是一个待办 ^daily_1234567890abcdef1234567890abcdef"
     )).toEqual({ from: 12, to: 52 });
     expect(dailyTaskTrailingIdRange("- [ ] 普通内容")).toBeUndefined();
+  });
+
+  it("folds technical lines before the asynchronous Daily item cache is consulted", () => {
+    const source = readFileSync(new URL("./daily-task-controls.ts", import.meta.url), "utf8");
+    const technicalScan = source.indexOf("for (let lineNumber = 1; lineNumber <= state.doc.lines; lineNumber += 1)");
+    const itemControls = source.indexOf("for (const { item, timing } of items)");
+    expect(technicalScan).toBeGreaterThan(-1);
+    expect(itemControls).toBeGreaterThan(technicalScan);
   });
 
   it("offers yesterday migration inside today's Daily note", () => {

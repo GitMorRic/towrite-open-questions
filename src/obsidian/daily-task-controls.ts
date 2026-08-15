@@ -130,6 +130,35 @@ function buildControls(
     selectedLines.add(state.doc.lineAt(selection.anchor).number);
     selectedLines.add(state.doc.lineAt(selection.head).number);
   }
+  // Conceal technical identity independently of the asynchronous Daily item
+  // cache. Live Preview can render a just-written block before the parser has
+  // refreshed; scanning the document itself prevents that short window from
+  // leaking block ids or owned metadata into the user's note.
+  for (let lineNumber = 1; lineNumber <= state.doc.lines; lineNumber += 1) {
+    const line = state.doc.line(lineNumber);
+    const trailingId = dailyTaskTrailingIdRange(line.text);
+    if (trailingId) {
+      const from = line.from + trailingId.from;
+      const to = line.from + trailingId.to;
+      entries.push({ from, to, decoration: Decoration.replace({ inclusive: false }) });
+      atomicEntries.push({ from, to, decoration: Decoration.mark({ class: "towrite-daily-technical-atomic" }) });
+    }
+    if (!isOwnedDailyMetadataLine(line.text)) continue;
+    entries.push({
+      from: line.from,
+      to: line.from,
+      decoration: Decoration.line({
+        attributes: { class: "towrite-daily-owned-metadata-folded" }
+      })
+    });
+    if (line.to > line.from) {
+      atomicEntries.push({
+        from: line.from,
+        to: line.to,
+        decoration: Decoration.mark({ class: "towrite-daily-technical-atomic" })
+      });
+    }
+  }
   for (const { item, timing } of items) {
     const taskLine = state.doc.line(item.line);
     entries.push({
@@ -142,17 +171,6 @@ function buildControls(
         }
       })
     });
-    const trailingId = dailyTaskTrailingIdRange(taskLine.text);
-    if (trailingId) {
-      const from = taskLine.from + trailingId.from;
-      const to = taskLine.from + trailingId.to;
-      entries.push({
-        from,
-        to,
-        decoration: Decoration.replace({ inclusive: false })
-      });
-      atomicEntries.push({ from, to, decoration: Decoration.mark({ class: "towrite-daily-technical-atomic" }) });
-    }
     // Do not interrupt the line currently being authored. Existing tasks keep
     // a zero-layout hover affordance on every other line.
     if (!selectedLines.has(item.line)) {
@@ -164,26 +182,6 @@ function buildControls(
           widget: new DailyTaskControlWidget(item, timing, options)
         })
       });
-    }
-    for (const lineNumber of ownedMetadataLineNumbers(state, item)) {
-      const line = state.doc.line(lineNumber);
-      entries.push({
-        from: line.from,
-        to: line.from,
-        decoration: Decoration.line({
-          attributes: {
-            class: "towrite-daily-owned-metadata-folded",
-            "data-towrite-task": item.id
-          }
-        })
-      });
-      if (line.to > line.from) {
-        atomicEntries.push({
-          from: line.from,
-          to: line.to,
-          decoration: Decoration.mark({ class: "towrite-daily-technical-atomic" })
-        });
-      }
     }
   }
 
@@ -548,22 +546,11 @@ function hasVisibleProperties(
   );
 }
 
-function ownedMetadataLineNumbers(state: EditorState, item: DailyPlanItem): number[] {
-  const candidates = new Set<number>();
-  const endLine = item.endLine ?? item.line;
-  for (let line = item.line + 1; line <= Math.min(endLine, state.doc.lines); line += 1) {
-    candidates.add(line);
-  }
-  for (const line of item.detachedOwnedLines ?? []) {
-    if (line >= 1 && line <= state.doc.lines) candidates.add(line);
-  }
-  return [...candidates]
-    .filter((line) => isOwnedDailyMetadataLine(state.doc.line(line).text))
-    .sort((left, right) => left - right);
-}
-
 export function isOwnedDailyMetadataLine(value: string): boolean {
-  const line = value.trim().replace(/^%%\s*/u, "").replace(/\s*%%$/u, "").trim();
+  const line = value.trim()
+    .replace(/^(?:%%|<!--)\s*/u, "")
+    .replace(/\s*(?:%%|-->)$/u, "")
+    .trim();
   if (/^\^daily_[a-f0-9]{32}$/u.test(line)) return true;
   return /^\[towrite-(?:kind|category|task-ref|pool-revision|work-kind|work-ref|work-revision|device|at|scheduled|due|primary|minimum|goal|next|estimate|action|target|started)::/u.test(line)
     && line.endsWith("]");

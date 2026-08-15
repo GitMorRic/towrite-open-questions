@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 0.5.2 - 2026-08-15
+
+- Fixed repeated `昨日还有 N 项未完成 / 选择迁移` cards appearing between Live Preview blocks. The Markdown post-processor now leaves editor chunks to the single CodeMirror widget and inserts at most one prompt in the first Reading-view section.
+- Conceal stable `^daily_*` ids and ToWrite-owned control lines directly from the editor document before the asynchronous Daily cache is consulted, preventing technical fields from flashing or remaining visible after a write.
+- New Daily control fields use native HTML comments so Obsidian's inline-field renderer cannot split `towrite-kind`, `task`, and comment delimiters into visible nodes. Existing `%% ... %%` metadata remains readable and foldable.
+- Production verification: 129 test files and 809 tests, Obsidian lint with zero warnings, TypeScript checks, production build, Release asset validation, and the 2 MiB bundle limit.
+
+中文摘要：
+
+- 修复 Live Preview 的多个渲染区块各自插入“昨日还有 N 项未完成 / 选择迁移”，导致提示卡在正文中重复出现的问题；编辑模式只保留 CodeMirror 的单个入口，阅读模式只在首个区段插入一次。
+- 稳定 `^daily_*` ID 与 ToWrite 技术行改为直接扫描编辑器文档后折叠，不再依赖异步 Daily 缓存是否已经刷新，避免写入后短暂或持续泄露技术字段。
+- 新写入的 Daily 控制字段改用原生 HTML 注释，避免 Obsidian inline-field 渲染器把 `towrite-kind`、`task` 和注释边界拆开显示；旧 `%% ... %%` 元数据继续兼容读取和隐藏。
+- 生产验证：129 个测试文件、809 项测试，以及 Obsidian lint、类型检查、生产构建、Release 资产校验和 2 MiB 包体限制全部通过。
+
 ## 0.5.1 - 2026-08-15
 
 - Recognize authored checkbox project trees under later custom Daily headings, even when the note already has a populated canonical `ToDo` section. A root such as `项目` remains both a task and a category; numbered/link groups and deeper child tasks keep their lineage.
