@@ -20,6 +20,7 @@ import {
 const LIST_RE = /^(?<indent>[ \t]*)(?<marker>(?:[-+*]|\d+[.)]))[ \t]+(?:(?<checkbox>\[(?<mark>[^\]])\])[ \t]+)?(?<body>.*)$/u;
 const STANDALONE_BLOCK_RE = /^(?<indent>[ \t]+)\^(?<id>[A-Za-z0-9_-]+)\s*$/u;
 const INLINE_BLOCK_RE = /(?:^|\s)\^(?<id>[A-Za-z0-9_-]+)\s*$/u;
+const DAILY_SECTION_MARKER_RE = /^\s*%%\s*\[towrite-daily-section::\s*(?:true|yes|1)\s*\]\s*%%\s*$/iu;
 const OWNED_FIELD_RE = /\[towrite-(?<key>kind|category|task-ref|pool-revision|work-kind|work-ref|work-revision|device|at|scheduled|due|primary|minimum|goal|next|estimate|action|target|started)::\s*(?<value>\[\[[^\]]+\]\]|[^\]]*)\]/giu;
 const MARKDOWN_LINK_LIKE_RE = /(?<!!)\[[^\]\r\n]*\]\((?<target>[^)\r\n]+)\)/gu;
 
@@ -260,7 +261,7 @@ export function resolveDailyPlanWriteSurface(
       }
       // Include standalone tasks already appended after the project trees,
       // but stop before a later journal heading and its unrelated checkboxes.
-      insertionNodes = surface.documentNodes.filter((node) => node.index < nextHeading);
+      insertionNodes = surface.nodes.filter((node) => node.index < nextHeading);
     }
     return {
       kind: "free-form",
@@ -296,17 +297,22 @@ function resolveDailyPlanningSurface(
   const freeFormNodes = documentNodes.filter((node) =>
     !nodeIsInScope(node, canonicalScope) && !nodeIsInScope(node, planScope)
   );
-  const projectRegionNodes = checkboxPlanningRegionNodes(lines, freeFormNodes, source, date);
+  const projectRegionNodes = checkboxPlanningRegionNodes(lines, freeFormNodes);
+  const markedSectionNodes = markedDailySectionNodes(lines, freeFormNodes);
+  const supplementalNodes = uniqueNodesBySourceLine([
+    ...projectRegionNodes,
+    ...markedSectionNodes
+  ]);
 
   if (canonicalNodes.length > 0) {
     // Older writers could append a populated ToDo section to a Daily note that
     // already used checkbox project trees. Keep the explicit canonical section
     // while recovering those authored tree components. Isolated journal
     // checkboxes and ordinary outlines remain outside the managed plan.
-    const supplemental = [
+    const supplemental = uniqueNodesBySourceLine([
       ...planNodes,
-      ...projectRegionNodes
-    ];
+      ...supplementalNodes
+    ]);
     return {
       canonicalScope,
       canonicalNodes,
@@ -320,6 +326,7 @@ function resolveDailyPlanningSurface(
     };
   }
   if (planNodes.length > 0) {
+    const nodes = uniqueNodesBySourceLine([...planNodes, ...supplementalNodes]);
     return {
       canonicalScope,
       canonicalNodes,
@@ -328,8 +335,8 @@ function resolveDailyPlanningSurface(
       documentScope,
       documentNodes,
       freeFormNodes,
-      nodes: planNodes,
-      revisionScope: planScope
+      nodes,
+      revisionScope: supplementalNodes.length > 0 ? documentScope ?? planScope : planScope
     };
   }
   const managedScope = canonicalScope ?? planScope;
@@ -347,12 +354,12 @@ function resolveDailyPlanningSurface(
       documentScope,
       documentNodes,
       freeFormNodes,
-      nodes: projectRegionNodes,
-      revisionScope: projectRegionNodes.length > 0 ? documentScope ?? managedScope : managedScope
+      nodes: supplementalNodes,
+      revisionScope: supplementalNodes.length > 0 ? documentScope ?? managedScope : managedScope
     };
   }
-  const unmanagedNodes = projectRegionNodes.length > 0
-    ? projectRegionNodes
+  const unmanagedNodes = supplementalNodes.length > 0
+    ? supplementalNodes
     : initialFreeFormChecklistNodes(lines, freeFormNodes, source, date);
   return {
     canonicalScope,
@@ -399,15 +406,53 @@ function checkboxTreeComponents(nodes: readonly ListNode[]): ListNode[] {
  */
 function checkboxPlanningRegionNodes(
   lines: readonly string[],
-  nodes: readonly ListNode[],
-  source: DailyPlanSource,
-  date: string
+  nodes: readonly ListNode[]
 ): ListNode[] {
-  const initialNodes = initialFreeFormChecklistNodes(lines, nodes, source, date);
-  const treeNodes = checkboxTreeComponents(initialNodes);
+  // A checkbox parent with authored descendants is a strong planning signal,
+  // even under a later custom heading such as "项目" or "随记". This is
+  // deliberately narrower than adopting every checkbox in that section: the
+  // tree establishes the region, then its same-section peers are included.
+  // Standalone reminder checkboxes elsewhere still require the explicit
+  // hidden section marker below.
+  const treeNodes = checkboxTreeComponents(nodes);
   if (treeNodes.length === 0) return [];
   const regions = new Set(treeNodes.map((node) => precedingHeadingIndex(lines, node.index)));
-  return initialNodes.filter((node) => regions.has(precedingHeadingIndex(lines, node.index)));
+  return nodes.filter((node) => regions.has(precedingHeadingIndex(lines, node.index)));
+}
+
+/**
+ * Opts a custom heading into Daily planning without renaming it to `ToDo`.
+ * The marker is an Obsidian comment, so it stays invisible in Reading view:
+ * `%% [towrite-daily-section:: true] %%`.
+ *
+ * This is intentionally section-scoped rather than note-scoped. A file can
+ * remain a natural journal while one authored section supplies commitments.
+ */
+function markedDailySectionNodes(
+  lines: readonly string[],
+  nodes: readonly ListNode[]
+): ListNode[] {
+  const ranges: Array<{ start: number; end: number }> = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!DAILY_SECTION_MARKER_RE.test(lines[index] ?? "")) continue;
+    const heading = precedingHeadingIndex(lines, index);
+    if (heading < 0) {
+      const nextHeading = lines.findIndex((line, lineIndex) => lineIndex > index && headingDepth(line) > 0);
+      ranges.push({ start: index + 1, end: nextHeading < 0 ? lines.length : nextHeading });
+      continue;
+    }
+    const level = headingDepth(lines[heading] ?? "");
+    let end = lines.length;
+    for (let cursor = heading + 1; cursor < lines.length; cursor += 1) {
+      const candidateLevel = headingDepth(lines[cursor] ?? "");
+      if (candidateLevel > 0 && candidateLevel <= level) {
+        end = cursor;
+        break;
+      }
+    }
+    ranges.push({ start: index + 1, end });
+  }
+  return nodes.filter((node) => ranges.some((range) => node.index >= range.start && node.index < range.end));
 }
 
 /** A heading-free body (or the body immediately below the date H1) can be a

@@ -539,6 +539,59 @@ describe("DailyPlanService", () => {
     expect(destinationMarkdown).toContain("  - [ ] 子任务 ^daily_category_child");
   });
 
+  it("keeps the authored type tree when it was written under a later custom heading", async () => {
+    const storage = new MemoryDailyStorage();
+    storage.files.set("Daily/2026-07-22.md", [
+      "# 2026-07-22",
+      "## ToDo",
+      "- [ ] 已有任务 ^daily_existing_task",
+      "",
+      "## 随记",
+      "- [ ] 项目 ^daily_late_category",
+      "  1. [[创作辅助工具电子屏幕-Layout和布局]]",
+      "     - [ ] 调整 FPC 端子间距 ^daily_late_child",
+      "     - 留螺丝孔"
+    ].join("\n"));
+    const service = new DailyPlanService(storage);
+    const source = (await service.list("2026-07-22"))
+      .find((item) => item.id === "daily_late_category");
+
+    expect(source).toMatchObject({
+      text: "项目",
+      structuralCategory: true,
+      structuralChildren: [
+        { text: "调整 FPC 端子间距" },
+        { text: "留螺丝孔" }
+      ]
+    });
+
+    const creation = await service.createMigrationSubtreeWithResult(
+      source!.id,
+      source!.revision,
+      source!.date,
+      {
+        id: "daily_late_category_destination",
+        date: "2026-07-23",
+        text: source!.text,
+        category: "项目"
+      },
+      undefined,
+      { placement: "prepend", mergeExactChildren: true }
+    );
+    await service.recordMigration(source!.id, source!.revision, {
+      date: "2026-07-23",
+      taskId: creation.item.id,
+      migrationId: "mig_late_category",
+      includeSubtree: true
+    }, source!.date);
+
+    const destination = storage.files.get("Daily/2026-07-23.md") ?? "";
+    expect(destination).toContain("- [ ] 项目");
+    expect(destination).toContain("  1. [[创作辅助工具电子屏幕-Layout和布局]]");
+    expect(destination).toContain("     - [ ] 调整 FPC 端子间距 ^daily_late_child");
+    expect(destination).toContain("     - 留螺丝孔");
+  });
+
   it("merges exact category children and remaps a conflicting nonduplicate child id", async () => {
     const storage = new MemoryDailyStorage();
     storage.files.set("Daily/2026-07-21.md", [

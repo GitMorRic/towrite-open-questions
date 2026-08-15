@@ -288,6 +288,65 @@ describe("daily hierarchy and inherited targets", () => {
     ]);
   });
 
+  it("recognizes a checkbox project tree under a later custom Daily heading", () => {
+    const markdown = [
+      `# ${DATE}`,
+      "## ToDo",
+      "- [ ] Canonical task ^daily_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "",
+      "## 随记",
+      "这里仍然可以写普通正文。",
+      "- [ ] 项目 ^daily_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "  1. [[创作辅助工具电子屏幕-Layout和布局]]",
+      "     - 调整 FPC 端子间距",
+      "     - 留螺丝孔",
+      "- [ ] 同区段独立任务 ^daily_cccccccccccccccccccccccccccccccc"
+    ].join("\n");
+
+    const hierarchy = parseDailyPlanHierarchy(markdown, PATH, DATE);
+
+    expect(hierarchy.groups.map((group) => group.text)).toEqual([
+      "项目",
+      "[[创作辅助工具电子屏幕-Layout和布局]]"
+    ]);
+    expect(hierarchy.tasks.map((task) => task.text)).toEqual([
+      "Canonical task",
+      "项目",
+      "调整 FPC 端子间距",
+      "留螺丝孔",
+      "同区段独立任务"
+    ]);
+    expect(hierarchy.tasks.find((task) => task.text === "调整 FPC 端子间距")?.lineage.groups
+      .map((group) => group.text)).toEqual([
+        "项目",
+        "[[创作辅助工具电子屏幕-Layout和布局]]"
+      ]);
+  });
+
+  it("opts standalone checkboxes under a custom heading in with one hidden section marker", () => {
+    const markdown = [
+      `# ${DATE}`,
+      "## ToDo",
+      "- [ ] Canonical task ^daily_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "",
+      "## 自定义安排",
+      "%% [towrite-daily-section:: true] %%",
+      "- [ ] 第一项 ^daily_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "- [ ] 第二项 ^daily_cccccccccccccccccccccccccccccccc",
+      "",
+      "## Journal",
+      "- [ ] 不应识别 ^daily_dddddddddddddddddddddddddddddddd"
+    ].join("\n");
+
+    const hierarchy = parseDailyPlanHierarchy(markdown, PATH, DATE);
+
+    expect(hierarchy.tasks.map((task) => task.text)).toEqual([
+      "Canonical task",
+      "第一项",
+      "第二项"
+    ]);
+  });
+
   it("keeps an explicit canonical ToDo isolated from unrelated checkboxes", () => {
     const markdown = [
       `# ${DATE}`,

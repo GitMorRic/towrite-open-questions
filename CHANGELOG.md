@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 0.5.1 - 2026-08-15
+
+- Recognize authored checkbox project trees under later custom Daily headings, even when the note already has a populated canonical `ToDo` section. A root such as `项目` remains both a task and a category; numbered/link groups and deeper child tasks keep their lineage.
+- Preserve those custom-section category trees as complete Markdown subtrees during carry-over migration instead of exposing only scattered leaves or relying solely on hidden category metadata.
+- Added the optional section-scoped marker `%% [towrite-daily-section:: true] %%` for custom headings that contain only standalone checkboxes. Structured checkbox trees need no marker, and Daily-note identity still comes from the configured folder and date format rather than injected per-note metadata.
+- Kept unrelated standalone journal reminders excluded unless their section is explicitly marked, preventing the broader recognition from adopting every checkbox in a natural journal.
+- Production verification: 129 test files and 808 tests, Obsidian lint with zero warnings, TypeScript checks, production build, Release asset validation, and the 2 MiB bundle limit.
+
+中文摘要：
+
+- 现在会识别日记后半段自定义标题下的 checkbox 项目树，即使同一篇日记已有内容不为空的 `ToDo` 区段；`项目` 等一级 checkbox 继续同时作为任务和分类，编号/链接分组与更深子任务保留完整来源层级。
+- 迁移这类分类时会复制完整 Markdown 子树，不再只留下散开的叶子，也不再只依赖阅读视图中看不见的分类元数据。
+- 新增可选的区段级标记 `%% [towrite-daily-section:: true] %%`，仅用于只有孤立 checkbox 的自定义标题。结构化项目树不需要标记，日记身份仍由设置中的目录和日期格式确定，不会逐篇日记注入隐藏字段。
+- 未标记的随记孤立提醒仍不会被接管，避免扩大识别范围后把自然日记中的所有 checkbox 都变成今日任务。
+- 生产验证：129 个测试文件、808 项测试，以及 Obsidian lint、类型检查、生产构建、Release 资产校验和 2 MiB 包体限制全部通过。
+
 ## 0.5.0 - 2026-08-15
 
 - Added the local-only `note-focus` desktop action. A physical primary-button event can now open the task's exact Obsidian file, block, heading, text checkpoint, line, or PDF page in the main editor while keeping the complete Today list visible on the right.
